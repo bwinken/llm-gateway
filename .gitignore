@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .env
+config.toml
 *.db
 pgdata/
 keys/

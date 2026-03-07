@@ -48,29 +48,19 @@ output_price_per_1m = 0.00
 # LLM
 # ------------------------------------------
 [models.llm]
-[models.llm."radllm"]
-real_model = "radllm-v1"
-base_url = "http://192.168.1.100:8000/v1"
+[models.llm."my-llm"]
+real_model = "my-llm-model-name"
+base_url = "http://your-llm-server:8000/v1"
 api_key_env_var = "VLLM_API_KEY"
-
-[models.llm."gpt-4o-mini"]
-real_model = "gpt-4o-mini"
-base_url = "https://api.openai.com/v1"
-api_key_env_var = "OPENAI_API_KEY"
 
 # ------------------------------------------
 # VLM (Vision Language Model)
 # ------------------------------------------
 [models.vlm]
-[models.vlm."gpt-4o"]
-real_model = "gpt-4o"
-base_url = "https://api.openai.com/v1"
-api_key_env_var = "OPENAI_API_KEY"
-
-[models.vlm."pixtral"]
-real_model = "mistralai/Pixtral-12B-2409"
-base_url = "http://192.168.1.100:8001/v1"
-api_key_env_var = "VLLM_API_KEY"
+[models.vlm."my-vlm"]
+real_model = "my-vlm-model-name"
+base_url = "http://your-vlm-server:8001/v1"
+api_key_env_var = "VLM_API_KEY"
 
 # ------------------------------------------
 # Embedding
@@ -78,22 +68,8 @@ api_key_env_var = "VLLM_API_KEY"
 [models.embedding]
 [models.embedding."bge-m3"]
 real_model = "BAAI/bge-m3"
-base_url = "http://192.168.1.101:8080/v1"
+base_url = "http://your-embedding-server:8080/v1"
 api_key_env_var = "EMBEDDING_API_KEY"
-
-[models.embedding."text-embedding-ada-002"]
-real_model = "text-embedding-ada-002"
-base_url = "https://api.openai.com/v1"
-api_key_env_var = "OPENAI_API_KEY"
-
-# ------------------------------------------
-# Vision Embedding
-# ------------------------------------------
-[models.vision_embedding]
-[models.vision_embedding."vlm-embed"]
-real_model = "Qwen/Qwen2-VL-7B-Instruct"
-base_url = "http://192.168.1.103:8000/v1"
-api_key_env_var = "VLM_API_KEY"
 
 # ------------------------------------------
 # Reranker
@@ -101,19 +77,5 @@ api_key_env_var = "VLM_API_KEY"
 [models.reranker]
 [models.reranker."bge-reranker-v2-m3"]
 real_model = "BAAI/bge-reranker-v2-m3"
-base_url = "http://192.168.1.102:8080/v1"
+base_url = "http://your-reranker-server:8080/v1"
 api_key_env_var = "RERANK_API_KEY"
-
-[models.reranker."radRERANK"]
-real_model = "radRERANK"
-base_url = "http://192.168.1.102:8080/v1"
-api_key_env_var = "RERANK_API_KEY"
-
-# ------------------------------------------
-# Vision Reranker
-# ------------------------------------------
-[models.vision_reranker]
-[models.vision_reranker."vlm-rerank"]
-real_model = "Qwen/Qwen2-VL-7B-Instruct"
-base_url = "http://192.168.1.103:8001/v1"
-api_key_env_var = "VLM_API_KEY"
