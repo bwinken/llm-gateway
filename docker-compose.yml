@@ -13,7 +13,14 @@ services:
       - ./pgdata:/var/lib/postgresql/data
 
   gateway:
-    build: .
+    build:
+      context: .
+      args:
+        # 如需 Proxy 建置，取消下方註解並填入實際位址
+        # HTTP_PROXY: http://proxy.company.com:8080
+        # HTTPS_PROXY: http://proxy.company.com:8080
+        HTTP_PROXY: "${HTTP_PROXY:-}"
+        HTTPS_PROXY: "${HTTPS_PROXY:-}"
     container_name: llm-gateway
     restart: unless-stopped
     ports:

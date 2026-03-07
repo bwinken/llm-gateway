@@ -41,6 +41,17 @@ output_price_per_1m = 0.00
 
 
 # ==========================================
+# Fallback (optional)
+# When a model's server is down, prefer this model as fallback for that type.
+# If not set, falls back to the first alive model of the same type.
+# ==========================================
+[fallback]
+# llm = "backup-llm"
+# vlm = "backup-vlm"
+# embedding = "backup-embedding"
+
+
+# ==========================================
 # Model Routing
 # ==========================================
 

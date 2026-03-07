@@ -16,7 +16,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlmodel import Session
 
-from app.core.config import MODEL_ROUTING, PRICING_MAP
+from app.core.config import FALLBACK_MAP, MODEL_ROUTING, PRICING_MAP
 from app.core.database import engine
 from app.core.logger import logger
 from app.core.server_state import get_client, is_alive
@@ -53,7 +53,16 @@ def _resolve_model(
     else:
         reason = f"model '{model_name}' not found or wrong type for {allowed_types}"
 
-    # Fallback: first alive model with compatible type
+    # Configured fallback: check FALLBACK_MAP first
+    for at in allowed_types:
+        fb_alias = FALLBACK_MAP.get(at)
+        if fb_alias and fb_alias != model_name and fb_alias in MODEL_ROUTING:
+            fb_route = MODEL_ROUTING[fb_alias]
+            if is_alive(fb_route["base_url"]):
+                logger.warning("{} - falling back to configured fallback '{}'", reason, fb_alias)
+                return fb_alias, fb_route, reason
+
+    # Auto fallback: first alive model with compatible type
     for fb_name, fb_route in MODEL_ROUTING.items():
         if fb_route["type"] in allowed_types and is_alive(fb_route["base_url"]):
             logger.warning("{} - falling back to '{}'", reason, fb_name)

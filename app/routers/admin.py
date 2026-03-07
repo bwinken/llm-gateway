@@ -1,5 +1,5 @@
 """
-Admin panel: web UI + API endpoints for user management.
+Admin panel: web UI + API endpoints for user management and model configuration.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete
 from sqlmodel import Session, select
 
+from app.core.config import get_config_data, save_config
 from app.core.database import get_session
 from app.core.deps import get_current_user
 from app.models.schema import User, UsageLog
@@ -228,3 +229,50 @@ async def update_user_api(
     session.commit()
     session.refresh(target)
     return {"ok": True, "user_id": target.id}
+
+
+# ── Model Configuration ──
+
+@router.get("/models", response_class=HTMLResponse)
+async def admin_models_page(
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    admin_user = _require_admin_session(request, session)
+    return templates.TemplateResponse(
+        "admin_models.html",
+        {
+            "request": request,
+            "title": "Model Configuration",
+            "user": admin_user,
+            "current_year": datetime.now(timezone.utc).year,
+        },
+    )
+
+
+@router.get("/api/config")
+async def get_config_api(
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    _require_admin_session(request, session)
+    return JSONResponse(get_config_data())
+
+
+@router.put("/api/config")
+async def save_config_api(
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    _require_admin_session(request, session)
+    body = await request.json()
+
+    models = body.get("models")
+    pricing = body.get("pricing")
+    fallback = body.get("fallback")
+
+    if not isinstance(models, dict) or not isinstance(pricing, dict):
+        raise HTTPException(status_code=400, detail="Invalid config format.")
+
+    save_config(models, pricing, fallback or {})
+    return JSONResponse({"ok": True})

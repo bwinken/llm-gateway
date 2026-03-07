@@ -118,6 +118,8 @@ TEST_PRICING_MAP: dict[str, dict[str, float]] = {
     "reranker": {"input_price_per_1m": 0.05, "output_price_per_1m": 0.00},
 }
 
+TEST_FALLBACK_MAP: dict[str, str] = {}
+
 # ---------------------------------------------------------------------------
 # Build a test FastAPI app (no lifespan side-effects)
 # ---------------------------------------------------------------------------
@@ -136,6 +138,7 @@ def _build_test_app() -> FastAPI:
     with (
         patch("app.core.config.MODEL_ROUTING", TEST_MODEL_ROUTING),
         patch("app.core.config.PRICING_MAP", TEST_PRICING_MAP),
+        patch("app.core.config.FALLBACK_MAP", TEST_FALLBACK_MAP),
     ):
         from app.routers import admin, auth_api, llm_api, web_ui
 
@@ -165,6 +168,7 @@ def _patch_all():
     with (
         patch("app.services.proxy.MODEL_ROUTING", TEST_MODEL_ROUTING),
         patch("app.services.proxy.PRICING_MAP", TEST_PRICING_MAP),
+        patch("app.services.proxy.FALLBACK_MAP", TEST_FALLBACK_MAP),
         patch("app.services.proxy.get_client", return_value=_mock_httpx_client),
         patch("app.services.proxy.engine", _test_engine),
         patch("app.services.proxy.is_alive", return_value=True),

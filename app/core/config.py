@@ -1,5 +1,6 @@
 """
-Parse config.toml, inject type tags, build MODEL_ROUTING, PRICING_MAP, and APP_CONFIG.
+Parse config.toml, inject type tags, build MODEL_ROUTING, PRICING_MAP,
+FALLBACK_MAP, and APP_CONFIG.
 
 Each model entry in MODEL_ROUTING contains:
   - base_url:        downstream server URL
@@ -44,8 +45,9 @@ def _build_config(raw: dict[str, Any]) -> tuple[
     dict[str, Any],
     dict[str, dict[str, Any]],
     dict[str, dict[str, float]],
+    dict[str, str],
 ]:
-    """Return (APP_CONFIG, MODEL_ROUTING, PRICING_MAP) from raw TOML data."""
+    """Return (APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP)."""
 
     # --- app ---
     app_config: dict[str, Any] = raw.get("app", {})
@@ -80,8 +82,80 @@ def _build_config(raw: dict[str, Any]) -> tuple[
                 "type": type_key,
             }
 
-    return app_config, model_routing, pricing_map
+    # --- fallback (type -> preferred fallback model alias) ---
+    fallback_map: dict[str, str] = {}
+    for type_key, alias in raw.get("fallback", {}).items():
+        if isinstance(alias, str):
+            fallback_map[type_key] = alias
+
+    return app_config, model_routing, pricing_map, fallback_map
 
 
 _raw = _load_toml()
-APP_CONFIG, MODEL_ROUTING, PRICING_MAP = _build_config(_raw)
+APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP = _build_config(_raw)
+
+
+def reload_config() -> None:
+    """Re-read config.toml and update all globals in-place."""
+    raw = _load_toml()
+    _, new_routing, new_pricing, new_fallback = _build_config(raw)
+    MODEL_ROUTING.clear()
+    MODEL_ROUTING.update(new_routing)
+    PRICING_MAP.clear()
+    PRICING_MAP.update(new_pricing)
+    FALLBACK_MAP.clear()
+    FALLBACK_MAP.update(new_fallback)
+
+
+def save_config(
+    models: dict[str, dict[str, Any]],
+    pricing: dict[str, dict[str, float]],
+    fallback: dict[str, str],
+) -> None:
+    """Write config back to config.toml and reload globals."""
+    raw = _load_toml()
+
+    # Rebuild [models.*] sections grouped by type
+    models_section: dict[str, dict[str, Any]] = {}
+    for alias, info in models.items():
+        type_key = info["type"]
+        if type_key not in models_section:
+            models_section[type_key] = {}
+        entry: dict[str, Any] = {
+            "real_model": info["real_model"],
+            "base_url": info["base_url"],
+        }
+        if info.get("api_key"):
+            entry["api_key"] = info["api_key"]
+        models_section[type_key][alias] = entry
+    raw["models"] = models_section
+
+    # Rebuild [pricing] section
+    pricing_section: dict[str, Any] = {}
+    for type_key, prices in pricing.items():
+        if type_key == "_default":
+            pricing_section["default_input_price_per_1m"] = prices["input_price_per_1m"]
+            pricing_section["default_output_price_per_1m"] = prices["output_price_per_1m"]
+        else:
+            pricing_section[type_key] = {
+                "input_price_per_1m": prices["input_price_per_1m"],
+                "output_price_per_1m": prices["output_price_per_1m"],
+            }
+    raw["pricing"] = pricing_section
+
+    # Rebuild [fallback] section
+    raw["fallback"] = {k: v for k, v in fallback.items() if v}
+
+    with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
+        toml.dump(raw, f)
+
+    reload_config()
+
+
+def get_config_data() -> dict[str, Any]:
+    """Return current config as a JSON-serializable dict."""
+    return {
+        "models": dict(MODEL_ROUTING),
+        "pricing": dict(PRICING_MAP),
+        "fallback": dict(FALLBACK_MAP),
+    }
