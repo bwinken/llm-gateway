@@ -1,0 +1,13 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: llm-gateway-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: llm_gateway
+      POSTGRES_PASSWORD: your_password
+      POSTGRES_DB: llm_gateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data

@@ -1,0 +1,341 @@
+{% extends "base.html" %}
+
+{% macro format_token(n) -%}
+    {% if n >= 1000000 %}
+        {{ "%.2f"|format(n / 1000000) }}M
+    {% elif n >= 1000 %}
+        {{ "%.1f"|format(n / 1000) }}K
+    {% else %}
+        {{ n }}
+    {% endif %}
+{%- endmacro %}
+
+{% block content %}
+<div class="mb-8 flex justify-between items-center">
+    <div>
+        <h1 class="text-2xl font-bold text-gray-900 flex items-center gap-2">
+            <span>🛡️</span> Admin Panel
+        </h1>
+        <p class="mt-1 text-sm text-gray-500">Manage users, view total usage, and adjust billing limits.</p>
+    </div>
+    <a href="/dashboard" class="text-sm font-medium text-indigo-600 hover:text-indigo-800 bg-indigo-50 px-4 py-2 rounded-md">
+        &larr; Back to Dashboard
+    </a>
+</div>
+
+{# ── Monthly Summary Cards ── #}
+<div class="mb-8">
+    <h2 class="text-lg font-bold text-gray-900 mb-4">{{ month_label }} — All Users</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div class="bg-white p-6 rounded-lg border border-gray-200 shadow-sm">
+            <dt class="text-sm font-medium text-gray-500">Total Requests</dt>
+            <dd class="mt-2 text-3xl font-bold text-gray-900 font-mono">{{ monthly_total_reqs }}</dd>
+        </div>
+        <div class="bg-white p-6 rounded-lg border border-gray-200 shadow-sm">
+            <dt class="text-sm font-medium text-gray-500">Total Cost</dt>
+            <dd class="mt-2 text-3xl font-bold text-gray-900 font-mono tracking-tight">${{ "%.4f"|format(monthly_total_cost) }}</dd>
+        </div>
+        <div class="bg-white p-6 rounded-lg border border-gray-200 shadow-sm">
+            <dt class="text-sm font-medium text-gray-500">Input Tokens</dt>
+            <dd class="mt-2 text-3xl font-bold text-gray-900 font-mono">{{ format_token(monthly_total_input) }}</dd>
+        </div>
+        <div class="bg-white p-6 rounded-lg border border-gray-200 shadow-sm">
+            <dt class="text-sm font-medium text-gray-500">Output Tokens</dt>
+            <dd class="mt-2 text-3xl font-bold text-gray-900 font-mono">{{ format_token(monthly_total_output) }}</dd>
+        </div>
+    </div>
+</div>
+
+{# ── Leaderboards ── #}
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+
+    {# App Leaderboard #}
+    <div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+        <div class="bg-gray-50 px-5 py-3 border-b border-gray-200 flex items-center gap-2">
+            <span class="text-base">🤖</span>
+            <h3 class="text-sm font-bold text-gray-700 uppercase tracking-wider">App Leaderboard</h3>
+            <span class="ml-auto text-xs text-gray-400">{{ month_label }}</span>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">#</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">App</th>
+                        <th class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Cost</th>
+                        <th class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Input</th>
+                        <th class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Output</th>
+                        <th class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Reqs</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    {% for u in app_leaderboard %}
+                    <tr class="hover:bg-gray-50 transition-colors">
+                        <td class="px-4 py-3 text-sm text-gray-400 font-mono">{{ loop.index }}</td>
+                        <td class="px-4 py-3 whitespace-nowrap">
+                            <div class="flex items-center gap-2">
+                                <div class="h-7 w-7 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-xs">
+                                    {{ u.username[4:][:2]|upper if u.username|length > 4 else u.username[0]|upper }}
+                                </div>
+                                <span class="text-sm font-medium text-gray-900">{{ u.username }}</span>
+                            </div>
+                        </td>
+                        <td class="px-4 py-3 text-right text-sm font-mono font-medium text-gray-900">${{ "%.4f"|format(u.monthly_cost) }}</td>
+                        <td class="px-4 py-3 text-right text-sm font-mono text-gray-600">{{ format_token(u.monthly_input) }}</td>
+                        <td class="px-4 py-3 text-right text-sm font-mono text-gray-600">{{ format_token(u.monthly_output) }}</td>
+                        <td class="px-4 py-3 text-right text-sm font-mono text-gray-600">{{ u.monthly_reqs }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not app_leaderboard %}
+                    <tr>
+                        <td colspan="6" class="px-4 py-6 text-center text-sm text-gray-400">No app accounts (app_*) found.</td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    {# User Leaderboard #}
+    <div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+        <div class="bg-gray-50 px-5 py-3 border-b border-gray-200 flex items-center gap-2">
+            <span class="text-base">👤</span>
+            <h3 class="text-sm font-bold text-gray-700 uppercase tracking-wider">User Leaderboard</h3>
+            <span class="ml-auto text-xs text-gray-400">{{ month_label }}</span>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">#</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
+                        <th class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Cost</th>
+                        <th class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Input</th>
+                        <th class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Output</th>
+                        <th class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Reqs</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    {% for u in user_leaderboard %}
+                    <tr class="hover:bg-gray-50 transition-colors">
+                        <td class="px-4 py-3 text-sm text-gray-400 font-mono">{{ loop.index }}</td>
+                        <td class="px-4 py-3 whitespace-nowrap">
+                            <div class="flex items-center gap-2">
+                                <div class="h-7 w-7 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-xs">
+                                    {{ u.username[0]|upper }}
+                                </div>
+                                <div>
+                                    <span class="text-sm font-medium text-gray-900">{{ u.username }}</span>
+                                    {% if u.is_admin %}
+                                    <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">Admin</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </td>
+                        <td class="px-4 py-3 text-right text-sm font-mono font-medium text-gray-900">${{ "%.4f"|format(u.monthly_cost) }}</td>
+                        <td class="px-4 py-3 text-right text-sm font-mono text-gray-600">{{ format_token(u.monthly_input) }}</td>
+                        <td class="px-4 py-3 text-right text-sm font-mono text-gray-600">{{ format_token(u.monthly_output) }}</td>
+                        <td class="px-4 py-3 text-right text-sm font-mono text-gray-600">{{ u.monthly_reqs }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not user_leaderboard %}
+                    <tr>
+                        <td colspan="6" class="px-4 py-6 text-center text-sm text-gray-400">No user accounts found.</td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</div>
+
+{# ── User Management Table ── #}
+<div class="mb-4">
+    <h2 class="text-lg font-bold text-gray-900 mb-4">User Management</h2>
+</div>
+<div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">API Key</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Spend</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Daily Limit</th>
+                    <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {% for u in users %}
+                <tr class="hover:bg-gray-50 transition-colors">
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="flex items-center gap-2">
+                            <div class="h-8 w-8 rounded-full {{ 'bg-blue-100 text-blue-700' if u.username.startswith('app_') else 'bg-indigo-100 text-indigo-700' }} flex items-center justify-center font-bold text-sm">
+                                {{ u.username[0]|upper }}
+                            </div>
+                            <div>
+                                <div class="text-sm font-medium text-gray-900">{{ u.username }}</div>
+                                {% if u.is_admin %}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">Admin</span>
+                                {% elif u.username.startswith('app_') %}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">App</span>
+                                {% else %}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">User</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </td>
+
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <button onclick="showKeyModal('{{ u.username }}', '{{ u.api_key }}', {{ u.id }})"
+                                class="inline-flex items-center gap-1.5 text-sm font-mono text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-md transition-colors">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+                            View Key
+                        </button>
+                    </td>
+
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="text-sm text-gray-900 font-mono font-medium">${{ "%.4f"|format(u.total_cost) }}</div>
+                        <div class="text-xs text-gray-500">{{ u.total_tokens }} tokens</div>
+                    </td>
+
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <form action="/admin/users/{{ u.id }}/limit" method="POST" class="flex items-center gap-2">
+                            <span class="text-gray-500 text-sm">$</span>
+                            <input type="number" step="0.1" name="new_limit" value="{{ u.daily_limit_usd }}"
+                                   class="w-20 text-sm border-gray-300 rounded-md shadow-sm focus:border-indigo-500 focus:ring-indigo-500 font-mono py-1 px-2 border">
+                            <button type="submit" class="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-1 px-2 rounded transition-colors">
+                                Save
+                            </button>
+                        </form>
+                    </td>
+
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        {% if not u.is_admin %}
+                        <form action="/admin/users/{{ u.id }}/delete" method="POST" onsubmit="return confirm('Delete user {{ u.username }}? This cannot be undone.');">
+                            <button type="submit" class="text-red-600 hover:text-red-900 bg-red-50 hover:bg-red-100 px-3 py-1 rounded-md transition-colors">
+                                Delete
+                            </button>
+                        </form>
+                        {% else %}
+                            <span class="text-gray-400 text-xs italic">N/A</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{# ── API Key Modal ── #}
+<div id="keyModal" class="fixed inset-0 z-50 hidden">
+    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm" onclick="closeKeyModal()"></div>
+    <div class="fixed inset-0 flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg relative" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+                <h3 class="text-lg font-bold text-gray-900">
+                    API Key &mdash; <span id="modalUsername" class="text-indigo-600"></span>
+                </h3>
+                <button onclick="closeKeyModal()" class="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="px-6 py-5">
+                <label class="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">API Key</label>
+                <div class="flex items-center gap-2">
+                    <input id="modalKeyValue" type="text" readonly
+                           class="flex-1 bg-gray-50 border border-gray-300 rounded-lg px-3 py-2.5 font-mono text-sm text-gray-900 select-all focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                </div>
+                <div id="modalCopyFeedback" class="text-xs text-green-600 font-medium mt-1.5 h-4"></div>
+            </div>
+            <div class="flex items-center justify-between px-6 py-4 bg-gray-50 rounded-b-xl border-t border-gray-200">
+                <button onclick="refreshKey()" id="modalRefreshBtn"
+                        class="inline-flex items-center gap-1.5 text-sm font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-4 py-2 rounded-lg transition-colors">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                    Regenerate
+                </button>
+                <button onclick="copyModalKey()"
+                        class="inline-flex items-center gap-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg transition-colors">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
+                    Copy
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let currentUserId = null;
+
+    function showKeyModal(username, apiKey, userId) {
+        currentUserId = userId;
+        document.getElementById('modalUsername').textContent = username;
+        document.getElementById('modalKeyValue').value = apiKey;
+        document.getElementById('modalCopyFeedback').textContent = '';
+        document.getElementById('keyModal').classList.remove('hidden');
+    }
+
+    function closeKeyModal() {
+        document.getElementById('keyModal').classList.add('hidden');
+        currentUserId = null;
+    }
+
+    function copyToClipboard(text, feedbackEl) {
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(function() {
+                feedbackEl.textContent = 'Copied to clipboard!';
+                setTimeout(function(){ feedbackEl.textContent = ''; }, 2000);
+            });
+        } else {
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            feedbackEl.textContent = 'Copied to clipboard!';
+            setTimeout(function(){ feedbackEl.textContent = ''; }, 2000);
+        }
+    }
+
+    function copyModalKey() {
+        var input = document.getElementById('modalKeyValue');
+        copyToClipboard(input.value, document.getElementById('modalCopyFeedback'));
+    }
+
+    function refreshKey() {
+        if (!currentUserId) return;
+        if (!confirm('Regenerate API key? The old key will stop working immediately.')) return;
+
+        const btn = document.getElementById('modalRefreshBtn');
+        btn.disabled = true;
+        btn.classList.add('opacity-50');
+
+        fetch('/admin/users/' + currentUserId + '/refresh-key', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.ok) {
+                    document.getElementById('modalKeyValue').value = data.api_key;
+                    document.getElementById('modalCopyFeedback').textContent = 'Key regenerated successfully!';
+                    setTimeout(() => { document.getElementById('modalCopyFeedback').textContent = ''; }, 3000);
+                } else {
+                    alert('Failed to regenerate key.');
+                }
+            })
+            .catch(() => alert('Error regenerating key.'))
+            .finally(() => {
+                btn.disabled = false;
+                btn.classList.remove('opacity-50');
+            });
+    }
+
+    // Close modal on Escape key
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeKeyModal();
+    });
+</script>
+{% endblock %}

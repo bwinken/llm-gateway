@@ -1,0 +1,457 @@
+{% extends "base.html" %}
+
+{% macro format_token(n) -%}
+    {% if n >= 1000000 %}
+        {{ "%.2f"|format(n / 1000000) }}M
+    {% elif n >= 1000 %}
+        {{ "%.1f"|format(n / 1000) }}K
+    {% else %}
+        {{ n }}
+    {% endif %}
+{%- endmacro %}
+
+{% block content %}
+
+<div class="mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    <div>
+        <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+        <p class="mt-1 text-sm text-gray-500">Overview of your API usage and system status.</p>
+    </div>
+    <button onclick="document.getElementById('apiKeyModal').classList.remove('hidden')"
+            class="inline-flex items-center gap-2 bg-gray-900 text-white px-4 py-2.5 rounded-lg hover:bg-gray-800 transition-colors text-sm font-medium shadow-sm self-start">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+        My API Key
+    </button>
+</div>
+
+{# ── System Status ── #}
+<div class="bg-white border border-gray-200 rounded-lg p-5 mb-8 shadow-sm">
+    <div class="flex flex-col gap-4">
+        <div class="flex items-center gap-2 border-b border-gray-100 pb-3">
+            <span class="relative flex h-3 w-3">
+              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+              <span class="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+            </span>
+            <span class="text-sm font-bold text-gray-700">System Status</span>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+
+            {% set type_labels = {
+                'llm': '💬 LLM (Chat)',
+                'vlm': '👁️ VLM (Vision)',
+                'embedding': '🧩 Embedding',
+                'vision_embedding': '🖼️🧩 Vision Embedding',
+                'reranker': '⚖️ Reranker',
+                'vision_reranker': '🖼️⚖️ Vision Reranker'
+            } %}
+
+            {% for type_key, servers in server_groups.items() %}
+                {% if servers %}
+                <div class="flex flex-col gap-2">
+                    <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider pl-1">
+                        {{ type_labels[type_key] if type_key in type_labels else type_key|upper }}
+                    </h4>
+
+                    <div class="flex flex-col gap-2">
+                        {% for s in servers %}
+                        <div class="flex items-center justify-between px-3 py-2 rounded-md border text-sm {{ 'bg-green-50 border-green-100' if s.alive else 'bg-red-50 border-red-100' }}">
+                            <div class="flex items-center gap-2 truncate">
+                                <div class="w-2 h-2 rounded-full flex-shrink-0 {{ 'bg-green-500' if s.alive else 'bg-red-500' }}"></div>
+                                <span class="font-medium truncate {{ 'text-green-700' if s.alive else 'text-red-700' }}" title="{{ s.name }}">
+                                    {{ s.name }}
+                                </span>
+                            </div>
+                            <span class="text-xs font-mono {{ 'text-green-600' if s.alive else 'text-red-600' }}">
+                                {{ 'ONLINE' if s.alive else 'DOWN' }}
+                            </span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+            {% endfor %}
+
+            {% set has_any = server_groups.values() | sum(start=[]) | length > 0 %}
+            {% if not has_any %}
+                <div class="col-span-full text-center py-4">
+                    <span class="text-sm text-gray-400">No servers configured in config.toml</span>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+{# ── Stats Cards ── #}
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+
+    <div class="bg-white p-6 rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+        <dt class="text-sm font-medium text-gray-500 truncate">Monthly Requests</dt>
+        <dd class="mt-2 text-3xl font-bold text-gray-900 font-mono">{{ total_reqs }}</dd>
+        <div class="mt-2 flex items-center text-xs text-gray-400">
+            <span>API Calls</span>
+        </div>
+    </div>
+
+    <div class="bg-white p-6 rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+        <dt class="text-sm font-medium text-gray-500 truncate">Estimated Cost</dt>
+        <dd class="mt-2 text-3xl font-bold text-gray-900 font-mono tracking-tight">${{ "%.4f"|format(total_cost) }}</dd>
+        <div class="mt-2 flex items-center text-xs text-gray-400">
+            <span>Current billing cycle</span>
+        </div>
+    </div>
+
+    <div class="bg-white p-6 rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+        <div class="flex justify-between items-center">
+            <dt class="text-sm font-medium text-gray-500 truncate">Budget Usage</dt>
+            <span class="text-xs font-mono font-medium {{ 'text-red-600' if usage_percent > 90 else 'text-green-600' }}">
+                {{ usage_percent | round(1) }}%
+            </span>
+        </div>
+        <div class="w-full bg-gray-100 rounded-full h-2 mt-4 overflow-hidden">
+            {% set bar_class = 'bg-red-500' if usage_percent > 90 else 'bg-green-500' %}
+            <div class="h-2 rounded-full {{ bar_class }}" style="width: {{ usage_percent }}%"></div>
+        </div>
+        <div class="mt-3 text-xs text-gray-400 font-mono">
+            Limit: ${{ user.daily_limit_usd }}/day
+        </div>
+    </div>
+
+    <div class="bg-white p-6 rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden">
+        <div class="absolute top-0 right-0 w-16 h-16 bg-gray-50 rounded-bl-full -mr-8 -mt-8 z-0"></div>
+        <dt class="text-sm font-medium text-gray-500 truncate relative z-10">Total Tokens</dt>
+        <dd class="mt-2 text-3xl font-bold text-gray-900 font-mono relative z-10">
+            {{ format_token(my_input + my_output) }}
+        </dd>
+        <div class="mt-2 flex items-center gap-3 text-xs font-mono relative z-10">
+            <span class="text-gray-500">In: <b class="text-gray-700">{{ format_token(my_input) }}</b></span>
+            <span class="text-gray-300">|</span>
+            <span class="text-gray-500">Out: <b class="text-gray-700">{{ format_token(my_output) }}</b></span>
+        </div>
+    </div>
+</div>
+
+{# ── Usage Trend Chart ── #}
+<div class="bg-white rounded-lg border border-gray-200 shadow-sm p-6 mb-8">
+    <div class="flex items-center justify-between mb-6">
+        <h3 class="text-lg font-medium leading-6 text-gray-900">Usage Trend (Last 30 Days)</h3>
+
+        <div class="bg-gray-100 p-1 rounded-lg inline-flex items-center">
+            <button id="btnShowReqs" onclick="switchChart('reqs')" class="px-3 py-1.5 text-sm font-medium rounded-md transition-all shadow-sm bg-white text-gray-900">
+                Requests
+            </button>
+            <button id="btnShowCost" onclick="switchChart('cost')" class="px-3 py-1.5 text-sm font-medium rounded-md transition-all text-gray-500 hover:text-gray-900">
+                Cost (USD)
+            </button>
+        </div>
+    </div>
+
+    <div class="w-full h-80">
+        <canvas id="trendChart"></canvas>
+    </div>
+</div>
+
+<div id="trendData" data-trend='{{ trend_data | tojson }}' style="display:none;"></div>
+<script>
+    const ctx = document.getElementById('trendChart').getContext('2d');
+    const trendData = JSON.parse(document.getElementById('trendData').dataset.trend || '[]');
+
+    const labels = trendData.length ? trendData.map(d => d.date) : [];
+    const dataCost = trendData.length ? trendData.map(d => d.cost) : [];
+    const dataReqs = trendData.length ? trendData.map(d => d.reqs) : [];
+
+    const chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'Requests',
+                    data: dataReqs,
+                    borderColor: '#6366f1',
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    pointBackgroundColor: '#6366f1',
+                    yAxisID: 'yReqs',
+                    tension: 0.4
+                },
+                {
+                    label: 'Cost (USD)',
+                    data: dataCost,
+                    borderColor: '#10a37f',
+                    backgroundColor: 'rgba(16, 163, 127, 0.05)',
+                    borderWidth: 2,
+                    pointBackgroundColor: '#10a37f',
+                    pointRadius: 3,
+                    yAxisID: 'yCost',
+                    tension: 0.4,
+                    fill: true,
+                    hidden: true
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { grid: { display: false }, ticks: { font: { family: 'Inter', size: 11 } } },
+                yReqs: {
+                    type: 'linear', display: true, position: 'left',
+                    grid: { borderDash: [4, 4], color: '#f3f4f6' },
+                    title: { display: true, text: 'Count' }
+                },
+                yCost: {
+                    type: 'linear', display: false, position: 'left',
+                    grid: { borderDash: [4, 4], color: '#f3f4f6' },
+                    ticks: { callback: function(value) { return '$' + value; } }
+                }
+            }
+        }
+    });
+
+    function switchChart(mode) {
+        const btnReqs = document.getElementById('btnShowReqs');
+        const btnCost = document.getElementById('btnShowCost');
+
+        if (mode === 'reqs') {
+            setActiveStyle(btnReqs);
+            setInactiveStyle(btnCost);
+            chart.getDatasetMeta(0).hidden = false;
+            chart.getDatasetMeta(1).hidden = true;
+            chart.options.scales.yReqs.display = true;
+            chart.options.scales.yCost.display = false;
+        } else {
+            setActiveStyle(btnCost);
+            setInactiveStyle(btnReqs);
+            chart.getDatasetMeta(0).hidden = true;
+            chart.getDatasetMeta(1).hidden = false;
+            chart.options.scales.yReqs.display = false;
+            chart.options.scales.yCost.display = true;
+        }
+        chart.update();
+    }
+
+    function setActiveStyle(el) {
+        el.className = "px-3 py-1.5 text-sm font-medium rounded-md transition-all shadow-sm bg-white text-gray-900";
+    }
+    function setInactiveStyle(el) {
+        el.className = "px-3 py-1.5 text-sm font-medium rounded-md transition-all text-gray-500 hover:text-gray-900";
+    }
+</script>
+
+{# ── API Integration Guide ── #}
+<div class="mt-8">
+    <h3 class="text-lg font-bold leading-6 text-gray-900 mb-4 flex items-center gap-2">
+        <span>🔌</span> API Integration Guide
+    </h3>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        <div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+            <div class="bg-gray-50 px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+                <span class="font-semibold text-gray-700 text-sm">Chat Completions</span>
+                <span class="bg-blue-100 text-blue-800 text-xs font-mono px-2 py-0.5 rounded border border-blue-200">POST /v1/chat/completions</span>
+            </div>
+            <div class="p-4">
+                <p class="text-sm text-gray-500 mb-3">OpenAI-compatible endpoint for generating chat responses.</p>
+                <div class="relative group">
+                    <pre class="bg-gray-900 text-gray-100 rounded-md p-3 text-xs font-mono overflow-x-auto">
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://{{ request.url.hostname }}:{{ request.url.port }}/v1",
+    api_key="{{ user.api_key }}"
+)
+
+resp = client.chat.completions.create(
+    model="radllm",
+    messages=[
+        {"role": "user", "content": "Hello!"}
+    ]
+)</pre>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+            <div class="bg-gray-50 px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+                <span class="font-semibold text-gray-700 text-sm">Embeddings</span>
+                <span class="bg-blue-100 text-blue-800 text-xs font-mono px-2 py-0.5 rounded border border-blue-200">POST /v1/embeddings</span>
+            </div>
+            <div class="p-4">
+                <p class="text-sm text-gray-500 mb-3">Generate vector embeddings for text inputs.</p>
+                <div class="relative group">
+                    <pre class="bg-gray-900 text-gray-100 rounded-md p-3 text-xs font-mono overflow-x-auto">
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://{{ request.url.hostname }}:{{ request.url.port }}/v1",
+    api_key="{{ user.api_key }}"
+)
+
+resp = client.embeddings.create(
+    model="bge-m3",
+    input=["The quick brown fox"]
+)</pre>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+            <div class="bg-gray-50 px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+                <span class="font-semibold text-gray-700 text-sm">Rerank</span>
+                <span class="bg-purple-100 text-purple-800 text-xs font-mono px-2 py-0.5 rounded border border-purple-200">POST /v1/rerank</span>
+            </div>
+            <div class="p-4">
+                <p class="text-sm text-gray-500 mb-3">Re-order a list of documents based on relevance to a query.</p>
+                <div class="relative group">
+                    <pre class="bg-gray-900 text-gray-100 rounded-md p-3 text-xs font-mono overflow-x-auto">
+import requests
+
+resp = requests.post(
+    "http://{{ request.url.hostname }}:{{ request.url.port }}/v1/rerank",
+    headers={
+        "Authorization": "Bearer {{ user.api_key }}"
+    },
+    json={
+        "model": "bge-reranker-v2-m3",
+        "query": "What is deep learning?",
+        "documents": ["Doc A content...", "Doc B content..."],
+        "top_n": 3
+    }
+)
+print(resp.json())</pre>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+            <div class="bg-gray-50 px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+                <span class="font-semibold text-gray-700 text-sm">Score</span>
+                <span class="bg-purple-100 text-purple-800 text-xs font-mono px-2 py-0.5 rounded border border-purple-200">POST /v1/score</span>
+            </div>
+            <div class="p-4">
+                <p class="text-sm text-gray-500 mb-3">Get a relevance score for query-document pairs.</p>
+                <div class="relative group">
+                    <pre class="bg-gray-900 text-gray-100 rounded-md p-3 text-xs font-mono overflow-x-auto">
+import requests
+
+resp = requests.post(
+    "http://{{ request.url.hostname }}:{{ request.url.port }}/v1/score",
+    headers={
+        "Authorization": "Bearer {{ user.api_key }}"
+    },
+    json={
+        "model": "bge-reranker-v2-m3",
+        "text_1": ["Apple"],
+        "text_2": ["A fruit", "A tech company"]
+    }
+)
+print(resp.json())</pre>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+{# ── API Key Modal ── #}
+<div id="apiKeyModal" class="fixed inset-0 z-50 hidden">
+    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm" onclick="document.getElementById('apiKeyModal').classList.add('hidden')"></div>
+    <div class="fixed inset-0 flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg relative" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+                <h3 class="text-lg font-bold text-gray-900">Your API Key</h3>
+                <button onclick="document.getElementById('apiKeyModal').classList.add('hidden')" class="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="px-6 py-5">
+                <label class="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">API Key</label>
+                <div class="flex items-center gap-2">
+                    <input id="dashKeyValue" type="text" readonly value="{{ user.api_key }}"
+                           class="flex-1 bg-gray-50 border border-gray-300 rounded-lg px-3 py-2.5 font-mono text-sm text-gray-900 select-all focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                </div>
+                <div id="dashCopyFeedback" class="text-xs text-green-600 font-medium mt-1.5 h-4"></div>
+
+                <div class="mt-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+                    <p class="text-xs text-amber-800">
+                        <b>Keep this key secret.</b> Anyone with your API key can make requests on your behalf. If compromised, contact your admin to regenerate it.
+                    </p>
+                </div>
+            </div>
+            <div class="flex items-center justify-between px-6 py-4 bg-gray-50 rounded-b-xl border-t border-gray-200">
+                <button onclick="dashRefreshKey()" id="dashRefreshBtn"
+                        class="inline-flex items-center gap-1.5 text-sm font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-4 py-2 rounded-lg transition-colors">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                    Regenerate
+                </button>
+                <button onclick="dashCopyKey()"
+                        class="inline-flex items-center gap-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg transition-colors">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
+                    Copy
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function copyToClipboard(text, feedbackEl) {
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(function() {
+                feedbackEl.textContent = 'Copied to clipboard!';
+                setTimeout(function(){ feedbackEl.textContent = ''; }, 2000);
+            });
+        } else {
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            feedbackEl.textContent = 'Copied to clipboard!';
+            setTimeout(function(){ feedbackEl.textContent = ''; }, 2000);
+        }
+    }
+
+    function dashCopyKey() {
+        var val = document.getElementById('dashKeyValue').value;
+        copyToClipboard(val, document.getElementById('dashCopyFeedback'));
+    }
+
+    function dashRefreshKey() {
+        if (!confirm('Regenerate your API key? The old key will stop working immediately.')) return;
+        var btn = document.getElementById('dashRefreshBtn');
+        btn.disabled = true;
+        btn.classList.add('opacity-50');
+
+        fetch('/dashboard/refresh-key', { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.ok) {
+                    document.getElementById('dashKeyValue').value = data.api_key;
+                    document.getElementById('dashCopyFeedback').textContent = 'Key regenerated successfully!';
+                    setTimeout(function(){ document.getElementById('dashCopyFeedback').textContent = ''; }, 3000);
+                } else {
+                    alert('Failed to regenerate key.');
+                }
+            })
+            .catch(function() { alert('Error regenerating key.'); })
+            .finally(function() {
+                btn.disabled = false;
+                btn.classList.remove('opacity-50');
+            });
+    }
+
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') document.getElementById('apiKeyModal').classList.add('hidden');
+    });
+</script>
+
+{% endblock %}

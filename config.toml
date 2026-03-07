@@ -1,0 +1,119 @@
+# ==========================================
+# LLM Gateway Configuration
+# ==========================================
+
+[app]
+host = "0.0.0.0"
+port = 8050
+log_level = "info"
+
+# ==========================================
+# Pricing (USD per 1M tokens)
+# ==========================================
+[pricing]
+# Fallback prices when no type-specific pricing is defined
+default_input_price_per_1m = 0.10
+default_output_price_per_1m = 0.10
+
+[pricing.llm]
+input_price_per_1m = 0.50
+output_price_per_1m = 1.50
+
+[pricing.vlm]
+input_price_per_1m = 5.00
+output_price_per_1m = 15.00
+
+[pricing.embedding]
+input_price_per_1m = 0.02
+output_price_per_1m = 0.00
+
+[pricing.vision_embedding]
+input_price_per_1m = 1.00
+output_price_per_1m = 0.00
+
+[pricing.reranker]
+input_price_per_1m = 0.05
+output_price_per_1m = 0.00
+
+[pricing.vision_reranker]
+input_price_per_1m = 2.00
+output_price_per_1m = 0.00
+
+
+# ==========================================
+# Model Routing
+# ==========================================
+
+# ------------------------------------------
+# LLM
+# ------------------------------------------
+[models.llm]
+[models.llm."radllm"]
+real_model = "radllm-v1"
+base_url = "http://192.168.1.100:8000/v1"
+api_key_env_var = "VLLM_API_KEY"
+
+[models.llm."gpt-4o-mini"]
+real_model = "gpt-4o-mini"
+base_url = "https://api.openai.com/v1"
+api_key_env_var = "OPENAI_API_KEY"
+
+# ------------------------------------------
+# VLM (Vision Language Model)
+# ------------------------------------------
+[models.vlm]
+[models.vlm."gpt-4o"]
+real_model = "gpt-4o"
+base_url = "https://api.openai.com/v1"
+api_key_env_var = "OPENAI_API_KEY"
+
+[models.vlm."pixtral"]
+real_model = "mistralai/Pixtral-12B-2409"
+base_url = "http://192.168.1.100:8001/v1"
+api_key_env_var = "VLLM_API_KEY"
+
+# ------------------------------------------
+# Embedding
+# ------------------------------------------
+[models.embedding]
+[models.embedding."bge-m3"]
+real_model = "BAAI/bge-m3"
+base_url = "http://192.168.1.101:8080/v1"
+api_key_env_var = "EMBEDDING_API_KEY"
+
+[models.embedding."text-embedding-ada-002"]
+real_model = "text-embedding-ada-002"
+base_url = "https://api.openai.com/v1"
+api_key_env_var = "OPENAI_API_KEY"
+
+# ------------------------------------------
+# Vision Embedding
+# ------------------------------------------
+[models.vision_embedding]
+[models.vision_embedding."vlm-embed"]
+real_model = "Qwen/Qwen2-VL-7B-Instruct"
+base_url = "http://192.168.1.103:8000/v1"
+api_key_env_var = "VLM_API_KEY"
+
+# ------------------------------------------
+# Reranker
+# ------------------------------------------
+[models.reranker]
+[models.reranker."bge-reranker-v2-m3"]
+real_model = "BAAI/bge-reranker-v2-m3"
+base_url = "http://192.168.1.102:8080/v1"
+api_key_env_var = "RERANK_API_KEY"
+
+[models.reranker."radRERANK"]
+real_model = "radRERANK"
+base_url = "http://192.168.1.102:8080/v1"
+api_key_env_var = "RERANK_API_KEY"
+
+# ------------------------------------------
+# Vision Reranker
+# ------------------------------------------
+[models.vision_reranker]
+[models.vision_reranker."vlm-rerank"]
+real_model = "Qwen/Qwen2-VL-7B-Instruct"
+base_url = "http://192.168.1.103:8001/v1"
+api_key_env_var = "VLM_API_KEY"
