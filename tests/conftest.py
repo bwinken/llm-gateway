@@ -87,25 +87,25 @@ TEST_MODEL_ROUTING: dict[str, dict[str, Any]] = {
     "test-llm": {
         "base_url": "http://mock-llm:8000/v1",
         "real_model": "real-llm-v1",
-        "api_key_env_var": "VLLM_API_KEY",
+        "api_key": "VLLM_API_KEY",
         "type": "llm",
     },
     "test-vlm": {
         "base_url": "http://mock-vlm:8001/v1",
         "real_model": "real-vlm-v1",
-        "api_key_env_var": "VLM_API_KEY",
+        "api_key": "VLM_API_KEY",
         "type": "vlm",
     },
     "test-embedding": {
         "base_url": "http://mock-embed:8080/v1",
         "real_model": "BAAI/bge-m3",
-        "api_key_env_var": "EMBEDDING_API_KEY",
+        "api_key": "EMBEDDING_API_KEY",
         "type": "embedding",
     },
     "test-reranker": {
         "base_url": "http://mock-rerank:8080/v1",
         "real_model": "BAAI/bge-reranker-v2-m3",
-        "api_key_env_var": "RERANK_API_KEY",
+        "api_key": "RERANK_API_KEY",
         "type": "reranker",
     },
 }

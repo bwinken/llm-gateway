@@ -5,7 +5,6 @@ Background task: periodically ping each backend server's /models endpoint.
 from __future__ import annotations
 
 import asyncio
-import os
 
 from app.core.config import MODEL_ROUTING
 from app.core.logger import logger
@@ -14,21 +13,19 @@ from app.core.server_state import get_client, set_alive
 
 async def check_all_servers() -> None:
     """Ping every unique base_url in MODEL_ROUTING (with API key if configured)."""
-    seen: dict[str, str] = {}  # base_url -> api_key_env_var
+    seen: dict[str, str] = {}  # base_url -> api_key
     client = get_client()
 
-    # Collect unique base_urls with their first api_key_env_var
+    # Collect unique base_urls with their first api_key
     for _model_name, route in MODEL_ROUTING.items():
         base_url = route["base_url"]
         if base_url not in seen:
-            seen[base_url] = route.get("api_key_env_var", "")
+            seen[base_url] = route.get("api_key", "")
 
-    for base_url, env_var in seen.items():
+    for base_url, api_key in seen.items():
         headers: dict[str, str] = {}
-        if env_var:
-            api_key = os.getenv(env_var, "")
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
 
         try:
             resp = await client.get(f"{base_url}/models", headers=headers, timeout=5.0)

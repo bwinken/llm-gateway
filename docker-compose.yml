@@ -11,3 +11,17 @@ services:
       - "5432:5432"
     volumes:
       - ./pgdata:/var/lib/postgresql/data
+
+  gateway:
+    build: .
+    container_name: llm-gateway
+    restart: unless-stopped
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./keys:/app/keys:ro
+    env_file:
+      - .env
+    depends_on:
+      - postgres

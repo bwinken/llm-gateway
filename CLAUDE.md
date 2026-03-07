@@ -55,8 +55,8 @@ Three forwarding methods, all sharing `_resolve_model()` for health-aware routin
 
 ### Configuration
 
-- **`config.toml`**: Model routing (alias → base_url + real_model + type) and per-type pricing. Parsed at import time by `app/core/config.py` into `MODEL_ROUTING` and `PRICING_MAP` dicts.
-- **`.env`**: Secrets, DATABASE_URL, AuthCenter OAuth2 settings, downstream API keys.
+- **`config.toml`**: Model routing (alias → base_url + real_model + api_key + type) and per-type pricing. Parsed at import time by `app/core/config.py` into `MODEL_ROUTING` and `PRICING_MAP` dicts. Downstream API keys are stored directly here as `api_key`.
+- **`.env`**: Secrets, DATABASE_URL, AuthCenter OAuth2 settings.
 
 ### Key Patterns
 

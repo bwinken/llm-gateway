@@ -51,7 +51,7 @@ output_price_per_1m = 0.00
 [models.llm."my-llm"]
 real_model = "my-llm-model-name"
 base_url = "http://your-llm-server:8000/v1"
-api_key_env_var = "VLLM_API_KEY"
+api_key = "your-api-key"
 
 # ------------------------------------------
 # VLM (Vision Language Model)
@@ -60,7 +60,7 @@ api_key_env_var = "VLLM_API_KEY"
 [models.vlm."my-vlm"]
 real_model = "my-vlm-model-name"
 base_url = "http://your-vlm-server:8001/v1"
-api_key_env_var = "VLM_API_KEY"
+api_key = "your-api-key"
 
 # ------------------------------------------
 # Embedding
@@ -69,7 +69,7 @@ api_key_env_var = "VLM_API_KEY"
 [models.embedding."bge-m3"]
 real_model = "BAAI/bge-m3"
 base_url = "http://your-embedding-server:8080/v1"
-api_key_env_var = "EMBEDDING_API_KEY"
+api_key = "your-api-key"
 
 # ------------------------------------------
 # Reranker
@@ -78,4 +78,4 @@ api_key_env_var = "EMBEDDING_API_KEY"
 [models.reranker."bge-reranker-v2-m3"]
 real_model = "BAAI/bge-reranker-v2-m3"
 base_url = "http://your-reranker-server:8080/v1"
-api_key_env_var = "RERANK_API_KEY"
+api_key = "your-api-key"

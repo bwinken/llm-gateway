@@ -1,144 +1,174 @@
 # LLM Gateway
 
-OpenAI-compatible reverse proxy gateway for [vLLM](https://github.com/vllm-project/vllm) serving clusters. Routes, proxies, and monitors traffic from client applications to downstream vLLM instances (LLM, VLM, Embedding, Reranker).
+OpenAI-compatible reverse proxy gateway for [vLLM](https://github.com/vllm-project/vllm) serving clusters.
+Routes, proxies, and monitors traffic from client applications to downstream vLLM instances (LLM, VLM, Embedding, Reranker).
+
+```
+Client App ──▶ LLM Gateway (:8050) ──▶ vLLM Instance A  [LLM]
+                    │                 ──▶ vLLM Instance B  [VLM]
+                    │                 ──▶ vLLM Instance C  [Embedding]
+                    │                 ──▶ vLLM Instance D  [Reranker]
+                    │
+                    ├── Auth (API key / OAuth2 SSO)
+                    ├── Routing (model alias → vLLM instance)
+                    ├── Smart fallback (health-aware)
+                    ├── Usage logging (tokens + cost)
+                    └── Health monitoring (30s interval)
+```
 
 ## Features
 
 - **OpenAI-compatible API** — `/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/score`, `/v1/responses`, `/v1/models`
 - **Multi-model routing** — LLM, VLM, Embedding, Vision Embedding, Reranker, Vision Reranker
-- **SSE streaming** — Full Server-Sent Events support with `aiter_lines()` and `X-Accel-Buffering: no`
-- **Smart fallback** — Type-safe automatic fallback to compatible model when requested model is unavailable
+- **SSE streaming** — Full Server-Sent Events support for chat completions and responses
+- **Smart fallback** — Health-check-aware fallback to compatible models; `X-Model-Fallback` response header
 - **Tiered pricing** — Per-type input/output token pricing with automatic cost calculation
-- **Usage tracking** — Per-user token and cost logging to SQLite/PostgreSQL
-- **OAuth2 SSO** — AuthCenter integration with RS256 JWT, auto-provisioning users on first login
-- **Dual auth** — API key (Bearer token) for SDK/API calls, OAuth2 session for web UI
-- **Web dashboard** — Usage stats, Chart.js trend charts (Requests/Cost/Tokens), grouped server health status
-- **Background health checks** — Periodic pings to all downstream vLLM instances with ONLINE/DOWN status cache
-- **Admin API** — User management endpoints (`/admin/users`)
+- **Usage tracking** — Per-user token and cost logging to PostgreSQL
+- **OAuth2 SSO** — [AuthCenter](https://github.com/bwinken/authcenter) integration with RS256 JWT, auto-provisioning users
+- **Dual auth** — API key (Bearer token) for SDK/API, OAuth2 session for web UI
+- **Web dashboard** — Usage stats, Chart.js trend charts, grouped server health status
+- **Admin panel** — User management, leaderboards, daily limit control
+- **Background health checks** — Periodic pings to all downstream servers
 
-## Project Structure
+## Tech Stack
 
-```
-llm-gateway/
-├── config.toml                # Model routing + tiered pricing
-├── .env                       # Secrets, DB config, default admin key
-├── requirements.txt
-└── app/
-    ├── main.py                # FastAPI app, lifespan, middleware, routers
-    ├── core/
-    │   ├── config.py          # TOML parsing -> MODEL_ROUTING + PRICING_MAP
-    │   ├── database.py        # SQLModel engine + session dependency
-    │   ├── deps.py            # Bearer token API key validation
-    │   ├── server_state.py    # Global httpx.AsyncClient + health cache
-    │   └── logger.py          # Unified logging
-    ├── models/
-    │   └── schema.py          # User + UsageLog tables
-    ├── routers/
-    │   ├── llm_api.py         # OpenAI-compatible API endpoints
-    │   ├── web_ui.py          # Dashboard pages (Jinja2)
-    │   ├── auth_api.py        # OAuth2 SSO (AuthCenter callback + logout)
-    │   └── admin.py           # Admin user management
-    ├── services/
-    │   ├── proxy.py           # Core proxy (3 forwarding methods + fallback + usage logging)
-    │   ├── stats.py           # Dashboard aggregations
-    │   └── health.py          # Background health check loop
-    └── templates/
-        ├── base.html          # Tailwind + Chart.js layout
-        ├── dashboard.html
-        └── admin.html
-```
+| Component | Technology |
+|---|---|
+| Framework | FastAPI (async ASGI) |
+| HTTP Client | HTTPX (connection-pooled) |
+| Database | PostgreSQL + SQLModel |
+| Auth | PyJWT (RS256), [AuthCenter](https://github.com/bwinken/authcenter) OAuth2 |
+| Frontend | Jinja2 + Tailwind CSS (CDN) + Chart.js |
+| Downstream | [vLLM](https://github.com/vllm-project/vllm) (OpenAI-compatible) |
 
-## Quick Start
+---
 
-### 1. Install dependencies
+## Quick Start (Development)
+
+### 1. Clone and install
 
 ```bash
+git clone https://github.com/bwinken/llm-gateway.git
+cd llm-gateway
 pip install -r requirements.txt
 ```
 
 ### 2. Configure
 
-Edit `config.toml` to point models to your downstream vLLM instances:
-
-```toml
-[models.llm."llama-3.1-8b"]
-base_url = "http://localhost:8001/v1"   # vLLM server serving this model
+```bash
+cp config.toml.example config.toml
+cp .env.example .env
 ```
 
-Edit `.env` to set your secret key and default admin credentials:
+Edit `config.toml` — set your downstream vLLM server URLs and API keys:
+
+```toml
+[models.llm."my-model"]
+real_model = "Qwen/Qwen2.5-72B"
+base_url = "http://192.168.1.100:8000/v1"
+api_key = "token-abc123"
+```
+
+Edit `.env` — set secrets and database URL:
 
 ```env
 SECRET_KEY=your-random-secret-key
-DEFAULT_ADMIN_KEY=your-admin-api-key
-DEFAULT_ADMIN_USER=admin
+DATABASE_URL=postgresql://llm_gateway:your_password@localhost:5432/llm_gateway
 ```
 
-### 3. Run
+### 3. Start PostgreSQL
 
 ```bash
-fastapi run app/main.py
+docker compose up -d postgres
 ```
 
-For development with auto-reload:
+### 4. Set up AuthCenter public key
+
+Place the AuthCenter RS256 public key at `keys/public.pem` (or change `AUTH_CENTER_PUBLIC_KEY_PATH` in `.env`).
+
+### 5. Run
 
 ```bash
 fastapi dev app/main.py
 ```
 
-> **Windows note:** If you see a `UnicodeEncodeError`, set the environment variable `PYTHONUTF8=1` before running, or run `set PYTHONUTF8=1` in your terminal first.
+The gateway starts at `http://localhost:8050`.
 
-The gateway starts on `http://localhost:8000`.
+> **Windows:** If you see `UnicodeEncodeError`, set `PYTHONUTF8=1` first.
 
-## Usage
+---
 
-### Default admin account
+## Configuration
 
-On first startup, an admin user is created automatically from `.env` values. Use the admin API key as a Bearer token.
+### config.toml
 
-### API examples
+Model routing and pricing. Each model maps an alias to a downstream vLLM instance:
 
-**Chat completion:**
-
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer gw-admin-key-change-me" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "llama-3.1-8b",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
+```toml
+[models.llm."model-alias"]
+real_model = "actual-model-name"    # Model name sent to vLLM
+base_url = "http://host:port/v1"    # vLLM server URL
+api_key = "your-key"                # vLLM --api-key (leave empty if none)
 ```
 
-**Streaming:**
+Supported model types: `llm`, `vlm`, `embedding`, `vision_embedding`, `reranker`, `vision_reranker`.
 
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer gw-admin-key-change-me" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "llama-3.1-8b",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": true
-  }'
+Per-type pricing (USD per 1M tokens):
+
+```toml
+[pricing.llm]
+input_price_per_1m = 0.50
+output_price_per_1m = 1.50
 ```
 
-**Embeddings:**
+### .env
 
-```bash
-curl http://localhost:8000/v1/embeddings \
-  -H "Authorization: Bearer gw-admin-key-change-me" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "bge-m3",
-    "input": "Search query text"
-  }'
+| Variable | Description | Default |
+|---|---|---|
+| `SECRET_KEY` | Session cookie encryption | `change-me` |
+| `DATABASE_URL` | PostgreSQL connection string | `sqlite:///./llm_gateway.db` |
+| `AUTH_CENTER_BASE_URL` | AuthCenter server URL | `http://localhost:8000` |
+| `AUTH_CENTER_APP_ID` | OAuth2 application ID | `llm_gateway` |
+| `AUTH_CENTER_CLIENT_SECRET` | OAuth2 client secret | `change-me` |
+| `AUTH_CENTER_REDIRECT_URI` | OAuth2 callback URL | `http://localhost:8050/auth/callback` |
+| `AUTH_CENTER_PUBLIC_KEY_PATH` | RS256 public key path | `./keys/public.pem` |
+
+---
+
+## API Usage
+
+All API endpoints require `Authorization: Bearer <api_key>`.
+
+### Chat Completions
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://your-gateway:8050/v1",
+    api_key="sk-your-api-key"
+)
+
+resp = client.chat.completions.create(
+    model="my-model",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
 ```
 
-**Reranking:**
+### Embeddings
+
+```python
+resp = client.embeddings.create(
+    model="bge-m3",
+    input=["The quick brown fox"]
+)
+```
+
+### Rerank
 
 ```bash
-curl http://localhost:8000/v1/rerank \
-  -H "Authorization: Bearer gw-admin-key-change-me" \
+curl http://your-gateway:8050/v1/rerank \
+  -H "Authorization: Bearer sk-your-api-key" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "bge-reranker-v2-m3",
@@ -147,93 +177,326 @@ curl http://localhost:8000/v1/rerank \
   }'
 ```
 
-**List models:**
+### List Models
 
 ```bash
-curl http://localhost:8000/v1/models \
-  -H "Authorization: Bearer gw-admin-key-change-me"
+curl http://your-gateway:8050/v1/models \
+  -H "Authorization: Bearer sk-your-api-key"
 ```
 
-### Web dashboard
+### Web Dashboard
 
-Open `http://localhost:8000` in your browser. You will be redirected to AuthCenter for SSO login. After authentication, you'll see usage stats, cost trends, and server health status. Admin features are available if your AuthCenter account has the `admin` scope.
+Open `http://your-gateway:8050` in browser. Redirects to AuthCenter for SSO login. Admin features require `admin` scope in AuthCenter.
 
-## Configuration Reference
+---
 
-### Pricing (`config.toml`)
+## Deployment
 
-Each model type has independent input/output pricing per 1M tokens:
+### Prerequisites
 
-```toml
-[pricing.llm]
-input_price_per_1m  = 0.50
-output_price_per_1m = 1.50
+- PostgreSQL (via Docker or system package)
+- AuthCenter RS256 public key at `keys/public.pem`
+- Nginx (system-level, managed by `systemctl`)
+
+---
+
+### Method 1: systemd user service + Nginx
+
+Runs the gateway as a user-level systemd service. No root required for the app process.
+
+#### Step 1: Clone and install
+
+```bash
+cd ~
+git clone https://github.com/bwinken/llm-gateway.git
+cd llm-gateway
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### Model routing (`config.toml`)
+#### Step 2: Configure
 
-Each entry maps a model name to a downstream vLLM instance. Quote model names containing dots:
-
-```toml
-[models.llm."qwen-2.5-72b"]
-base_url = "http://localhost:8002/v1"   # vLLM --model Qwen/Qwen2.5-72B
-
-[models.vlm."qwen-2.5-vl-72b"]
-base_url = "http://localhost:8003/v1"   # vLLM --model Qwen/Qwen2.5-VL-72B
-
-[models.embedding.bge-m3]
-base_url = "http://localhost:8004/v1"   # vLLM --model BAAI/bge-m3
+```bash
+cp config.toml.example config.toml
+cp .env.example .env
 ```
 
-Supported types: `llm`, `vlm`, `embedding`, `vision_embedding`, `reranker`, `vision_reranker`.
+Edit `config.toml` with your vLLM server addresses and API keys.
 
-### Environment variables (`.env`)
+Edit `.env`:
 
-| Variable | Description | Default |
-|---|---|---|
-| `SECRET_KEY` | Session cookie encryption key | `change-me` |
-| `DATABASE_URL` | SQLModel database URL | `sqlite:///./llm_gateway.db` |
-| `DEFAULT_ADMIN_KEY` | Bootstrap admin API key | `gw-admin-key-change-me` |
-| `DEFAULT_ADMIN_USER` | Bootstrap admin username | `admin` |
-| `DEFAULT_ADMIN_DAILY_LIMIT` | Admin daily budget (USD) | `100.0` |
-| `AUTH_CENTER_BASE_URL` | AuthCenter server URL | `http://localhost:8000` |
-| `AUTH_CENTER_APP_ID` | OAuth2 application ID | `llm_gateway` |
-| `AUTH_CENTER_CLIENT_SECRET` | OAuth2 client secret | `change-me` |
-| `AUTH_CENTER_REDIRECT_URI` | OAuth2 callback URL | `http://localhost:8050/auth/callback` |
-| `AUTH_CENTER_PUBLIC_KEY_PATH` | Path to AuthCenter RS256 public key | `./keys/public.pem` |
-
-## Proxy Behavior
-
-| Method | Endpoint | Allowed Types | Behavior |
-|---|---|---|---|
-| `forward_request` | `/v1/chat/completions` | llm, vlm | Streaming + non-streaming, SSE parsing |
-| `forward_simple_request` | `/v1/embeddings` | embedding, vision_embedding | Non-streaming, 120s timeout |
-| `forward_simple_request` | `/v1/rerank`, `/v1/score` | reranker, vision_reranker | Non-streaming, 120s timeout |
-| `forward_to_path` | `/v1/responses` | llm, vlm | Pure pass-through, no schema mutation |
-
-**Smart fallback:** If a requested model is missing or its type doesn't match the endpoint, the gateway falls back to the first available model of a compatible type — never crossing type boundaries.
-
-## Architecture
-
-```
-Client App ──> LLM Gateway (:8000) ──> vLLM Instance A (:8001)  [llama-3.1-8b]
-                    │                ──> vLLM Instance B (:8002)  [qwen-2.5-72b]
-                    │                ──> vLLM Instance C (:8003)  [qwen-2.5-vl-72b]
-                    │                ──> vLLM Instance D (:8004)  [bge-m3]
-                    │                ──> ...
-                    │
-                    ├── Auth (API key validation)
-                    ├── Routing (model name -> vLLM instance)
-                    ├── Usage logging (tokens + cost)
-                    └── Health monitoring
+```env
+SECRET_KEY=<random-secret>
+DATABASE_URL=postgresql://llm_gateway:your_password@localhost:5432/llm_gateway
+AUTH_CENTER_BASE_URL=https://your-authcenter.example.com
+AUTH_CENTER_CLIENT_SECRET=<your-secret>
+AUTH_CENTER_REDIRECT_URI=https://llm-gateway.example.com/auth/callback
+AUTH_CENTER_PUBLIC_KEY_PATH=./keys/public.pem
 ```
 
-## Tech Stack
+Place the AuthCenter public key:
 
-- **FastAPI** (async ASGI)
-- **HTTPX** (connection-pooled async client)
-- **SQLModel** (SQLite / PostgreSQL)
-- **PyJWT** (RS256 JWT verification)
-- **Jinja2** + **Tailwind CSS** (CDN) + **Chart.js**
-- **Downstream:** [vLLM](https://github.com/vllm-project/vllm) (OpenAI-compatible serving)
-- **Auth:** [AuthCenter](https://github.com/bwinken/authcenter) (OAuth2 SSO)
+```bash
+mkdir -p keys
+cp /path/to/public.pem keys/public.pem
+```
+
+#### Step 3: Start PostgreSQL
+
+```bash
+docker compose up -d postgres
+```
+
+Or use an existing PostgreSQL server — just update `DATABASE_URL` in `.env`.
+
+#### Step 4: Create systemd user service
+
+```bash
+mkdir -p ~/.config/systemd/user
+```
+
+Create `~/.config/systemd/user/llm-gateway.service`:
+
+```ini
+[Unit]
+Description=LLM Gateway
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/llm-gateway
+Environment=PYTHONUTF8=1
+ExecStart=%h/llm-gateway/venv/bin/fastapi run app/main.py --host 127.0.0.1 --port 8050
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+#### Step 5: Enable and start
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable llm-gateway
+systemctl --user start llm-gateway
+```
+
+Enable lingering so the service runs after logout:
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+Check status:
+
+```bash
+systemctl --user status llm-gateway
+journalctl --user -u llm-gateway -f
+```
+
+#### Step 6: Configure Nginx
+
+Create `/etc/nginx/sites-available/llm-gateway`:
+
+```nginx
+server {
+    listen 80;
+    server_name llm-gateway.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8050;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # SSE streaming support
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+        chunked_transfer_encoding on;
+    }
+}
+```
+
+Enable and reload:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/llm-gateway /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+(Optional) Add HTTPS with certbot:
+
+```bash
+sudo certbot --nginx -d llm-gateway.example.com
+```
+
+---
+
+### Method 2: Docker + Nginx
+
+Runs the gateway and PostgreSQL together in Docker containers.
+
+#### Step 1: Clone and configure
+
+```bash
+git clone https://github.com/bwinken/llm-gateway.git
+cd llm-gateway
+cp config.toml.example config.toml
+cp .env.example .env
+```
+
+Edit `config.toml` with your vLLM server addresses and API keys.
+
+Edit `.env`:
+
+```env
+SECRET_KEY=<random-secret>
+DATABASE_URL=postgresql://llm_gateway:your_password@postgres:5432/llm_gateway
+AUTH_CENTER_BASE_URL=https://your-authcenter.example.com
+AUTH_CENTER_CLIENT_SECRET=<your-secret>
+AUTH_CENTER_REDIRECT_URI=https://llm-gateway.example.com/auth/callback
+AUTH_CENTER_PUBLIC_KEY_PATH=./keys/public.pem
+```
+
+> **Note:** `DATABASE_URL` uses `postgres` (the Docker service name) instead of `localhost`.
+
+Place the AuthCenter public key:
+
+```bash
+mkdir -p keys
+cp /path/to/public.pem keys/public.pem
+```
+
+#### Step 2: Build and start
+
+```bash
+docker compose up -d --build
+```
+
+This starts both PostgreSQL and the gateway. The gateway listens on port `8050`.
+
+Check logs:
+
+```bash
+docker compose logs -f gateway
+```
+
+#### Step 3: Configure Nginx
+
+Create `/etc/nginx/sites-available/llm-gateway`:
+
+```nginx
+server {
+    listen 80;
+    server_name llm-gateway.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8050;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # SSE streaming support
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+        chunked_transfer_encoding on;
+    }
+}
+```
+
+Enable and reload:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/llm-gateway /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+(Optional) Add HTTPS:
+
+```bash
+sudo certbot --nginx -d llm-gateway.example.com
+```
+
+---
+
+### Management Commands
+
+```bash
+# View logs (systemd)
+journalctl --user -u llm-gateway -f
+
+# View logs (Docker)
+docker compose logs -f gateway
+
+# Restart (systemd)
+systemctl --user restart llm-gateway
+
+# Restart (Docker)
+docker compose restart gateway
+
+# Migrate data from old SQLite DB
+python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db
+```
+
+---
+
+## Testing
+
+```bash
+python -m pytest tests/ -v
+```
+
+Tests use in-memory SQLite and mock all downstream calls. No PostgreSQL or vLLM servers required.
+
+---
+
+## Project Structure
+
+```
+llm-gateway/
+├── config.toml.example        # Model routing + pricing template
+├── .env.example                # Environment variables template
+├── Dockerfile
+├── docker-compose.yml          # Gateway + PostgreSQL
+├── requirements.txt
+├── scripts/
+│   └── migrate_sqlite_to_pg.py
+├── app/
+│   ├── main.py                 # FastAPI app, lifespan, middleware
+│   ├── core/
+│   │   ├── config.py           # TOML → MODEL_ROUTING + PRICING_MAP
+│   │   ├── database.py         # SQLModel engine + session
+│   │   ├── deps.py             # Bearer token auth
+│   │   ├── server_state.py     # httpx client + health cache
+│   │   └── logger.py
+│   ├── models/
+│   │   └── schema.py           # User + UsageLog tables
+│   ├── routers/
+│   │   ├── llm_api.py          # /v1/* API endpoints
+│   │   ├── web_ui.py           # Dashboard (Jinja2)
+│   │   ├── auth_api.py         # OAuth2 SSO callback
+│   │   └── admin.py            # Admin panel + API
+│   ├── services/
+│   │   ├── proxy.py            # Core proxy + fallback + logging
+│   │   ├── stats.py            # Dashboard aggregations
+│   │   └── health.py           # Background health loop
+│   └── templates/
+│       ├── base.html
+│       ├── dashboard.html
+│       └── admin.html
+└── tests/
+    ├── conftest.py
+    ├── test_chat_completions.py
+    ├── test_embeddings.py
+    ├── test_rerank_score.py
+    ├── test_responses.py
+    └── test_vlm.py
+```

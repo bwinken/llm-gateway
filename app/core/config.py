@@ -4,7 +4,7 @@ Parse config.toml, inject type tags, build MODEL_ROUTING, PRICING_MAP, and APP_C
 Each model entry in MODEL_ROUTING contains:
   - base_url:        downstream server URL
   - real_model:      actual model name to send downstream
-  - api_key_env_var: env var name holding the downstream API key
+  - api_key:         downstream API key (from config.toml)
   - type:            injected from parent section (llm, vlm, embedding, ...)
 """
 
@@ -76,7 +76,7 @@ def _build_config(raw: dict[str, Any]) -> tuple[
             model_routing[model_name] = {
                 "base_url": model_cfg.get("base_url", ""),
                 "real_model": model_cfg.get("real_model", model_name),
-                "api_key_env_var": model_cfg.get("api_key_env_var", ""),
+                "api_key": model_cfg.get("api_key", ""),
                 "type": type_key,
             }
 

@@ -10,7 +10,6 @@ Core proxy logic:
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 from fastapi import HTTPException, Request
@@ -75,11 +74,9 @@ def _resolve_model(
 def _get_downstream_headers(route: dict[str, Any]) -> dict[str, str]:
     """Build headers for the downstream request, including API key if configured."""
     headers: dict[str, str] = {"Content-Type": "application/json"}
-    env_var = route.get("api_key_env_var", "")
-    if env_var:
-        api_key = os.getenv(env_var, "")
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+    api_key = route.get("api_key", "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     return headers
 
 
