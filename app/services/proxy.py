@@ -89,6 +89,15 @@ def _get_downstream_headers(route: dict[str, Any]) -> dict[str, str]:
     return headers
 
 
+def _error_response(resp) -> JSONResponse:
+    """Build a JSONResponse from a non-200 downstream response, handling non-JSON bodies."""
+    try:
+        content = resp.json()
+    except Exception:
+        content = {"error": resp.text[:500]}
+    return JSONResponse(content=content, status_code=resp.status_code)
+
+
 def _calc_cost(model_type: str, input_tokens: int, output_tokens: int) -> float:
     pricing = PRICING_MAP.get(model_type, PRICING_MAP.get("_default", {}))
     inp_price = pricing.get("input_price_per_1m", 0.0)
@@ -188,7 +197,7 @@ async def _non_stream_chat(
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+        return _error_response(resp)
 
     data = resp.json()
     usage = data.get("usage", {})
@@ -281,7 +290,7 @@ async def forward_simple_request(
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+        return _error_response(resp)
 
     data = resp.json()
     usage = data.get("usage", {})
@@ -357,7 +366,7 @@ async def _passthrough_non_stream(
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+        return _error_response(resp)
 
     data = resp.json()
     usage = data.get("usage", {})

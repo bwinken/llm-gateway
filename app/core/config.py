@@ -96,15 +96,28 @@ APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP = _build_config(_raw)
 
 
 def reload_config() -> None:
-    """Re-read config.toml and update all globals in-place."""
+    """Re-read config.toml and update all globals in-place.
+
+    Updates before removing stale keys to avoid a transient empty state.
+    """
     raw = _load_toml()
     _, new_routing, new_pricing, new_fallback = _build_config(raw)
-    MODEL_ROUTING.clear()
+
+    # Update first, then remove stale keys (never leaves dicts empty mid-swap)
+    stale = set(MODEL_ROUTING) - set(new_routing)
     MODEL_ROUTING.update(new_routing)
-    PRICING_MAP.clear()
+    for k in stale:
+        MODEL_ROUTING.pop(k, None)
+
+    stale = set(PRICING_MAP) - set(new_pricing)
     PRICING_MAP.update(new_pricing)
-    FALLBACK_MAP.clear()
+    for k in stale:
+        PRICING_MAP.pop(k, None)
+
+    stale = set(FALLBACK_MAP) - set(new_fallback)
     FALLBACK_MAP.update(new_fallback)
+    for k in stale:
+        FALLBACK_MAP.pop(k, None)
 
 
 def save_config(

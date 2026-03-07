@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
-
 from sqlalchemy import Index
 from sqlmodel import Field, SQLModel
 

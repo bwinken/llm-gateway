@@ -274,5 +274,16 @@ async def save_config_api(
     if not isinstance(models, dict) or not isinstance(pricing, dict):
         raise HTTPException(status_code=400, detail="Invalid config format.")
 
+    # Validate model entries have required fields
+    for alias, info in models.items():
+        if not isinstance(info, dict):
+            raise HTTPException(status_code=400, detail=f"Invalid model entry: {alias}")
+        if not info.get("base_url") or not info.get("type"):
+            raise HTTPException(status_code=400, detail=f"Model '{alias}' missing base_url or type.")
+
+    # Validate fallback values are strings
+    if fallback and not all(isinstance(v, str) for v in fallback.values()):
+        raise HTTPException(status_code=400, detail="Fallback values must be strings.")
+
     save_config(models, pricing, fallback or {})
     return JSONResponse({"ok": True})

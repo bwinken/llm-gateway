@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import Generator
 
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -17,6 +17,6 @@ def init_db() -> None:
     SQLModel.metadata.create_all(engine)
 
 
-def get_session() -> AsyncGenerator[Session, None]:
+def get_session() -> Generator[Session, None, None]:
     with Session(engine) as session:
         yield session
