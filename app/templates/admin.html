@@ -155,6 +155,35 @@
 
 </div>
 
+{# ── Create App Account ── #}
+<div class="mb-6 bg-white border border-gray-200 rounded-lg shadow-sm p-5">
+    <h2 class="text-lg font-bold text-gray-900 mb-3">Create App Account</h2>
+    <form action="/admin/users/create" method="POST" class="flex items-end gap-4 flex-wrap">
+        <div>
+            <label class="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Username</label>
+            <div class="flex items-center gap-1">
+                <span class="text-sm text-gray-500 font-mono">app_</span>
+                <input type="text" name="username" required placeholder="my_service"
+                       pattern="[a-zA-Z0-9_\-]+"
+                       title="Only letters, numbers, underscores and hyphens"
+                       class="w-48 text-sm border-gray-300 rounded-md shadow-sm focus:border-indigo-500 focus:ring-indigo-500 font-mono py-1.5 px-2 border">
+            </div>
+        </div>
+        <div>
+            <label class="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Daily Limit (USD)</label>
+            <div class="flex items-center gap-1">
+                <span class="text-sm text-gray-500">$</span>
+                <input type="number" step="0.1" name="daily_limit_usd" value="10.0"
+                       class="w-24 text-sm border-gray-300 rounded-md shadow-sm focus:border-indigo-500 focus:ring-indigo-500 font-mono py-1.5 px-2 border">
+            </div>
+        </div>
+        <button type="submit" class="inline-flex items-center gap-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            Create
+        </button>
+    </form>
+</div>
+
 {# ── User Management Table ── #}
 <div class="mb-4">
     <h2 class="text-lg font-bold text-gray-900 mb-4">User Management</h2>
