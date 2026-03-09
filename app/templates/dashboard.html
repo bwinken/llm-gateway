@@ -242,6 +242,64 @@
     }
 </script>
 
+{# ── My App Accounts ── #}
+{% if owned_apps %}
+<div class="bg-white rounded-lg border border-gray-200 shadow-sm p-6 mb-8">
+    <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-medium leading-6 text-gray-900">My App Accounts</h3>
+        <span class="text-xs text-gray-400">App accounts assigned to you</span>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">App</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">API Key</th>
+                    <th class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Monthly Cost</th>
+                    <th class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Input</th>
+                    <th class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Output</th>
+                    <th class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Reqs</th>
+                    <th class="px-4 py-2.5 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+                {% for app in owned_apps %}
+                <tr class="hover:bg-gray-50 transition-colors">
+                    <td class="px-4 py-3 whitespace-nowrap">
+                        <div class="flex items-center gap-2">
+                            <div class="h-7 w-7 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-xs">
+                                {{ app.username[4:][:2]|upper if app.username|length > 4 else app.username[0]|upper }}
+                            </div>
+                            <span class="text-sm font-medium text-gray-900">{{ app.username }}</span>
+                        </div>
+                    </td>
+                    <td class="px-4 py-3 whitespace-nowrap">
+                        <div class="flex items-center gap-2">
+                            <code id="appKey-{{ app.id }}" class="text-xs font-mono text-gray-600 bg-gray-50 px-2 py-1 rounded border">{{ app.api_key[:12] }}...</code>
+                            <button onclick="copyAppKey({{ app.id }}, this)"
+                                    class="text-xs text-indigo-600 hover:text-indigo-800 font-medium">Copy</button>
+                        </div>
+                    </td>
+                    <td class="px-4 py-3 text-right text-sm font-mono font-medium text-gray-900">${{ "%.4f"|format(app.monthly_cost) }}</td>
+                    <td class="px-4 py-3 text-right text-sm font-mono text-gray-600">{{ format_token(app.monthly_input) }}</td>
+                    <td class="px-4 py-3 text-right text-sm font-mono text-gray-600">{{ format_token(app.monthly_output) }}</td>
+                    <td class="px-4 py-3 text-right text-sm font-mono text-gray-600">{{ app.monthly_reqs }}</td>
+                    <td class="px-4 py-3 text-center">
+                        <button onclick="refreshAppKey({{ app.id }})"
+                                id="refreshAppBtn-{{ app.id }}"
+                                class="inline-flex items-center gap-1 text-xs font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2.5 py-1.5 rounded-md transition-colors">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                            Refresh Key
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
 {# ── API Integration Guide ── #}
 <div class="mt-8">
     <h3 class="text-lg font-bold leading-6 text-gray-900 mb-4 flex items-center gap-2">
@@ -452,6 +510,58 @@ print(resp.json())</pre>
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') document.getElementById('apiKeyModal').classList.add('hidden');
     });
+
+    // Store full app keys in a map for copy after refresh
+    var appKeyMap = {};
+    {% if owned_apps %}
+    {% for app in owned_apps %}
+    appKeyMap[{{ app.id }}] = '{{ app.api_key }}';
+    {% endfor %}
+    {% endif %}
+
+    function copyAppKey(appId, btn) {
+        var key = appKeyMap[appId] || '';
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(key);
+        } else {
+            var ta = document.createElement('textarea');
+            ta.value = key;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+        }
+        var orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(function(){ btn.textContent = orig; }, 2000);
+    }
+
+    function refreshAppKey(appId) {
+        if (!confirm('Regenerate this app API key? The old key will stop working immediately.')) return;
+        var btn = document.getElementById('refreshAppBtn-' + appId);
+        btn.disabled = true;
+        btn.classList.add('opacity-50');
+
+        fetch('/dashboard/app/' + appId + '/refresh-key', { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.ok) {
+                    appKeyMap[appId] = data.api_key;
+                    var keyEl = document.getElementById('appKey-' + appId);
+                    keyEl.textContent = data.api_key.substring(0, 12) + '...';
+                    alert('Key regenerated! Click Copy to get the new key.');
+                } else {
+                    alert('Failed to regenerate key.');
+                }
+            })
+            .catch(function() { alert('Error regenerating key.'); })
+            .finally(function() {
+                btn.disabled = false;
+                btn.classList.remove('opacity-50');
+            });
+    }
 </script>
 
 {% endblock %}

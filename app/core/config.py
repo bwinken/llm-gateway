@@ -24,10 +24,6 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config.toml"
 
 SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me")
 DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./llm_gateway.db")
-DEFAULT_ADMIN_KEY: str = os.getenv("DEFAULT_ADMIN_KEY", "sk-admin-key-change-me")
-DEFAULT_ADMIN_USER: str = os.getenv("DEFAULT_ADMIN_USER", "admin")
-DEFAULT_ADMIN_DAILY_LIMIT: float = float(os.getenv("DEFAULT_ADMIN_DAILY_LIMIT", "100.0"))
-
 # AuthCenter OAuth2 SSO
 AUTH_CENTER_BASE_URL: str = os.getenv("AUTH_CENTER_BASE_URL", "http://localhost:8000")
 AUTH_CENTER_APP_ID: str = os.getenv("AUTH_CENTER_APP_ID", "llm_gateway")

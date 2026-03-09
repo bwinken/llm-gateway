@@ -15,6 +15,7 @@ class User(SQLModel, table=True):
     api_key: str = Field(index=True, unique=True, default_factory=lambda: f"sk-{uuid.uuid4().hex}")
     daily_limit_usd: float = Field(default=10.0)
     is_admin: bool = Field(default=False)
+    owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
