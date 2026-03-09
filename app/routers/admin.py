@@ -119,6 +119,36 @@ async def admin_page(
     )
 
 
+@router.post("/users/create")
+async def create_app_account_web(
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Create a new app account (web UI form)."""
+    _require_admin_session(request, session)
+
+    form = await request.form()
+    username = (form.get("username") or "").strip()
+    daily_limit = form.get("daily_limit_usd")
+
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required.")
+    if not username.startswith("app_"):
+        username = f"app_{username}"
+
+    existing = session.exec(select(User).where(User.username == username)).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"User '{username}' already exists.")
+
+    user = User(username=username)
+    if daily_limit is not None:
+        user.daily_limit_usd = float(daily_limit)
+    session.add(user)
+    session.commit()
+
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 @router.post("/users/{user_id}/limit")
 async def update_user_limit(
     user_id: int,
@@ -205,6 +235,42 @@ async def list_users_api(
         }
         for u in users
     ]
+
+
+@router.post("/users")
+async def create_user_api(
+    body: dict,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Create a new user account via API (requires admin Bearer token)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+
+    username = (body.get("username") or "").strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required.")
+
+    existing = session.exec(select(User).where(User.username == username)).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"User '{username}' already exists.")
+
+    new_user = User(username=username)
+    if "daily_limit_usd" in body:
+        new_user.daily_limit_usd = float(body["daily_limit_usd"])
+    if "is_admin" in body:
+        new_user.is_admin = bool(body["is_admin"])
+    session.add(new_user)
+    session.commit()
+    session.refresh(new_user)
+
+    return {
+        "ok": True,
+        "id": new_user.id,
+        "username": new_user.username,
+        "api_key": new_user.api_key,
+        "daily_limit_usd": new_user.daily_limit_usd,
+    }
 
 
 @router.patch("/users/{user_id}")
