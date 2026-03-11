@@ -96,13 +96,40 @@ async def auth_callback(
         session.refresh(user)
         logger.info("Auto-provisioned user '{}' via OAuth", employee_name)
 
-    # Store in session
-    request.session["user_id"] = user.id
-    request.session["username"] = user.username
-    request.session["scopes"] = scopes
+    # Store only the opaque JWT in the session – no PII in the cookie
+    request.session["access_token"] = access_token
 
     response = RedirectResponse("/dashboard", status_code=303)
     return response
+
+
+def get_session_user(
+    request: Request, session: Session
+) -> tuple[User, list[str]] | None:
+    """Decode the JWT stored in the session cookie and return (User, scopes).
+
+    Returns ``None`` when the token is missing, expired, or the user no longer
+    exists – callers should redirect to login in that case.
+    """
+    token = request.session.get("access_token")
+    if not token:
+        return None
+
+    payload = decode_jwt(token)
+    if payload is None:
+        # Token invalid or expired – force re-login
+        request.session.clear()
+        return None
+
+    username: str = payload["sub"]
+    scopes: list[str] = payload.get("scopes", [])
+
+    user = session.exec(select(User).where(User.username == username)).first()
+    if user is None:
+        request.session.clear()
+        return None
+
+    return user, scopes
 
 
 @router.get("/logout")

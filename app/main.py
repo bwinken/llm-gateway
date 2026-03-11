@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.core.config import SECRET_KEY
+from app.core.config import APP_TITLE, SECRET_KEY
 from app.core.database import init_db
 from app.core.logger import logger
 from app.core.server_state import close_client, init_client
@@ -26,13 +26,13 @@ from app.services.health import health_check_loop
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    logger.info("Starting LLM Gateway...")
+    logger.info("Starting {}...", APP_TITLE)
     init_db()
     await init_client()
 
     # Launch background health checker
     health_task = asyncio.create_task(health_check_loop(interval=30))
-    logger.info("LLM Gateway ready.")
+    logger.info("{} ready.", APP_TITLE)
 
     yield
 
@@ -43,11 +43,11 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     await close_client()
-    logger.info("LLM Gateway shut down.")
+    logger.info("{} shut down.", APP_TITLE)
 
 
 app = FastAPI(
-    title="LLM Gateway",
+    title=APP_TITLE,
     version="1.0.0",
     description="High-performance API gateway for LLM/VLM/Embedding servers.",
     lifespan=lifespan,

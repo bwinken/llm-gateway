@@ -135,8 +135,9 @@ vlm = "backup-vlm"
 
 | Variable | Description | Default |
 |---|---|---|
+| `APP_TITLE` | Service name shown in UI, browser tab, and logs | `LLM Gateway` |
 | `SECRET_KEY` | Session cookie encryption | `change-me` |
-| `DATABASE_URL` | PostgreSQL connection string | `sqlite:///./llm_gateway.db` |
+| `DATABASE_URL` | PostgreSQL connection string | `postgresql://llm_gateway:password@localhost:5432/llm_gateway` |
 | `AUTH_CENTER_BASE_URL` | AuthCenter server URL | `http://localhost:8000` |
 | `AUTH_CENTER_APP_ID` | OAuth2 application ID | `llm_gateway` |
 | `AUTH_CENTER_CLIENT_SECRET` | OAuth2 client secret | `change-me` |
@@ -204,12 +205,31 @@ Open `http://your-gateway:8050` in browser. Redirects to AuthCenter for SSO logi
 
 兩種部署方式（systemd / Docker），詳見 [deploy/README.md](deploy/README.md)。
 
-### 資料遷移
+### 開發用 PostgreSQL
 
 ```bash
-# 從舊的 SQLite 遷移到 PostgreSQL
-python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db
+bash scripts/start-pg-dev.sh start    # 啟動（首次會自動建立容器）
+bash scripts/start-pg-dev.sh stop     # 停止（資料保留）
+bash scripts/start-pg-dev.sh status   # 查看狀態
+bash scripts/start-pg-dev.sh rm       # 刪除容器（資料遺失）
 ```
+
+使用與 `.env.example` 相同的帳號密碼，無需額外設定。
+
+### 資料遷移（SQLite → PostgreSQL）
+
+```bash
+# 1. 預覽遷移（不寫入任何資料）
+python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --dry-run
+
+# 2. 執行完整遷移
+python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db
+
+# 3. 正式上線前增量同步（只遷移上次之後的新資料）
+python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --sync
+```
+
+> `--sync` 會根據 PostgreSQL 中最新的 `usage_logs.created_at` 作為 cutoff，只遷移之後的記錄，並同步更新有變更的 user 欄位。原始 SQLite 檔案不會被修改。
 
 ---
 

@@ -4,21 +4,19 @@ Web dashboard endpoints (Jinja2 HTML pages).
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlmodel import Session, select
+from sqlmodel import Session
 
-from app.core.config import MODEL_ROUTING
+from app.core.config import APP_TITLE, MODEL_ROUTING
 from app.core.database import get_session
 from app.core.server_state import is_alive
-from app.models.schema import User
-from app.routers.auth_api import LOGIN_URL
-from app.services.stats import get_daily_trends, get_owned_apps_summary, get_user_monthly_summary
+from app.routers.auth_api import LOGIN_URL, get_session_user
+from app.services.stats import get_daily_trends, get_user_monthly_summary
 
 router = APIRouter()
 _templates_dir = Path(__file__).resolve().parent.parent / "templates"
@@ -29,16 +27,21 @@ def _common_ctx(request: Request, **extra) -> dict:
     """Base context shared by all pages."""
     return {
         "request": request,
+        "app_title": APP_TITLE,
         "current_year": datetime.now(timezone.utc).year,
         **extra,
     }
 
 
 @router.get("/", response_class=HTMLResponse)
-async def login_page(request: Request):
-    if request.session.get("user_id"):
+async def login_page(request: Request, session: Session = Depends(get_session)):
+    result = get_session_user(request, session)
+    if result is not None:
         return RedirectResponse(url="/dashboard", status_code=303)
-    return RedirectResponse(url=LOGIN_URL, status_code=303)
+    return templates.TemplateResponse(
+        "login.html",
+        _common_ctx(request, title="Sign In", login_url=LOGIN_URL),
+    )
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -46,23 +49,18 @@ async def dashboard(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    user_id = request.session.get("user_id")
-    if not user_id:
+    result = get_session_user(request, session)
+    if result is None:
         return RedirectResponse(url="/", status_code=303)
 
-    user = session.exec(select(User).where(User.id == user_id)).first()
-    if not user:
-        request.session.clear()
-        return RedirectResponse(url="/", status_code=303)
-
-    # Derive admin status from JWT scopes (expunge first to avoid persisting)
-    scopes = request.session.get("scopes", [])
+    user, scopes = result
+    if "read" not in scopes and "admin" not in scopes:
+        raise HTTPException(status_code=403, detail="Insufficient scope: 'read' required.")
     session.expunge(user)
     user.is_admin = "admin" in scopes
 
-    summary = get_user_monthly_summary(session, user_id)
-    trend_data = get_daily_trends(session, user_id)
-    owned_apps = get_owned_apps_summary(session, user_id)
+    summary = get_user_monthly_summary(session, user.id)
+    trend_data = get_daily_trends(session, user.id)
 
     # Build grouped server status keyed by raw type
     server_groups: dict[str, list[dict]] = {}
@@ -109,12 +107,12 @@ async def refresh_own_key(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    user_id = request.session.get("user_id")
-    if not user_id:
+    result = get_session_user(request, session)
+    if result is None:
         raise HTTPException(status_code=401)
-    user = session.exec(select(User).where(User.id == user_id)).first()
-    if not user:
-        raise HTTPException(status_code=401)
+    user, scopes = result
+    if "read" not in scopes and "admin" not in scopes:
+        raise HTTPException(status_code=403, detail="Insufficient scope: 'read' required.")
 
     from app.models.schema import _generate_api_key
     user.api_key = _generate_api_key()

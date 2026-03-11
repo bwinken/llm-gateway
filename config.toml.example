@@ -49,6 +49,9 @@ output_price_per_1m = 0.00
 # llm = "backup-llm"
 # vlm = "backup-vlm"
 # embedding = "backup-embedding"
+# vision_embedding = "backup-vision-embedding"
+# reranker = "backup-reranker"
+# vision_reranker = "backup-vision-reranker"
 
 
 # ==========================================
@@ -83,10 +86,28 @@ base_url = "http://your-embedding-server:8080/v1"
 api_key = "your-api-key"
 
 # ------------------------------------------
+# Vision Embedding
+# ------------------------------------------
+[models.vision_embedding]
+[models.vision_embedding."qwen3-vl-embedding"]
+real_model = "Qwen/Qwen3-VL-Embedding-2B"
+base_url = "http://your-vision-embedding-server:8090/v1"
+api_key = "your-api-key"
+
+# ------------------------------------------
 # Reranker
 # ------------------------------------------
 [models.reranker]
 [models.reranker."bge-reranker-v2-m3"]
 real_model = "BAAI/bge-reranker-v2-m3"
 base_url = "http://your-reranker-server:8080/v1"
+api_key = "your-api-key"
+
+# ------------------------------------------
+# Vision Reranker
+# ------------------------------------------
+[models.vision_reranker]
+[models.vision_reranker."qwen3-vl-reranker"]
+real_model = "Qwen/Qwen3-VL-Reranker-2B"
+base_url = "http://your-vision-reranker-server:8091/v1"
 api_key = "your-api-key"
