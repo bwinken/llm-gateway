@@ -116,7 +116,8 @@ async def refresh_own_key(
     if not user:
         raise HTTPException(status_code=401)
 
-    user.api_key = f"sk-{uuid.uuid4().hex}"
+    from app.models.schema import _generate_api_key
+    user.api_key = _generate_api_key()
     session.add(user)
     session.commit()
     session.refresh(user)
