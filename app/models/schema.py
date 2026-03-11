@@ -6,13 +6,19 @@ from sqlalchemy import Index
 from sqlmodel import Field, SQLModel
 
 
+def _generate_api_key() -> str:
+    ts = int(datetime.now(timezone.utc).timestamp())
+    short_hex = uuid.uuid4().hex[:8]
+    return f"sk-internal-{ts}-{short_hex}"
+
+
 class User(SQLModel, table=True):
     __tablename__ = "users"
 
     id: int | None = Field(default=None, primary_key=True)
     username: str = Field(index=True, unique=True)
     password_hash: str = Field(default="")
-    api_key: str = Field(index=True, unique=True, default_factory=lambda: f"sk-{uuid.uuid4().hex}")
+    api_key: str = Field(index=True, unique=True, default_factory=_generate_api_key)
     daily_limit_usd: float = Field(default=10.0)
     is_admin: bool = Field(default=False)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

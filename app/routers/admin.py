@@ -207,7 +207,8 @@ async def refresh_user_key(
     if not target:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    target.api_key = f"sk-{uuid.uuid4().hex}"
+    from app.models.schema import _generate_api_key
+    target.api_key = _generate_api_key()
     session.add(target)
     session.commit()
     session.refresh(target)
