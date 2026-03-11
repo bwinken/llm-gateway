@@ -136,7 +136,7 @@ vlm = "backup-vlm"
 | Variable | Description | Default |
 |---|---|---|
 | `SECRET_KEY` | Session cookie encryption | `change-me` |
-| `DATABASE_URL` | PostgreSQL connection string | `sqlite:///./llm_gateway.db` |
+| `DATABASE_URL` | PostgreSQL connection string | `postgresql://llm_gateway:password@localhost:5432/llm_gateway` |
 | `AUTH_CENTER_BASE_URL` | AuthCenter server URL | `http://localhost:8000` |
 | `AUTH_CENTER_APP_ID` | OAuth2 application ID | `llm_gateway` |
 | `AUTH_CENTER_CLIENT_SECRET` | OAuth2 client secret | `change-me` |
