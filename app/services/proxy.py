@@ -107,6 +107,57 @@ def _calc_cost(model_type: str, input_tokens: int, output_tokens: int) -> Decima
     return (input_tokens * inp_price + output_tokens * out_price) / 1_000_000
 
 
+def _log_usage_sync(
+    user_id: int,
+    username: str,
+    daily_limit: float,
+    model: str,
+    model_type: str,
+    input_tokens: int,
+    output_tokens: int,
+    cost: Decimal,
+    endpoint: str,
+) -> None:
+    """Synchronous DB write — meant to run in a thread via run_in_executor."""
+    try:
+        with Session(engine) as session:
+            log = UsageLog(
+                user_id=user_id,
+                model=model,
+                model_type=model_type,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=cost,
+                endpoint=endpoint,
+            )
+            session.add(log)
+            session.commit()
+
+            # Post-write daily limit check (soft protection for TOCTOU race)
+            from datetime import datetime, timezone
+            from sqlmodel import func, select as sel
+            today_start = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0,
+            )
+            stmt = (
+                sel(func.coalesce(func.sum(UsageLog.cost_usd), 0))
+                .where(UsageLog.user_id == user_id)
+                .where(UsageLog.created_at >= today_start)
+            )
+            today_cost = float(session.exec(stmt).one())
+            if today_cost > daily_limit:
+                logger.warning(
+                    "Daily limit exceeded after request | user={} limit=${} actual=${}",
+                    username, daily_limit, today_cost,
+                )
+        logger.info(
+            "Usage | user={} model={} in={} out={} cost=${}",
+            username, model, input_tokens, output_tokens, cost,
+        )
+    except Exception as exc:
+        logger.error("Failed to log usage for user={}: {}", username, exc)
+
+
 def _log_usage(
     user: User,
     model: str,
@@ -115,27 +166,24 @@ def _log_usage(
     output_tokens: int,
     endpoint: str,
 ) -> None:
+    """Fire-and-forget usage logging in a background thread."""
+    import asyncio
+
     cost = _calc_cost(model_type, input_tokens, output_tokens)
-    with Session(engine) as session:
-        log = UsageLog(
-            user_id=user.id,  # type: ignore[arg-type]
-            model=model,
-            model_type=model_type,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost_usd=cost,
-            endpoint=endpoint,
+    try:
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(
+            None,
+            _log_usage_sync,
+            user.id, user.username, user.daily_limit_usd,
+            model, model_type, input_tokens, output_tokens, cost, endpoint,
         )
-        session.add(log)
-        session.commit()
-    logger.info(
-        "Usage | user={} model={} in={} out={} cost=${}",
-        user.username,
-        model,
-        input_tokens,
-        output_tokens,
-        cost,
-    )
+    except RuntimeError:
+        # No running loop (e.g. during testing) — run synchronously
+        _log_usage_sync(
+            user.id, user.username, user.daily_limit_usd,  # type: ignore[arg-type]
+            model, model_type, input_tokens, output_tokens, cost, endpoint,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +271,7 @@ async def _stream_chat(
     async def event_generator():
         input_tokens = 0
         output_tokens = 0
+        resp = None
         try:
             resp = await client.send(req, stream=True)
             async for line in resp.aiter_lines():
@@ -242,11 +291,12 @@ async def _stream_chat(
                             output_tokens = usage.get("completion_tokens", output_tokens)
                     except (json.JSONDecodeError, KeyError):
                         pass
-
-            await resp.aclose()
         except Exception as exc:
             logger.error("Stream error: {}", exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+        finally:
+            if resp is not None:
+                await resp.aclose()
 
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
@@ -395,6 +445,7 @@ async def _passthrough_stream(
     async def event_generator():
         input_tokens = 0
         output_tokens = 0
+        resp = None
         try:
             resp = await client.send(req, stream=True)
             async for line in resp.aiter_lines():
@@ -413,11 +464,12 @@ async def _passthrough_stream(
                             output_tokens = usage.get("output_tokens", usage.get("completion_tokens", output_tokens))
                     except (json.JSONDecodeError, KeyError):
                         pass
-
-            await resp.aclose()
         except Exception as exc:
             logger.error("Stream error: {}", exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+        finally:
+            if resp is not None:
+                await resp.aclose()
 
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
