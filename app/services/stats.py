@@ -63,14 +63,21 @@ def get_daily_trends(session: Session, user_id: int, days: int = 30) -> list[dic
 
 
 def get_all_users_usage(session: Session) -> dict[int, dict]:
-    """Return total cost and total tokens per user (all-time)."""
-    stmt = select(
-        UsageLog.user_id,
-        func.coalesce(func.sum(UsageLog.cost_usd), 0),
-        func.coalesce(
-            func.sum(UsageLog.input_tokens) + func.sum(UsageLog.output_tokens), 0
-        ),
-    ).group_by(UsageLog.user_id)
+    """Return total cost and total tokens per user for the current month."""
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    stmt = (
+        select(
+            UsageLog.user_id,
+            func.coalesce(func.sum(UsageLog.cost_usd), 0),
+            func.coalesce(
+                func.sum(UsageLog.input_tokens) + func.sum(UsageLog.output_tokens), 0
+            ),
+        )
+        .where(UsageLog.created_at >= month_start)
+        .group_by(UsageLog.user_id)
+    )
     rows = session.exec(stmt).all()
     return {
         int(row[0]): {

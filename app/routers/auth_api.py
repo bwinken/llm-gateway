@@ -1,5 +1,7 @@
 """
-OAuth2 SSO authentication via AuthCenter + session logout.
+OAuth2 SSO authentication via AuthCenter.
+
+JWT is stored directly in an httponly cookie (``access_token``).
 """
 
 from __future__ import annotations
@@ -8,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlmodel import Session, select
 
@@ -49,8 +51,20 @@ def decode_jwt(token: str) -> dict | None:
             _load_public_key(),
             algorithms=[_ALGORITHM],
             audience=AUTH_CENTER_APP_ID,
+            issuer="auth-center",
+            leeway=5,
         )
-    except jwt.PyJWTError:
+    except jwt.ExpiredSignatureError:
+        logger.warning("JWT expired")
+        return None
+    except jwt.InvalidAudienceError:
+        logger.warning("JWT audience mismatch")
+        return None
+    except jwt.InvalidIssuerError:
+        logger.warning("JWT issuer mismatch")
+        return None
+    except jwt.PyJWTError as e:
+        logger.warning("JWT validation failed: {}", e)
         return None
 
 
@@ -60,7 +74,7 @@ async def auth_callback(
     code: str = Query(...),
     session: Session = Depends(get_session),
 ):
-    """OAuth2 callback: exchange authorization code for JWT, provision user, set session."""
+    """OAuth2 callback: exchange authorization code for JWT, set httponly cookie."""
     client = get_client()
     resp = await client.post(
         f"{AUTH_CENTER_BASE_URL}/auth/token",
@@ -85,7 +99,6 @@ async def auth_callback(
         raise HTTPException(500, "Failed to validate JWT from AuthCenter.")
 
     employee_name = payload["sub"]
-    scopes = payload.get("scopes", [])
 
     # Auto-provision or update user in DB
     user = session.exec(select(User).where(User.username == employee_name)).first()
@@ -96,29 +109,31 @@ async def auth_callback(
         session.refresh(user)
         logger.info("Auto-provisioned user '{}' via OAuth", employee_name)
 
-    # Store only the opaque JWT in the session – no PII in the cookie
-    request.session["access_token"] = access_token
-
     response = RedirectResponse("/dashboard", status_code=303)
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        max_age=_TOKEN_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+    )
     return response
 
 
 def get_session_user(
     request: Request, session: Session
-) -> tuple[User, list[str]] | None:
-    """Decode the JWT stored in the session cookie and return (User, scopes).
+) -> tuple[User, list[str], dict] | None:
+    """Decode the JWT from the ``access_token`` cookie and return (User, scopes, payload).
 
     Returns ``None`` when the token is missing, expired, or the user no longer
     exists – callers should redirect to login in that case.
     """
-    token = request.session.get("access_token")
+    token = request.cookies.get("access_token")
     if not token:
         return None
 
     payload = decode_jwt(token)
     if payload is None:
-        # Token invalid or expired – force re-login
-        request.session.clear()
         return None
 
     username: str = payload["sub"]
@@ -126,13 +141,13 @@ def get_session_user(
 
     user = session.exec(select(User).where(User.username == username)).first()
     if user is None:
-        request.session.clear()
         return None
 
-    return user, scopes
+    return user, scopes, payload
 
 
 @router.get("/logout")
 async def logout(request: Request):
-    request.session.clear()
-    return RedirectResponse(url="/", status_code=303)
+    response = RedirectResponse(url="/", status_code=303)
+    response.delete_cookie(key="access_token")
+    return response

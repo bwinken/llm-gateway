@@ -2,14 +2,15 @@
 
 ## Prerequisites
 
-- Python 3.12+（方法一）或 Docker（方法二）
-- Docker（方法一用於 PostgreSQL，方法二用於全部）
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) 套件管理工具
+- Docker（用於 PostgreSQL）
 - Nginx（透過 `systemctl` 管理）
 - AuthCenter RS256 public key（`keys/public.pem`）
 
 ---
 
-## 方法一：systemd user service + PostgreSQL Docker + Nginx
+## 部署方式：systemd user service + PostgreSQL Docker + Nginx
 
 使用 user-level systemd 執行 Gateway，Docker 執行 PostgreSQL。不需要 root（nginx 和 linger 除外）。
 
@@ -39,9 +40,9 @@ bash deploy/setup.sh
 腳本會自動：
 1. 用 Docker 啟動 PostgreSQL 16（資料存於 `~/opt/pgdata`，僅綁定 127.0.0.1）
 2. rsync 程式碼到 `~/opt/llm-gateway`（排除 `.env`、`config.toml`、`keys/`）
-3. 建立 venv 並安裝依賴
+3. `uv sync` 安裝依賴
 4. 自動建立 `.env` 並填入 DATABASE_URL
-5. 執行資料庫 schema 同步
+5. `uv run alembic upgrade head` 執行資料庫遷移
 6. 設定 user-level systemd service
 7. 啟用 lingering（登出後服務持續運行）
 8. 設定 nginx reverse proxy
@@ -61,7 +62,7 @@ bash deploy/setup.sh
 ```bash
 cd /path/to/llm-gateway
 git pull
-rsync -a --exclude='.git' --exclude='venv' --exclude='__pycache__' \
+rsync -a --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
     --exclude='config.toml' --exclude='.env' --exclude='keys/' \
     ./ ~/opt/llm-gateway/
 systemctl --user restart llm-gateway
@@ -90,7 +91,9 @@ docker stop llm-gateway-pg              # 停止
 ~/opt/
 ├── llm-gateway/          # 應用程式
 │   ├── app/
-│   ├── venv/
+│   ├── .venv/            # uv 管理的虛擬環境
+│   ├── pyproject.toml
+│   ├── uv.lock
 │   ├── config.toml
 │   ├── .env
 │   └── keys/public.pem
@@ -105,65 +108,9 @@ docker stop llm-gateway-pg              # 停止
 
 ---
 
-## 方法二：Docker Compose + Nginx
-
-使用 Docker Compose 同時啟動 Gateway 和 PostgreSQL。
-
-### 首次部署
-
-```bash
-git clone https://github.com/bwinken/llm-gateway.git
-cd llm-gateway
-
-# 建立並編輯設定檔
-cp .env.example .env && nano .env
-cp config.toml.example config.toml && nano config.toml
-
-# 重要：Docker 環境下 DATABASE_URL 使用 'postgres' 而非 'localhost'
-# DATABASE_URL=postgresql://llm_gateway:your_password@postgres:5432/llm_gateway
-
-# 放置 AuthCenter 公鑰
-mkdir -p keys && cp /path/to/public.pem keys/public.pem
-
-# 如需 Proxy，先設定環境變數（會自動傳入 Docker build）
-export http_proxy=http://proxy.company.com:8080
-
-# 執行部署
-bash deploy/setup-docker.sh
-```
-
-### 更新程式碼
-
-```bash
-cd /path/to/llm-gateway
-git pull
-
-# 重建 image 並重啟（有 layer cache，只改 code 很快）
-docker compose up -d --build
-```
-
-> `config.toml` 和 `keys/` 是 volume mount，不受 image 重建影響。
-
-### 服務管理
-
-```bash
-docker compose logs -f gateway          # 查看日誌
-docker compose restart gateway          # 重啟
-docker compose down                     # 停止
-docker compose up -d --build            # 重建並啟動
-```
-
-### 相關檔案
-
-- [setup-docker.sh](setup-docker.sh) — 部署腳本
-- [../Dockerfile](../Dockerfile) — Docker image
-- [../docker-compose.yml](../docker-compose.yml) — Compose 設定
-
----
-
 ## Nginx 設定
 
-兩種方法都會自動安裝 nginx 設定。如需手動調整：
+部署腳本會自動安裝 nginx 設定。如需手動調整：
 
 ```bash
 sudo nano /etc/nginx/sites-available/llm-gateway
@@ -186,5 +133,4 @@ sudo certbot --nginx -d your-domain.com
 export http_proxy=http://proxy.company.com:8080
 ```
 
-- **systemd 方式**：`setup.sh` 會自動使用；如需 runtime proxy，取消 `llm-gateway.service` 中的 proxy 註解
-- **Docker 方式**：`setup-docker.sh` 和 `docker-compose.yml` 會自動將 proxy 傳入 Docker build
+`setup.sh` 會自動使用。如需 runtime proxy，取消 `llm-gateway.service` 中的 proxy 註解。

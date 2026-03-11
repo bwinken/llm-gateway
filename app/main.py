@@ -2,7 +2,7 @@
 FastAPI application entry point.
 
 Lifespan: DB init, global httpx client, background health checks.
-Middleware: SessionMiddleware, CORS.
+Middleware: CORS.
 Router mounting: web_ui, auth_api, llm_api, admin.
 """
 
@@ -13,9 +13,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.sessions import SessionMiddleware
 
-from app.core.config import APP_TITLE, SECRET_KEY
+from app.core.config import APP_TITLE
 from app.core.database import init_db
 from app.core.logger import logger
 from app.core.server_state import close_client, init_client
@@ -54,7 +53,6 @@ app = FastAPI(
 )
 
 # --- Middleware ---
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

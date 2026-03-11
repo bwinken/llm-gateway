@@ -27,7 +27,7 @@ _TYPE_CAPABILITIES: dict[str, str] = {
 @router.get("/v1/models")
 async def list_models(user: User = Depends(get_current_user)):
     models = []
-    for name, route in MODEL_ROUTING.items():
+    for name, route in dict(MODEL_ROUTING).items():
         model_type = route["type"]
         models.append(
             {

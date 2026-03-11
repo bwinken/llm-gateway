@@ -10,6 +10,7 @@ Core proxy logic:
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException, Request
@@ -63,13 +64,14 @@ def _resolve_model(
                 return fb_alias, fb_route, reason
 
     # Auto fallback: first alive model with compatible type
-    for fb_name, fb_route in MODEL_ROUTING.items():
+    routing_snapshot = dict(MODEL_ROUTING)
+    for fb_name, fb_route in routing_snapshot.items():
         if fb_route["type"] in allowed_types and is_alive(fb_route["base_url"]):
             logger.warning("{} - falling back to '{}'", reason, fb_name)
             return fb_name, fb_route, reason
 
     # No alive server — best effort: use any model with compatible type
-    for fb_name, fb_route in MODEL_ROUTING.items():
+    for fb_name, fb_route in routing_snapshot.items():
         if fb_route["type"] in allowed_types:
             logger.warning("{} - no alive server, best-effort fallback to '{}'", reason, fb_name)
             return fb_name, fb_route, reason
@@ -98,11 +100,62 @@ def _error_response(resp) -> JSONResponse:
     return JSONResponse(content=content, status_code=resp.status_code)
 
 
-def _calc_cost(model_type: str, input_tokens: int, output_tokens: int) -> float:
+def _calc_cost(model_type: str, input_tokens: int, output_tokens: int) -> Decimal:
     pricing = PRICING_MAP.get(model_type, PRICING_MAP.get("_default", {}))
-    inp_price = pricing.get("input_price_per_1m", 0.0)
-    out_price = pricing.get("output_price_per_1m", 0.0)
+    inp_price = Decimal(str(pricing.get("input_price_per_1m", 0.0)))
+    out_price = Decimal(str(pricing.get("output_price_per_1m", 0.0)))
     return (input_tokens * inp_price + output_tokens * out_price) / 1_000_000
+
+
+def _log_usage_sync(
+    user_id: int,
+    username: str,
+    daily_limit: float,
+    model: str,
+    model_type: str,
+    input_tokens: int,
+    output_tokens: int,
+    cost: Decimal,
+    endpoint: str,
+) -> None:
+    """Synchronous DB write — meant to run in a thread via run_in_executor."""
+    try:
+        with Session(engine) as session:
+            log = UsageLog(
+                user_id=user_id,
+                model=model,
+                model_type=model_type,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=cost,
+                endpoint=endpoint,
+            )
+            session.add(log)
+            session.commit()
+
+            # Post-write daily limit check (soft protection for TOCTOU race)
+            from datetime import datetime, timezone
+            from sqlmodel import func, select as sel
+            today_start = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0,
+            )
+            stmt = (
+                sel(func.coalesce(func.sum(UsageLog.cost_usd), 0))
+                .where(UsageLog.user_id == user_id)
+                .where(UsageLog.created_at >= today_start)
+            )
+            today_cost = float(session.exec(stmt).one())
+            if today_cost > daily_limit:
+                logger.warning(
+                    "Daily limit exceeded after request | user={} limit=${} actual=${}",
+                    username, daily_limit, today_cost,
+                )
+        logger.info(
+            "Usage | user={} model={} in={} out={} cost=${}",
+            username, model, input_tokens, output_tokens, cost,
+        )
+    except Exception as exc:
+        logger.error("Failed to log usage for user={}: {}", username, exc)
 
 
 def _log_usage(
@@ -113,27 +166,24 @@ def _log_usage(
     output_tokens: int,
     endpoint: str,
 ) -> None:
+    """Fire-and-forget usage logging in a background thread."""
+    import asyncio
+
     cost = _calc_cost(model_type, input_tokens, output_tokens)
-    with Session(engine) as session:
-        log = UsageLog(
-            user_id=user.id,  # type: ignore[arg-type]
-            model=model,
-            model_type=model_type,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost_usd=cost,
-            endpoint=endpoint,
+    try:
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(
+            None,
+            _log_usage_sync,
+            user.id, user.username, user.daily_limit_usd,
+            model, model_type, input_tokens, output_tokens, cost, endpoint,
         )
-        session.add(log)
-        session.commit()
-    logger.info(
-        "Usage | user={} model={} in={} out={} cost=${:.6f}",
-        user.username,
-        model,
-        input_tokens,
-        output_tokens,
-        cost,
-    )
+    except RuntimeError:
+        # No running loop (e.g. during testing) — run synchronously
+        _log_usage_sync(
+            user.id, user.username, user.daily_limit_usd,  # type: ignore[arg-type]
+            model, model_type, input_tokens, output_tokens, cost, endpoint,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +271,7 @@ async def _stream_chat(
     async def event_generator():
         input_tokens = 0
         output_tokens = 0
+        resp = None
         try:
             resp = await client.send(req, stream=True)
             async for line in resp.aiter_lines():
@@ -240,12 +291,15 @@ async def _stream_chat(
                             output_tokens = usage.get("completion_tokens", output_tokens)
                     except (json.JSONDecodeError, KeyError):
                         pass
-
-            await resp.aclose()
         except Exception as exc:
             logger.error("Stream error: {}", exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+        finally:
+            if resp is not None:
+                await resp.aclose()
 
+        if input_tokens == 0 and output_tokens == 0:
+            logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
         _log_usage(user, model, model_type, input_tokens, output_tokens, "/v1/chat/completions")
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
@@ -391,6 +445,7 @@ async def _passthrough_stream(
     async def event_generator():
         input_tokens = 0
         output_tokens = 0
+        resp = None
         try:
             resp = await client.send(req, stream=True)
             async for line in resp.aiter_lines():
@@ -409,12 +464,15 @@ async def _passthrough_stream(
                             output_tokens = usage.get("output_tokens", usage.get("completion_tokens", output_tokens))
                     except (json.JSONDecodeError, KeyError):
                         pass
-
-            await resp.aclose()
         except Exception as exc:
             logger.error("Stream error: {}", exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+        finally:
+            if resp is not None:
+                await resp.aclose()
 
+        if input_tokens == 0 and output_tokens == 0:
+            logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
         _log_usage(user, model, model_type, input_tokens, output_tokens, path_suffix)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
