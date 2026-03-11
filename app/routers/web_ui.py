@@ -50,6 +50,8 @@ async def dashboard(
         return RedirectResponse(url="/", status_code=303)
 
     user, scopes = result
+    if "read" not in scopes and "admin" not in scopes:
+        raise HTTPException(status_code=403, detail="Insufficient scope: 'read' required.")
     session.expunge(user)
     user.is_admin = "admin" in scopes
 
@@ -103,7 +105,9 @@ async def refresh_own_key(
     result = get_session_user(request, session)
     if result is None:
         raise HTTPException(status_code=401)
-    user, _scopes = result
+    user, scopes = result
+    if "read" not in scopes and "admin" not in scopes:
+        raise HTTPException(status_code=403, detail="Insufficient scope: 'read' required.")
 
     from app.models.schema import _generate_api_key
     user.api_key = _generate_api_key()
