@@ -231,6 +231,8 @@ python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --sync
 
 > `--sync` 會根據 PostgreSQL 中最新的 `usage_logs.created_at` 作為 cutoff，只遷移之後的記錄，並同步更新有變更的 user 欄位。原始 SQLite 檔案不會被修改。
 
+完整的遷移步驟、注意事項和 checklist 請參考 **[Migration Guide](docs/migration-guide.md)**。
+
 ---
 
 ## Database Migrations
