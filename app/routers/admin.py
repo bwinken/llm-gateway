@@ -18,6 +18,7 @@ from app.core.config import get_config_data, save_config
 from app.core.database import get_session
 from app.core.deps import get_current_user
 from app.models.schema import User, UsageLog
+from app.routers.auth_api import get_session_user
 from app.services.stats import get_all_users_usage, get_monthly_all_users_usage
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -26,14 +27,11 @@ templates = Jinja2Templates(directory=str(_templates_dir))
 
 
 def _require_admin_session(request: Request, session: Session) -> User:
-    """Check session-based admin auth for web pages (uses JWT scopes)."""
-    user_id = request.session.get("user_id")
-    if not user_id:
+    """Check session-based admin auth for web pages (decodes JWT each request)."""
+    result = get_session_user(request, session)
+    if result is None:
         raise HTTPException(status_code=303, headers={"Location": "/"})
-    user = session.exec(select(User).where(User.id == user_id)).first()
-    if not user:
-        raise HTTPException(status_code=303, headers={"Location": "/"})
-    scopes = request.session.get("scopes", [])
+    user, scopes = result
     if "admin" not in scopes:
         raise HTTPException(status_code=403, detail="Admin access required.")
     session.expunge(user)
