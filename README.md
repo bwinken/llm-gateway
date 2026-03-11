@@ -204,6 +204,17 @@ Open `http://your-gateway:8050` in browser. Redirects to AuthCenter for SSO logi
 
 兩種部署方式（systemd / Docker），詳見 [deploy/README.md](deploy/README.md)。
 
+### 開發用 PostgreSQL
+
+```bash
+bash scripts/start-pg-dev.sh start    # 啟動（首次會自動建立容器）
+bash scripts/start-pg-dev.sh stop     # 停止（資料保留）
+bash scripts/start-pg-dev.sh status   # 查看狀態
+bash scripts/start-pg-dev.sh rm       # 刪除容器（資料遺失）
+```
+
+使用與 `.env.example` 相同的帳號密碼，無需額外設定。
+
 ### 資料遷移（SQLite → PostgreSQL）
 
 ```bash
