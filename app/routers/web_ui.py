@@ -4,19 +4,22 @@ Web dashboard endpoints (Jinja2 HTML pages).
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlmodel import Session
+from sqlmodel import Session, select
+
+from app.models.schema import User
 
 from app.core.config import APP_TITLE, MODEL_ROUTING
 from app.core.database import get_session
 from app.core.server_state import is_alive
 from app.routers.auth_api import LOGIN_URL, get_session_user
-from app.services.stats import get_daily_trends, get_user_monthly_summary
+from app.services.stats import get_daily_trends, get_owned_apps_summary, get_user_monthly_summary
 
 router = APIRouter()
 _templates_dir = Path(__file__).resolve().parent.parent / "templates"
@@ -61,6 +64,7 @@ async def dashboard(
 
     summary = get_user_monthly_summary(session, user.id)
     trend_data = get_daily_trends(session, user.id)
+    owned_apps = get_owned_apps_summary(session, user.id)
 
     # Build grouped server status keyed by raw type
     server_groups: dict[str, list[dict]] = {}
