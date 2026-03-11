@@ -14,8 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev gcc && \
     rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
 COPY app/ app/
 
@@ -24,4 +26,4 @@ ENV http_proxy="" https_proxy="" no_proxy=""
 
 EXPOSE 8050
 
-CMD ["fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8050"]
+CMD ["uv", "run", "fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8050"]

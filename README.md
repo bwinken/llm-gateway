@@ -50,7 +50,7 @@ Client App ──▶ LLM Gateway (:8050) ──▶ vLLM Instance A  [LLM]
 ```bash
 git clone https://github.com/bwinken/llm-gateway.git
 cd llm-gateway
-pip install -r requirements.txt
+uv sync
 ```
 
 ### 2. Configure
@@ -89,7 +89,7 @@ Place the AuthCenter RS256 public key at `keys/public.pem` (or change `AUTH_CENT
 ### 5. Run
 
 ```bash
-fastapi dev app/main.py
+uv run fastapi dev app/main.py
 ```
 
 The gateway starts at `http://localhost:8050`.
@@ -220,13 +220,13 @@ bash scripts/start-pg-dev.sh rm       # 刪除容器（資料遺失）
 
 ```bash
 # 1. 預覽遷移（不寫入任何資料）
-python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --dry-run
+uv run python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --dry-run
 
 # 2. 執行完整遷移
-python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db
+uv run python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db
 
 # 3. 正式上線前增量同步（只遷移上次之後的新資料）
-python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --sync
+uv run python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --sync
 ```
 
 > `--sync` 會根據 PostgreSQL 中最新的 `usage_logs.created_at` 作為 cutoff，只遷移之後的記錄，並同步更新有變更的 user 欄位。原始 SQLite 檔案不會被修改。
@@ -241,23 +241,23 @@ Uses [Alembic](https://alembic.sqlalchemy.org/) for schema migrations. The `DATA
 
 ```bash
 # Apply all pending migrations
-alembic upgrade head
+uv run alembic upgrade head
 
 # Generate a new migration after changing models/schema.py
-alembic revision --autogenerate -m "describe your change"
+uv run alembic revision --autogenerate -m "describe your change"
 
 # View current migration status
-alembic current
+uv run alembic current
 ```
 
-> For existing deployments upgrading to Alembic, run `alembic stamp head` once to mark the current schema as up-to-date without re-running migrations.
+> For existing deployments upgrading to Alembic, run `uv run alembic stamp head` once to mark the current schema as up-to-date without re-running migrations.
 
 ---
 
 ## Testing
 
 ```bash
-python -m pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
 Tests use in-memory SQLite and mock all downstream calls. No PostgreSQL or vLLM servers required.
@@ -272,7 +272,8 @@ llm-gateway/
 ├── .env.example                # Environment variables template
 ├── Dockerfile
 ├── docker-compose.yml          # Gateway + PostgreSQL
-├── requirements.txt
+├── pyproject.toml              # Dependencies and project config (uv)
+├── uv.lock                     # Locked dependency versions
 ├── alembic.ini                 # Alembic migration config
 ├── alembic/
 │   ├── env.py                  # Migration environment (reads DATABASE_URL)

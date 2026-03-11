@@ -49,7 +49,7 @@ DATABASE_URL=postgresql://llm_gateway:your_password@localhost:5432/llm_gateway
 ### 1.3 驗證連線
 
 ```bash
-python -c "
+uv run python -c "
 from dotenv import load_dotenv; load_dotenv()
 from app.core.config import DATABASE_URL
 from sqlmodel import create_engine
@@ -68,7 +68,7 @@ with engine.connect() as conn:
 不會寫入任何資料，只顯示會執行的操作：
 
 ```bash
-python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --dry-run
+uv run python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --dry-run
 ```
 
 **檢查重點：**
@@ -79,7 +79,7 @@ python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --dry-run
 ### 2.2 首次完整遷移
 
 ```bash
-python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db
+uv run python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db
 ```
 
 此步驟會：
@@ -94,7 +94,7 @@ python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db
 如果首次遷移後 SQLite 仍繼續服務了一段時間，在正式切換前執行：
 
 ```bash
-python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --sync
+uv run python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --sync
 ```
 
 此步驟會：
@@ -110,10 +110,10 @@ python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --sync
 
 ### 3.1 標記現有 Schema
 
-**重要**：如果資料庫是透過 `migrate_sqlite_to_pg.py` 或 `create_all()` 建立的（不是透過 Alembic），必須先標記當前版本，否則 `alembic upgrade head` 會嘗試重新建表並失敗。
+**重要**：如果資料庫是透過 `migrate_sqlite_to_pg.py` 或 `create_all()` 建立的（不是透過 Alembic），必須先標記當前版本，否則 `uv run alembic upgrade head` 會嘗試重新建表並失敗。
 
 ```bash
-alembic stamp head
+uv run alembic stamp head
 ```
 
 這會在資料庫建立 `alembic_version` 表，並標記為最新版本。
@@ -124,23 +124,23 @@ alembic stamp head
 
 ```bash
 # 查看待執行的 migration
-alembic history --verbose
+uv run alembic history --verbose
 
 # 套用所有待執行的 migration
-alembic upgrade head
+uv run alembic upgrade head
 
 # 查看當前版本
-alembic current
+uv run alembic current
 ```
 
 ### 3.3 回滾（如有問題）
 
 ```bash
 # 回到上一個版本
-alembic downgrade -1
+uv run alembic downgrade -1
 
 # 回到特定版本
-alembic downgrade <revision_id>
+uv run alembic downgrade <revision_id>
 ```
 
 ---
@@ -195,8 +195,8 @@ psql -U llm_gateway -c "SELECT count(*) FROM usage_logs;"
 [ ] 4. 首次完整遷移完成，檢查 users 和 usage_logs 數量
 [ ] 5. （如有需要）--sync 增量同步完成
 [ ] 6. 停止舊的 SQLite 服務
-[ ] 7. alembic stamp head 標記 schema 版本
-[ ] 8. alembic upgrade head 套用最新 schema 變更
+[ ] 7. uv run alembic stamp head 標記 schema 版本
+[ ] 8. uv run alembic upgrade head 套用最新 schema 變更
 [ ] 9. 啟動新服務，確認 dashboard 和 API 正常
 [ ] 10. 保留 SQLite 檔案作為備份（至少一週）
 ```

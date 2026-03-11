@@ -1,0 +1,25 @@
+[project]
+name = "llm-gateway"
+version = "0.1.0"
+description = "OpenAI-compatible reverse proxy gateway for vLLM clusters"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[standard]>=0.115.0",
+    "httpx>=0.27.0",
+    "sqlmodel>=0.0.22",
+    "psycopg2-binary>=2.9.9",
+    "PyJWT[crypto]>=2.8.0",
+    "python-dotenv>=1.0.1",
+    "jinja2>=3.1.4",
+    "itsdangerous>=2.2.0",
+    "python-multipart>=0.0.9",
+    "toml>=0.10.2",
+    "alembic>=1.13.0",
+    "loguru>=0.7.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]

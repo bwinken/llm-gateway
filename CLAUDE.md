@@ -5,25 +5,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
+# Install dependencies
+uv sync
+
 # Run the app (dev with auto-reload)
-fastapi dev app/main.py
+uv run fastapi dev app/main.py
 
 # Run all tests
-python -m pytest tests/ -v
+uv run pytest tests/ -v
 
 # Run a single test file
-python -m pytest tests/test_chat_completions.py -v
+uv run pytest tests/test_chat_completions.py -v
 
 # Run a single test by name
-python -m pytest tests/test_chat_completions.py::TestChatCompletionsNonStream::test_basic_completion -v
+uv run pytest tests/test_chat_completions.py::TestChatCompletionsNonStream::test_basic_completion -v
 
 # Migrate data from old SQLite to PostgreSQL
-python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db
+uv run python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db
 
 # Database migrations (Alembic)
-alembic upgrade head                              # Apply all pending migrations
-alembic revision --autogenerate -m "description"  # Generate migration from model changes
-alembic current                                   # Show current migration version
+uv run alembic upgrade head                              # Apply all pending migrations
+uv run alembic revision --autogenerate -m "description"  # Generate migration from model changes
+uv run alembic current                                   # Show current migration version
+
+# Add a dependency
+uv add <package>
 ```
 
 ## Architecture
