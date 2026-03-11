@@ -204,12 +204,20 @@ Open `http://your-gateway:8050` in browser. Redirects to AuthCenter for SSO logi
 
 兩種部署方式（systemd / Docker），詳見 [deploy/README.md](deploy/README.md)。
 
-### 資料遷移
+### 資料遷移（SQLite → PostgreSQL）
 
 ```bash
-# 從舊的 SQLite 遷移到 PostgreSQL
+# 1. 預覽遷移（不寫入任何資料）
+python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --dry-run
+
+# 2. 執行完整遷移
 python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db
+
+# 3. 正式上線前增量同步（只遷移上次之後的新資料）
+python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --sync
 ```
+
+> `--sync` 會根據 PostgreSQL 中最新的 `usage_logs.created_at` 作為 cutoff，只遷移之後的記錄，並同步更新有變更的 user 欄位。原始 SQLite 檔案不會被修改。
 
 ---
 
