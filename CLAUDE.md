@@ -49,8 +49,10 @@ Client (Bearer API key) → FastAPI → deps.py (auth + daily limit check)
 ### Dual Auth System
 
 - **API endpoints** (`/v1/*`): API key in `Authorization: Bearer <key>` header → `deps.py:get_current_user()` looks up User by `api_key` in DB
-- **Web UI** (`/`, `/dashboard`, `/admin`): OAuth2 SSO via AuthCenter → JWT scopes stored in session → `auth_api.py:auth_callback()` auto-provisions users on first login
-- Admin access for web UI is determined by `"admin" in session["scopes"]` (from AuthCenter JWT), NOT by `user.is_admin` in DB
+- **Web UI** (`/`, `/dashboard`, `/admin`): OAuth2 SSO via AuthCenter → JWT stored in `access_token` httponly cookie → `auth_api.py:get_session_user()` decodes JWT each request, returns `(User, scopes, payload)`
+- JWT validation: RS256, `audience=AUTH_CENTER_APP_ID`, `issuer="auth-center"`, `leeway=5` for clock skew tolerance
+- Admin access for web UI is determined by `"admin" in scopes` (from AuthCenter JWT), NOT by `user.is_admin` in DB
+- JWT payload fields `display_name` and `org_code` are extracted and displayed in the navbar
 
 ### Proxy Layer (`app/services/proxy.py`)
 
