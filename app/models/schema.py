@@ -32,7 +32,7 @@ class UsageLog(SQLModel, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    user_id: int = Field(index=True)
+    user_id: int = Field()
     model: str = Field(default="")
     model_type: str = Field(default="")
     input_tokens: int = Field(default=0)

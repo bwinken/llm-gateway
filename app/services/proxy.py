@@ -246,6 +246,8 @@ async def _stream_chat(
             logger.error("Stream error: {}", exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
+        if input_tokens == 0 and output_tokens == 0:
+            logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
         _log_usage(user, model, model_type, input_tokens, output_tokens, "/v1/chat/completions")
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
@@ -415,6 +417,8 @@ async def _passthrough_stream(
             logger.error("Stream error: {}", exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
+        if input_tokens == 0 and output_tokens == 0:
+            logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
         _log_usage(user, model, model_type, input_tokens, output_tokens, path_suffix)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
