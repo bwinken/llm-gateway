@@ -37,7 +37,10 @@ async def login_page(request: Request, session: Session = Depends(get_session)):
     result = get_session_user(request, session)
     if result is not None:
         return RedirectResponse(url="/dashboard", status_code=303)
-    return RedirectResponse(url=LOGIN_URL, status_code=303)
+    return templates.TemplateResponse(
+        "login.html",
+        _common_ctx(request, title="Sign In", login_url=LOGIN_URL),
+    )
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
