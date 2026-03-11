@@ -12,6 +12,8 @@ Each model entry in MODEL_ROUTING contains:
 from __future__ import annotations
 
 import os
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +94,13 @@ def _build_config(raw: dict[str, Any]) -> tuple[
 _raw = _load_toml()
 APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP = _build_config(_raw)
 
+_config_lock = threading.Lock()
+
+
+def get_model_routing_snapshot() -> dict[str, dict[str, Any]]:
+    """Return a shallow copy of MODEL_ROUTING safe for iteration."""
+    return dict(MODEL_ROUTING)
+
 
 def reload_config() -> None:
     """Re-read config.toml and update all globals in-place.
@@ -101,21 +110,22 @@ def reload_config() -> None:
     raw = _load_toml()
     _, new_routing, new_pricing, new_fallback = _build_config(raw)
 
-    # Update first, then remove stale keys (never leaves dicts empty mid-swap)
-    stale = set(MODEL_ROUTING) - set(new_routing)
-    MODEL_ROUTING.update(new_routing)
-    for k in stale:
-        MODEL_ROUTING.pop(k, None)
+    with _config_lock:
+        # Update first, then remove stale keys (never leaves dicts empty mid-swap)
+        stale = set(MODEL_ROUTING) - set(new_routing)
+        MODEL_ROUTING.update(new_routing)
+        for k in stale:
+            MODEL_ROUTING.pop(k, None)
 
-    stale = set(PRICING_MAP) - set(new_pricing)
-    PRICING_MAP.update(new_pricing)
-    for k in stale:
-        PRICING_MAP.pop(k, None)
+        stale = set(PRICING_MAP) - set(new_pricing)
+        PRICING_MAP.update(new_pricing)
+        for k in stale:
+            PRICING_MAP.pop(k, None)
 
-    stale = set(FALLBACK_MAP) - set(new_fallback)
-    FALLBACK_MAP.update(new_fallback)
-    for k in stale:
-        FALLBACK_MAP.pop(k, None)
+        stale = set(FALLBACK_MAP) - set(new_fallback)
+        FALLBACK_MAP.update(new_fallback)
+        for k in stale:
+            FALLBACK_MAP.pop(k, None)
 
 
 def save_config(
@@ -157,8 +167,16 @@ def save_config(
     # Rebuild [fallback] section
     raw["fallback"] = {k: v for k, v in fallback.items() if v}
 
-    with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
-        toml.dump(raw, f)
+    # Atomic write: write to temp file then rename to prevent corruption
+    dir_path = _CONFIG_PATH.parent
+    fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix=".toml.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            toml.dump(raw, f)
+        os.replace(tmp_path, _CONFIG_PATH)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
 
     reload_config()
 

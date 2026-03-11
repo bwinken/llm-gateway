@@ -69,7 +69,7 @@ async def dashboard(
     # Build grouped server status keyed by raw type
     server_groups: dict[str, list[dict]] = {}
     seen_urls: set[str] = set()
-    for model_name, route in MODEL_ROUTING.items():
+    for model_name, route in dict(MODEL_ROUTING).items():
         base_url = route["base_url"]
         model_type = route["type"]
         if model_type not in server_groups:

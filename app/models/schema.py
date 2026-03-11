@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
+
+import sqlalchemy as sa
 from sqlalchemy import Index
 from sqlmodel import Field, SQLModel
 
@@ -37,6 +40,6 @@ class UsageLog(SQLModel, table=True):
     model_type: str = Field(default="")
     input_tokens: int = Field(default=0)
     output_tokens: int = Field(default=0)
-    cost_usd: float = Field(default=0.0)
+    cost_usd: Decimal = Field(default=Decimal("0"), sa_column=sa.Column(sa.Numeric(12, 6), nullable=False, default=0))
     endpoint: str = Field(default="")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -10,6 +10,7 @@ Core proxy logic:
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException, Request
@@ -63,13 +64,14 @@ def _resolve_model(
                 return fb_alias, fb_route, reason
 
     # Auto fallback: first alive model with compatible type
-    for fb_name, fb_route in MODEL_ROUTING.items():
+    routing_snapshot = dict(MODEL_ROUTING)
+    for fb_name, fb_route in routing_snapshot.items():
         if fb_route["type"] in allowed_types and is_alive(fb_route["base_url"]):
             logger.warning("{} - falling back to '{}'", reason, fb_name)
             return fb_name, fb_route, reason
 
     # No alive server — best effort: use any model with compatible type
-    for fb_name, fb_route in MODEL_ROUTING.items():
+    for fb_name, fb_route in routing_snapshot.items():
         if fb_route["type"] in allowed_types:
             logger.warning("{} - no alive server, best-effort fallback to '{}'", reason, fb_name)
             return fb_name, fb_route, reason
@@ -98,10 +100,10 @@ def _error_response(resp) -> JSONResponse:
     return JSONResponse(content=content, status_code=resp.status_code)
 
 
-def _calc_cost(model_type: str, input_tokens: int, output_tokens: int) -> float:
+def _calc_cost(model_type: str, input_tokens: int, output_tokens: int) -> Decimal:
     pricing = PRICING_MAP.get(model_type, PRICING_MAP.get("_default", {}))
-    inp_price = pricing.get("input_price_per_1m", 0.0)
-    out_price = pricing.get("output_price_per_1m", 0.0)
+    inp_price = Decimal(str(pricing.get("input_price_per_1m", 0.0)))
+    out_price = Decimal(str(pricing.get("output_price_per_1m", 0.0)))
     return (input_tokens * inp_price + output_tokens * out_price) / 1_000_000
 
 
@@ -127,7 +129,7 @@ def _log_usage(
         session.add(log)
         session.commit()
     logger.info(
-        "Usage | user={} model={} in={} out={} cost=${:.6f}",
+        "Usage | user={} model={} in={} out={} cost=${}",
         user.username,
         model,
         input_tokens,
