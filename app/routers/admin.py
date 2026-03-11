@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete
 from sqlmodel import Session, select
 
-from app.core.config import get_config_data, save_config
+from app.core.config import APP_TITLE, get_config_data, save_config
 from app.core.database import get_session
 from app.core.deps import get_current_user
 from app.models.schema import User, UsageLog
@@ -102,6 +102,7 @@ async def admin_page(
         "admin.html",
         {
             "request": request,
+            "app_title": APP_TITLE,
             "title": "Admin Panel",
             "user": admin_user,
             "users": users,
@@ -308,6 +309,7 @@ async def admin_models_page(
         "admin_models.html",
         {
             "request": request,
+            "app_title": APP_TITLE,
             "title": "Model Configuration",
             "user": admin_user,
             "current_year": datetime.now(timezone.utc).year,

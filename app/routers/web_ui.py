@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session
 
-from app.core.config import MODEL_ROUTING
+from app.core.config import APP_TITLE, MODEL_ROUTING
 from app.core.database import get_session
 from app.core.server_state import is_alive
 from app.routers.auth_api import LOGIN_URL, get_session_user
@@ -27,6 +27,7 @@ def _common_ctx(request: Request, **extra) -> dict:
     """Base context shared by all pages."""
     return {
         "request": request,
+        "app_title": APP_TITLE,
         "current_year": datetime.now(timezone.utc).year,
         **extra,
     }
