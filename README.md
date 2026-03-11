@@ -233,6 +233,25 @@ python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --sync
 
 ---
 
+## Database Migrations
+
+Uses [Alembic](https://alembic.sqlalchemy.org/) for schema migrations. The `DATABASE_URL` from `.env` is used automatically.
+
+```bash
+# Apply all pending migrations
+alembic upgrade head
+
+# Generate a new migration after changing models/schema.py
+alembic revision --autogenerate -m "describe your change"
+
+# View current migration status
+alembic current
+```
+
+> For existing deployments upgrading to Alembic, run `alembic stamp head` once to mark the current schema as up-to-date without re-running migrations.
+
+---
+
 ## Testing
 
 ```bash
@@ -252,6 +271,10 @@ llm-gateway/
 ├── Dockerfile
 ├── docker-compose.yml          # Gateway + PostgreSQL
 ├── requirements.txt
+├── alembic.ini                 # Alembic migration config
+├── alembic/
+│   ├── env.py                  # Migration environment (reads DATABASE_URL)
+│   └── versions/               # Migration scripts
 ├── scripts/
 │   └── migrate_sqlite_to_pg.py
 ├── app/

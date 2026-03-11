@@ -19,6 +19,11 @@ python -m pytest tests/test_chat_completions.py::TestChatCompletionsNonStream::t
 
 # Migrate data from old SQLite to PostgreSQL
 python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db
+
+# Database migrations (Alembic)
+alembic upgrade head                              # Apply all pending migrations
+alembic revision --autogenerate -m "description"  # Generate migration from model changes
+alembic current                                   # Show current migration version
 ```
 
 ## Architecture
