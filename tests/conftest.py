@@ -108,6 +108,18 @@ TEST_MODEL_ROUTING: dict[str, dict[str, Any]] = {
         "api_key": "RERANK_API_KEY",
         "type": "reranker",
     },
+    "test-vision-embedding": {
+        "base_url": "http://mock-vembed:8090/v1",
+        "real_model": "Qwen/Qwen3-VL-Embedding-2B",
+        "api_key": "VEMBED_API_KEY",
+        "type": "vision_embedding",
+    },
+    "test-vision-reranker": {
+        "base_url": "http://mock-vrerank:8091/v1",
+        "real_model": "Qwen/Qwen3-VL-Reranker-2B",
+        "api_key": "VRERANK_API_KEY",
+        "type": "vision_reranker",
+    },
 }
 
 TEST_PRICING_MAP: dict[str, dict[str, float]] = {
@@ -116,6 +128,8 @@ TEST_PRICING_MAP: dict[str, dict[str, float]] = {
     "vlm": {"input_price_per_1m": 5.00, "output_price_per_1m": 15.00},
     "embedding": {"input_price_per_1m": 0.02, "output_price_per_1m": 0.00},
     "reranker": {"input_price_per_1m": 0.05, "output_price_per_1m": 0.00},
+    "vision_embedding": {"input_price_per_1m": 0.02, "output_price_per_1m": 0.00},
+    "vision_reranker": {"input_price_per_1m": 0.05, "output_price_per_1m": 0.00},
 }
 
 TEST_FALLBACK_MAP: dict[str, str] = {}
