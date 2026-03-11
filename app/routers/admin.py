@@ -26,17 +26,22 @@ _templates_dir = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
 
 
-def _require_admin_session(request: Request, session: Session) -> User:
-    """Check session-based admin auth for web pages (decodes JWT each request)."""
+def _require_admin_session(
+    request: Request, session: Session
+) -> tuple[User, dict]:
+    """Check session-based admin auth for web pages (decodes JWT each request).
+
+    Returns (user, jwt_payload).
+    """
     result = get_session_user(request, session)
     if result is None:
         raise HTTPException(status_code=303, headers={"Location": "/"})
-    user, scopes = result
+    user, scopes, payload = result
     if "admin" not in scopes:
         raise HTTPException(status_code=403, detail="Admin access required.")
     session.expunge(user)
     user.is_admin = True
-    return user
+    return user, payload
 
 
 # ── Web UI ──
@@ -46,7 +51,7 @@ async def admin_page(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    admin_user = _require_admin_session(request, session)
+    admin_user, payload = _require_admin_session(request, session)
 
     all_users = session.exec(select(User).order_by(User.id)).all()
     usage_map = get_all_users_usage(session)
@@ -115,6 +120,8 @@ async def admin_page(
             "app_title": APP_TITLE,
             "title": "Admin Panel",
             "user": admin_user,
+            "display_name": payload.get("display_name", admin_user.username),
+            "org_code": payload.get("org_code", ""),
             "users": users,
             "app_leaderboard": app_leaderboard,
             "user_leaderboard": user_leaderboard,
@@ -192,7 +199,7 @@ async def delete_user(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    admin_user = _require_admin_session(request, session)
+    admin_user, _payload = _require_admin_session(request, session)
 
     target = session.exec(select(User).where(User.id == user_id)).first()
     if not target:
@@ -335,7 +342,7 @@ async def admin_models_page(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    admin_user = _require_admin_session(request, session)
+    admin_user, payload = _require_admin_session(request, session)
     return templates.TemplateResponse(
         "admin_models.html",
         {
@@ -343,6 +350,8 @@ async def admin_models_page(
             "app_title": APP_TITLE,
             "title": "Model Configuration",
             "user": admin_user,
+            "display_name": payload.get("display_name", admin_user.username),
+            "org_code": payload.get("org_code", ""),
             "current_year": datetime.now(timezone.utc).year,
         },
     )

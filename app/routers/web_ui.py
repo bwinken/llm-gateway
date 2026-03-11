@@ -38,8 +38,7 @@ def _common_ctx(request: Request, **extra) -> dict:
 
 @router.get("/", response_class=HTMLResponse)
 async def login_page(request: Request, session: Session = Depends(get_session)):
-    result = get_session_user(request, session)
-    if result is not None:
+    if get_session_user(request, session) is not None:
         return RedirectResponse(url="/dashboard", status_code=303)
     return templates.TemplateResponse(
         "login.html",
@@ -56,11 +55,14 @@ async def dashboard(
     if result is None:
         return RedirectResponse(url="/", status_code=303)
 
-    user, scopes = result
+    user, scopes, payload = result
     if "read" not in scopes and "admin" not in scopes:
         raise HTTPException(status_code=403, detail="Insufficient scope: 'read' required.")
     session.expunge(user)
     user.is_admin = "admin" in scopes
+
+    display_name = payload.get("display_name", user.username)
+    org_code = payload.get("org_code", "")
 
     summary = get_user_monthly_summary(session, user.id)
     trend_data = get_daily_trends(session, user.id)
@@ -94,6 +96,8 @@ async def dashboard(
             request,
             title="Dashboard",
             user=user,
+            display_name=display_name,
+            org_code=org_code,
             total_reqs=summary["total_requests"],
             total_cost=summary["total_cost_usd"],
             my_input=summary["total_input_tokens"],
@@ -114,7 +118,7 @@ async def refresh_own_key(
     result = get_session_user(request, session)
     if result is None:
         raise HTTPException(status_code=401)
-    user, scopes = result
+    user, scopes, _payload = result
     if "read" not in scopes and "admin" not in scopes:
         raise HTTPException(status_code=403, detail="Insufficient scope: 'read' required.")
 

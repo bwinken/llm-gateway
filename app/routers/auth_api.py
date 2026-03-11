@@ -49,8 +49,20 @@ def decode_jwt(token: str) -> dict | None:
             _load_public_key(),
             algorithms=[_ALGORITHM],
             audience=AUTH_CENTER_APP_ID,
+            issuer="auth-center",
+            leeway=5,
         )
-    except jwt.PyJWTError:
+    except jwt.ExpiredSignatureError:
+        logger.warning("JWT expired")
+        return None
+    except jwt.InvalidAudienceError:
+        logger.warning("JWT audience mismatch")
+        return None
+    except jwt.InvalidIssuerError:
+        logger.warning("JWT issuer mismatch")
+        return None
+    except jwt.PyJWTError as e:
+        logger.warning("JWT validation failed: {}", e)
         return None
 
 
@@ -105,8 +117,8 @@ async def auth_callback(
 
 def get_session_user(
     request: Request, session: Session
-) -> tuple[User, list[str]] | None:
-    """Decode the JWT stored in the session cookie and return (User, scopes).
+) -> tuple[User, list[str], dict] | None:
+    """Decode the JWT stored in the session cookie and return (User, scopes, payload).
 
     Returns ``None`` when the token is missing, expired, or the user no longer
     exists – callers should redirect to login in that case.
@@ -129,7 +141,7 @@ def get_session_user(
         request.session.clear()
         return None
 
-    return user, scopes
+    return user, scopes, payload
 
 
 @router.get("/logout")
