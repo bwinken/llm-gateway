@@ -25,7 +25,6 @@ load_dotenv()
 _CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config.toml"
 
 APP_TITLE: str = os.getenv("APP_TITLE", "LLM Gateway")
-SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me")
 DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://llm_gateway:password@localhost:5432/llm_gateway")
 
 # AuthCenter OAuth2 SSO
