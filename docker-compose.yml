@@ -8,27 +8,6 @@ services:
       POSTGRES_PASSWORD: your_password
       POSTGRES_DB: llm_gateway
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - ./pgdata:/var/lib/postgresql/data
-
-  gateway:
-    build:
-      context: .
-      args:
-        # 如需 Proxy 建置，取消下方註解並填入實際位址
-        # HTTP_PROXY: http://proxy.company.com:8080
-        # HTTPS_PROXY: http://proxy.company.com:8080
-        HTTP_PROXY: "${HTTP_PROXY:-}"
-        HTTPS_PROXY: "${HTTPS_PROXY:-}"
-    container_name: llm-gateway
-    restart: unless-stopped
-    ports:
-      - "8050:8050"
-    volumes:
-      - ./config.toml:/app/config.toml:ro
-      - ./keys:/app/keys:ro
-    env_file:
-      - .env
-    depends_on:
-      - postgres

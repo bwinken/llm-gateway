@@ -27,8 +27,8 @@ if [ -n "$PROXY_URL" ]; then
 fi
 
 # === 前置檢查 ===
-if ! command -v python3 &>/dev/null; then
-    echo "錯誤：python3 未安裝" >&2
+if ! command -v uv &>/dev/null; then
+    echo "錯誤：uv 未安裝（https://docs.astral.sh/uv/getting-started/installation/）" >&2
     exit 1
 fi
 if ! command -v docker &>/dev/null; then
@@ -73,11 +73,8 @@ rsync -a --exclude='.git' --exclude='.venv' --exclude='venv' --exclude='__pycach
     "$SCRIPT_DIR/" "$APP_DIR/"
 
 echo "=== 3. 安裝依賴 ==="
-if [ ! -d "$APP_DIR/venv" ]; then
-    python3 -m venv "$APP_DIR/venv"
-fi
-"$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
-"$APP_DIR/venv/bin/pip" install --quiet -r "$APP_DIR/requirements.txt"
+cd "$APP_DIR"
+uv sync --frozen --no-dev
 
 echo "=== 4. 檢查設定檔 ==="
 if [ ! -f "$APP_DIR/config.toml" ]; then
@@ -103,11 +100,8 @@ else
 fi
 
 echo "=== 6. 資料庫遷移 ==="
-"$APP_DIR/venv/bin/python" -c "
-from app.core.database import init_db
-init_db()
-print('資料庫 schema 已同步')
-" 2>/dev/null || echo "提醒：資料庫遷移失敗，請確認 .env 中的 DATABASE_URL 設定正確"
+cd "$APP_DIR"
+uv run alembic upgrade head 2>/dev/null || echo "提醒：資料庫遷移失敗，請確認 .env 中的 DATABASE_URL 設定正確"
 
 echo "=== 7. 安裝 user-level systemd service ==="
 mkdir -p "$HOME/.config/systemd/user"

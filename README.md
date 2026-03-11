@@ -203,7 +203,7 @@ Open `http://your-gateway:8050` in browser. Redirects to AuthCenter for SSO logi
 
 ## Deployment
 
-兩種部署方式（systemd / Docker），詳見 [deploy/README.md](deploy/README.md)。
+使用 user-level systemd 部署，PostgreSQL 以 Docker 執行。詳見 [deploy/README.md](deploy/README.md)。
 
 ### 開發用 PostgreSQL
 
@@ -270,8 +270,7 @@ Tests use in-memory SQLite and mock all downstream calls. No PostgreSQL or vLLM 
 llm-gateway/
 ├── config.toml.example        # Model routing + pricing template
 ├── .env.example                # Environment variables template
-├── Dockerfile
-├── docker-compose.yml          # Gateway + PostgreSQL
+├── docker-compose.yml          # PostgreSQL
 ├── pyproject.toml              # Dependencies and project config (uv)
 ├── uv.lock                     # Locked dependency versions
 ├── alembic.ini                 # Alembic migration config
