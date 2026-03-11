@@ -60,6 +60,14 @@ async def admin_page(
     monthly_total_output = 0
     monthly_total_reqs = 0
 
+    # Build owner lookup and potential owners list for the dropdown
+    owner_lookup: dict[int | None, str] = {}
+    potential_owners: list[dict] = []
+    for u in all_users:
+        if not u.username.startswith("app_"):
+            potential_owners.append({"id": u.id, "username": u.username})
+            owner_lookup[u.id] = u.username
+
     for u in all_users:
         usage = usage_map.get(u.id, {"total_cost": 0.0, "total_tokens": 0})
         monthly = monthly_map.get(u.id, {
@@ -72,6 +80,8 @@ async def admin_page(
             "api_key": u.api_key,
             "daily_limit_usd": u.daily_limit_usd,
             "is_admin": u.is_admin,
+            "owner_id": u.owner_id,
+            "owner_name": owner_lookup.get(u.owner_id, ""),
             "total_cost": usage["total_cost"],
             "total_tokens": usage["total_tokens"],
             "monthly_cost": monthly["cost"],
@@ -113,6 +123,7 @@ async def admin_page(
             "monthly_total_input": monthly_total_input,
             "monthly_total_output": monthly_total_output,
             "monthly_total_reqs": monthly_total_reqs,
+            "potential_owners": potential_owners,
             "current_year": datetime.now(timezone.utc).year,
         },
     )
@@ -129,6 +140,7 @@ async def create_app_account_web(
     form = await request.form()
     username = (form.get("username") or "").strip()
     daily_limit = form.get("daily_limit_usd")
+    owner_id = form.get("owner_id")
 
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
@@ -142,6 +154,10 @@ async def create_app_account_web(
     user = User(username=username)
     if daily_limit is not None:
         user.daily_limit_usd = float(daily_limit)
+    if owner_id:
+        owner = session.exec(select(User).where(User.id == int(owner_id))).first()
+        if owner:
+            user.owner_id = owner.id
     session.add(user)
     session.commit()
 
@@ -232,6 +248,7 @@ async def list_users_api(
             "api_key": u.api_key,
             "daily_limit_usd": u.daily_limit_usd,
             "is_admin": u.is_admin,
+            "owner_id": u.owner_id,
         }
         for u in users
     ]
@@ -260,6 +277,11 @@ async def create_user_api(
         new_user.daily_limit_usd = float(body["daily_limit_usd"])
     if "is_admin" in body:
         new_user.is_admin = bool(body["is_admin"])
+    if "owner_id" in body:
+        owner = session.exec(select(User).where(User.id == int(body["owner_id"]))).first()
+        if not owner:
+            raise HTTPException(status_code=400, detail="Owner user not found.")
+        new_user.owner_id = owner.id
     session.add(new_user)
     session.commit()
     session.refresh(new_user)
@@ -270,6 +292,7 @@ async def create_user_api(
         "username": new_user.username,
         "api_key": new_user.api_key,
         "daily_limit_usd": new_user.daily_limit_usd,
+        "owner_id": new_user.owner_id,
     }
 
 
@@ -290,6 +313,14 @@ async def update_user_api(
         target.daily_limit_usd = float(body["daily_limit_usd"])
     if "is_admin" in body:
         target.is_admin = bool(body["is_admin"])
+    if "owner_id" in body:
+        if body["owner_id"] is None:
+            target.owner_id = None
+        else:
+            owner = session.exec(select(User).where(User.id == int(body["owner_id"]))).first()
+            if not owner:
+                raise HTTPException(status_code=400, detail="Owner user not found.")
+            target.owner_id = owner.id
 
     session.add(target)
     session.commit()

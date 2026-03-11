@@ -3,15 +3,15 @@
 ## Prerequisites
 
 - Python 3.12+（方法一）或 Docker（方法二）
-- PostgreSQL
+- Docker（方法一用於 PostgreSQL，方法二用於全部）
 - Nginx（透過 `systemctl` 管理）
 - AuthCenter RS256 public key（`keys/public.pem`）
 
 ---
 
-## 方法一：systemd user service + Nginx
+## 方法一：systemd user service + PostgreSQL Docker + Nginx
 
-使用 user-level systemd 執行，不需要 root（nginx 設定除外）。
+使用 user-level systemd 執行 Gateway，Docker 執行 PostgreSQL。不需要 root（nginx 和 linger 除外）。
 
 ### 首次部署
 
@@ -29,16 +29,22 @@ mkdir -p keys && cp /path/to/public.pem keys/public.pem
 # 如需 Proxy，先設定環境變數
 export http_proxy=http://proxy.company.com:8080
 
+# 如需自訂 PostgreSQL 密碼
+export PG_PASSWORD=my_secure_password
+
 # 執行部署
 bash deploy/setup.sh
 ```
 
 腳本會自動：
-1. rsync 程式碼到 `~/llm-gateway`（排除 `.env`、`config.toml`、`keys/`）
-2. 建立 venv 並安裝依賴
-3. 設定 user-level systemd service
-4. 啟用 lingering（登出後服務持續運行）
-5. 設定 nginx reverse proxy
+1. 用 Docker 啟動 PostgreSQL 16（資料存於 `~/opt/pgdata`，僅綁定 127.0.0.1）
+2. rsync 程式碼到 `~/opt/llm-gateway`（排除 `.env`、`config.toml`、`keys/`）
+3. 建立 venv 並安裝依賴
+4. 自動建立 `.env` 並填入 DATABASE_URL
+5. 執行資料庫 schema 同步
+6. 設定 user-level systemd service
+7. 啟用 lingering（登出後服務持續運行）
+8. 設定 nginx reverse proxy
 
 ### 更新程式碼
 
@@ -46,7 +52,7 @@ bash deploy/setup.sh
 cd /path/to/llm-gateway   # 原始 clone 目錄
 git pull
 
-# 重新執行部署腳本（會 rsync + 更新依賴 + 重啟服務）
+# 重新執行部署腳本（會 rsync + 更新依賴 + 重啟服務，PostgreSQL 不受影響）
 bash deploy/setup.sh
 ```
 
@@ -57,7 +63,7 @@ cd /path/to/llm-gateway
 git pull
 rsync -a --exclude='.git' --exclude='venv' --exclude='__pycache__' \
     --exclude='config.toml' --exclude='.env' --exclude='keys/' \
-    ./ ~/llm-gateway/
+    ./ ~/opt/llm-gateway/
 systemctl --user restart llm-gateway
 ```
 
@@ -66,10 +72,29 @@ systemctl --user restart llm-gateway
 ### 服務管理
 
 ```bash
+# Gateway
 systemctl --user status llm-gateway     # 查看狀態
 systemctl --user restart llm-gateway    # 重啟
 systemctl --user stop llm-gateway       # 停止
 journalctl --user -u llm-gateway -f     # 查看日誌
+
+# PostgreSQL
+docker logs -f llm-gateway-pg           # 查看日誌
+docker restart llm-gateway-pg           # 重啟
+docker stop llm-gateway-pg              # 停止
+```
+
+### 目錄結構
+
+```
+~/opt/
+├── llm-gateway/          # 應用程式
+│   ├── app/
+│   ├── venv/
+│   ├── config.toml
+│   ├── .env
+│   └── keys/public.pem
+└── pgdata/               # PostgreSQL 資料
 ```
 
 ### 相關檔案

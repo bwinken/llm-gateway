@@ -4,14 +4,14 @@ After=network.target
 
 [Service]
 Type=exec
-WorkingDirectory=%h/llm-gateway
-EnvironmentFile=%h/llm-gateway/.env
+WorkingDirectory=%h/opt/llm-gateway
+EnvironmentFile=%h/opt/llm-gateway/.env
 Environment=PYTHONUTF8=1
 # 如需透過 Proxy 連外網，取消下方註解
 # Environment="HTTP_PROXY=http://proxy.company.com:8080"
 # Environment="HTTPS_PROXY=http://proxy.company.com:8080"
 # Environment="NO_PROXY=localhost,127.0.0.1"
-ExecStart=%h/llm-gateway/venv/bin/fastapi run app/main.py \
+ExecStart=%h/opt/llm-gateway/venv/bin/fastapi run app/main.py \
     --host 127.0.0.1 \
     --port 8050 \
     --workers 2

@@ -96,6 +96,7 @@ async def dashboard(
             my_output=summary["total_output_tokens"],
             usage_percent=round(usage_percent, 1),
             trend_data=trend_data,
+            owned_apps=owned_apps,
             server_groups=server_groups,
         ),
     )
@@ -119,3 +120,28 @@ async def refresh_own_key(
     session.commit()
     session.refresh(user)
     return JSONResponse({"ok": True, "api_key": user.api_key})
+
+
+@router.post("/dashboard/app/{app_id}/refresh-key")
+async def refresh_owned_app_key(
+    app_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Refresh API key for an app account owned by the current user."""
+    user_id = request.session.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401)
+
+    target = session.exec(select(User).where(User.id == app_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="App account not found.")
+
+    if target.owner_id != user_id:
+        raise HTTPException(status_code=403, detail="You do not own this app account.")
+
+    target.api_key = f"sk-{uuid.uuid4().hex}"
+    session.add(target)
+    session.commit()
+    session.refresh(target)
+    return JSONResponse({"ok": True, "api_key": target.api_key})

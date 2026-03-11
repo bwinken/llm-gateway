@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, func, select
 
-from app.models.schema import UsageLog
+from app.models.schema import UsageLog, User
 
 
 def get_user_monthly_summary(session: Session, user_id: int) -> dict:
@@ -107,6 +107,54 @@ def get_monthly_all_users_usage(session: Session) -> dict[int, dict]:
         }
         for row in rows
     }
+
+
+def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
+    """Return app accounts owned by this user, with their monthly usage."""
+    apps = session.exec(select(User).where(User.owner_id == owner_id)).all()
+    if not apps:
+        return []
+
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    app_ids = [a.id for a in apps]
+    stmt = (
+        select(
+            UsageLog.user_id,
+            func.coalesce(func.sum(UsageLog.cost_usd), 0),
+            func.coalesce(func.sum(UsageLog.input_tokens), 0),
+            func.coalesce(func.sum(UsageLog.output_tokens), 0),
+            func.count(UsageLog.id),
+        )
+        .where(UsageLog.user_id.in_(app_ids))
+        .where(UsageLog.created_at >= month_start)
+        .group_by(UsageLog.user_id)
+    )
+    rows = session.exec(stmt).all()
+    usage_by_id = {
+        int(row[0]): {
+            "cost": round(float(row[1]), 6),
+            "input_tokens": int(row[2]),
+            "output_tokens": int(row[3]),
+            "requests": int(row[4]),
+        }
+        for row in rows
+    }
+
+    return [
+        {
+            "id": app.id,
+            "username": app.username,
+            "api_key": app.api_key,
+            "daily_limit_usd": app.daily_limit_usd,
+            "monthly_cost": usage_by_id.get(app.id, {}).get("cost", 0.0),
+            "monthly_input": usage_by_id.get(app.id, {}).get("input_tokens", 0),
+            "monthly_output": usage_by_id.get(app.id, {}).get("output_tokens", 0),
+            "monthly_reqs": usage_by_id.get(app.id, {}).get("requests", 0),
+        }
+        for app in apps
+    ]
 
 
 def get_model_breakdown(session: Session, user_id: int) -> list[dict]:
