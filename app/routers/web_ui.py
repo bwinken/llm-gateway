@@ -137,9 +137,10 @@ async def refresh_owned_app_key(
     session: Session = Depends(get_session),
 ):
     """Refresh API key for an app account owned by the current user."""
-    user_id = request.session.get("user_id")
-    if not user_id:
+    result = get_session_user(request, session)
+    if result is None:
         raise HTTPException(status_code=401)
+    user_id = result[0].id
 
     target = session.exec(select(User).where(User.id == app_id)).first()
     if not target:

@@ -158,10 +158,6 @@ def _build_test_app() -> FastAPI:
 
     test_app = FastAPI(lifespan=_noop_lifespan)
 
-    # Add minimal middleware
-    from starlette.middleware.sessions import SessionMiddleware
-    test_app.add_middleware(SessionMiddleware, secret_key="test-secret")
-
     test_app.include_router(web_ui.router)
     test_app.include_router(auth_api.router)
     test_app.include_router(llm_api.router)
