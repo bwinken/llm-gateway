@@ -25,7 +25,7 @@ Client App ──▶ LLM Gateway (:8050) ──▶ vLLM Instance A  [LLM]
 - **Tiered pricing** — Per-type input/output token pricing with automatic cost calculation
 - **Usage tracking** — Per-user token and cost logging to PostgreSQL
 - **OAuth2 SSO** — [AuthCenter](https://github.com/bwinken/authcenter) integration with RS256 JWT, auto-provisioning users
-- **Dual auth** — API key (Bearer token) for SDK/API, OAuth2 session for web UI
+- **Dual auth** — API key (Bearer token) for SDK/API, OAuth2 JWT cookie for web UI
 - **Web dashboard** — Usage stats, Chart.js trend charts, grouped server health status
 - **Admin panel** — User management, leaderboards, daily limit control, model config UI (routing/pricing/fallback)
 - **Background health checks** — Periodic pings to all downstream servers
@@ -69,10 +69,9 @@ base_url = "http://192.168.1.100:8000/v1"
 api_key = "token-abc123"
 ```
 
-Edit `.env` — set secrets and database URL:
+Edit `.env` — set database URL and AuthCenter credentials:
 
 ```env
-SECRET_KEY=your-random-secret-key
 DATABASE_URL=postgresql://llm_gateway:your_password@localhost:5432/llm_gateway
 ```
 
@@ -136,7 +135,6 @@ vlm = "backup-vlm"
 | Variable | Description | Default |
 |---|---|---|
 | `APP_TITLE` | Service name shown in UI, browser tab, and logs | `LLM Gateway` |
-| `SECRET_KEY` | Session cookie encryption | `change-me` |
 | `DATABASE_URL` | PostgreSQL connection string | `postgresql://llm_gateway:password@localhost:5432/llm_gateway` |
 | `AUTH_CENTER_BASE_URL` | AuthCenter server URL | `http://localhost:8000` |
 | `AUTH_CENTER_APP_ID` | OAuth2 application ID | `llm_gateway` |
