@@ -29,40 +29,39 @@ Browser → Nginx (:80)
 ```bash
 git clone https://github.com/bwinken/llm-gateway.git
 cd llm-gateway
-
-# 1. 設定 Docker 基礎服務
-cp deploy/.env.example deploy/.env
-nano deploy/.env    # 填入 OIDC_ISSUER_URL、CLIENT_SECRET、PG_PASSWORD 等
-
-# 2. 設定應用
-cp .env.example .env && nano .env
-cp config.toml.example config.toml && nano config.toml
-
-# 3. 放置 AuthCenter 公鑰
-mkdir -p keys && cp /path/to/public.pem keys/public.pem
-
-# 4. 如需 Proxy
-export http_proxy=http://proxy.company.com:8080
-
-# 5. 執行部署
 bash deploy/setup.sh
 ```
 
-腳本會自動：
-1. rsync 程式碼到 `~/opt/llm-gateway`
-2. `docker compose up` 啟動 PostgreSQL + oauth2-proxy
-3. `uv sync` 安裝依賴
-4. 自動建立 `.env` 並填入 DATABASE_URL
-5. `alembic upgrade head` 執行資料庫遷移
-6. 設定 user-level systemd service + lingering
-7. 設定 nginx reverse proxy + auth_request
+腳本會互動式引導完成所有設定：
+
+1. **Pre-flight 檢查** — 確認 uv、docker、rsync、openssl 等工具已安裝
+2. **PostgreSQL 設定** — 提示輸入密碼（或自動產生）
+3. **OIDC / oauth2-proxy 設定** — 提示輸入 issuer URL、client ID/secret、domain
+4. **AuthCenter 公鑰** — 可選擇貼上 PEM 內容或指定檔案路徑
+5. **rsync 程式碼** 到 `~/opt/llm-gateway`
+6. **docker compose up** 啟動 PostgreSQL + oauth2-proxy
+7. **uv sync** 安裝 Python 依賴
+8. **自動建立 `.env`** 並填入 DATABASE_URL
+9. **alembic upgrade head** 執行資料庫遷移
+10. **設定 user-level systemd** service + lingering
+11. **設定 nginx** reverse proxy + auth_request
+12. **部署狀態摘要** — 顯示各服務健康狀態與待辦事項
+
+> 重複執行時，腳本會偵測已存在的設定檔並詢問是否覆蓋，不會強制重設。
+
+如需設定 proxy：
+
+```bash
+export http_proxy=http://proxy.company.com:8080
+bash deploy/setup.sh
+```
 
 ## 更新程式碼
 
 ```bash
 cd /path/to/llm-gateway   # 原始 clone 目錄
 git pull
-bash deploy/setup.sh      # rsync + 更新依賴 + 重啟（Docker 服務不受影響）
+bash deploy/setup.sh      # 偵測已有設定，只更新程式碼 + 依賴 + 重啟
 ```
 
 快速更新（沒有新依賴時）：
@@ -133,6 +132,8 @@ sudo certbot --nginx -d your-domain.com
 ```
 
 ## Proxy 設定
+
+部署腳本會提示是否需要設定 proxy。如需手動設定：
 
 ```bash
 export http_proxy=http://proxy.company.com:8080
