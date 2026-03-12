@@ -82,6 +82,8 @@ async def admin_page(
             "is_admin": u.is_admin,
             "owner_id": u.owner_id,
             "owner_name": owner_lookup.get(u.owner_id, ""),
+            "display_name": u.display_name,
+            "org_code": u.org_code,
             "total_cost": usage["total_cost"],
             "total_tokens": usage["total_tokens"],
             "monthly_cost": monthly["cost"],
@@ -115,8 +117,8 @@ async def admin_page(
             "app_title": APP_TITLE,
             "title": "Admin Panel",
             "user": admin_user,
-            "display_name": payload.get("display_name", admin_user.username),
-            "org_code": payload.get("org_code", ""),
+            "display_name": admin_user.display_name or admin_user.username,
+            "org_code": admin_user.org_code,
             "users": users,
             "app_leaderboard": app_leaderboard,
             "user_leaderboard": user_leaderboard,
@@ -251,6 +253,8 @@ async def list_users_api(
             "daily_limit_usd": u.daily_limit_usd,
             "is_admin": u.is_admin,
             "owner_id": u.owner_id,
+            "display_name": u.display_name,
+            "org_code": u.org_code,
         }
         for u in users
     ]
@@ -345,8 +349,8 @@ async def admin_models_page(
             "app_title": APP_TITLE,
             "title": "Model Configuration",
             "user": admin_user,
-            "display_name": payload.get("display_name", admin_user.username),
-            "org_code": payload.get("org_code", ""),
+            "display_name": admin_user.display_name or admin_user.username,
+            "org_code": admin_user.org_code,
             "current_year": datetime.now(timezone.utc).year,
         },
     )

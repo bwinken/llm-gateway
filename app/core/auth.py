@@ -72,14 +72,30 @@ def get_web_user(request: Request, session: Session) -> tuple[User, list[str], d
     username: str = payload.get("sub", "")
     scopes: list[str] = payload.get("scopes", [])
 
+    display_name: str = payload.get("display_name", "")
+    org_code: str = payload.get("org_code", "")
+
     # Auto-provision user on first visit
     user = session.exec(select(User).where(User.username == username)).first()
     if user is None:
-        user = User(username=username)
+        user = User(username=username, display_name=display_name, org_code=org_code)
         session.add(user)
         session.commit()
         session.refresh(user)
         logger.info("Auto-provisioned user '{}' via JWT", username)
+    else:
+        # Update display_name / org_code if changed in IdP
+        changed = False
+        if display_name and user.display_name != display_name:
+            user.display_name = display_name
+            changed = True
+        if org_code and user.org_code != org_code:
+            user.org_code = org_code
+            changed = True
+        if changed:
+            session.add(user)
+            session.commit()
+            session.refresh(user)
 
     session.expunge(user)
     user.is_admin = "admin" in scopes

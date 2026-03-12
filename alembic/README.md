@@ -50,7 +50,8 @@ alembic/
 ├── script.py.mako     # migration 檔案模板
 └── versions/          # migration scripts（按時間順序）
     ├── ae7ecabcf79d_initial_schema_users_and_usage_logs.py
-    └── a3c2d266f101_change_cost_usd_from_float_to_numeric_.py
+    ├── a3c2d266f101_change_cost_usd_from_float_to_numeric_.py
+    └── b4e1f8a23d01_add_display_name_and_org_code_to_users.py
 ```
 
 ## Migration 歷史
@@ -59,6 +60,7 @@ alembic/
 |---|---|---|
 | `ae7ecabcf79d` | 初始 schema：建立 `users` 和 `usage_logs` 表 | 2026-03-11 |
 | `a3c2d266f101` | `cost_usd` 從 `FLOAT` 改為 `NUMERIC(12,6)` 提升精度 | 2026-03-11 |
+| `b4e1f8a23d01` | 新增 `display_name` 和 `org_code` 欄位至 `users` 表 | 2026-03-13 |
 
 ## 資料庫 Schema
 
@@ -72,6 +74,8 @@ erDiagram
         float daily_limit_usd "每日用量上限 (USD)"
         boolean is_admin "管理員標記"
         int owner_id FK "擁有者 (app 帳號用)"
+        varchar display_name "顯示名稱 (IdP 同步)"
+        varchar org_code "組織代碼 (IdP 同步)"
         datetime created_at "建立時間"
     }
 
@@ -104,6 +108,8 @@ erDiagram
 | `daily_limit_usd` | `FLOAT` | 每日用量上限，預設 10.0 USD |
 | `is_admin` | `BOOLEAN` | 資料庫中的管理員標記（Web UI admin 由 JWT scope 決定） |
 | `owner_id` | `INTEGER` FK → `users.id` | App 帳號的擁有者，NULL 表示一般使用者帳號 |
+| `display_name` | `VARCHAR` | 顯示名稱，來自 IdP JWT，每次登入自動同步 |
+| `org_code` | `VARCHAR` | 組織代碼，來自 IdP JWT，每次登入自動同步 |
 | `created_at` | `DATETIME` | 建立時間 (UTC) |
 
 **usage_logs** — API 使用記錄

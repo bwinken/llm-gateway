@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{# ── Hero ── #}
+<div class="text-center mt-8 mb-14 gw-anim">
+    <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium mb-6"
+         style="background:rgba(99,152,255,0.08);border:1px solid rgba(99,152,255,0.15);color:#6398ff;">
+        <span class="inline-block w-1.5 h-1.5 rounded-full bg-ag"></span>
+        OpenAI-Compatible API Gateway
+    </div>
+    <h1 class="text-4xl sm:text-5xl font-extrabold text-t1 tracking-tight leading-tight">
+        Welcome to <span style="background:linear-gradient(135deg,#6398ff,#4dd9e8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">{{ app_title | default("LLM Gateway") }}</span>
+    </h1>
+    <p class="mt-4 text-lg text-t3 max-w-2xl mx-auto leading-relaxed">
+        Use your existing OpenAI SDK to access LLM, VLM, Embedding, and Reranker models through a single unified endpoint.
+    </p>
+    <div class="mt-8 flex items-center justify-center gap-4">
+        <a href="/dashboard" class="gw-btn gw-btn-primary px-6 py-3 text-sm">
+            Go to Dashboard &rarr;
+        </a>
+    </div>
+</div>
+
+{# ── Quick Start Steps ── #}
+<div class="max-w-4xl mx-auto mb-14 gw-anim gw-d1">
+    <h2 class="text-sm font-bold text-t3 uppercase tracking-wider mb-6 text-center">Quick Start — 3 Steps</h2>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+
+        {# Step 1 #}
+        <div class="gw-card p-6 text-center">
+            <div class="mx-auto w-10 h-10 rounded-xl flex items-center justify-center text-lg font-extrabold mb-4"
+                 style="background:linear-gradient(135deg,rgba(99,152,255,0.15),rgba(77,217,232,0.1));color:#6398ff;">1</div>
+            <h3 class="text-sm font-bold text-t1 mb-2">Get Your API Key</h3>
+            <p class="text-xs text-t3 leading-relaxed">
+                Go to the <a href="/dashboard" class="text-ab hover:underline">Dashboard</a> and click
+                <span class="font-semibold text-t2">"My API Key"</span> to view or copy your key.
+            </p>
+        </div>
+
+        {# Step 2 #}
+        <div class="gw-card p-6 text-center">
+            <div class="mx-auto w-10 h-10 rounded-xl flex items-center justify-center text-lg font-extrabold mb-4"
+                 style="background:linear-gradient(135deg,rgba(61,214,140,0.15),rgba(77,217,232,0.1));color:#3dd68c;">2</div>
+            <h3 class="text-sm font-bold text-t1 mb-2">Point Your SDK</h3>
+            <p class="text-xs text-t3 leading-relaxed">
+                Set <code class="text-t2 bg-n3 px-1 rounded text-[11px]">base_url</code> to this gateway's address and use your API key as
+                <code class="text-t2 bg-n3 px-1 rounded text-[11px]">api_key</code>.
+            </p>
+        </div>
+
+        {# Step 3 #}
+        <div class="gw-card p-6 text-center">
+            <div class="mx-auto w-10 h-10 rounded-xl flex items-center justify-center text-lg font-extrabold mb-4"
+                 style="background:linear-gradient(135deg,rgba(167,139,250,0.15),rgba(99,152,255,0.1));color:#a78bfa;">3</div>
+            <h3 class="text-sm font-bold text-t1 mb-2">Make Requests</h3>
+            <p class="text-xs text-t3 leading-relaxed">
+                Use any OpenAI-compatible client. The gateway handles routing, fallback, and usage tracking automatically.
+            </p>
+        </div>
+    </div>
+</div>
+
+{# ── Code Example ── #}
+<div class="max-w-4xl mx-auto mb-14 gw-anim gw-d2">
+    <h2 class="text-sm font-bold text-t3 uppercase tracking-wider mb-6 text-center">Example</h2>
+    <div class="gw-card overflow-hidden">
+        <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <div class="flex items-center gap-3">
+                <span class="text-xs font-bold text-t2">Python — Chat Completions</span>
+            </div>
+            <span class="text-[11px] font-mono text-ab bg-[rgba(99,152,255,0.08)] px-2 py-0.5 rounded border border-[rgba(99,152,255,0.15)]">POST /v1/chat/completions</span>
+        </div>
+        <div class="p-5">
+            <pre class="gw-code p-4 text-sm font-mono overflow-x-auto leading-relaxed"><span class="text-av">from</span> <span class="text-t1">openai</span> <span class="text-av">import</span> <span class="text-t1">OpenAI</span>
+
+client = OpenAI(
+    base_url=<span class="text-ag">"http://{{ request.url.hostname }}:{{ request.url.port }}/v1"</span>,
+    api_key=<span class="text-ag">"{{ user.api_key }}"</span>
+)
+
+resp = client.chat.completions.create(
+    model=<span class="text-ag">"{{ first_model }}"</span>,
+    messages=[{<span class="text-ag">"role"</span>: <span class="text-ag">"user"</span>, <span class="text-ag">"content"</span>: <span class="text-ag">"Hello!"</span>}]
+)
+<span class="text-t4">print</span>(resp.choices[<span class="text-aa">0</span>].message.content)</pre>
+        </div>
+    </div>
+</div>
+
+{# ── Available Endpoints ── #}
+<div class="max-w-4xl mx-auto mb-14 gw-anim gw-d3">
+    <h2 class="text-sm font-bold text-t3 uppercase tracking-wider mb-6 text-center">Available Endpoints</h2>
+    <div class="gw-card overflow-hidden">
+        <table class="gw-table">
+            <thead><tr>
+                <th>Method</th><th>Path</th><th>Description</th><th>Model Types</th>
+            </tr></thead>
+            <tbody>
+                <tr>
+                    <td><span class="text-xs font-mono font-bold text-ag">POST</span></td>
+                    <td class="font-mono text-sm text-t1">/v1/chat/completions</td>
+                    <td class="text-sm text-t3">Chat conversation generation</td>
+                    <td>
+                        <span class="gw-badge">llm</span>
+                        <span class="gw-badge" style="background:rgba(167,139,250,0.1);color:#a78bfa;border-color:rgba(167,139,250,0.15)">vlm</span>
+                    </td>
+                </tr>
+                <tr>
+                    <td><span class="text-xs font-mono font-bold text-ag">POST</span></td>
+                    <td class="font-mono text-sm text-t1">/v1/responses</td>
+                    <td class="text-sm text-t3">Responses API (pass-through)</td>
+                    <td>
+                        <span class="gw-badge">llm</span>
+                        <span class="gw-badge" style="background:rgba(167,139,250,0.1);color:#a78bfa;border-color:rgba(167,139,250,0.15)">vlm</span>
+                    </td>
+                </tr>
+                <tr>
+                    <td><span class="text-xs font-mono font-bold text-ag">POST</span></td>
+                    <td class="font-mono text-sm text-t1">/v1/embeddings</td>
+                    <td class="text-sm text-t3">Text vector embeddings</td>
+                    <td><span class="gw-badge" style="background:rgba(77,217,232,0.1);color:#4dd9e8;border-color:rgba(77,217,232,0.15)">embedding</span></td>
+                </tr>
+                <tr>
+                    <td><span class="text-xs font-mono font-bold text-ag">POST</span></td>
+                    <td class="font-mono text-sm text-t1">/v1/rerank</td>
+                    <td class="text-sm text-t3">Document re-ranking</td>
+                    <td><span class="gw-badge" style="background:rgba(245,166,35,0.1);color:#f5a623;border-color:rgba(245,166,35,0.15)">reranker</span></td>
+                </tr>
+                <tr>
+                    <td><span class="text-xs font-mono font-bold text-ag">POST</span></td>
+                    <td class="font-mono text-sm text-t1">/v1/score</td>
+                    <td class="text-sm text-t3">Relevance scoring</td>
+                    <td><span class="gw-badge" style="background:rgba(245,166,35,0.1);color:#f5a623;border-color:rgba(245,166,35,0.15)">reranker</span></td>
+                </tr>
+                <tr>
+                    <td><span class="text-xs font-mono font-bold text-ab">GET</span></td>
+                    <td class="font-mono text-sm text-t1">/v1/models</td>
+                    <td class="text-sm text-t3">List all available models</td>
+                    <td><span class="text-xs text-t4">all</span></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{# ── Available Models ── #}
+{% if models_by_type %}
+<div class="max-w-4xl mx-auto mb-14 gw-anim gw-d4">
+    <h2 class="text-sm font-bold text-t3 uppercase tracking-wider mb-6 text-center">Available Models</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {% set type_colors = {
+            'llm': ('#6398ff', 'rgba(99,152,255,0.08)', 'rgba(99,152,255,0.15)'),
+            'vlm': ('#a78bfa', 'rgba(167,139,250,0.08)', 'rgba(167,139,250,0.15)'),
+            'embedding': ('#4dd9e8', 'rgba(77,217,232,0.08)', 'rgba(77,217,232,0.15)'),
+            'vision_embedding': ('#4dd9e8', 'rgba(77,217,232,0.08)', 'rgba(77,217,232,0.15)'),
+            'reranker': ('#f5a623', 'rgba(245,166,35,0.08)', 'rgba(245,166,35,0.15)'),
+            'vision_reranker': ('#f5a623', 'rgba(245,166,35,0.08)', 'rgba(245,166,35,0.15)')
+        } %}
+        {% for type_key, models in models_by_type.items() %}
+        <div class="gw-card p-5">
+            {% set tc = type_colors.get(type_key, ('#868da0', 'rgba(255,255,255,0.04)', 'rgba(255,255,255,0.06)')) %}
+            <div class="flex items-center gap-2 mb-3">
+                <span class="text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded"
+                      style="color:{{ tc[0] }};background:{{ tc[1] }};border:1px solid {{ tc[2] }}">{{ type_key }}</span>
+                <span class="text-[11px] text-t4">{{ models|length }} model{{ 's' if models|length > 1 else '' }}</span>
+            </div>
+            <div class="flex flex-col gap-1.5">
+                {% for m in models %}
+                <div class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-n1 border border-[rgba(255,255,255,0.03)]">
+                    <code class="text-xs font-mono text-t1">{{ m }}</code>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+{# ── Key Info Cards ── #}
+<div class="max-w-4xl mx-auto mb-14 gw-anim gw-d5">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+        <div class="gw-card p-5">
+            <div class="text-ab mb-3">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+            </div>
+            <h3 class="text-sm font-bold text-t1 mb-1">Health-Aware Routing</h3>
+            <p class="text-xs text-t3 leading-relaxed">Automatic failover when a downstream server is unreachable. Fallback model configurable per type.</p>
+        </div>
+        <div class="gw-card p-5">
+            <div class="text-ag mb-3">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+            </div>
+            <h3 class="text-sm font-bold text-t1 mb-1">Usage Tracking</h3>
+            <p class="text-xs text-t3 leading-relaxed">Per-request token counting and cost estimation. Daily spending limits enforced automatically.</p>
+        </div>
+        <div class="gw-card p-5">
+            <div class="text-av mb-3">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+            </div>
+            <h3 class="text-sm font-bold text-t1 mb-1">Drop-In Compatible</h3>
+            <p class="text-xs text-t3 leading-relaxed">Works with any OpenAI SDK client. Just change the base_url — no code rewrite needed.</p>
+        </div>
+    </div>
+</div>
+
+{% endblock %}

@@ -25,6 +25,8 @@ class User(SQLModel, table=True):
     daily_limit_usd: float = Field(default=10.0)
     is_admin: bool = Field(default=False)
     owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
+    display_name: str = Field(default="")
+    org_code: str = Field(default="")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

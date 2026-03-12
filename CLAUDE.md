@@ -52,7 +52,7 @@ Client (Bearer API key) → FastAPI → deps.py (auth + daily limit check)
 - **Web UI** (`/`, `/dashboard`, `/admin`): oauth2-proxy handles login via AuthCenter OIDC → nginx `auth_request` validates session → injects `Authorization: Bearer <JWT>` header → `auth.py:get_web_user()` decodes JWT, returns `(User, scopes, payload)`
 - JWT validation: RS256, `audience=AUTH_CENTER_APP_ID`, `issuer="auth-center"`, `leeway=5` for clock skew tolerance
 - Admin access for web UI is determined by `"admin" in scopes` (from AuthCenter JWT), NOT by `user.is_admin` in DB
-- JWT payload fields `display_name` and `org_code` are extracted and displayed in the navbar
+- JWT payload fields `display_name` and `org_code` are persisted to the User model on each login (auto-synced from IdP) and displayed in navbar + admin tables
 
 ### Proxy Layer (`app/services/proxy.py`)
 
@@ -94,5 +94,6 @@ When adding new tests, always use the existing `client` fixture and `auth_header
 ## Database
 
 - Production: PostgreSQL (`psycopg2-binary`)
-- Tables: `users` (with auto-generated `api_key`), `usage_logs` (with composite index on `user_id + created_at`)
+- Tables: `users` (with auto-generated `api_key`, `display_name`, `org_code`), `usage_logs` (with composite index on `user_id + created_at`)
 - `password_hash` field exists on User model with `default=""` for backward compatibility but is unused
+- `display_name` and `org_code` are synced from IdP JWT on each web login

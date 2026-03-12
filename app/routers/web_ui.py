@@ -37,9 +37,41 @@ def _common_ctx(request: Request, **extra) -> dict:
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    """Root redirects to dashboard; oauth2-proxy handles login if unauthenticated."""
-    return RedirectResponse(url="/dashboard", status_code=303)
+async def index(
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Getting-started welcome page with API guide and available models."""
+    user, scopes, payload = get_web_user(request, session)
+    if "read" not in scopes and "admin" not in scopes:
+        raise HTTPException(status_code=403, detail="Insufficient scope: 'read' required.")
+
+    display_name = user.display_name or user.username
+    org_code = user.org_code
+
+    # Group models by type for display
+    models_by_type: dict[str, list[str]] = {}
+    first_model = ""
+    for alias, route in dict(MODEL_ROUTING).items():
+        model_type = route["type"]
+        if model_type not in models_by_type:
+            models_by_type[model_type] = []
+        models_by_type[model_type].append(alias)
+        if not first_model and model_type in ("llm", "vlm"):
+            first_model = alias
+
+    return templates.TemplateResponse(
+        "welcome.html",
+        _common_ctx(
+            request,
+            title="Welcome",
+            user=user,
+            display_name=display_name,
+            org_code=org_code,
+            models_by_type=models_by_type,
+            first_model=first_model or "your-model",
+        ),
+    )
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -51,8 +83,8 @@ async def dashboard(
     if "read" not in scopes and "admin" not in scopes:
         raise HTTPException(status_code=403, detail="Insufficient scope: 'read' required.")
 
-    display_name = payload.get("display_name", user.username)
-    org_code = payload.get("org_code", "")
+    display_name = user.display_name or user.username
+    org_code = user.org_code
 
     summary = get_user_monthly_summary(session, user.id)
     trend_data = get_daily_trends(session, user.id)
