@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: llm-gateway-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: ${PG_DB}
+    ports:
+      - "127.0.0.1:${PG_PORT:-5432}:5432"
+    volumes:
+      - ${PGDATA_DIR}:/var/lib/postgresql/data
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:latest
+    container_name: llm-gateway-oauth2-proxy
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    command:
+      - --http-address=0.0.0.0:4180
+      - --provider=oidc
+      - --provider-display-name=AuthCenter
+      - --oidc-issuer-url=${OIDC_ISSUER_URL}
+      - --client-id=${OAUTH2_CLIENT_ID}
+      - --client-secret=${OAUTH2_CLIENT_SECRET}
+      - --redirect-url=${OAUTH2_REDIRECT_URL}
+      - --cookie-name=${OAUTH2_COOKIE_NAME:-_llm_gw_oauth2}
+      - --cookie-secret=${OAUTH2_COOKIE_SECRET}
+      - --cookie-secure=false
+      - --email-domain=*
+      - --upstream=static://202
+      - --pass-access-token=true
+      - --set-xauthrequest=true
+      - --skip-provider-button=true
+    ports:
+      - "127.0.0.1:4180:4180"

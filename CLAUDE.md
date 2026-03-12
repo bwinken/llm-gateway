@@ -49,7 +49,7 @@ Client (Bearer API key) → FastAPI → deps.py (auth + daily limit check)
 ### Dual Auth System
 
 - **API endpoints** (`/v1/*`): API key in `Authorization: Bearer <key>` header → `deps.py:get_current_user()` looks up User by `api_key` in DB
-- **Web UI** (`/`, `/dashboard`, `/admin`): OAuth2 SSO via AuthCenter → JWT stored in `access_token` httponly cookie → `auth_api.py:get_session_user()` decodes JWT each request, returns `(User, scopes, payload)`
+- **Web UI** (`/`, `/dashboard`, `/admin`): oauth2-proxy handles login via AuthCenter OIDC → nginx `auth_request` validates session → injects `Authorization: Bearer <JWT>` header → `auth.py:get_web_user()` decodes JWT, returns `(User, scopes, payload)`
 - JWT validation: RS256, `audience=AUTH_CENTER_APP_ID`, `issuer="auth-center"`, `leeway=5` for clock skew tolerance
 - Admin access for web UI is determined by `"admin" in scopes` (from AuthCenter JWT), NOT by `user.is_admin` in DB
 - JWT payload fields `display_name` and `org_code` are extracted and displayed in the navbar
@@ -69,7 +69,8 @@ Three forwarding methods, all sharing `_resolve_model()` for health-aware routin
 ### Configuration
 
 - **`config.toml`**: Model routing (alias → base_url + real_model + api_key + type) and per-type pricing. Parsed at import time by `app/core/config.py` into `MODEL_ROUTING` and `PRICING_MAP` dicts. Downstream API keys are stored directly here as `api_key`.
-- **`.env`**: Secrets, DATABASE_URL, AuthCenter OAuth2 settings.
+- **`.env`**: DATABASE_URL, AUTH_CENTER_APP_ID/PUBLIC_KEY_PATH.
+- **`deploy/.env`**: Docker Compose settings: PG credentials, OIDC issuer, oauth2-proxy client.
 
 ### Key Patterns
 
@@ -88,7 +89,7 @@ Tests use in-memory SQLite with `StaticPool` (all connections share one DB). Key
 - `FakeStreamResponse` simulates SSE streaming for stream tests
 - Mock httpx client accessible via `client.__httpx_mock__`
 
-When adding new tests, always use the existing `client` fixture and `auth_header()` helper. Set mock responses on `client.__httpx_mock__.post` (non-stream) or `client.__httpx_mock__.send` (stream).
+When adding new tests, always use the existing `client` fixture and `auth_header()` helper (for API key auth) or `web_auth_header()` helper (for JWT web auth). Set mock responses on `client.__httpx_mock__.post` (non-stream) or `client.__httpx_mock__.send` (stream).
 
 ## Database
 

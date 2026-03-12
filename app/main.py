@@ -18,7 +18,7 @@ from app.core.config import APP_TITLE
 from app.core.database import init_db
 from app.core.logger import logger
 from app.core.server_state import close_client, init_client
-from app.routers import admin, auth_api, llm_api, web_ui
+from app.routers import admin, llm_api, web_ui
 from app.services.health import health_check_loop
 
 
@@ -63,6 +63,5 @@ app.add_middleware(
 
 # --- Routers ---
 app.include_router(web_ui.router)
-app.include_router(auth_api.router)
 app.include_router(llm_api.router)
 app.include_router(admin.router)

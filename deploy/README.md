@@ -4,63 +4,70 @@
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) 套件管理工具
-- Docker（用於 PostgreSQL）
-- Nginx（透過 `systemctl` 管理）
+- Docker（PostgreSQL + oauth2-proxy）
+- Nginx
 - AuthCenter RS256 public key（`keys/public.pem`）
+
+## 架構
+
+```
+Browser → Nginx (:80)
+            ├─ /oauth2/*  → oauth2-proxy (:4180)  ← 處理登入/登出
+            ├─ /v1/*      → Gateway (:8050)        ← API key 認證
+            └─ /*         → auth_request → oauth2-proxy 驗證
+                          → Gateway (:8050)        ← JWT header 認證
+```
+
+- **Gateway**：user-level systemd service（Python/FastAPI）
+- **PostgreSQL + oauth2-proxy**：Docker Compose（`deploy/docker-compose.yml`）
+- **Nginx**：system service，反向代理 + auth_request
 
 ---
 
-## 部署方式：systemd user service + PostgreSQL Docker + Nginx
-
-使用 user-level systemd 執行 Gateway，Docker 執行 PostgreSQL。不需要 root（nginx 和 linger 除外）。
-
-### 首次部署
+## 首次部署
 
 ```bash
 git clone https://github.com/bwinken/llm-gateway.git
 cd llm-gateway
 
-# 建立並編輯設定檔
+# 1. 設定 Docker 基礎服務
+cp deploy/.env.example deploy/.env
+nano deploy/.env    # 填入 OIDC_ISSUER_URL、CLIENT_SECRET、PG_PASSWORD 等
+
+# 2. 設定應用
 cp .env.example .env && nano .env
 cp config.toml.example config.toml && nano config.toml
 
-# 放置 AuthCenter 公鑰
+# 3. 放置 AuthCenter 公鑰
 mkdir -p keys && cp /path/to/public.pem keys/public.pem
 
-# 如需 Proxy，先設定環境變數
+# 4. 如需 Proxy
 export http_proxy=http://proxy.company.com:8080
 
-# 如需自訂 PostgreSQL 密碼
-export PG_PASSWORD=my_secure_password
-
-# 執行部署
+# 5. 執行部署
 bash deploy/setup.sh
 ```
 
 腳本會自動：
-1. 用 Docker 啟動 PostgreSQL 16（資料存於 `~/opt/pgdata`，僅綁定 127.0.0.1）
-2. rsync 程式碼到 `~/opt/llm-gateway`（排除 `.env`、`config.toml`、`keys/`）
+1. rsync 程式碼到 `~/opt/llm-gateway`
+2. `docker compose up` 啟動 PostgreSQL + oauth2-proxy
 3. `uv sync` 安裝依賴
 4. 自動建立 `.env` 並填入 DATABASE_URL
-5. `uv run alembic upgrade head` 執行資料庫遷移
-6. 設定 user-level systemd service
-7. 啟用 lingering（登出後服務持續運行）
-8. 設定 nginx reverse proxy
+5. `alembic upgrade head` 執行資料庫遷移
+6. 設定 user-level systemd service + lingering
+7. 設定 nginx reverse proxy + auth_request
 
-### 更新程式碼
+## 更新程式碼
 
 ```bash
 cd /path/to/llm-gateway   # 原始 clone 目錄
 git pull
-
-# 重新執行部署腳本（會 rsync + 更新依賴 + 重啟服務，PostgreSQL 不受影響）
-bash deploy/setup.sh
+bash deploy/setup.sh      # rsync + 更新依賴 + 重啟（Docker 服務不受影響）
 ```
 
-如果只改了程式碼、沒有新增依賴，也可以手動更新：
+快速更新（沒有新依賴時）：
 
 ```bash
-cd /path/to/llm-gateway
 git pull
 rsync -a --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
     --exclude='config.toml' --exclude='.env' --exclude='keys/' \
@@ -68,49 +75,51 @@ rsync -a --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
 systemctl --user restart llm-gateway
 ```
 
-> `config.toml`、`.env`、`keys/` 不會被覆蓋。
+> `config.toml`、`.env`、`keys/`、`deploy/.env` 不會被覆蓋。
 
-### 服務管理
+## 服務管理
 
 ```bash
-# Gateway
+# Gateway（systemd）
 systemctl --user status llm-gateway     # 查看狀態
 systemctl --user restart llm-gateway    # 重啟
-systemctl --user stop llm-gateway       # 停止
 journalctl --user -u llm-gateway -f     # 查看日誌
 
-# PostgreSQL
-docker logs -f llm-gateway-pg           # 查看日誌
-docker restart llm-gateway-pg           # 重啟
-docker stop llm-gateway-pg              # 停止
+# PostgreSQL + oauth2-proxy（Docker Compose）
+docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml logs -f
+docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml restart
+docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 ```
 
-### 目錄結構
+## 目錄結構
 
 ```
-~/opt/
-├── llm-gateway/          # 應用程式
-│   ├── app/
-│   ├── .venv/            # uv 管理的虛擬環境
-│   ├── pyproject.toml
-│   ├── uv.lock
-│   ├── config.toml
-│   ├── .env
-│   └── keys/public.pem
-└── pgdata/               # PostgreSQL 資料
+~/opt/llm-gateway/
+├── app/                      # 應用程式碼
+├── .venv/                    # uv 管理的虛擬環境
+├── config.toml               # 模型路由設定
+├── .env                      # 應用環境變數
+├── keys/public.pem           # AuthCenter 公鑰
+└── deploy/
+    ├── docker-compose.yml    # PG + oauth2-proxy
+    ├── .env                  # Docker 服務環境變數
+    ├── pgdata/               # PostgreSQL 資料
+    ├── setup.sh              # 部署腳本
+    ├── llm-gateway.service   # systemd unit
+    └── llm-gateway.nginx.conf
 ```
 
-### 相關檔案
+## 設定檔說明
 
-- [setup.sh](setup.sh) — 部署腳本
-- [llm-gateway.service](llm-gateway.service) — systemd unit file
-- [llm-gateway.nginx.conf](llm-gateway.nginx.conf) — nginx 設定
-
----
+| 檔案 | 用途 |
+|---|---|
+| `deploy/.env` | Docker 服務設定：PG 密碼、OIDC issuer、oauth2-proxy client 等 |
+| `.env` | Gateway 應用設定：DATABASE_URL、AUTH_CENTER_APP_ID |
+| `config.toml` | 模型路由、定價、fallback |
 
 ## Nginx 設定
 
-部署腳本會自動安裝 nginx 設定。如需手動調整：
+部署腳本會自動安裝。手動調整：
 
 ```bash
 sudo nano /etc/nginx/sites-available/llm-gateway
@@ -123,14 +132,10 @@ SSL 憑證（可選）：
 sudo certbot --nginx -d your-domain.com
 ```
 
----
-
 ## Proxy 設定
-
-在 airgapped 環境下，部署前設定 proxy 環境變數：
 
 ```bash
 export http_proxy=http://proxy.company.com:8080
 ```
 
-`setup.sh` 會自動使用。如需 runtime proxy，取消 `llm-gateway.service` 中的 proxy 註解。
+如需 Gateway runtime proxy，取消 `llm-gateway.service` 中的 proxy 註解。

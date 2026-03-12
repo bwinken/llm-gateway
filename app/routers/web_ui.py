@@ -15,10 +15,10 @@ from sqlmodel import Session, select
 
 from app.models.schema import User
 
+from app.core.auth import get_web_user
 from app.core.config import APP_TITLE, MODEL_ROUTING
 from app.core.database import get_session
 from app.core.server_state import is_alive
-from app.routers.auth_api import LOGIN_URL, get_session_user
 from app.services.stats import get_daily_trends, get_owned_apps_summary, get_user_monthly_summary
 
 router = APIRouter()
@@ -37,13 +37,9 @@ def _common_ctx(request: Request, **extra) -> dict:
 
 
 @router.get("/", response_class=HTMLResponse)
-async def login_page(request: Request, session: Session = Depends(get_session)):
-    if get_session_user(request, session) is not None:
-        return RedirectResponse(url="/dashboard", status_code=303)
-    return templates.TemplateResponse(
-        "login.html",
-        _common_ctx(request, title="Sign In", login_url=LOGIN_URL),
-    )
+async def index(request: Request):
+    """Root redirects to dashboard; oauth2-proxy handles login if unauthenticated."""
+    return RedirectResponse(url="/dashboard", status_code=303)
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -51,15 +47,9 @@ async def dashboard(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = get_session_user(request, session)
-    if result is None:
-        return RedirectResponse(url="/", status_code=303)
-
-    user, scopes, payload = result
+    user, scopes, payload = get_web_user(request, session)
     if "read" not in scopes and "admin" not in scopes:
         raise HTTPException(status_code=403, detail="Insufficient scope: 'read' required.")
-    session.expunge(user)
-    user.is_admin = "admin" in scopes
 
     display_name = payload.get("display_name", user.username)
     org_code = payload.get("org_code", "")
@@ -115,19 +105,18 @@ async def refresh_own_key(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = get_session_user(request, session)
-    if result is None:
-        raise HTTPException(status_code=401)
-    user, scopes, _payload = result
+    user, scopes, _payload = get_web_user(request, session)
     if "read" not in scopes and "admin" not in scopes:
         raise HTTPException(status_code=403, detail="Insufficient scope: 'read' required.")
 
+    # Re-fetch from DB for write operation (user was expunged in get_web_user)
+    db_user = session.get(User, user.id)
     from app.models.schema import _generate_api_key
-    user.api_key = _generate_api_key()
-    session.add(user)
+    db_user.api_key = _generate_api_key()
+    session.add(db_user)
     session.commit()
-    session.refresh(user)
-    return JSONResponse({"ok": True, "api_key": user.api_key})
+    session.refresh(db_user)
+    return JSONResponse({"ok": True, "api_key": db_user.api_key})
 
 
 @router.post("/dashboard/app/{app_id}/refresh-key")
@@ -137,16 +126,13 @@ async def refresh_owned_app_key(
     session: Session = Depends(get_session),
 ):
     """Refresh API key for an app account owned by the current user."""
-    result = get_session_user(request, session)
-    if result is None:
-        raise HTTPException(status_code=401)
-    user_id = result[0].id
+    user, _scopes, _payload = get_web_user(request, session)
 
     target = session.exec(select(User).where(User.id == app_id)).first()
     if not target:
         raise HTTPException(status_code=404, detail="App account not found.")
 
-    if target.owner_id != user_id:
+    if target.owner_id != user.id:
         raise HTTPException(status_code=403, detail="You do not own this app account.")
 
     target.api_key = f"sk-{uuid.uuid4().hex}"

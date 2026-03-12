@@ -14,11 +14,11 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete
 from sqlmodel import Session, select
 
+from app.core.auth import get_web_user
 from app.core.config import APP_TITLE, get_config_data, save_config
 from app.core.database import get_session
 from app.core.deps import get_current_user
 from app.models.schema import User, UsageLog
-from app.routers.auth_api import get_session_user
 from app.services.stats import get_all_users_usage, get_monthly_all_users_usage
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -26,21 +26,16 @@ _templates_dir = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
 
 
-def _require_admin_session(
+def _require_admin(
     request: Request, session: Session
 ) -> tuple[User, dict]:
-    """Check session-based admin auth for web pages (decodes JWT each request).
+    """Check JWT-based admin auth for web pages.
 
     Returns (user, jwt_payload).
     """
-    result = get_session_user(request, session)
-    if result is None:
-        raise HTTPException(status_code=303, headers={"Location": "/"})
-    user, scopes, payload = result
+    user, scopes, payload = get_web_user(request, session)
     if "admin" not in scopes:
         raise HTTPException(status_code=403, detail="Admin access required.")
-    session.expunge(user)
-    user.is_admin = True
     return user, payload
 
 
@@ -51,7 +46,7 @@ async def admin_page(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    admin_user, payload = _require_admin_session(request, session)
+    admin_user, payload = _require_admin(request, session)
 
     all_users = session.exec(select(User).order_by(User.id)).all()
     usage_map = get_all_users_usage(session)
@@ -142,7 +137,7 @@ async def create_app_account_web(
     session: Session = Depends(get_session),
 ):
     """Create a new app account (web UI form)."""
-    _require_admin_session(request, session)
+    _require_admin(request, session)
 
     form = await request.form()
     username = (form.get("username") or "").strip()
@@ -177,7 +172,7 @@ async def update_user_limit(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    _require_admin_session(request, session)
+    _require_admin(request, session)
 
     target = session.exec(select(User).where(User.id == user_id)).first()
     if not target:
@@ -199,7 +194,7 @@ async def delete_user(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    admin_user, _payload = _require_admin_session(request, session)
+    admin_user, _payload = _require_admin(request, session)
 
     target = session.exec(select(User).where(User.id == user_id)).first()
     if not target:
@@ -223,7 +218,7 @@ async def refresh_user_key(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    _require_admin_session(request, session)
+    _require_admin(request, session)
 
     target = session.exec(select(User).where(User.id == user_id)).first()
     if not target:
@@ -342,7 +337,7 @@ async def admin_models_page(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    admin_user, payload = _require_admin_session(request, session)
+    admin_user, payload = _require_admin(request, session)
     return templates.TemplateResponse(
         "admin_models.html",
         {
@@ -362,7 +357,7 @@ async def get_config_api(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    _require_admin_session(request, session)
+    _require_admin(request, session)
     return JSONResponse(get_config_data())
 
 
@@ -371,7 +366,7 @@ async def save_config_api(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    _require_admin_session(request, session)
+    _require_admin(request, session)
     body = await request.json()
 
     models = body.get("models")

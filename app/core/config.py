@@ -27,11 +27,8 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config.toml"
 APP_TITLE: str = os.getenv("APP_TITLE", "LLM Gateway")
 DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://llm_gateway:password@localhost:5432/llm_gateway")
 
-# AuthCenter OAuth2 SSO
-AUTH_CENTER_BASE_URL: str = os.getenv("AUTH_CENTER_BASE_URL", "http://localhost:8000")
+# AuthCenter JWT validation (oauth2-proxy handles login flow)
 AUTH_CENTER_APP_ID: str = os.getenv("AUTH_CENTER_APP_ID", "llm_gateway")
-AUTH_CENTER_CLIENT_SECRET: str = os.getenv("AUTH_CENTER_CLIENT_SECRET", "change-me")
-AUTH_CENTER_REDIRECT_URI: str = os.getenv("AUTH_CENTER_REDIRECT_URI", "http://localhost:8050/auth/callback")
 AUTH_CENTER_PUBLIC_KEY_PATH: str = os.getenv("AUTH_CENTER_PUBLIC_KEY_PATH", "./keys/public.pem")
 
 

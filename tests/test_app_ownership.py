@@ -6,7 +6,7 @@ import pytest
 from sqlmodel import Session
 
 from app.models.schema import User
-from tests.conftest import auth_header
+from tests.conftest import auth_header, web_auth_header
 
 
 @pytest.fixture()
@@ -143,23 +143,35 @@ class TestListUsersIncludesOwner:
 class TestRefreshOwnedAppKey:
     """Dashboard: POST /dashboard/app/{id}/refresh-key."""
 
-    def _login_session(self, client, user: User):
-        """Set session cookie for a user by directly manipulating the test session."""
-        # We use the internal session middleware by making a request that sets session
-        # For TestClient, we can use cookies approach
-        from starlette.testclient import TestClient
+    def test_refresh_owned_app_key_success(self, client, db_session, owner_user, owned_app):
+        """Owner can refresh their own app's key."""
+        old_key = owned_app.api_key
+        resp = client.post(
+            f"/dashboard/app/{owned_app.id}/refresh-key",
+            headers=web_auth_header(sub=owner_user.username, scopes=["read"]),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["api_key"] != old_key
 
-        # Set session data via a helper endpoint is complex; instead test via API
-        # We'll patch the session directly
-        pass
+    def test_refresh_non_owner_rejected(self, client, db_session, owner_user, owned_app, test_user):
+        """Non-owner cannot refresh another user's app key."""
+        resp = client.post(
+            f"/dashboard/app/{owned_app.id}/refresh-key",
+            headers=web_auth_header(sub=test_user.username, scopes=["read"]),
+        )
+        assert resp.status_code == 403
 
-    def test_refresh_owned_app_key_unauthenticated(self, client, db_session, owned_app):
-        """Refreshing an owned app key without session returns 401."""
+    def test_refresh_nonexistent_app(self, client, db_session, owner_user):
+        """Refreshing a non-existent app returns 404."""
+        resp = client.post(
+            "/dashboard/app/99999/refresh-key",
+            headers=web_auth_header(sub=owner_user.username, scopes=["read"]),
+        )
+        assert resp.status_code == 404
+
+    def test_refresh_unauthenticated(self, client, db_session, owned_app):
+        """Refreshing without auth returns 401."""
         resp = client.post(f"/dashboard/app/{owned_app.id}/refresh-key")
-        assert resp.status_code == 401
-
-    def test_refresh_nonexistent_app_returns_error(self, client, db_session):
-        """Refreshing a non-existent app should fail."""
-        resp = client.post("/dashboard/app/99999/refresh-key")
-        # Without session, should be 401
         assert resp.status_code == 401

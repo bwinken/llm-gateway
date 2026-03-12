@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 os.environ["DATABASE_URL"] = "sqlite://"
 
 import httpx
+import jwt as pyjwt
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -39,6 +40,59 @@ _test_engine = create_engine(
 def _reset_tables():
     SQLModel.metadata.drop_all(_test_engine)
     SQLModel.metadata.create_all(_test_engine)
+
+
+# ---------------------------------------------------------------------------
+# JWT test helpers — HS256 with a fixed secret for test convenience
+# ---------------------------------------------------------------------------
+
+_TEST_JWT_SECRET = "test-secret-for-jwt-signing"
+
+
+def _make_test_jwt(
+    sub: str = "testuser",
+    scopes: list[str] | None = None,
+    display_name: str | None = None,
+    org_code: str | None = None,
+) -> str:
+    """Create a signed test JWT (HS256)."""
+    payload: dict[str, Any] = {
+        "sub": sub,
+        "scopes": scopes or ["read"],
+        "aud": "llm_gateway",
+        "iss": "auth-center",
+    }
+    if display_name:
+        payload["display_name"] = display_name
+    if org_code:
+        payload["org_code"] = org_code
+    return pyjwt.encode(payload, _TEST_JWT_SECRET, algorithm="HS256")
+
+
+def _test_decode_jwt(token: str) -> dict | None:
+    """Decode a test JWT (HS256) — used to patch ``_decode_jwt`` in tests."""
+    try:
+        return pyjwt.decode(
+            token,
+            _TEST_JWT_SECRET,
+            algorithms=["HS256"],
+            audience="llm_gateway",
+            issuer="auth-center",
+            leeway=5,
+        )
+    except pyjwt.PyJWTError:
+        return None
+
+
+def web_auth_header(
+    sub: str = "testuser",
+    scopes: list[str] | None = None,
+    display_name: str | None = None,
+    org_code: str | None = None,
+) -> dict[str, str]:
+    """Return an Authorization header with a test JWT for web UI endpoints."""
+    token = _make_test_jwt(sub=sub, scopes=scopes, display_name=display_name, org_code=org_code)
+    return {"Authorization": f"Bearer {token}"}
 
 
 # ---------------------------------------------------------------------------
@@ -154,12 +208,11 @@ def _build_test_app() -> FastAPI:
         patch("app.core.config.PRICING_MAP", TEST_PRICING_MAP),
         patch("app.core.config.FALLBACK_MAP", TEST_FALLBACK_MAP),
     ):
-        from app.routers import admin, auth_api, llm_api, web_ui
+        from app.routers import admin, llm_api, web_ui
 
     test_app = FastAPI(lifespan=_noop_lifespan)
 
     test_app.include_router(web_ui.router)
-    test_app.include_router(auth_api.router)
     test_app.include_router(llm_api.router)
     test_app.include_router(admin.router)
 
@@ -184,6 +237,7 @@ def _patch_all():
         patch("app.services.proxy.is_alive", return_value=True),
         patch("app.routers.llm_api.MODEL_ROUTING", TEST_MODEL_ROUTING),
         patch("app.core.server_state.get_client", return_value=_mock_httpx_client),
+        patch("app.core.auth._decode_jwt", _test_decode_jwt),
     ):
         yield
 
