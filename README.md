@@ -25,7 +25,7 @@ Client App ──▶ LLM Gateway (:8050) ──▶ vLLM Instance A  [LLM]
 - **Tiered pricing** — Per-type input/output token pricing with automatic cost calculation
 - **Usage tracking** — Per-user token and cost logging to PostgreSQL
 - **OAuth2 SSO** — [AuthCenter](https://github.com/bwinken/authcenter) integration with RS256 JWT, auto-provisioning users
-- **Dual auth** — API key (Bearer token) for SDK/API, OAuth2 JWT cookie for web UI
+- **Dual auth** — API key (Bearer token) for SDK/API, oauth2-proxy + JWT for web UI
 - **Web dashboard** — Usage stats, Chart.js trend charts, grouped server health status
 - **Admin panel** — User management, leaderboards, daily limit control, model config UI (routing/pricing/fallback)
 - **Background health checks** — Periodic pings to all downstream servers
@@ -78,7 +78,7 @@ DATABASE_URL=postgresql://llm_gateway:your_password@localhost:5432/llm_gateway
 ### 3. Start PostgreSQL
 
 ```bash
-docker compose up -d postgres
+bash scripts/start-pg-dev.sh start
 ```
 
 ### 4. Set up AuthCenter public key
@@ -136,11 +136,10 @@ vlm = "backup-vlm"
 |---|---|---|
 | `APP_TITLE` | Service name shown in UI, browser tab, and logs | `LLM Gateway` |
 | `DATABASE_URL` | PostgreSQL connection string | `postgresql://llm_gateway:password@localhost:5432/llm_gateway` |
-| `AUTH_CENTER_BASE_URL` | AuthCenter server URL | `http://localhost:8000` |
-| `AUTH_CENTER_APP_ID` | OAuth2 application ID | `llm_gateway` |
-| `AUTH_CENTER_CLIENT_SECRET` | OAuth2 client secret | `change-me` |
-| `AUTH_CENTER_REDIRECT_URI` | OAuth2 callback URL | `http://localhost:8050/auth/callback` |
+| `AUTH_CENTER_APP_ID` | JWT audience (AuthCenter app ID) | `llm_gateway` |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | RS256 public key path | `./keys/public.pem` |
+
+> OAuth2 login settings (OIDC issuer, client secret, redirect URL) are configured in `deploy/.env` for oauth2-proxy. See [deploy/README.md](deploy/README.md).
 
 ---
 
@@ -195,7 +194,7 @@ curl http://your-gateway:8050/v1/models \
 
 ### Web Dashboard
 
-Open `http://your-gateway:8050` in browser. Redirects to AuthCenter for SSO login. Admin features require `admin` scope in AuthCenter.
+Open `http://your-gateway` in browser. oauth2-proxy handles SSO login via AuthCenter. Admin features require `admin` scope in AuthCenter.
 
 ---
 
@@ -268,7 +267,6 @@ Tests use in-memory SQLite and mock all downstream calls. No PostgreSQL or vLLM 
 llm-gateway/
 ├── config.toml.example        # Model routing + pricing template
 ├── .env.example                # Environment variables template
-├── docker-compose.yml          # PostgreSQL
 ├── pyproject.toml              # Dependencies and project config (uv)
 ├── uv.lock                     # Locked dependency versions
 ├── alembic.ini                 # Alembic migration config
@@ -280,6 +278,7 @@ llm-gateway/
 ├── app/
 │   ├── main.py                 # FastAPI app, lifespan, middleware
 │   ├── core/
+│   │   ├── auth.py             # JWT validation (get_web_user)
 │   │   ├── config.py           # TOML → MODEL_ROUTING + PRICING_MAP
 │   │   ├── database.py         # SQLModel engine + session
 │   │   ├── deps.py             # Bearer token auth
@@ -290,7 +289,6 @@ llm-gateway/
 │   ├── routers/
 │   │   ├── llm_api.py          # /v1/* API endpoints
 │   │   ├── web_ui.py           # Dashboard (Jinja2)
-│   │   ├── auth_api.py         # OAuth2 SSO callback
 │   │   └── admin.py            # Admin panel + API
 │   ├── services/
 │   │   ├── proxy.py            # Core proxy + fallback + logging
@@ -300,6 +298,12 @@ llm-gateway/
 │       ├── base.html
 │       ├── dashboard.html
 │       └── admin.html
+├── deploy/
+│   ├── docker-compose.yml      # PostgreSQL + oauth2-proxy
+│   ├── .env.example            # Docker services env vars
+│   ├── setup.sh                # Deployment script
+│   ├── llm-gateway.service     # systemd unit
+│   └── llm-gateway.nginx.conf  # Nginx config (auth_request)
 └── tests/
     ├── conftest.py
     ├── test_chat_completions.py

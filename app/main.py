@@ -3,7 +3,7 @@ FastAPI application entry point.
 
 Lifespan: DB init, global httpx client, background health checks.
 Middleware: CORS.
-Router mounting: web_ui, auth_api, llm_api, admin.
+Router mounting: web_ui, llm_api, admin.
 """
 
 from __future__ import annotations
