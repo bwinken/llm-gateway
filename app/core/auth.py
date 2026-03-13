@@ -17,7 +17,7 @@ import jwt
 from fastapi import HTTPException, Request
 from sqlmodel import Session, select
 
-from app.core.config import AUTH_CENTER_APP_ID, AUTH_CENTER_PUBLIC_KEY_PATH
+from app.core.config import AUTH_BASE_URL, AUTH_CENTER_APP_ID, AUTH_CENTER_PUBLIC_KEY_PATH
 from app.core.logger import logger
 from app.models.schema import User
 
@@ -37,7 +37,7 @@ def _decode_jwt(token: str) -> dict | None:
             _load_public_key(),
             algorithms=[_ALGORITHM],
             audience=AUTH_CENTER_APP_ID,
-            issuer="auth-center",
+            issuer=AUTH_BASE_URL,
             leeway=5,
         )
     except jwt.ExpiredSignatureError:

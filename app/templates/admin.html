@@ -47,8 +47,27 @@
     </div>
 </div>
 
+{# ── DAU Trend ── #}
+<div class="mb-8 gw-anim gw-d2">
+    <div class="gw-card overflow-hidden">
+        <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <div class="flex items-center gap-3">
+                <h3 class="text-xs font-bold text-t3 uppercase tracking-wider">Daily Active Users</h3>
+                <span class="text-[11px] text-t4">Last 30 days</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-t4">Today</span>
+                <span class="text-lg font-bold font-mono text-t1">{{ today_dau }}</span>
+            </div>
+        </div>
+        <div class="p-5" style="height:180px">
+            <canvas id="dauChart"></canvas>
+        </div>
+    </div>
+</div>
+
 {# ── Leaderboards ── #}
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8 gw-anim gw-d2">
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8 gw-anim gw-d3">
     {# App Leaderboard #}
     <div class="gw-card overflow-hidden">
         <div class="px-5 py-3 flex items-center gap-2" style="border-bottom:1px solid rgba(255,255,255,0.04)">
@@ -135,7 +154,7 @@
 </div>
 
 {# ── Create App Account ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d3">
+<div class="gw-card p-5 mb-6 gw-anim gw-d4">
     <h2 class="text-sm font-bold text-t2 mb-4">Create App Account</h2>
     <form action="/admin/users/create" method="POST" class="flex items-end gap-4 flex-wrap">
         <div>
@@ -172,7 +191,7 @@
 </div>
 
 {# ── User Management ── #}
-<div class="gw-anim gw-d4">
+<div class="gw-anim gw-d5">
     <h2 class="text-sm font-bold text-t2 mb-4">User Management</h2>
     <div class="gw-card overflow-hidden">
         <div class="overflow-x-auto">
@@ -322,5 +341,60 @@
             .finally(() => { btn.disabled=false; btn.classList.remove('opacity-50'); });
     }
     document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeKeyModal(); });
+</script>
+
+<script>
+(function(){
+    var raw = {{ dau_data | tojson }};
+    var labels = raw.map(function(d){ return d.date.slice(5); });
+    var values = raw.map(function(d){ return d.dau; });
+    var ctx = document.getElementById('dauChart');
+    if (!ctx) return;
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [{
+                data: values,
+                backgroundColor: 'rgba(99,152,255,0.35)',
+                hoverBackgroundColor: 'rgba(99,152,255,0.6)',
+                borderRadius: 3,
+                barPercentage: 0.7,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#1f2029',
+                    borderColor: 'rgba(255,255,255,0.08)',
+                    borderWidth: 1,
+                    titleColor: '#eef0f4',
+                    bodyColor: '#c4c9d4',
+                    cornerRadius: 8,
+                    padding: 8,
+                    callbacks: {
+                        label: function(c){ return c.parsed.y + ' active users'; }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    grid: { display: false },
+                    ticks: { color: '#4e5569', font: { size: 10, family: 'JetBrains Mono' }, maxRotation: 0, autoSkip: true, maxTicksLimit: 10 },
+                    border: { display: false }
+                },
+                y: {
+                    beginAtZero: true,
+                    grid: { color: 'rgba(255,255,255,0.03)' },
+                    ticks: { color: '#4e5569', font: { size: 10, family: 'JetBrains Mono' }, precision: 0 },
+                    border: { display: false }
+                }
+            }
+        }
+    });
+})();
 </script>
 {% endblock %}

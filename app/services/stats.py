@@ -62,6 +62,23 @@ def get_daily_trends(session: Session, user_id: int, days: int = 30) -> list[dic
     ]
 
 
+def get_dau_trends(session: Session, days: int = 30) -> list[dict]:
+    """Return daily active user counts for the last N days."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    stmt = (
+        select(
+            func.date(UsageLog.created_at).label("day"),
+            func.count(func.distinct(UsageLog.user_id)).label("dau"),
+        )
+        .where(UsageLog.created_at >= cutoff)
+        .group_by(func.date(UsageLog.created_at))
+        .order_by(func.date(UsageLog.created_at))
+    )
+    rows = session.exec(stmt).all()
+    return [{"date": str(row[0]), "dau": int(row[1])} for row in rows]
+
+
 def get_all_users_usage(session: Session) -> dict[int, dict]:
     """Return total cost and total tokens per user for the current month."""
     now = datetime.now(timezone.utc)

@@ -34,6 +34,7 @@ class UsageLog(SQLModel, table=True):
     __tablename__ = "usage_logs"
     __table_args__ = (
         Index("ix_usage_user_created", "user_id", "created_at"),
+        Index("ix_usage_created_at", "created_at"),
     )
 
     id: int | None = Field(default=None, primary_key=True)

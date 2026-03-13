@@ -19,7 +19,7 @@ from app.core.config import APP_TITLE, get_config_data, save_config
 from app.core.database import get_session
 from app.core.deps import get_current_user
 from app.models.schema import User, UsageLog
-from app.services.stats import get_all_users_usage, get_monthly_all_users_usage
+from app.services.stats import get_all_users_usage, get_dau_trends, get_monthly_all_users_usage
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 _templates_dir = Path(__file__).resolve().parent.parent / "templates"
@@ -110,6 +110,9 @@ async def admin_page(
     now = datetime.now(timezone.utc)
     month_label = now.strftime("%B %Y")
 
+    dau_data = get_dau_trends(session)
+    today_dau = dau_data[-1]["dau"] if dau_data else 0
+
     return templates.TemplateResponse(
         "admin.html",
         {
@@ -129,6 +132,8 @@ async def admin_page(
             "monthly_total_reqs": monthly_total_reqs,
             "potential_owners": potential_owners,
             "current_year": datetime.now(timezone.utc).year,
+            "dau_data": dau_data,
+            "today_dau": today_dau,
         },
     )
 

@@ -30,6 +30,7 @@ DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://llm_gateway:password
 # AuthCenter JWT validation (oauth2-proxy handles login flow)
 AUTH_CENTER_APP_ID: str = os.getenv("AUTH_CENTER_APP_ID", "llm_gateway")
 AUTH_CENTER_PUBLIC_KEY_PATH: str = os.getenv("AUTH_CENTER_PUBLIC_KEY_PATH", "./keys/public.pem")
+AUTH_BASE_URL: str = os.getenv("AUTH_BASE_URL", "auth-center")
 
 
 def _load_toml() -> dict[str, Any]:

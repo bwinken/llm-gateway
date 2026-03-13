@@ -245,7 +245,12 @@ else
     PG_PORT=$(grep '^PG_PORT=' "$DEPLOY_DIR/.env" | cut -d= -f2)
     PG_DB=$(grep '^PG_DB=' "$DEPLOY_DIR/.env" | cut -d= -f2)
     sed -i "s|DATABASE_URL=.*|DATABASE_URL=postgresql://${PG_USER}:${PG_PASSWORD}@localhost:${PG_PORT}/${PG_DB}|" "$APP_DIR/.env"
-    ok ".env 已建立（DATABASE_URL 已自動填入）"
+    # 從 deploy/.env 讀取 OIDC_ISSUER_URL 自動填入 AUTH_BASE_URL（JWT issuer 驗證）
+    OIDC_ISSUER=$(grep '^OIDC_ISSUER_URL=' "$DEPLOY_DIR/.env" | cut -d= -f2)
+    if [ -n "$OIDC_ISSUER" ]; then
+        sed -i "s|AUTH_BASE_URL=.*|AUTH_BASE_URL=${OIDC_ISSUER}|" "$APP_DIR/.env"
+    fi
+    ok ".env 已建立（DATABASE_URL、AUTH_BASE_URL 已自動填入）"
 fi
 chmod 600 "$APP_DIR/.env"
 chmod 600 "$APP_DIR/config.toml"
