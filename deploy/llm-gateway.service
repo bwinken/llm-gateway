@@ -12,7 +12,7 @@ Environment="PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
 # Environment="HTTP_PROXY=http://proxy.company.com:8080"
 # Environment="HTTPS_PROXY=http://proxy.company.com:8080"
 # Environment="NO_PROXY=localhost,127.0.0.1"
-ExecStart=uv run fastapi run app/main.py \
+ExecStart=%h/.local/bin/uv run fastapi run app/main.py \
     --host 127.0.0.1 \
     --port 8050 \
     --workers 2
