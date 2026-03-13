@@ -200,6 +200,17 @@ else
     warn "PostgreSQL 尚未就緒，繼續部署（可能需要手動檢查）"
 fi
 
+# ── Checkpoint: Docker 服務已啟動 ──
+echo ""
+info "Docker 服務已啟動，可以先測試連線："
+info "  docker exec llm-gateway-pg pg_isready -U ${PG_USER_CHECK:-llm_gateway}"
+info "  docker logs llm-gateway-oauth2-proxy"
+echo ""
+if ! confirm "繼續安裝 Python 依賴與應用程式設定？"; then
+    ok "已停在 Step 3（Docker 服務）。後續可重新執行 setup.sh 繼續。"
+    exit 0
+fi
+
 # ╔══════════════════════════════════════════════════════════╗
 # ║           Step 4: 安裝 Python 依賴                       ║
 # ╚══════════════════════════════════════════════════════════╝
@@ -276,6 +287,18 @@ else
     warn "資料庫遷移失敗 — 請確認 PostgreSQL 已啟動且 .env 中的 DATABASE_URL 正確"
 fi
 
+# ── Checkpoint: 可以手動測試 Gateway ──
+echo ""
+info "應用程式已就緒，可以手動啟動測試："
+info "  cd $APP_DIR"
+info "  uv run fastapi dev app/main.py          # 開發模式（auto-reload）"
+info "  curl http://127.0.0.1:8000/v1/models    # 測試 API"
+echo ""
+if ! confirm "繼續安裝 systemd 服務與 Nginx？"; then
+    ok "已停在 Step 7（DB 遷移完成）。可手動啟動 Gateway 測試。"
+    exit 0
+fi
+
 # ╔══════════════════════════════════════════════════════════╗
 # ║           Step 8: systemd 服務                           ║
 # ╚══════════════════════════════════════════════════════════╝
@@ -295,6 +318,17 @@ else
     info "啟用 lingering（需要 sudo，確保登出後服務繼續運行）"
     sudo loginctl enable-linger "$(whoami)" 2>/dev/null && ok "Lingering 已啟用" || \
         warn "請手動執行：sudo loginctl enable-linger $(whoami)"
+fi
+
+# ── Checkpoint: Gateway 已透過 systemd 運行 ──
+echo ""
+info "Gateway 服務已啟動，可以先測試："
+info "  systemctl --user status llm-gateway"
+info "  curl http://127.0.0.1:8050/v1/models"
+echo ""
+if ! confirm "繼續設定 Nginx 反向代理？"; then
+    ok "已停在 Step 8（systemd 服務）。Gateway 已在 127.0.0.1:8050 運行。"
+    exit 0
 fi
 
 # ╔══════════════════════════════════════════════════════════╗
