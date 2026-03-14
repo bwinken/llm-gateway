@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, func, select
 
-from app.models.schema import UsageLog, User
+from app.models.schema import AppOwner, UsageLog, User
 
 
 def get_user_monthly_summary(session: Session, user_id: int) -> dict:
@@ -137,7 +137,8 @@ def get_monthly_all_users_usage(session: Session) -> dict[int, dict]:
 
 def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
     """Return app accounts owned by this user, with their monthly usage."""
-    apps = session.exec(select(User).where(User.owner_id == owner_id)).all()
+    app_ids_stmt = select(AppOwner.app_id).where(AppOwner.owner_id == owner_id)
+    apps = session.exec(select(User).where(User.id.in_(app_ids_stmt))).all()  # type: ignore[attr-defined]
     if not apps:
         return []
 

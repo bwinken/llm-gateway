@@ -18,7 +18,7 @@ from app.core.auth import get_web_user
 from app.core.config import APP_TITLE, get_config_data, save_config
 from app.core.database import get_session
 from app.core.deps import get_current_user
-from app.models.schema import User, UsageLog
+from app.models.schema import AppOwner, User, UsageLog
 from app.services.stats import get_all_users_usage, get_dau_trends, get_department_usage, get_monthly_all_users_usage
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -60,13 +60,21 @@ async def admin_page(
     monthly_total_output = 0
     monthly_total_reqs = 0
 
-    # Build owner lookup and potential owners list for the dropdown
-    owner_lookup: dict[int | None, str] = {}
+    # Build user lookup and app->owners mapping
+    user_lookup: dict[int, str] = {}
     potential_owners: list[dict] = []
     for u in all_users:
+        user_lookup[u.id] = u.username
         if not u.username.startswith("app_"):
             potential_owners.append({"id": u.id, "username": u.username})
-            owner_lookup[u.id] = u.username
+
+    # Build app_id -> list of owner usernames
+    all_app_owners = session.exec(select(AppOwner)).all()
+    app_owners_map: dict[int, list[str]] = {}
+    for ao in all_app_owners:
+        app_owners_map.setdefault(ao.app_id, []).append(
+            user_lookup.get(ao.owner_id, str(ao.owner_id))
+        )
 
     for u in all_users:
         usage = usage_map.get(u.id, {"total_cost": 0.0, "total_tokens": 0})
@@ -80,8 +88,7 @@ async def admin_page(
             "api_key": u.api_key,
             "daily_limit_usd": u.daily_limit_usd,
             "is_admin": u.is_admin,
-            "owner_id": u.owner_id,
-            "owner_name": owner_lookup.get(u.owner_id, ""),
+            "owners": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
             "total_cost": usage["total_cost"],
@@ -165,13 +172,17 @@ async def create_app_account_web(
     user = User(username=username)
     if daily_limit is not None:
         user.daily_limit_usd = float(daily_limit)
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+
+    # Add owner via AppOwner table
     if owner_username:
         owner = session.exec(select(User).where(User.username == owner_username)).first()
         if not owner:
             raise HTTPException(status_code=400, detail=f"Owner '{owner_username}' not found.")
-        user.owner_id = owner.id
-    session.add(user)
-    session.commit()
+        session.add(AppOwner(app_id=user.id, owner_id=owner.id))
+        session.commit()
 
     return RedirectResponse(url="/admin", status_code=303)
 
@@ -182,7 +193,7 @@ async def update_user_owner(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """Update app account owner by username."""
+    """Replace app account owners (comma-separated usernames)."""
     _require_admin(request, session)
 
     target = session.exec(select(User).where(User.id == user_id)).first()
@@ -190,17 +201,26 @@ async def update_user_owner(
         raise HTTPException(status_code=404, detail="User not found.")
 
     form = await request.form()
-    owner_username = (form.get("owner_username") or "").strip()
+    raw = (form.get("owner_usernames") or "").strip()
 
-    if not owner_username:
-        target.owner_id = None
-    else:
-        owner = session.exec(select(User).where(User.username == owner_username)).first()
-        if not owner:
-            raise HTTPException(status_code=400, detail=f"User '{owner_username}' not found.")
-        target.owner_id = owner.id
+    # Remove all existing owners for this app
+    session.execute(delete(AppOwner).where(AppOwner.app_id == user_id))
 
-    session.add(target)
+    # Add new owners
+    if raw:
+        not_found = []
+        for name in [n.strip() for n in raw.split(",") if n.strip()]:
+            owner = session.exec(select(User).where(User.username == name)).first()
+            if not owner:
+                not_found.append(name)
+            else:
+                session.add(AppOwner(app_id=user_id, owner_id=owner.id))
+        if not_found:
+            raise HTTPException(
+                status_code=400,
+                detail=f"User(s) not found: {', '.join(not_found)}",
+            )
+
     session.commit()
 
     return RedirectResponse(url="/admin", status_code=303)
@@ -244,7 +264,10 @@ async def delete_user(
     if target.id == admin_user.id:
         raise HTTPException(status_code=400, detail="Cannot delete yourself.")
 
-    # Bulk-delete usage logs, then the user
+    # Bulk-delete ownership records, usage logs, then the user
+    session.execute(delete(AppOwner).where(
+        (AppOwner.app_id == user_id) | (AppOwner.owner_id == user_id)
+    ))
     session.execute(delete(UsageLog).where(UsageLog.user_id == user_id))
     session.delete(target)
     session.commit()

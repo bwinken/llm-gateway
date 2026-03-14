@@ -30,6 +30,15 @@ class User(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class AppOwner(SQLModel, table=True):
+    """Many-to-many: which users own which app accounts."""
+    __tablename__ = "app_owners"
+
+    id: int | None = Field(default=None, primary_key=True)
+    app_id: int = Field(foreign_key="users.id", index=True)
+    owner_id: int = Field(foreign_key="users.id", index=True)
+
+
 class UsageLog(SQLModel, table=True):
     __tablename__ = "usage_logs"
     __table_args__ = (
