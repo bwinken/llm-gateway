@@ -11,6 +11,17 @@ from sqlmodel import Session, func, select
 from app.models.schema import AppOwner, UsageLog, User
 
 
+def get_user_daily_cost(session: Session, user_id: int) -> float:
+    """Total cost for today (UTC)."""
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    stmt = (
+        select(func.coalesce(func.sum(UsageLog.cost_usd), 0))
+        .where(UsageLog.user_id == user_id)
+        .where(UsageLog.created_at >= today_start)
+    )
+    return float(session.exec(stmt).one())
+
+
 def get_user_monthly_summary(session: Session, user_id: int) -> dict:
     """Total tokens and cost for the current calendar month."""
     now = datetime.now(timezone.utc)
