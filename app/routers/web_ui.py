@@ -19,7 +19,7 @@ from app.core.auth import get_web_user
 from app.core.config import APP_TITLE, get_model_routing_snapshot
 from app.core.database import get_session
 from app.core.server_state import is_alive
-from app.services.stats import get_daily_trends, get_owned_apps_summary, get_user_monthly_summary
+from app.services.stats import get_daily_trends, get_owned_apps_summary, get_user_daily_cost, get_user_monthly_summary
 
 router = APIRouter()
 _templates_dir = Path(__file__).resolve().parent.parent / "templates"
@@ -113,9 +113,10 @@ async def dashboard(
                 }
             )
 
-    # Budget percentage (prevent division by zero)
+    # Budget percentage based on today's cost vs daily limit
+    today_cost = get_user_daily_cost(session, user.id)
     daily_limit = user.daily_limit_usd if user.daily_limit_usd > 0 else 1.0
-    usage_percent = min(100.0, (summary["total_cost_usd"] / daily_limit) * 100)
+    usage_percent = min(100.0, (today_cost / daily_limit) * 100)
 
     return templates.TemplateResponse(
         "dashboard.html",
@@ -129,6 +130,7 @@ async def dashboard(
             total_cost=summary["total_cost_usd"],
             my_input=summary["total_input_tokens"],
             my_output=summary["total_output_tokens"],
+            today_cost=round(today_cost, 4),
             usage_percent=round(usage_percent, 1),
             trend_data=trend_data,
             owned_apps=owned_apps,
