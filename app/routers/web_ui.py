@@ -28,10 +28,15 @@ templates = Jinja2Templates(directory=str(_templates_dir))
 
 def _common_ctx(request: Request, **extra) -> dict:
     """Base context shared by all pages."""
+    # Build gateway base URL from Host header (reliable behind reverse proxy)
+    host = request.headers.get("host", request.url.hostname or "localhost")
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme or "http")
+    gateway_base = f"{scheme}://{host}/v1"
     return {
         "request": request,
         "app_title": APP_TITLE,
         "current_year": datetime.now(timezone.utc).year,
+        "gateway_base": gateway_base,
         **extra,
     }
 

@@ -77,8 +77,8 @@
         <div class="overflow-x-auto">
             <table class="gw-table">
                 <thead><tr>
-                    <th>#</th><th>App</th><th class="text-right">Cost</th>
-                    <th class="text-right">Input</th><th class="text-right">Output</th><th class="text-right">Reqs</th>
+                    <th>#</th><th>App</th><th style="text-align:right">Cost</th>
+                    <th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Reqs</th>
                 </tr></thead>
                 <tbody id="appLbBody">
                     {% for u in app_leaderboard %}
@@ -122,8 +122,8 @@
         <div class="overflow-x-auto">
             <table class="gw-table">
                 <thead><tr>
-                    <th>#</th><th>User</th><th class="text-right">Cost</th>
-                    <th class="text-right">Input</th><th class="text-right">Output</th><th class="text-right">Reqs</th>
+                    <th>#</th><th>User</th><th style="text-align:right">Cost</th>
+                    <th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Reqs</th>
                 </tr></thead>
                 <tbody id="userLbBody">
                     {% for u in user_leaderboard %}
@@ -177,8 +177,8 @@
         <div class="overflow-x-auto">
             <table class="gw-table">
                 <thead><tr>
-                    <th>Department</th><th class="text-right">Users</th><th class="text-right">Cost</th>
-                    <th class="text-right">Input</th><th class="text-right">Output</th><th class="text-right">Reqs</th>
+                    <th>Department</th><th style="text-align:right">Users</th><th style="text-align:right">Cost</th>
+                    <th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Reqs</th>
                 </tr></thead>
                 <tbody>
                     {% for d in dept_usage %}
@@ -260,7 +260,7 @@
                     <th>User</th><th>API Key</th>
                     <th class="gw-tip" data-tip="All-time cumulative cost">Total Spend</th>
                     <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
-                    <th class="text-right">Actions</th>
+                    <th style="text-align:right">Actions</th>
                 </tr></thead>
                 <tbody id="umUsersBody" class="um-paged-body">
                     {% for u in users if not u.username.startswith('app_') %}
@@ -336,7 +336,7 @@
                     <th>App</th><th>API Key</th><th>Owner</th>
                     <th class="gw-tip" data-tip="All-time cumulative cost">Total Spend</th>
                     <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
-                    <th class="text-right">Actions</th>
+                    <th style="text-align:right">Actions</th>
                 </tr></thead>
                 <tbody id="umAppsBody" class="um-paged-body">
                     {% for u in users if u.username.startswith('app_') %}
@@ -360,7 +360,7 @@
                             </button>
                         </td>
                         <td class="whitespace-nowrap">
-                            <form onsubmit="return setOwner(this, {{ u.id }})" class="flex items-center gap-1">
+                            <form onsubmit="event.preventDefault(); setOwner(this, {{ u.id }})" class="flex items-center gap-1">
                                 <input type="text" name="owner_usernames" value="{{ u.owners|join(', ') }}" placeholder="user1, user2"
                                        class="gw-input w-40 text-sm font-mono py-1 px-2" title="Comma-separated usernames">
                                 <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Set</button>
@@ -550,14 +550,14 @@
         var origText = btn.textContent;
         btn.disabled = true; btn.textContent = '...';
         var fd = new FormData(); fd.append('owner_usernames', input.value);
-        fetch('/admin/users/' + userId + '/owner', { method: 'POST', body: fd })
+        fetch('/admin/users/' + userId + '/owner', { method: 'POST', body: fd, redirect: 'manual' })
             .then(function(r) {
                 if (r.ok) { btn.textContent = 'OK'; btn.classList.add('text-green-400'); }
+                else if (r.type === 'opaqueredirect') { btn.textContent = 'OK'; btn.classList.add('text-green-400'); }
                 else return r.json().then(function(d) { alert(d.detail || 'Error'); btn.textContent = origText; });
             })
             .catch(function() { alert('Network error'); btn.textContent = origText; })
             .finally(function() { btn.disabled = false; setTimeout(function() { btn.textContent = origText; btn.classList.remove('text-green-400'); }, 1500); });
-        return false;
     }
     document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeKeyModal(); });
 </script>
