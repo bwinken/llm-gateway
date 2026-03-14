@@ -223,7 +223,7 @@ async def update_user_owner(
 
     session.commit()
 
-    return RedirectResponse(url="/admin", status_code=303)
+    return JSONResponse({"ok": True})
 
 
 @router.post("/users/{user_id}/limit")
