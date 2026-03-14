@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from app.core.config import MODEL_ROUTING
+from app.core.config import get_model_routing_snapshot
 from app.core.deps import get_current_user
 from app.models.schema import User
 from app.services.proxy import forward_request, forward_simple_request, forward_to_path
@@ -27,7 +27,7 @@ _TYPE_CAPABILITIES: dict[str, str] = {
 @router.get("/v1/models")
 async def list_models(user: User = Depends(get_current_user)):
     models = []
-    for name, route in dict(MODEL_ROUTING).items():
+    for name, route in get_model_routing_snapshot().items():
         model_type = route["type"]
         models.append(
             {

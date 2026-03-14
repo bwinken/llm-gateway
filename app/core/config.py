@@ -92,10 +92,24 @@ _raw = _load_toml()
 APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP = _build_config(_raw)
 
 _config_lock = threading.Lock()
+_config_mtime: float = _CONFIG_PATH.stat().st_mtime
+
+
+def _check_auto_reload() -> None:
+    """Reload config if the file has been modified (handles multi-worker sync)."""
+    global _config_mtime
+    try:
+        mtime = _CONFIG_PATH.stat().st_mtime
+    except OSError:
+        return
+    if mtime != _config_mtime:
+        _config_mtime = mtime
+        reload_config()
 
 
 def get_model_routing_snapshot() -> dict[str, dict[str, Any]]:
     """Return a shallow copy of MODEL_ROUTING safe for iteration."""
+    _check_auto_reload()
     return dict(MODEL_ROUTING)
 
 
@@ -104,7 +118,12 @@ def reload_config() -> None:
 
     Updates before removing stale keys to avoid a transient empty state.
     """
+    global _config_mtime
     raw = _load_toml()
+    try:
+        _config_mtime = _CONFIG_PATH.stat().st_mtime
+    except OSError:
+        pass
     _, new_routing, new_pricing, new_fallback = _build_config(raw)
 
     with _config_lock:
@@ -181,9 +200,9 @@ def save_config(
 def get_config_data() -> dict[str, Any]:
     """Return current config as a JSON-serializable dict.
 
-    Re-reads config.toml to ensure freshness across multiple workers.
+    Auto-reloads from config.toml if file has changed (multi-worker safe).
     """
-    reload_config()
+    _check_auto_reload()
     return {
         "models": dict(MODEL_ROUTING),
         "pricing": dict(PRICING_MAP),

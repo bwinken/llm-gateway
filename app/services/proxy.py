@@ -17,7 +17,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlmodel import Session
 
-from app.core.config import FALLBACK_MAP, MODEL_ROUTING, PRICING_MAP
+from app.core.config import FALLBACK_MAP, MODEL_ROUTING, PRICING_MAP, _check_auto_reload
 from app.core.database import engine
 from app.core.logger import logger
 from app.core.server_state import get_client, is_alive
@@ -43,6 +43,7 @@ def _resolve_model(
 
     fallback_reason is None when the original model was used directly.
     """
+    _check_auto_reload()
     route = MODEL_ROUTING.get(model_name)
 
     # Exact match with correct type
