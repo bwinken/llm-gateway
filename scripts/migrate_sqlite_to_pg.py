@@ -60,9 +60,21 @@ def migrate(sqlite_path: str, *, dry_run: bool = False, sync: bool = False) -> N
     pg_engine = create_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
     SQLModel.metadata.create_all(pg_engine)
 
+    # ---- Detect old vs new SQLite schema ----
+    table_names = {
+        r[0] for r in src.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    legacy = "user" in table_names and "users" not in table_names
+    if legacy:
+        print("Detected legacy schema (user/usagelog)\n")
+    user_table = "user" if legacy else "users"
+    log_table = "usagelog" if legacy else "usage_logs"
+
     with Session(pg_engine) as session:
         # ---- Migrate users ----
-        src_users = src.execute("SELECT * FROM users ORDER BY id").fetchall()
+        src_users = src.execute(f"SELECT * FROM {user_table} ORDER BY id").fetchall()
         migrated_users = 0
         skipped_users = 0
         updated_users = 0
@@ -98,13 +110,19 @@ def migrate(sqlite_path: str, *, dry_run: bool = False, sync: bool = False) -> N
                 continue
 
             if not dry_run:
+                # Legacy schema has is_active instead of is_admin, and float timestamps
+                is_admin_val = bool(row["is_admin"]) if "is_admin" in row.keys() else False
+                created_at_val = row["created_at"]
+                if legacy and isinstance(created_at_val, (int, float)):
+                    from datetime import datetime, timezone
+                    created_at_val = datetime.fromtimestamp(created_at_val, tz=timezone.utc).isoformat()
                 user = User(
                     username=row["username"],
                     password_hash=row["password_hash"] if "password_hash" in row.keys() else "",
                     api_key=row["api_key"],
                     daily_limit_usd=row["daily_limit_usd"],
-                    is_admin=bool(row["is_admin"]),
-                    created_at=row["created_at"],
+                    is_admin=is_admin_val,
+                    created_at=created_at_val,
                 )
                 session.add(user)
                 session.flush()
@@ -149,13 +167,15 @@ def migrate(sqlite_path: str, *, dry_run: bool = False, sync: bool = False) -> N
                 print("Sync mode: PostgreSQL has no usage_logs, migrating all\n")
 
         # ---- Migrate usage_logs ----
+        # Legacy schema uses "timestamp" column instead of "created_at"
+        time_col = "timestamp" if legacy else "created_at"
         if cutoff:
             src_logs = src.execute(
-                "SELECT * FROM usage_logs WHERE created_at > ? ORDER BY id",
+                f"SELECT * FROM {log_table} WHERE {time_col} > ? ORDER BY id",
                 (str(cutoff),),
             ).fetchall()
         else:
-            src_logs = src.execute("SELECT * FROM usage_logs ORDER BY id").fetchall()
+            src_logs = src.execute(f"SELECT * FROM {log_table} ORDER BY id").fetchall()
 
         migrated_logs = 0
         skipped_logs = 0
@@ -168,6 +188,11 @@ def migrate(sqlite_path: str, *, dry_run: bool = False, sync: bool = False) -> N
                 continue
 
             if not dry_run:
+                # Legacy schema: "timestamp" (float) instead of "created_at", no model_type/endpoint
+                created_at_val = row[time_col]
+                if legacy and isinstance(created_at_val, (int, float)):
+                    from datetime import datetime, timezone
+                    created_at_val = datetime.fromtimestamp(created_at_val, tz=timezone.utc).isoformat()
                 log = UsageLog(
                     user_id=new_user_id,
                     model=row["model"],
@@ -176,7 +201,7 @@ def migrate(sqlite_path: str, *, dry_run: bool = False, sync: bool = False) -> N
                     output_tokens=row["output_tokens"],
                     cost_usd=row["cost_usd"],
                     endpoint=row["endpoint"] if "endpoint" in row.keys() else "",
-                    created_at=row["created_at"],
+                    created_at=created_at_val,
                 )
                 session.add(log)
             migrated_logs += 1
