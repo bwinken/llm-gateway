@@ -188,8 +188,23 @@ function deleteModel(alias) {
     render();
 }
 
+function collectFromDOM() {
+    // Collect model fields directly from DOM inputs to avoid stale state
+    document.querySelectorAll('input[data-alias][data-field]').forEach(function(el) {
+        var a = el.dataset.alias, f = el.dataset.field;
+        if (config.models[a]) config.models[a][f] = el.value;
+    });
+    // Collect pricing fields directly from DOM inputs
+    document.querySelectorAll('input[data-ptype][data-pfield]').forEach(function(el) {
+        var t = el.dataset.ptype, f = el.dataset.pfield;
+        if (!config.pricing[t]) config.pricing[t] = {};
+        config.pricing[t][f] = parseFloat(el.value) || 0;
+    });
+}
+
 async function saveAll() {
     const btn = document.getElementById('saveBtn'); btn.disabled=true; btn.textContent='Saving...';
+    collectFromDOM();
     try {
         const resp = await fetch('/admin/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
         const data = await resp.json();

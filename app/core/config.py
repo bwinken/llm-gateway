@@ -179,7 +179,11 @@ def save_config(
 
 
 def get_config_data() -> dict[str, Any]:
-    """Return current config as a JSON-serializable dict."""
+    """Return current config as a JSON-serializable dict.
+
+    Re-reads config.toml to ensure freshness across multiple workers.
+    """
+    reload_config()
     return {
         "models": dict(MODEL_ROUTING),
         "pricing": dict(PRICING_MAP),
