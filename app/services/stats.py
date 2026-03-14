@@ -63,7 +63,7 @@ def get_daily_trends(session: Session, user_id: int, days: int = 30) -> list[dic
 
 
 def get_dau_trends(session: Session, days: int = 30) -> list[dict]:
-    """Return daily active user counts for the last N days."""
+    """Return daily active user counts for the last N days (excludes app accounts)."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
     stmt = (
@@ -71,7 +71,9 @@ def get_dau_trends(session: Session, days: int = 30) -> list[dict]:
             func.date(UsageLog.created_at).label("day"),
             func.count(func.distinct(UsageLog.user_id)).label("dau"),
         )
+        .join(User, UsageLog.user_id == User.id)
         .where(UsageLog.created_at >= cutoff)
+        .where(~User.username.startswith("app_"))
         .group_by(func.date(UsageLog.created_at))
         .order_by(func.date(UsageLog.created_at))
     )
@@ -178,6 +180,40 @@ def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
             "monthly_reqs": usage_by_id.get(app.id, {}).get("requests", 0),
         }
         for app in apps
+    ]
+
+
+def get_department_usage(session: Session) -> list[dict]:
+    """Return aggregated monthly usage grouped by org_code (department)."""
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    stmt = (
+        select(
+            func.coalesce(User.org_code, "Unknown"),
+            func.count(func.distinct(UsageLog.user_id)),
+            func.coalesce(func.sum(UsageLog.cost_usd), 0),
+            func.coalesce(func.sum(UsageLog.input_tokens), 0),
+            func.coalesce(func.sum(UsageLog.output_tokens), 0),
+            func.count(UsageLog.id),
+        )
+        .join(User, UsageLog.user_id == User.id)
+        .where(UsageLog.created_at >= month_start)
+        .where(~User.username.startswith("app_"))
+        .group_by(func.coalesce(User.org_code, "Unknown"))
+        .order_by(func.sum(UsageLog.cost_usd).desc())
+    )
+    rows = session.exec(stmt).all()
+    return [
+        {
+            "department": str(row[0]) if row[0] else "Unknown",
+            "user_count": int(row[1]),
+            "cost": round(float(row[2]), 6),
+            "input_tokens": int(row[3]),
+            "output_tokens": int(row[4]),
+            "requests": int(row[5]),
+        }
+        for row in rows
     ]
 
 
