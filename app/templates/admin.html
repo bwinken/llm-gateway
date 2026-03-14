@@ -167,8 +167,43 @@
     </div>
 </div>
 
+{# ── Department Usage ── #}
+<div class="mb-8 gw-anim gw-d4">
+    <div class="gw-card overflow-hidden">
+        <div class="px-5 py-3 flex items-center gap-2" style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <h3 class="text-xs font-bold text-t3 uppercase tracking-wider">Department Usage</h3>
+            <span class="ml-auto text-[11px] text-t4 font-mono">{{ month_label }}</span>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="gw-table">
+                <thead><tr>
+                    <th>Department</th><th class="text-right">Users</th><th class="text-right">Cost</th>
+                    <th class="text-right">Input</th><th class="text-right">Output</th><th class="text-right">Reqs</th>
+                </tr></thead>
+                <tbody>
+                    {% for d in dept_usage %}
+                    <tr>
+                        <td>
+                            <span class="text-sm font-medium text-t1">{{ d.department }}</span>
+                        </td>
+                        <td class="text-right text-sm font-mono text-t3">{{ d.user_count }}</td>
+                        <td class="text-right text-sm font-mono font-medium text-t1">${{ "%.4f"|format(d.cost) }}</td>
+                        <td class="text-right text-sm font-mono text-t3">{{ format_token(d.input_tokens) }}</td>
+                        <td class="text-right text-sm font-mono text-t3">{{ format_token(d.output_tokens) }}</td>
+                        <td class="text-right text-sm font-mono text-t3">{{ d.requests }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not dept_usage %}
+                    <tr><td colspan="6" class="text-center py-6 text-sm text-t4">No usage data this month.</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
 {# ── Create App Account ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d4">
+<div class="gw-card p-5 mb-6 gw-anim gw-d5">
     <h2 class="text-sm font-bold text-t2 mb-4">Create App Account</h2>
     <form action="/admin/users/create" method="POST" class="flex items-end gap-4 flex-wrap">
         <div>
@@ -189,13 +224,9 @@
             </div>
         </div>
         <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Owner can view and refresh this app's API key from their Dashboard.">Owner</label>
-            <select name="owner_id" class="gw-input w-48 text-sm py-1.5 px-2">
-                <option value="">— No owner —</option>
-                {% for o in potential_owners %}
-                <option value="{{ o.id }}">{{ o.username }}</option>
-                {% endfor %}
-            </select>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Owner can view and refresh this app's API key from their Dashboard. Enter username.">Owner</label>
+            <input type="text" name="owner_username" placeholder="username (optional)"
+                   class="gw-input w-48 text-sm font-mono py-1.5 px-2">
         </div>
         <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
@@ -205,7 +236,7 @@
 </div>
 
 {# ── User Management ── #}
-<div class="gw-anim gw-d5">
+<div class="gw-anim gw-d6">
     <div class="flex items-center justify-between mb-4">
         <div class="flex items-center gap-4">
             <h2 class="text-sm font-bold text-t2">User Management</h2>
@@ -297,7 +328,7 @@
         <div class="overflow-x-auto">
             <table class="gw-table">
                 <thead><tr>
-                    <th>App</th><th>API Key</th>
+                    <th>App</th><th>API Key</th><th>Owner</th>
                     <th class="gw-tip" data-tip="All-time cumulative cost">Total Spend</th>
                     <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
                     <th class="text-right">Actions</th>
@@ -313,9 +344,6 @@
                                 <div>
                                     <div class="text-sm font-medium text-t1">{{ u.username }}</div>
                                     <span class="gw-badge">App</span>
-                                    {% if u.owner_name %}
-                                    <span class="gw-badge" style="background:rgba(61,214,140,0.08);color:#3dd68c;border-color:rgba(61,214,140,0.15)">Owner: {{ u.owner_name }}</span>
-                                    {% endif %}
                                 </div>
                             </div>
                         </td>
@@ -325,6 +353,13 @@
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
                                 View Key
                             </button>
+                        </td>
+                        <td class="whitespace-nowrap">
+                            <form action="/admin/users/{{ u.id }}/owner" method="POST" class="flex items-center gap-1">
+                                <input type="text" name="owner_username" value="{{ u.owner_name }}" placeholder="username"
+                                       class="gw-input w-28 text-sm font-mono py-1 px-2">
+                                <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Set</button>
+                            </form>
                         </td>
                         <td class="whitespace-nowrap">
                             <div class="text-sm text-t1 font-mono font-medium">${{ "%.4f"|format(u.total_cost) }}</div>

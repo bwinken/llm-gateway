@@ -19,7 +19,7 @@ from app.core.config import APP_TITLE, get_config_data, save_config
 from app.core.database import get_session
 from app.core.deps import get_current_user
 from app.models.schema import User, UsageLog
-from app.services.stats import get_all_users_usage, get_dau_trends, get_monthly_all_users_usage
+from app.services.stats import get_all_users_usage, get_dau_trends, get_department_usage, get_monthly_all_users_usage
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 _templates_dir = Path(__file__).resolve().parent.parent / "templates"
@@ -112,6 +112,7 @@ async def admin_page(
 
     dau_data = get_dau_trends(session)
     today_dau = dau_data[-1]["dau"] if dau_data else 0
+    dept_usage = get_department_usage(session)
 
     return templates.TemplateResponse(
         "admin.html",
@@ -131,6 +132,7 @@ async def admin_page(
             "monthly_total_output": monthly_total_output,
             "monthly_total_reqs": monthly_total_reqs,
             "potential_owners": potential_owners,
+            "dept_usage": dept_usage,
             "current_year": datetime.now(timezone.utc).year,
             "dau_data": dau_data,
             "today_dau": today_dau,
@@ -149,7 +151,7 @@ async def create_app_account_web(
     form = await request.form()
     username = (form.get("username") or "").strip()
     daily_limit = form.get("daily_limit_usd")
-    owner_id = form.get("owner_id")
+    owner_username = (form.get("owner_username") or "").strip()
 
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
@@ -163,11 +165,42 @@ async def create_app_account_web(
     user = User(username=username)
     if daily_limit is not None:
         user.daily_limit_usd = float(daily_limit)
-    if owner_id:
-        owner = session.exec(select(User).where(User.id == int(owner_id))).first()
-        if owner:
-            user.owner_id = owner.id
+    if owner_username:
+        owner = session.exec(select(User).where(User.username == owner_username)).first()
+        if not owner:
+            raise HTTPException(status_code=400, detail=f"Owner '{owner_username}' not found.")
+        user.owner_id = owner.id
     session.add(user)
+    session.commit()
+
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/users/{user_id}/owner")
+async def update_user_owner(
+    user_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Update app account owner by username."""
+    _require_admin(request, session)
+
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    form = await request.form()
+    owner_username = (form.get("owner_username") or "").strip()
+
+    if not owner_username:
+        target.owner_id = None
+    else:
+        owner = session.exec(select(User).where(User.username == owner_username)).first()
+        if not owner:
+            raise HTTPException(status_code=400, detail=f"User '{owner_username}' not found.")
+        target.owner_id = owner.id
+
+    session.add(target)
     session.commit()
 
     return RedirectResponse(url="/admin", status_code=303)
