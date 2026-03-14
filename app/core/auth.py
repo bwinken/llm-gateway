@@ -73,7 +73,7 @@ def get_web_user(request: Request, session: Session) -> tuple[User, list[str], d
     scopes: list[str] = payload.get("scopes", [])
 
     display_name: str = payload.get("display_name", "")
-    org_code: str = payload.get("org_code", "")
+    org_code: str = payload.get("org_id", "") or payload.get("org_code", "")
 
     # Auto-provision user on first visit
     user = session.exec(select(User).where(User.username == username)).first()
