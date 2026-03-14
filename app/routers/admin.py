@@ -306,6 +306,14 @@ async def list_users_api(
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required.")
     users = session.exec(select(User)).all()
+
+    # Build owner lookup
+    all_app_owners = session.exec(select(AppOwner)).all()
+    user_lookup = {u.id: u.username for u in users}
+    app_owners_map: dict[int, list[int]] = {}
+    for ao in all_app_owners:
+        app_owners_map.setdefault(ao.app_id, []).append(ao.owner_id)
+
     return [
         {
             "id": u.id,
@@ -313,7 +321,7 @@ async def list_users_api(
             "api_key": u.api_key,
             "daily_limit_usd": u.daily_limit_usd,
             "is_admin": u.is_admin,
-            "owner_id": u.owner_id,
+            "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
         }
@@ -344,14 +352,18 @@ async def create_user_api(
         new_user.daily_limit_usd = float(body["daily_limit_usd"])
     if "is_admin" in body:
         new_user.is_admin = bool(body["is_admin"])
-    if "owner_id" in body:
-        owner = session.exec(select(User).where(User.id == int(body["owner_id"]))).first()
-        if not owner:
-            raise HTTPException(status_code=400, detail="Owner user not found.")
-        new_user.owner_id = owner.id
     session.add(new_user)
     session.commit()
     session.refresh(new_user)
+
+    # Add owners via AppOwner table
+    owner_ids = body.get("owner_ids", [])
+    if isinstance(owner_ids, list):
+        for oid in owner_ids:
+            owner = session.exec(select(User).where(User.id == int(oid))).first()
+            if owner:
+                session.add(AppOwner(app_id=new_user.id, owner_id=owner.id))
+        session.commit()
 
     return {
         "ok": True,
@@ -359,7 +371,7 @@ async def create_user_api(
         "username": new_user.username,
         "api_key": new_user.api_key,
         "daily_limit_usd": new_user.daily_limit_usd,
-        "owner_id": new_user.owner_id,
+        "owner_ids": owner_ids,
     }
 
 
@@ -380,14 +392,12 @@ async def update_user_api(
         target.daily_limit_usd = float(body["daily_limit_usd"])
     if "is_admin" in body:
         target.is_admin = bool(body["is_admin"])
-    if "owner_id" in body:
-        if body["owner_id"] is None:
-            target.owner_id = None
-        else:
-            owner = session.exec(select(User).where(User.id == int(body["owner_id"]))).first()
-            if not owner:
-                raise HTTPException(status_code=400, detail="Owner user not found.")
-            target.owner_id = owner.id
+    if "owner_ids" in body:
+        session.execute(delete(AppOwner).where(AppOwner.app_id == user_id))
+        for oid in (body["owner_ids"] or []):
+            owner = session.exec(select(User).where(User.id == int(oid))).first()
+            if owner:
+                session.add(AppOwner(app_id=user_id, owner_id=owner.id))
 
     session.add(target)
     session.commit()
