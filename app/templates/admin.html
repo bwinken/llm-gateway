@@ -262,7 +262,7 @@
                     <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
                     <th class="text-right">Actions</th>
                 </tr></thead>
-                <tbody id="umUsersBody">
+                <tbody id="umUsersBody" class="um-paged-body">
                     {% for u in users if not u.username.startswith('app_') %}
                     <tr class="um-row" data-search="{{ (u.display_name or '')|lower }} {{ u.username|lower }} {{ (u.org_code or '')|lower }}">
                         <td class="whitespace-nowrap">
@@ -321,6 +321,11 @@
                 </tbody>
             </table>
         </div>
+        <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)" id="umUsersPager">
+            <button onclick="umPage('users',-1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="umUsersPrev" disabled>&larr; Prev</button>
+            <span id="umUsersInfo"></span>
+            <button onclick="umPage('users',1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="umUsersNext">Next &rarr;</button>
+        </div>
     </div>
 
     {# Apps table #}
@@ -333,7 +338,7 @@
                     <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
                     <th class="text-right">Actions</th>
                 </tr></thead>
-                <tbody id="umAppsBody">
+                <tbody id="umAppsBody" class="um-paged-body">
                     {% for u in users if u.username.startswith('app_') %}
                     <tr class="um-row" data-search="{{ u.username|lower }} {{ (u.owner_name or '')|lower }}">
                         <td class="whitespace-nowrap">
@@ -382,6 +387,11 @@
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+        <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)" id="umAppsPager">
+            <button onclick="umPage('apps',-1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="umAppsPrev" disabled>&larr; Prev</button>
+            <span id="umAppsInfo"></span>
+            <button onclick="umPage('apps',1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="umAppsNext">Next &rarr;</button>
         </div>
     </div>
 </div>
@@ -442,8 +452,10 @@
     // Initialize pagination on load
     lbPage('app', 0); lbPage('user', 0);
 
-    /* ── User Management tabs ── */
+    /* ── User Management tabs + pagination ── */
     var umActiveTab = 'users';
+    var umState = { users: { page: 0, size: 15 }, apps: { page: 0, size: 15 } };
+
     function switchUmTab(tab) {
         umActiveTab = tab;
         document.getElementById('umUsersPanel').classList.toggle('hidden', tab !== 'users');
@@ -452,17 +464,48 @@
         var btnApps = document.getElementById('umTabApps');
         btnUsers.className = 'text-xs font-medium px-3 py-1.5 transition-colors ' + (tab === 'users' ? 'bg-n3 text-t1' : 'text-t4 hover:text-t2');
         btnApps.className = 'text-xs font-medium px-3 py-1.5 transition-colors ' + (tab === 'apps' ? 'bg-n3 text-t1' : 'text-t4 hover:text-t2');
+        umState[tab].page = 0;
         filterUmTable();
     }
     function filterUmTable() {
         var q = (document.getElementById('umSearch').value || '').toLowerCase().trim();
         var bodyId = umActiveTab === 'users' ? 'umUsersBody' : 'umAppsBody';
         var rows = document.querySelectorAll('#' + bodyId + ' .um-row');
+        // First pass: mark matched rows
+        var matched = [];
         rows.forEach(function(r) {
             var text = r.getAttribute('data-search') || '';
-            r.style.display = (!q || text.indexOf(q) !== -1) ? '' : 'none';
+            var show = !q || text.indexOf(q) !== -1;
+            r.dataset.matched = show ? '1' : '0';
+            if (show) matched.push(r);
         });
+        // Reset page if search changed
+        if (q) umState[umActiveTab].page = 0;
+        // Apply pagination to matched rows
+        var s = umState[umActiveTab];
+        var total = matched.length;
+        var maxPage = Math.max(0, Math.ceil(total / s.size) - 1);
+        s.page = Math.min(s.page, maxPage);
+        var start = s.page * s.size, end = start + s.size;
+        rows.forEach(function(r) { r.style.display = 'none'; });
+        matched.forEach(function(r, i) {
+            r.style.display = (i >= start && i < end) ? '' : 'none';
+        });
+        // Update pager
+        var kind = umActiveTab === 'users' ? 'Users' : 'Apps';
+        var prevBtn = document.getElementById('um' + kind + 'Prev');
+        var nextBtn = document.getElementById('um' + kind + 'Next');
+        var info = document.getElementById('um' + kind + 'Info');
+        if (prevBtn) prevBtn.disabled = s.page === 0;
+        if (nextBtn) nextBtn.disabled = end >= total;
+        if (info) info.textContent = total ? (start + 1) + '-' + Math.min(end, total) + ' of ' + total : '0 items';
     }
+    function umPage(tab, delta) {
+        umState[tab].page += delta;
+        filterUmTable();
+    }
+    // Initialize on load
+    filterUmTable();
 
     let currentUserId = null;
     function showKeyModal(username, apiKey, userId) {
