@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 from app.models.schema import User
 
 from app.core.auth import get_web_user
-from app.core.config import APP_TITLE, MODEL_ROUTING
+from app.core.config import APP_TITLE, get_model_routing_snapshot
 from app.core.database import get_session
 from app.core.server_state import is_alive
 from app.services.stats import get_daily_trends, get_owned_apps_summary, get_user_monthly_summary
@@ -52,7 +52,7 @@ async def index(
     # Group models by type for display
     models_by_type: dict[str, list[str]] = {}
     first_model = ""
-    for alias, route in dict(MODEL_ROUTING).items():
+    for alias, route in get_model_routing_snapshot().items():
         model_type = route["type"]
         if model_type not in models_by_type:
             models_by_type[model_type] = []
@@ -93,7 +93,7 @@ async def dashboard(
     # Build grouped server status keyed by raw type
     server_groups: dict[str, list[dict]] = {}
     seen_urls: set[str] = set()
-    for model_name, route in dict(MODEL_ROUTING).items():
+    for model_name, route in get_model_routing_snapshot().items():
         base_url = route["base_url"]
         model_type = route["type"]
         if model_type not in server_groups:

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 
-from app.core.config import MODEL_ROUTING
+from app.core.config import MODEL_ROUTING, _check_auto_reload
 from app.core.logger import logger
 from app.core.server_state import get_client, set_alive
 
@@ -17,6 +17,7 @@ async def check_all_servers() -> None:
     client = get_client()
 
     # Collect unique base_urls with their first api_key (snapshot to avoid mutation during iter)
+    _check_auto_reload()
     for _model_name, route in list(MODEL_ROUTING.items()):
         base_url = route["base_url"]
         if base_url not in seen:
