@@ -242,7 +242,7 @@
                 <pre class="gw-code p-3 text-xs font-mono overflow-x-auto"><span class="text-av">from</span> <span class="text-t1">openai</span> <span class="text-av">import</span> <span class="text-t1">OpenAI</span>
 
 client = OpenAI(
-    base_url=<span class="text-ag">"http://{{ request.url.hostname }}:{{ request.url.port }}/v1"</span>,
+    base_url=<span class="text-ag">"{{ request.url.scheme }}://{{ request.url.hostname }}{% if request.url.port and request.url.port not in (80, 443) %}:{{ request.url.port }}{% endif %}/v1"</span>,
     api_key=<span class="text-ag">"{{ user.api_key }}"</span>
 )
 
@@ -264,7 +264,7 @@ resp = client.chat.completions.create(
                 <pre class="gw-code p-3 text-xs font-mono overflow-x-auto"><span class="text-av">from</span> <span class="text-t1">openai</span> <span class="text-av">import</span> <span class="text-t1">OpenAI</span>
 
 client = OpenAI(
-    base_url=<span class="text-ag">"http://{{ request.url.hostname }}:{{ request.url.port }}/v1"</span>,
+    base_url=<span class="text-ag">"{{ request.url.scheme }}://{{ request.url.hostname }}{% if request.url.port and request.url.port not in (80, 443) %}:{{ request.url.port }}{% endif %}/v1"</span>,
     api_key=<span class="text-ag">"{{ user.api_key }}"</span>
 )
 
@@ -286,7 +286,7 @@ resp = client.embeddings.create(
                 <pre class="gw-code p-3 text-xs font-mono overflow-x-auto"><span class="text-av">import</span> <span class="text-t1">requests</span>
 
 resp = requests.post(
-    <span class="text-ag">"http://{{ request.url.hostname }}:{{ request.url.port }}/v1/rerank"</span>,
+    <span class="text-ag">"{{ request.url.scheme }}://{{ request.url.hostname }}{% if request.url.port and request.url.port not in (80, 443) %}:{{ request.url.port }}{% endif %}/v1/rerank"</span>,
     headers={<span class="text-ag">"Authorization"</span>: <span class="text-ag">"Bearer {{ user.api_key }}"</span>},
     json={
         <span class="text-ag">"model"</span>: <span class="text-ag">"bge-reranker-v2-m3"</span>,
@@ -309,7 +309,7 @@ resp = requests.post(
                 <pre class="gw-code p-3 text-xs font-mono overflow-x-auto"><span class="text-av">import</span> <span class="text-t1">requests</span>
 
 resp = requests.post(
-    <span class="text-ag">"http://{{ request.url.hostname }}:{{ request.url.port }}/v1/score"</span>,
+    <span class="text-ag">"{{ request.url.scheme }}://{{ request.url.hostname }}{% if request.url.port and request.url.port not in (80, 443) %}:{{ request.url.port }}{% endif %}/v1/score"</span>,
     headers={<span class="text-ag">"Authorization"</span>: <span class="text-ag">"Bearer {{ user.api_key }}"</span>},
     json={
         <span class="text-ag">"model"</span>: <span class="text-ag">"bge-reranker-v2-m3"</span>,
