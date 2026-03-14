@@ -80,10 +80,10 @@
                     <th>#</th><th>App</th><th class="text-right">Cost</th>
                     <th class="text-right">Input</th><th class="text-right">Output</th><th class="text-right">Reqs</th>
                 </tr></thead>
-                <tbody>
+                <tbody id="appLbBody">
                     {% for u in app_leaderboard %}
-                    <tr>
-                        <td class="text-sm text-t4 font-mono">{{ loop.index }}</td>
+                    <tr class="lb-app-row">
+                        <td class="text-sm text-t4 font-mono lb-rank">{{ loop.index }}</td>
                         <td class="whitespace-nowrap">
                             <div class="flex items-center gap-2">
                                 <div class="h-7 w-7 rounded-lg bg-[rgba(99,152,255,0.1)] flex items-center justify-center text-ab font-bold text-xs">
@@ -104,6 +104,13 @@
                 </tbody>
             </table>
         </div>
+        {% if app_leaderboard|length > 10 %}
+        <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)" id="appLbPager">
+            <button onclick="lbPage('app',-1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="appLbPrev" disabled>&larr; Prev</button>
+            <span id="appLbInfo"></span>
+            <button onclick="lbPage('app',1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="appLbNext">Next &rarr;</button>
+        </div>
+        {% endif %}
     </div>
 
     {# User Leaderboard #}
@@ -118,10 +125,10 @@
                     <th>#</th><th>User</th><th class="text-right">Cost</th>
                     <th class="text-right">Input</th><th class="text-right">Output</th><th class="text-right">Reqs</th>
                 </tr></thead>
-                <tbody>
+                <tbody id="userLbBody">
                     {% for u in user_leaderboard %}
-                    <tr>
-                        <td class="text-sm text-t4 font-mono">{{ loop.index }}</td>
+                    <tr class="lb-user-row">
+                        <td class="text-sm text-t4 font-mono lb-rank">{{ loop.index }}</td>
                         <td class="whitespace-nowrap">
                             <div class="flex items-center gap-2">
                                 <div class="h-7 w-7 rounded-lg bg-[rgba(167,139,250,0.1)] flex items-center justify-center text-av font-bold text-xs">
@@ -150,6 +157,13 @@
                 </tbody>
             </table>
         </div>
+        {% if user_leaderboard|length > 10 %}
+        <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)" id="userLbPager">
+            <button onclick="lbPage('user',-1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="userLbPrev" disabled>&larr; Prev</button>
+            <span id="userLbInfo"></span>
+            <button onclick="lbPage('user',1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="userLbNext">Next &rarr;</button>
+        </div>
+        {% endif %}
     </div>
 </div>
 
@@ -192,8 +206,23 @@
 
 {# ── User Management ── #}
 <div class="gw-anim gw-d5">
-    <h2 class="text-sm font-bold text-t2 mb-4">User Management</h2>
-    <div class="gw-card overflow-hidden">
+    <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-4">
+            <h2 class="text-sm font-bold text-t2">User Management</h2>
+            <div class="flex rounded-lg overflow-hidden border border-n4" style="border-color:rgba(255,255,255,0.06)">
+                <button id="umTabUsers" onclick="switchUmTab('users')" class="text-xs font-medium px-3 py-1.5 transition-colors bg-n3 text-t1">Users</button>
+                <button id="umTabApps" onclick="switchUmTab('apps')" class="text-xs font-medium px-3 py-1.5 transition-colors text-t4 hover:text-t2">Apps</button>
+            </div>
+        </div>
+        <div class="relative">
+            <svg class="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-t4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <input type="text" id="umSearch" oninput="filterUmTable()" placeholder="Search username..."
+                   class="gw-input text-sm py-1.5 pl-8 pr-3 w-56">
+        </div>
+    </div>
+
+    {# Users table #}
+    <div id="umUsersPanel" class="gw-card overflow-hidden">
         <div class="overflow-x-auto">
             <table class="gw-table">
                 <thead><tr>
@@ -202,13 +231,12 @@
                     <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
                     <th class="text-right">Actions</th>
                 </tr></thead>
-                <tbody>
-                    {% for u in users %}
-                    <tr>
+                <tbody id="umUsersBody">
+                    {% for u in users if not u.username.startswith('app_') %}
+                    <tr class="um-row" data-search="{{ (u.display_name or '')|lower }} {{ u.username|lower }} {{ (u.org_code or '')|lower }}">
                         <td class="whitespace-nowrap">
                             <div class="flex items-center gap-2">
-                                <div class="h-8 w-8 rounded-lg flex items-center justify-center font-bold text-sm
-                                    {{ 'bg-[rgba(99,152,255,0.1)] text-ab' if u.username.startswith('app_') else 'bg-[rgba(167,139,250,0.1)] text-av' }}">
+                                <div class="h-8 w-8 rounded-lg flex items-center justify-center font-bold text-sm bg-[rgba(167,139,250,0.1)] text-av">
                                     {{ u.username[0]|upper }}
                                 </div>
                                 <div>
@@ -223,11 +251,6 @@
                                     </div>
                                     {% if u.is_admin %}
                                         <span class="gw-badge" style="background:rgba(167,139,250,0.1);color:#a78bfa;border-color:rgba(167,139,250,0.15)">Admin</span>
-                                    {% elif u.username.startswith('app_') %}
-                                        <span class="gw-badge">App</span>
-                                        {% if u.owner_name %}
-                                        <span class="gw-badge" style="background:rgba(61,214,140,0.08);color:#3dd68c;border-color:rgba(61,214,140,0.15)">Owner: {{ u.owner_name }}</span>
-                                        {% endif %}
                                     {% else %}
                                         <span class="gw-badge" style="background:rgba(255,255,255,0.04);color:#868da0;border-color:rgba(255,255,255,0.06)">User</span>
                                     {% endif %}
@@ -261,6 +284,64 @@
                             {% else %}
                                 <span class="text-t4 text-xs italic">N/A</span>
                             {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    {# Apps table #}
+    <div id="umAppsPanel" class="gw-card overflow-hidden hidden">
+        <div class="overflow-x-auto">
+            <table class="gw-table">
+                <thead><tr>
+                    <th>App</th><th>API Key</th>
+                    <th class="gw-tip" data-tip="All-time cumulative cost">Total Spend</th>
+                    <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
+                    <th class="text-right">Actions</th>
+                </tr></thead>
+                <tbody id="umAppsBody">
+                    {% for u in users if u.username.startswith('app_') %}
+                    <tr class="um-row" data-search="{{ u.username|lower }} {{ (u.owner_name or '')|lower }}">
+                        <td class="whitespace-nowrap">
+                            <div class="flex items-center gap-2">
+                                <div class="h-8 w-8 rounded-lg flex items-center justify-center font-bold text-sm bg-[rgba(99,152,255,0.1)] text-ab">
+                                    {{ u.username[0]|upper }}
+                                </div>
+                                <div>
+                                    <div class="text-sm font-medium text-t1">{{ u.username }}</div>
+                                    <span class="gw-badge">App</span>
+                                    {% if u.owner_name %}
+                                    <span class="gw-badge" style="background:rgba(61,214,140,0.08);color:#3dd68c;border-color:rgba(61,214,140,0.15)">Owner: {{ u.owner_name }}</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </td>
+                        <td class="whitespace-nowrap">
+                            <button onclick="showKeyModal('{{ u.username }}', '{{ u.api_key }}', {{ u.id }})"
+                                    class="gw-btn gw-btn-ghost text-xs font-mono px-3 py-1.5">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+                                View Key
+                            </button>
+                        </td>
+                        <td class="whitespace-nowrap">
+                            <div class="text-sm text-t1 font-mono font-medium">${{ "%.4f"|format(u.total_cost) }}</div>
+                            <div class="text-xs text-t4">{{ u.total_tokens }} tokens</div>
+                        </td>
+                        <td class="whitespace-nowrap">
+                            <form action="/admin/users/{{ u.id }}/limit" method="POST" class="flex items-center gap-2">
+                                <span class="text-t4 text-sm">$</span>
+                                <input type="number" step="0.1" name="new_limit" value="{{ u.daily_limit_usd }}"
+                                       class="gw-input w-20 text-sm font-mono py-1 px-2">
+                                <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
+                            </form>
+                        </td>
+                        <td class="whitespace-nowrap text-right">
+                            <form action="/admin/users/{{ u.id }}/delete" method="POST" onsubmit="return confirm('Delete app {{ u.username }}? This cannot be undone.');">
+                                <button type="submit" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
+                            </form>
                         </td>
                     </tr>
                     {% endfor %}
@@ -303,6 +384,51 @@
 </div>
 
 <script>
+    /* ── Leaderboard pagination ── */
+    var lbState = { app: { page: 0, size: 10 }, user: { page: 0, size: 10 } };
+    function lbPage(kind, delta) {
+        var rows = document.querySelectorAll('.lb-' + kind + '-row');
+        var total = rows.length;
+        if (!total) return;
+        var s = lbState[kind];
+        s.page = Math.max(0, Math.min(s.page + delta, Math.ceil(total / s.size) - 1));
+        var start = s.page * s.size, end = start + s.size;
+        rows.forEach(function(r, i) {
+            r.style.display = (i >= start && i < end) ? '' : 'none';
+            if (i >= start && i < end) r.querySelector('.lb-rank').textContent = i + 1;
+        });
+        var prevBtn = document.getElementById(kind + 'LbPrev');
+        var nextBtn = document.getElementById(kind + 'LbNext');
+        var info = document.getElementById(kind + 'LbInfo');
+        if (prevBtn) prevBtn.disabled = s.page === 0;
+        if (nextBtn) nextBtn.disabled = end >= total;
+        if (info) info.textContent = (start + 1) + '-' + Math.min(end, total) + ' of ' + total;
+    }
+    // Initialize pagination on load
+    lbPage('app', 0); lbPage('user', 0);
+
+    /* ── User Management tabs ── */
+    var umActiveTab = 'users';
+    function switchUmTab(tab) {
+        umActiveTab = tab;
+        document.getElementById('umUsersPanel').classList.toggle('hidden', tab !== 'users');
+        document.getElementById('umAppsPanel').classList.toggle('hidden', tab !== 'apps');
+        var btnUsers = document.getElementById('umTabUsers');
+        var btnApps = document.getElementById('umTabApps');
+        btnUsers.className = 'text-xs font-medium px-3 py-1.5 transition-colors ' + (tab === 'users' ? 'bg-n3 text-t1' : 'text-t4 hover:text-t2');
+        btnApps.className = 'text-xs font-medium px-3 py-1.5 transition-colors ' + (tab === 'apps' ? 'bg-n3 text-t1' : 'text-t4 hover:text-t2');
+        filterUmTable();
+    }
+    function filterUmTable() {
+        var q = (document.getElementById('umSearch').value || '').toLowerCase().trim();
+        var bodyId = umActiveTab === 'users' ? 'umUsersBody' : 'umAppsBody';
+        var rows = document.querySelectorAll('#' + bodyId + ' .um-row');
+        rows.forEach(function(r) {
+            var text = r.getAttribute('data-search') || '';
+            r.style.display = (!q || text.indexOf(q) !== -1) ? '' : 'none';
+        });
+    }
+
     let currentUserId = null;
     function showKeyModal(username, apiKey, userId) {
         currentUserId = userId;

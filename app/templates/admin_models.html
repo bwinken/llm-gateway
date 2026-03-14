@@ -135,9 +135,9 @@ function renderModelRow(alias, info) {
     return `
         <tr id="row-${alias}">
             <td><span class="text-sm font-mono font-medium text-t1">${escHtml(alias)}</span></td>
-            <td><input type="text" value="${escAttr(info.real_model)}" data-alias="${escAttr(alias)}" data-field="real_model" onchange="updateField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
-            <td><input type="text" value="${escAttr(info.base_url)}" data-alias="${escAttr(alias)}" data-field="base_url" onchange="updateField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
-            <td><input type="text" value="${escAttr(info.api_key || '')}" data-alias="${escAttr(alias)}" data-field="api_key" onchange="updateField(this)" placeholder="(none)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
+            <td><input type="text" value="${escAttr(info.real_model)}" data-alias="${escAttr(alias)}" data-field="real_model" oninput="updateField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
+            <td><input type="text" value="${escAttr(info.base_url)}" data-alias="${escAttr(alias)}" data-field="base_url" oninput="updateField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
+            <td><input type="text" value="${escAttr(info.api_key || '')}" data-alias="${escAttr(alias)}" data-field="api_key" oninput="updateField(this)" placeholder="(none)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
             <td class="text-right"><button onclick="deleteModel('${escAttr(alias)}')" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button></td>
         </tr>
     `;
@@ -150,8 +150,8 @@ function renderPricing(types) {
     rows.push(`
         <tr style="background:rgba(255,255,255,0.015)">
             <td class="font-medium text-t2">Default</td>
-            <td><input type="number" step="0.01" value="${def.input_price_per_1m}" data-ptype="_default" data-pfield="input_price_per_1m" onchange="updatePricing(this)" class="gw-input w-28 text-sm py-1 px-2 font-mono"></td>
-            <td><input type="number" step="0.01" value="${def.output_price_per_1m}" data-ptype="_default" data-pfield="output_price_per_1m" onchange="updatePricing(this)" class="gw-input w-28 text-sm py-1 px-2 font-mono"></td>
+            <td><input type="number" step="0.01" value="${def.input_price_per_1m}" data-ptype="_default" data-pfield="input_price_per_1m" oninput="updatePricing(this)" class="gw-input w-28 text-sm py-1 px-2 font-mono"></td>
+            <td><input type="number" step="0.01" value="${def.output_price_per_1m}" data-ptype="_default" data-pfield="output_price_per_1m" oninput="updatePricing(this)" class="gw-input w-28 text-sm py-1 px-2 font-mono"></td>
         </tr>
     `);
     for (const t of types) {
@@ -160,8 +160,8 @@ function renderPricing(types) {
         rows.push(`
             <tr>
                 <td class="font-medium text-t1">${t}</td>
-                <td><input type="number" step="0.01" value="${p.input_price_per_1m}" data-ptype="${t}" data-pfield="input_price_per_1m" onchange="updatePricing(this)" class="gw-input w-28 text-sm py-1 px-2 font-mono"></td>
-                <td><input type="number" step="0.01" value="${p.output_price_per_1m}" data-ptype="${t}" data-pfield="output_price_per_1m" onchange="updatePricing(this)" class="gw-input w-28 text-sm py-1 px-2 font-mono"></td>
+                <td><input type="number" step="0.01" value="${p.input_price_per_1m}" data-ptype="${t}" data-pfield="input_price_per_1m" oninput="updatePricing(this)" class="gw-input w-28 text-sm py-1 px-2 font-mono"></td>
+                <td><input type="number" step="0.01" value="${p.output_price_per_1m}" data-ptype="${t}" data-pfield="output_price_per_1m" oninput="updatePricing(this)" class="gw-input w-28 text-sm py-1 px-2 font-mono"></td>
             </tr>
         `);
     }
