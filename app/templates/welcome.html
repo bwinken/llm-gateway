@@ -75,7 +75,7 @@
             <pre class="gw-code p-4 text-sm font-mono overflow-x-auto leading-relaxed"><span class="text-av">from</span> <span class="text-t1">openai</span> <span class="text-av">import</span> <span class="text-t1">OpenAI</span>
 
 client = OpenAI(
-    base_url=<span class="text-ag">"http://{{ request.url.hostname }}:{{ request.url.port }}/v1"</span>,
+    base_url=<span class="text-ag">"{{ gateway_base }}"</span>,
     api_key=<span class="text-ag">"{{ user.api_key }}"</span>
 )
 
