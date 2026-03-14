@@ -36,8 +36,6 @@ services:
     image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
     container_name: llm-gateway-oauth2-proxy
     restart: unless-stopped
-    depends_on:
-      - postgres
     ports:
       - "127.0.0.1:4180:4180"
     environment:
