@@ -1,11 +1,11 @@
-"""Tests for app account ownership feature."""
+"""Tests for app account ownership feature (many-to-many via AppOwner)."""
 
 from __future__ import annotations
 
 import pytest
-from sqlmodel import Session
+from sqlmodel import Session, select
 
-from app.models.schema import User
+from app.models.schema import AppOwner, User
 from tests.conftest import auth_header, web_auth_header
 
 
@@ -26,16 +26,18 @@ def owner_user(db_session: Session) -> User:
 
 @pytest.fixture()
 def owned_app(db_session: Session, owner_user: User) -> User:
-    """An app account owned by owner_user."""
+    """An app account owned by owner_user via AppOwner table."""
     app = User(
         username="app_my_service",
         api_key="sk-appkey-owned",
         daily_limit_usd=50.0,
-        owner_id=owner_user.id,
     )
     db_session.add(app)
     db_session.commit()
     db_session.refresh(app)
+    # Create ownership via AppOwner
+    db_session.add(AppOwner(app_id=app.id, owner_id=owner_user.id))
+    db_session.commit()
     return app
 
 
@@ -54,33 +56,31 @@ def unowned_app(db_session: Session) -> User:
 
 
 class TestCreateWithOwner:
-    """Admin API: create app accounts with owner_id."""
+    """Admin API: create app accounts with owner_ids."""
 
     def test_create_app_with_owner(self, client, db_session, admin_user, owner_user):
         resp = client.post(
             "/admin/users",
             json={
                 "username": "app_new_service",
-                "owner_id": owner_user.id,
+                "owner_ids": [owner_user.id],
             },
             headers=auth_header(admin_user.api_key),
         )
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is True
-        assert data["owner_id"] == owner_user.id
+        assert data["owner_ids"] == [owner_user.id]
 
-    def test_create_app_with_invalid_owner(self, client, db_session, admin_user):
-        resp = client.post(
-            "/admin/users",
-            json={
-                "username": "app_bad_owner",
-                "owner_id": 99999,
-            },
-            headers=auth_header(admin_user.api_key),
-        )
-        assert resp.status_code == 400
-        assert "Owner user not found" in resp.json()["detail"]
+        # Verify AppOwner record created
+        new_user = db_session.exec(
+            select(User).where(User.username == "app_new_service")
+        ).first()
+        ao = db_session.exec(
+            select(AppOwner).where(AppOwner.app_id == new_user.id)
+        ).first()
+        assert ao is not None
+        assert ao.owner_id == owner_user.id
 
     def test_create_app_without_owner(self, client, db_session, admin_user):
         resp = client.post(
@@ -90,45 +90,42 @@ class TestCreateWithOwner:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["owner_id"] is None
+        assert data["owner_ids"] == []
 
 
 class TestUpdateOwner:
-    """Admin API: update owner_id via PATCH."""
+    """Admin API: update owners via PATCH with owner_ids."""
 
     def test_set_owner(self, client, db_session, admin_user, unowned_app, owner_user):
         resp = client.patch(
             f"/admin/users/{unowned_app.id}",
-            json={"owner_id": owner_user.id},
+            json={"owner_ids": [owner_user.id]},
             headers=auth_header(admin_user.api_key),
         )
         assert resp.status_code == 200
-        db_session.refresh(unowned_app)
-        assert unowned_app.owner_id == owner_user.id
+        ao = db_session.exec(
+            select(AppOwner).where(AppOwner.app_id == unowned_app.id)
+        ).first()
+        assert ao is not None
+        assert ao.owner_id == owner_user.id
 
     def test_clear_owner(self, client, db_session, admin_user, owned_app):
         resp = client.patch(
             f"/admin/users/{owned_app.id}",
-            json={"owner_id": None},
+            json={"owner_ids": []},
             headers=auth_header(admin_user.api_key),
         )
         assert resp.status_code == 200
-        db_session.refresh(owned_app)
-        assert owned_app.owner_id is None
-
-    def test_set_invalid_owner(self, client, db_session, admin_user, unowned_app):
-        resp = client.patch(
-            f"/admin/users/{unowned_app.id}",
-            json={"owner_id": 99999},
-            headers=auth_header(admin_user.api_key),
-        )
-        assert resp.status_code == 400
+        ao = db_session.exec(
+            select(AppOwner).where(AppOwner.app_id == owned_app.id)
+        ).first()
+        assert ao is None
 
 
 class TestListUsersIncludesOwner:
-    """Admin API: GET /admin/users includes owner_id."""
+    """Admin API: GET /admin/users includes owner_ids."""
 
-    def test_list_includes_owner_id(self, client, db_session, admin_user, owned_app):
+    def test_list_includes_owner_ids(self, client, db_session, admin_user, owned_app):
         resp = client.get(
             "/admin/users",
             headers=auth_header(admin_user.api_key),
@@ -136,8 +133,8 @@ class TestListUsersIncludesOwner:
         assert resp.status_code == 200
         users = resp.json()
         app_entry = next(u for u in users if u["username"] == "app_my_service")
-        assert "owner_id" in app_entry
-        assert app_entry["owner_id"] is not None
+        assert "owner_ids" in app_entry
+        assert len(app_entry["owner_ids"]) > 0
 
 
 class TestRefreshOwnedAppKey:

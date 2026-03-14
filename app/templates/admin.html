@@ -340,7 +340,7 @@
                 </tr></thead>
                 <tbody id="umAppsBody" class="um-paged-body">
                     {% for u in users if u.username.startswith('app_') %}
-                    <tr class="um-row" data-search="{{ u.username|lower }} {{ (u.owner_name or '')|lower }}">
+                    <tr class="um-row" data-search="{{ u.username|lower }} {{ u.owners|join(' ')|lower }}">
                         <td class="whitespace-nowrap">
                             <div class="flex items-center gap-2">
                                 <div class="h-8 w-8 rounded-lg flex items-center justify-center font-bold text-sm bg-[rgba(99,152,255,0.1)] text-ab">
@@ -361,8 +361,8 @@
                         </td>
                         <td class="whitespace-nowrap">
                             <form action="/admin/users/{{ u.id }}/owner" method="POST" class="flex items-center gap-1">
-                                <input type="text" name="owner_username" value="{{ u.owner_name }}" placeholder="username"
-                                       class="gw-input w-28 text-sm font-mono py-1 px-2">
+                                <input type="text" name="owner_usernames" value="{{ u.owners|join(', ') }}" placeholder="user1, user2"
+                                       class="gw-input w-40 text-sm font-mono py-1 px-2" title="Comma-separated usernames">
                                 <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Set</button>
                             </form>
                         </td>

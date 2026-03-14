@@ -235,7 +235,7 @@ def _patch_all():
         patch("app.services.proxy.get_client", return_value=_mock_httpx_client),
         patch("app.services.proxy.engine", _test_engine),
         patch("app.services.proxy.is_alive", return_value=True),
-        patch("app.routers.llm_api.MODEL_ROUTING", TEST_MODEL_ROUTING),
+        patch("app.core.config.get_model_routing_snapshot", return_value=TEST_MODEL_ROUTING),
         patch("app.core.server_state.get_client", return_value=_mock_httpx_client),
         patch("app.core.auth._decode_jwt", _test_decode_jwt),
     ):

@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
-from app.models.schema import User
+from app.models.schema import AppOwner, User
 
 from app.core.auth import get_web_user
 from app.core.config import APP_TITLE, get_model_routing_snapshot
@@ -164,7 +164,10 @@ async def refresh_owned_app_key(
     if not target:
         raise HTTPException(status_code=404, detail="App account not found.")
 
-    if target.owner_id != user.id:
+    ownership = session.exec(
+        select(AppOwner).where(AppOwner.app_id == app_id, AppOwner.owner_id == user.id)
+    ).first()
+    if not ownership:
         raise HTTPException(status_code=403, detail="You do not own this app account.")
 
     target.api_key = f"sk-{uuid.uuid4().hex}"
