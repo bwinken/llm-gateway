@@ -262,8 +262,8 @@
                     <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
                     <th style="text-align:right">Actions</th>
                 </tr></thead>
-                <tbody id="umUsersBody" class="um-paged-body">
-                    {% for u in users if not u.username.startswith('app_') %}
+                <tbody id="umUsersBody">
+                    {% for u in users %}
                     <tr class="um-row" data-search="{{ (u.display_name or '')|lower }} {{ u.username|lower }} {{ (u.org_code or '')|lower }}">
                         <td class="whitespace-nowrap">
                             <div class="flex items-center gap-2">
@@ -289,7 +289,8 @@
                             </div>
                         </td>
                         <td class="whitespace-nowrap">
-                            <button onclick="showKeyModal('{{ u.username }}', '{{ u.api_key }}', {{ u.id }})"
+                            <button data-username="{{ u.username }}" data-apikey="{{ u.api_key }}" data-uid="{{ u.id }}"
+                                    onclick="showKeyModal(this)"
                                     class="gw-btn gw-btn-ghost text-xs font-mono px-3 py-1.5">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
                                 View Key
@@ -309,7 +310,8 @@
                         </td>
                         <td class="whitespace-nowrap text-right">
                             {% if not u.is_admin %}
-                            <form action="/admin/users/{{ u.id }}/delete" method="POST" onsubmit="return confirm('Delete user {{ u.username }}? This cannot be undone.');">
+                            <form action="/admin/users/{{ u.id }}/delete" method="POST" data-username="{{ u.username }}"
+                                  onsubmit="return confirm('Delete user ' + this.dataset.username + '? This cannot be undone.');">
                                 <button type="submit" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
                             </form>
                             {% else %}
@@ -321,11 +323,15 @@
                 </tbody>
             </table>
         </div>
-        <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)" id="umUsersPager">
-            <button onclick="umPage('users',-1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="umUsersPrev" disabled>&larr; Prev</button>
-            <span id="umUsersInfo"></span>
-            <button onclick="umPage('users',1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="umUsersNext">Next &rarr;</button>
+        {% if user_total > 0 %}
+        <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)">
+            <a href="?offset={{ [offset - limit, 0]|max }}&limit={{ limit }}&app_offset={{ app_offset }}&app_limit={{ app_limit }}"
+               class="gw-btn gw-btn-ghost text-xs px-2 py-1 {{ 'opacity-30 pointer-events-none' if offset == 0 }}">&larr; Prev</a>
+            <span>{{ offset + 1 }}-{{ [offset + limit, user_total]|min }} of {{ user_total }}</span>
+            <a href="?offset={{ offset + limit }}&limit={{ limit }}&app_offset={{ app_offset }}&app_limit={{ app_limit }}"
+               class="gw-btn gw-btn-ghost text-xs px-2 py-1 {{ 'opacity-30 pointer-events-none' if offset + limit >= user_total }}">&rarr; Next</a>
         </div>
+        {% endif %}
     </div>
 
     {# Apps table #}
@@ -338,8 +344,8 @@
                     <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
                     <th style="text-align:right">Actions</th>
                 </tr></thead>
-                <tbody id="umAppsBody" class="um-paged-body">
-                    {% for u in users if u.username.startswith('app_') %}
+                <tbody id="umAppsBody">
+                    {% for u in apps %}
                     <tr class="um-row" data-search="{{ u.username|lower }} {{ u.owners|join(' ')|lower }}">
                         <td class="whitespace-nowrap">
                             <div class="flex items-center gap-2">
@@ -353,7 +359,8 @@
                             </div>
                         </td>
                         <td class="whitespace-nowrap">
-                            <button onclick="showKeyModal('{{ u.username }}', '{{ u.api_key }}', {{ u.id }})"
+                            <button data-username="{{ u.username }}" data-apikey="{{ u.api_key }}" data-uid="{{ u.id }}"
+                                    onclick="showKeyModal(this)"
                                     class="gw-btn gw-btn-ghost text-xs font-mono px-3 py-1.5">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
                                 View Key
@@ -379,7 +386,8 @@
                             </form>
                         </td>
                         <td class="whitespace-nowrap text-right">
-                            <form action="/admin/users/{{ u.id }}/delete" method="POST" onsubmit="return confirm('Delete app {{ u.username }}? This cannot be undone.');">
+                            <form action="/admin/users/{{ u.id }}/delete" method="POST" data-username="{{ u.username }}"
+                                  onsubmit="return confirm('Delete app ' + this.dataset.username + '? This cannot be undone.');">
                                 <button type="submit" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
                             </form>
                         </td>
@@ -388,11 +396,15 @@
                 </tbody>
             </table>
         </div>
-        <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)" id="umAppsPager">
-            <button onclick="umPage('apps',-1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="umAppsPrev" disabled>&larr; Prev</button>
-            <span id="umAppsInfo"></span>
-            <button onclick="umPage('apps',1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="umAppsNext">Next &rarr;</button>
+        {% if app_total > 0 %}
+        <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)">
+            <a href="?offset={{ offset }}&limit={{ limit }}&app_offset={{ [app_offset - app_limit, 0]|max }}&app_limit={{ app_limit }}"
+               class="gw-btn gw-btn-ghost text-xs px-2 py-1 {{ 'opacity-30 pointer-events-none' if app_offset == 0 }}">&larr; Prev</a>
+            <span>{{ app_offset + 1 }}-{{ [app_offset + app_limit, app_total]|min }} of {{ app_total }}</span>
+            <a href="?offset={{ offset }}&limit={{ limit }}&app_offset={{ app_offset + app_limit }}&app_limit={{ app_limit }}"
+               class="gw-btn gw-btn-ghost text-xs px-2 py-1 {{ 'opacity-30 pointer-events-none' if app_offset + app_limit >= app_total }}">&rarr; Next</a>
         </div>
+        {% endif %}
     </div>
 </div>
 
@@ -452,9 +464,8 @@
     // Initialize pagination on load
     lbPage('app', 0); lbPage('user', 0);
 
-    /* ── User Management tabs + pagination ── */
+    /* ── User Management tabs + search ── */
     var umActiveTab = 'users';
-    var umState = { users: { page: 0, size: 15 }, apps: { page: 0, size: 15 } };
 
     function switchUmTab(tab) {
         umActiveTab = tab;
@@ -464,54 +475,24 @@
         var btnApps = document.getElementById('umTabApps');
         btnUsers.className = 'text-xs font-medium px-3 py-1.5 transition-colors ' + (tab === 'users' ? 'bg-n3 text-t1' : 'text-t4 hover:text-t2');
         btnApps.className = 'text-xs font-medium px-3 py-1.5 transition-colors ' + (tab === 'apps' ? 'bg-n3 text-t1' : 'text-t4 hover:text-t2');
-        umState[tab].page = 0;
+        document.getElementById('umSearch').value = '';
         filterUmTable();
     }
     function filterUmTable() {
         var q = (document.getElementById('umSearch').value || '').toLowerCase().trim();
         var bodyId = umActiveTab === 'users' ? 'umUsersBody' : 'umAppsBody';
         var rows = document.querySelectorAll('#' + bodyId + ' .um-row');
-        // First pass: mark matched rows
-        var matched = [];
         rows.forEach(function(r) {
             var text = r.getAttribute('data-search') || '';
-            var show = !q || text.indexOf(q) !== -1;
-            r.dataset.matched = show ? '1' : '0';
-            if (show) matched.push(r);
+            r.style.display = (!q || text.indexOf(q) !== -1) ? '' : 'none';
         });
-        // Reset page if search changed
-        if (q) umState[umActiveTab].page = 0;
-        // Apply pagination to matched rows
-        var s = umState[umActiveTab];
-        var total = matched.length;
-        var maxPage = Math.max(0, Math.ceil(total / s.size) - 1);
-        s.page = Math.min(s.page, maxPage);
-        var start = s.page * s.size, end = start + s.size;
-        rows.forEach(function(r) { r.style.display = 'none'; });
-        matched.forEach(function(r, i) {
-            r.style.display = (i >= start && i < end) ? '' : 'none';
-        });
-        // Update pager
-        var kind = umActiveTab === 'users' ? 'Users' : 'Apps';
-        var prevBtn = document.getElementById('um' + kind + 'Prev');
-        var nextBtn = document.getElementById('um' + kind + 'Next');
-        var info = document.getElementById('um' + kind + 'Info');
-        if (prevBtn) prevBtn.disabled = s.page === 0;
-        if (nextBtn) nextBtn.disabled = end >= total;
-        if (info) info.textContent = total ? (start + 1) + '-' + Math.min(end, total) + ' of ' + total : '0 items';
     }
-    function umPage(tab, delta) {
-        umState[tab].page += delta;
-        filterUmTable();
-    }
-    // Initialize on load
-    filterUmTable();
 
     let currentUserId = null;
-    function showKeyModal(username, apiKey, userId) {
-        currentUserId = userId;
-        document.getElementById('modalUsername').textContent = username;
-        document.getElementById('modalKeyValue').value = apiKey;
+    function showKeyModal(el) {
+        currentUserId = el.dataset.uid;
+        document.getElementById('modalUsername').textContent = el.dataset.username;
+        document.getElementById('modalKeyValue').value = el.dataset.apikey;
         document.getElementById('modalCopyFeedback').textContent = '';
         document.getElementById('keyModal').classList.remove('hidden');
     }

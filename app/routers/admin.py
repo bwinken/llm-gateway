@@ -12,14 +12,21 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete
-from sqlmodel import Session, select
+from sqlmodel import Session, func, select
 
 from app.core.auth import get_web_user
 from app.core.config import APP_TITLE, get_config_data, save_config
 from app.core.database import get_session
 from app.core.deps import get_current_user
 from app.models.schema import AppOwner, User, UsageLog
-from app.services.stats import get_all_users_usage, get_dau_trends, get_department_usage, get_monthly_all_users_usage
+from app.services.stats import (
+    get_all_users_usage,
+    get_dau_trends,
+    get_department_usage,
+    get_leaderboard,
+    get_monthly_all_users_usage,
+    get_monthly_totals,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 _templates_dir = Path(__file__).resolve().parent.parent / "templates"
@@ -41,48 +48,79 @@ def _require_admin(
 
 # ── Web UI ──
 
+_PAGE_SIZE = 15
+
+
 @router.get("", response_class=HTMLResponse)
 async def admin_page(
     request: Request,
     session: Session = Depends(get_session),
+    limit: int = _PAGE_SIZE,
+    offset: int = 0,
+    app_limit: int = _PAGE_SIZE,
+    app_offset: int = 0,
 ):
     admin_user, payload = _require_admin(request, session)
 
-    all_users = session.exec(select(User).order_by(User.id)).all()
+    # ── Monthly totals (single aggregate query) ──
+    totals = get_monthly_totals(session)
+
+    # ── Leaderboards (top-N queries) ──
+    app_leaderboard = get_leaderboard(session, is_app=True, limit=10)
+    user_leaderboard = get_leaderboard(session, is_app=False, limit=10)
+
+    # ── User Management: paginated queries ──
+    user_count_stmt = select(func.count(User.id)).where(~User.username.startswith("app_"))
+    app_count_stmt = select(func.count(User.id)).where(User.username.startswith("app_"))
+    user_total = session.exec(user_count_stmt).one()
+    app_total = session.exec(app_count_stmt).one()
+
+    # Clamp offset
+    offset = max(0, min(offset, max(user_total - 1, 0)))
+    app_offset = max(0, min(app_offset, max(app_total - 1, 0)))
+
+    paged_users = session.exec(
+        select(User)
+        .where(~User.username.startswith("app_"))
+        .order_by(User.id)
+        .offset(offset).limit(limit)
+    ).all()
+    paged_apps = session.exec(
+        select(User)
+        .where(User.username.startswith("app_"))
+        .order_by(User.id)
+        .offset(app_offset).limit(app_limit)
+    ).all()
+
+    # Usage maps for paginated users only
+    paged_ids = [u.id for u in paged_users] + [u.id for u in paged_apps]
     usage_map = get_all_users_usage(session)
     monthly_map = get_monthly_all_users_usage(session)
 
-    users = []
-    app_leaderboard = []
-    user_leaderboard = []
-    monthly_total_cost = 0.0
-    monthly_total_input = 0
-    monthly_total_output = 0
-    monthly_total_reqs = 0
-
-    # Build user lookup and app->owners mapping
-    user_lookup: dict[int, str] = {}
-    potential_owners: list[dict] = []
-    for u in all_users:
-        user_lookup[u.id] = u.username
-        if not u.username.startswith("app_"):
-            potential_owners.append({"id": u.id, "username": u.username})
-
-    # Build app_id -> list of owner usernames
+    # Owner lookup for app accounts
     all_app_owners = session.exec(select(AppOwner)).all()
+    user_lookup: dict[int, str] = {}
+    for u in paged_users:
+        user_lookup[u.id] = u.username
+    # Also need usernames of owners who may not be in the paged set
+    owner_ids = {ao.owner_id for ao in all_app_owners}
+    if owner_ids:
+        owners = session.exec(select(User).where(User.id.in_(owner_ids))).all()
+        for o in owners:
+            user_lookup[o.id] = o.username
+
     app_owners_map: dict[int, list[str]] = {}
     for ao in all_app_owners:
         app_owners_map.setdefault(ao.app_id, []).append(
             user_lookup.get(ao.owner_id, str(ao.owner_id))
         )
 
-    for u in all_users:
+    def _build_user_data(u: User) -> dict:
         usage = usage_map.get(u.id, {"total_cost": 0.0, "total_tokens": 0})
         monthly = monthly_map.get(u.id, {
             "cost": 0.0, "input_tokens": 0, "output_tokens": 0, "requests": 0,
         })
-
-        user_data = {
+        return {
             "id": u.id,
             "username": u.username,
             "api_key": u.api_key,
@@ -98,21 +136,9 @@ async def admin_page(
             "monthly_output": monthly["output_tokens"],
             "monthly_reqs": monthly["requests"],
         }
-        users.append(user_data)
 
-        monthly_total_cost += monthly["cost"]
-        monthly_total_input += monthly["input_tokens"]
-        monthly_total_output += monthly["output_tokens"]
-        monthly_total_reqs += monthly["requests"]
-
-        if u.username.startswith("app_"):
-            app_leaderboard.append(user_data)
-        else:
-            user_leaderboard.append(user_data)
-
-    # Sort leaderboards by monthly cost descending
-    app_leaderboard.sort(key=lambda x: x["monthly_cost"], reverse=True)
-    user_leaderboard.sort(key=lambda x: x["monthly_cost"], reverse=True)
+    users = [_build_user_data(u) for u in paged_users]
+    apps = [_build_user_data(u) for u in paged_apps]
 
     now = datetime.now(timezone.utc)
     month_label = now.strftime("%B %Y")
@@ -131,18 +157,25 @@ async def admin_page(
             "display_name": admin_user.display_name or admin_user.username,
             "org_code": admin_user.org_code,
             "users": users,
+            "apps": apps,
             "app_leaderboard": app_leaderboard,
             "user_leaderboard": user_leaderboard,
             "month_label": month_label,
-            "monthly_total_cost": round(monthly_total_cost, 4),
-            "monthly_total_input": monthly_total_input,
-            "monthly_total_output": monthly_total_output,
-            "monthly_total_reqs": monthly_total_reqs,
-            "potential_owners": potential_owners,
+            "monthly_total_cost": totals["cost"],
+            "monthly_total_input": totals["input_tokens"],
+            "monthly_total_output": totals["output_tokens"],
+            "monthly_total_reqs": totals["requests"],
             "dept_usage": dept_usage,
-            "current_year": datetime.now(timezone.utc).year,
+            "current_year": now.year,
             "dau_data": dau_data,
             "today_dau": today_dau,
+            # Pagination state
+            "limit": limit,
+            "offset": offset,
+            "user_total": user_total,
+            "app_limit": app_limit,
+            "app_offset": app_offset,
+            "app_total": app_total,
         },
     )
 

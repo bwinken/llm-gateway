@@ -8,7 +8,7 @@ import asyncio
 
 from app.core.config import MODEL_ROUTING, _check_auto_reload
 from app.core.logger import logger
-from app.core.server_state import get_client, set_alive
+from app.core.server_state import get_client, prune_cache, set_alive
 
 
 async def check_all_servers() -> None:
@@ -37,6 +37,7 @@ async def check_all_servers() -> None:
             logger.warning("Server DOWN: {}", base_url)
 
     await asyncio.gather(*[_ping(url, key) for url, key in seen.items()])
+    prune_cache(set(seen.keys()))
 
 
 async def health_check_loop(interval: int = 30) -> None:

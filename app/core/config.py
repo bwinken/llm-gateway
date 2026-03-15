@@ -126,21 +126,21 @@ def reload_config() -> None:
         pass
     _, new_routing, new_pricing, new_fallback = _build_config(raw)
 
+    # Pre-compute stale keys outside the lock
+    stale_routing = set(MODEL_ROUTING) - set(new_routing)
+    stale_pricing = set(PRICING_MAP) - set(new_pricing)
+    stale_fallback = set(FALLBACK_MAP) - set(new_fallback)
+
     with _config_lock:
-        # Update first, then remove stale keys (never leaves dicts empty mid-swap)
-        stale = set(MODEL_ROUTING) - set(new_routing)
+        # Swap all three dicts as close together as possible
         MODEL_ROUTING.update(new_routing)
-        for k in stale:
-            MODEL_ROUTING.pop(k, None)
-
-        stale = set(PRICING_MAP) - set(new_pricing)
         PRICING_MAP.update(new_pricing)
-        for k in stale:
-            PRICING_MAP.pop(k, None)
-
-        stale = set(FALLBACK_MAP) - set(new_fallback)
         FALLBACK_MAP.update(new_fallback)
-        for k in stale:
+        for k in stale_routing:
+            MODEL_ROUTING.pop(k, None)
+        for k in stale_pricing:
+            PRICING_MAP.pop(k, None)
+        for k in stale_fallback:
             FALLBACK_MAP.pop(k, None)
 
 

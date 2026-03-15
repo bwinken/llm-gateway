@@ -10,7 +10,7 @@ and returns the authenticated user.
 
 from __future__ import annotations
 
-from functools import lru_cache
+import os
 from pathlib import Path
 
 import jwt
@@ -23,10 +23,23 @@ from app.models.schema import User
 
 _ALGORITHM = "RS256"
 
+# Cache public key with mtime check so key rotation takes effect without restart.
+_pk_cache: tuple[float, str] = (0.0, "")
 
-@lru_cache
+
 def _load_public_key() -> str:
-    return Path(AUTH_CENTER_PUBLIC_KEY_PATH).read_text()
+    global _pk_cache
+    p = Path(AUTH_CENTER_PUBLIC_KEY_PATH)
+    try:
+        mtime = os.path.getmtime(p)
+    except OSError:
+        # File missing — return cached value if any, otherwise raise
+        if _pk_cache[1]:
+            return _pk_cache[1]
+        raise
+    if mtime != _pk_cache[0]:
+        _pk_cache = (mtime, p.read_text())
+    return _pk_cache[1]
 
 
 def _decode_jwt(token: str) -> dict | None:

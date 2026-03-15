@@ -118,6 +118,74 @@ def get_all_users_usage(session: Session) -> dict[int, dict]:
     }
 
 
+def get_monthly_totals(session: Session) -> dict:
+    """Return aggregate monthly totals across all users (single row query)."""
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    stmt = select(
+        func.coalesce(func.sum(UsageLog.cost_usd), 0),
+        func.coalesce(func.sum(UsageLog.input_tokens), 0),
+        func.coalesce(func.sum(UsageLog.output_tokens), 0),
+        func.count(UsageLog.id),
+    ).where(UsageLog.created_at >= month_start)
+    row = session.exec(stmt).first()
+    return {
+        "cost": round(float(row[0]), 4) if row else 0.0,
+        "input_tokens": int(row[1]) if row else 0,
+        "output_tokens": int(row[2]) if row else 0,
+        "requests": int(row[3]) if row else 0,
+    }
+
+
+def get_leaderboard(
+    session: Session, *, is_app: bool, limit: int = 10,
+) -> list[dict]:
+    """Return top-N users/apps by monthly cost with their usage stats."""
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    prefix_filter = (
+        User.username.startswith("app_") if is_app
+        else ~User.username.startswith("app_")
+    )
+
+    stmt = (
+        select(
+            User.id,
+            User.username,
+            User.display_name,
+            User.org_code,
+            User.is_admin,
+            func.coalesce(func.sum(UsageLog.cost_usd), 0),
+            func.coalesce(func.sum(UsageLog.input_tokens), 0),
+            func.coalesce(func.sum(UsageLog.output_tokens), 0),
+            func.count(UsageLog.id),
+        )
+        .join(UsageLog, UsageLog.user_id == User.id)
+        .where(UsageLog.created_at >= month_start)
+        .where(prefix_filter)
+        .group_by(User.id, User.username, User.display_name, User.org_code, User.is_admin)
+        .order_by(func.sum(UsageLog.cost_usd).desc())
+        .limit(limit)
+    )
+    rows = session.exec(stmt).all()
+    return [
+        {
+            "id": int(row[0]),
+            "username": row[1],
+            "display_name": row[2],
+            "org_code": row[3],
+            "is_admin": row[4],
+            "monthly_cost": round(float(row[5]), 6),
+            "monthly_input": int(row[6]),
+            "monthly_output": int(row[7]),
+            "monthly_reqs": int(row[8]),
+        }
+        for row in rows
+    ]
+
+
 def get_monthly_all_users_usage(session: Session) -> dict[int, dict]:
     """Return per-user usage for the current calendar month."""
     now = datetime.now(timezone.utc)

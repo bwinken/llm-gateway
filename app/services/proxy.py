@@ -297,7 +297,10 @@ async def _stream_chat(
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
         finally:
             if resp is not None:
-                await resp.aclose()
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
 
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
@@ -470,7 +473,10 @@ async def _passthrough_stream(
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
         finally:
             if resp is not None:
-                await resp.aclose()
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
 
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
