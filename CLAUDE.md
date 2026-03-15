@@ -50,7 +50,7 @@ Client (Bearer API key) → FastAPI → deps.py (auth + daily limit check)
 
 - **API endpoints** (`/v1/*`): API key in `Authorization: Bearer <key>` header → `deps.py:get_current_user()` looks up User by `api_key` in DB
 - **Web UI** (`/`, `/dashboard`, `/admin`): oauth2-proxy handles login via AuthCenter OIDC → nginx `auth_request` validates session → injects `Authorization: Bearer <JWT>` header → `auth.py:get_web_user()` decodes JWT, returns `(User, scopes, payload)`
-- JWT validation: RS256, `audience=AUTH_CENTER_APP_ID`, `issuer="auth-center"`, `leeway=5` for clock skew tolerance
+- JWT validation: RS256, `audience=AUTH_CENTER_APP_ID`, `issuer=AUTH_BASE_URL`, `leeway=5` for clock skew tolerance. Public key loaded from `AUTH_CENTER_PUBLIC_KEY_PATH` with mtime-based reload (key rotation takes effect without restart).
 - Admin access for web UI is determined by `"admin" in scopes` (from AuthCenter JWT), NOT by `user.is_admin` in DB
 - JWT payload fields `display_name` and `org_code` are persisted to the User model on each login (auto-synced from IdP) and displayed in navbar + admin tables
 
@@ -69,13 +69,13 @@ Three forwarding methods, all sharing `_resolve_model()` for health-aware routin
 ### Configuration
 
 - **`config.toml`**: Model routing (alias → base_url + real_model + api_key + type) and per-type pricing. Parsed at import time by `app/core/config.py` into `MODEL_ROUTING` and `PRICING_MAP` dicts. Downstream API keys are stored directly here as `api_key`.
-- **`.env`**: DATABASE_URL, AUTH_CENTER_APP_ID/PUBLIC_KEY_PATH.
+- **`.env`**: DATABASE_URL, AUTH_CENTER_APP_ID/PUBLIC_KEY_PATH, AUTH_BASE_URL (JWT issuer).
 - **`deploy/.env`**: Docker Compose settings: PG credentials, OIDC issuer, oauth2-proxy client.
 
 ### Key Patterns
 
 - All downstream HTTP calls use a single shared `httpx.AsyncClient` (initialized in lifespan, accessed via `server_state.get_client()`)
-- Background health check loop pings all unique `base_url`s every 30s, updates `server_state._health_cache`
+- Background health check loop pings all unique `base_url`s every 30s, updates `server_state._health_cache`, prunes stale entries
 - Usage is logged per-request to `usage_logs` table with cost calculated from `PRICING_MAP`
 - Model alias (user-facing name) is swapped to `real_model` before forwarding downstream
 
@@ -94,6 +94,7 @@ When adding new tests, always use the existing `client` fixture and `auth_header
 ## Database
 
 - Production: PostgreSQL (`psycopg2-binary`)
-- Tables: `users` (with auto-generated `api_key`, `display_name`, `org_code`), `usage_logs` (with composite index on `user_id + created_at`)
+- Tables: `users` (with auto-generated `api_key`, `display_name`, `org_code`), `usage_logs` (with covering index on `user_id + created_at + cost_usd`), `app_owners` (many-to-many: which users own which app accounts)
 - `password_hash` field exists on User model with `default=""` for backward compatibility but is unused
 - `display_name` and `org_code` are synced from IdP JWT on each web login
+- `scripts/cleanup_usage_logs.py`: retention cleanup script (default 1 year, dry-run by default, `--execute` to delete)

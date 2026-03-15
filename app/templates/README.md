@@ -68,10 +68,12 @@
 | 區塊 | 說明 |
 |---|---|
 | **Monthly Summary** | 全平台當月彙總：Total Requests、Total Cost、Input / Output Tokens |
-| **App Leaderboard** | App 帳號排行榜（`app_*`），按月費用降序，顯示 Cost / Input / Output / Reqs |
-| **User Leaderboard** | 使用者排行榜，按月費用降序，顯示 display_name、org_code badge、Admin badge |
-| **Create App Account** | 建立新 App 帳號的表單：username（自動加 `app_` 前綴）、Daily Limit、Owner 下拉選單 |
-| **User Management** | 全使用者表格：顯示 display_name（附 username 和 org_code）、角色（Admin / App / User）、API key、Total Spend、Daily Limit |
+| **DAU Trend** | Chart.js 柱狀圖，近 30 天 Daily Active Users，右上顯示今日 DAU |
+| **App Leaderboard** | App 帳號排行榜（`app_*`），按月費用降序 top-10 |
+| **User Leaderboard** | 使用者排行榜，按月費用降序 top-10，顯示 display_name、org_code badge |
+| **Department Usage** | 依 org_code 分組的部門用量表：Users、Cost、Input / Output Tokens、Reqs |
+| **Create App Account** | 建立新 App 帳號的表單：username（自動加 `app_` 前綴）、Daily Limit、Owner |
+| **User Management** | 後端分頁（limit/offset）的使用者表格，Users / Apps 分頁切換 |
 
 ### 可執行操作
 

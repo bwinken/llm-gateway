@@ -32,6 +32,7 @@ graph TD
 | `DATABASE_URL` | `str` | `.env` | PostgreSQL 連線字串 |
 | `AUTH_CENTER_APP_ID` | `str` | `.env` | JWT audience 驗證值 |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | `str` | `.env` | RS256 公鑰路徑 |
+| `AUTH_BASE_URL` | `str` | `.env` | JWT issuer 驗證值（預設 `auth-center`） |
 | `MODEL_ROUTING` | `dict[str, dict]` | `config.toml` | 模型路由表：alias → `{base_url, real_model, api_key, type}` |
 | `PRICING_MAP` | `dict[str, dict]` | `config.toml` | 定價表：type → `{input_price_per_1m, output_price_per_1m}` |
 | `FALLBACK_MAP` | `dict[str, str]` | `config.toml` | Fallback 表：type → 偏好的 fallback model alias |
@@ -128,6 +129,7 @@ DB 查詢: SELECT * FROM users WHERE api_key = ?
 | `get_client()` | 取得 AsyncClient 實例 |
 | `set_alive(base_url, alive)` | 更新健康快取（由 health check loop 呼叫） |
 | `is_alive(base_url)` | 查詢伺服器是否存活 |
+| `prune_cache(active_urls)` | 移除不再存在於 MODEL_ROUTING 的 cache entry |
 | `all_health()` | 回傳所有伺服器的健康狀態 dict |
 
 **Client 參數：**

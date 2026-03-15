@@ -51,7 +51,10 @@ alembic/
 └── versions/          # migration scripts（按時間順序）
     ├── ae7ecabcf79d_initial_schema_users_and_usage_logs.py
     ├── a3c2d266f101_change_cost_usd_from_float_to_numeric_.py
-    └── b4e1f8a23d01_add_display_name_and_org_code_to_users.py
+    ├── b4e1f8a23d01_add_display_name_and_org_code_to_users.py
+    ├── c7f3e9b45a02_add_created_at_index_on_usage_logs.py
+    ├── d5a2c3e67f04_add_app_owners_table.py
+    └── e8b4f1a23c05_replace_user_created_index_with_covering.py
 ```
 
 ## Migration 歷史
@@ -61,6 +64,9 @@ alembic/
 | `ae7ecabcf79d` | 初始 schema：建立 `users` 和 `usage_logs` 表 | 2026-03-11 |
 | `a3c2d266f101` | `cost_usd` 從 `FLOAT` 改為 `NUMERIC(12,6)` 提升精度 | 2026-03-11 |
 | `b4e1f8a23d01` | 新增 `display_name` 和 `org_code` 欄位至 `users` 表 | 2026-03-13 |
+| `c7f3e9b45a02` | 新增 `ix_usage_created_at` 索引（DAU 查詢用） | 2026-03-13 |
+| `d5a2c3e67f04` | 新增 `app_owners` 多對多表（App 帳號擁有者） | 2026-03-14 |
+| `e8b4f1a23c05` | 替換 `ix_usage_user_created` 為 covering index `ix_usage_user_date_cost`（CONCURRENTLY） | 2026-03-15 |
 
 ## 資料庫 Schema
 
@@ -91,8 +97,15 @@ erDiagram
         datetime created_at "請求時間"
     }
 
+    app_owners {
+        int id PK
+        int app_id FK "App 帳號 → users.id"
+        int owner_id FK "擁有者 → users.id"
+    }
+
     users ||--o{ usage_logs : "has many"
-    users ||--o{ users : "owns (app accounts)"
+    users ||--o{ app_owners : "owned apps"
+    users ||--o{ app_owners : "owns"
 ```
 
 ### 表說明
@@ -133,7 +146,10 @@ erDiagram
 | `ix_users_username` | `users` | `username` | UNIQUE — 快速查詢使用者 |
 | `ix_users_api_key` | `users` | `api_key` | UNIQUE — API key 認證查詢 |
 | `ix_users_owner_id` | `users` | `owner_id` | App 帳號擁有者查詢 |
-| `ix_usage_user_created` | `usage_logs` | `user_id`, `created_at` | 複合索引 — 用量統計與每日限額查詢 |
+| `ix_usage_user_date_cost` | `usage_logs` | `user_id`, `created_at`, `cost_usd` | Covering index — 每日限額 index-only scan |
+| `ix_usage_created_at` | `usage_logs` | `created_at` | DAU 統計、時間範圍查詢 |
+| `ix_app_owners_app_id` | `app_owners` | `app_id` | App 帳號擁有者查詢 |
+| `ix_app_owners_owner_id` | `app_owners` | `owner_id` | 使用者所屬 App 查詢 |
 
 ## 注意事項
 

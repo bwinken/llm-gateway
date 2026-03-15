@@ -94,7 +94,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 | 方法 | 路徑 | 說明 |
 |---|---|---|
-| `GET` | `/admin` | Admin 首頁：用量彙總、排行榜、使用者管理 |
+| `GET` | `/admin` | Admin 首頁：用量彙總、DAU 趨勢、部門用量、排行榜、使用者管理。支援分頁：`?limit=15&offset=0&app_limit=15&app_offset=0` |
 | `POST` | `/admin/users/create` | 建立 App 帳號（Form submit，username 自動加 `app_` 前綴） |
 | `POST` | `/admin/users/{id}/limit` | 修改使用者每日限額（Form submit） |
 | `POST` | `/admin/users/{id}/delete` | 刪除使用者及其 usage logs（不可刪除自己） |

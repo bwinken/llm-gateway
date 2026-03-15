@@ -6,7 +6,7 @@
 
 | 檔案 | 說明 |
 |---|---|
-| `schema.py` | `User` 和 `UsageLog` 兩個 ORM Model |
+| `schema.py` | `User`、`AppOwner`、`UsageLog` 三個 ORM Model |
 
 ## ER Diagram
 
@@ -37,8 +37,15 @@ erDiagram
         DATETIME created_at "請求時間 (UTC)"
     }
 
+    app_owners {
+        INTEGER id PK "自動遞增主鍵"
+        INTEGER app_id FK "App 帳號 → users.id"
+        INTEGER owner_id FK "擁有者 → users.id"
+    }
+
     users ||--o{ usage_logs : "產生用量記錄"
-    users ||--o{ users : "擁有 App 帳號"
+    users ||--o{ app_owners : "被擁有 (app)"
+    users ||--o{ app_owners : "擁有 (owner)"
 ```
 
 ## User 模型
@@ -142,6 +149,5 @@ cost_usd = (input_tokens × input_price_per_1m + output_tokens × output_price_p
 
 | 索引名稱 | 欄位 | 用途 |
 |---|---|---|
-| `ix_usage_user_created` | `user_id`, `created_at` | 複合索引。Dashboard 用量統計、每日限額查詢的核心索引 |
-
-> 初始 migration 中也建立了 `ix_usage_logs_user_id` 單欄索引，在第二次 migration 中移除（複合索引已覆蓋）。
+| `ix_usage_user_date_cost` | `user_id`, `created_at`, `cost_usd` | Covering index。每日限額查詢可 index-only scan，不需回表讀 cost_usd |
+| `ix_usage_created_at` | `created_at` | DAU 統計、時間範圍查詢 |
