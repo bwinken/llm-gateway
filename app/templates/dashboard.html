@@ -53,7 +53,7 @@
                             {{ 'bg-[rgba(61,214,140,0.04)] border border-[rgba(61,214,140,0.08)]' if s.alive else 'bg-[rgba(255,92,92,0.04)] border border-[rgba(255,92,92,0.08)]' }}">
                             <div class="flex items-center gap-2 truncate">
                                 <div class="{{ 'gw-dot-on' if s.alive else 'gw-dot-off' }}"></div>
-                                <span class="font-medium truncate text-t2 gw-tip" data-tip="{{ s.base_url }}">{{ s.name }}</span>
+                                <span class="font-medium truncate text-t2">{{ s.name }}</span>
                             </div>
                             <span class="text-xs font-mono {{ 'text-ag' if s.alive else 'text-ar' }}">
                                 {{ 'ONLINE' if s.alive else 'DOWN' }}
