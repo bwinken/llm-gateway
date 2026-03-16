@@ -133,6 +133,7 @@ async def dashboard(
             today_cost=round(today_cost, 4),
             usage_percent=round(usage_percent, 1),
             trend_data=trend_data,
+            now_utc=datetime.now(timezone.utc),
             owned_apps=owned_apps,
             server_groups=server_groups,
         ),

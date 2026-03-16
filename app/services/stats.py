@@ -55,6 +55,8 @@ def get_daily_trends(session: Session, user_id: int, days: int = 30) -> list[dic
             func.date(UsageLog.created_at).label("day"),
             func.count(UsageLog.id).label("requests"),
             func.coalesce(func.sum(UsageLog.cost_usd), 0).label("cost"),
+            func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
         )
         .where(UsageLog.user_id == user_id)
         .where(UsageLog.created_at >= cutoff)
@@ -68,6 +70,8 @@ def get_daily_trends(session: Session, user_id: int, days: int = 30) -> list[dic
             "date": str(row[0]),
             "reqs": int(row[1]),
             "cost": round(float(row[2]), 6),
+            "input_tokens": int(row[3]),
+            "output_tokens": int(row[4]),
         }
         for row in rows
     ]
