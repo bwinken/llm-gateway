@@ -90,6 +90,32 @@ docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml restart
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 ```
 
+## PostgreSQL 資料遷移（更換 Volume）
+
+當需要將 PG 資料搬移到其他 volume（例如掛錯磁碟、擴容）時，使用 `pg_dumpall` 邏輯備份最安全，不受檔案系統或權限差異影響。
+
+```bash
+# 1. 匯出整個資料庫（容器還在跑的時候執行）
+docker exec llm-gateway-pg pg_dumpall -U "$PG_USER" > /tmp/pg_backup.sql
+
+# 2. 停掉所有服務
+docker compose -f deploy/docker-compose.yml down
+
+# 3. 修改 deploy/.env，將 PGDATA_DIR 指向新 volume
+#    例如: PGDATA_DIR=/mnt/new-volume/pgdata
+
+# 4. 啟動 PG（會在新 volume 初始化空資料庫）
+docker compose -f deploy/docker-compose.yml up -d postgres
+
+# 5. 等 PG 就緒後匯入備份
+docker exec -i llm-gateway-pg psql -U "$PG_USER" -d "$PG_DB" < /tmp/pg_backup.sql
+
+# 6. 確認資料正確後，啟動其餘服務
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+> **注意**：執行前請確認新 volume 已掛載且空間足夠。`$PG_USER` / `$PG_DB` 對應 `deploy/.env` 中的設定值。
+
 ## 目錄結構
 
 ```
