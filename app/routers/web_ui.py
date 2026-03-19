@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Security
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
@@ -44,12 +44,10 @@ def _common_ctx(request: Request, **extra) -> dict:
 @router.get("/", response_class=HTMLResponse)
 async def index(
     request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
 ):
     """Getting-started welcome page with API guide and available models."""
-    user, scopes, payload = get_web_user(request, session)
-    if "read" not in scopes and "admin" not in scopes:
-        raise HTTPException(status_code=403, detail="Insufficient scope: 'read' required.")
 
     display_name = user.display_name or user.username
     org_code = user.org_code
@@ -82,11 +80,9 @@ async def index(
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
 ):
-    user, scopes, payload = get_web_user(request, session)
-    if "read" not in scopes and "admin" not in scopes:
-        raise HTTPException(status_code=403, detail="Insufficient scope: 'read' required.")
 
     display_name = user.display_name or user.username
     org_code = user.org_code
@@ -143,11 +139,9 @@ async def dashboard(
 @router.post("/dashboard/refresh-key")
 async def refresh_own_key(
     request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
 ):
-    user, scopes, _payload = get_web_user(request, session)
-    if "read" not in scopes and "admin" not in scopes:
-        raise HTTPException(status_code=403, detail="Insufficient scope: 'read' required.")
 
     # Re-fetch from DB for write operation (user was expunged in get_web_user)
     db_user = session.get(User, user.id)
@@ -163,10 +157,10 @@ async def refresh_own_key(
 async def refresh_owned_app_key(
     app_id: int,
     request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
 ):
     """Refresh API key for an app account owned by the current user."""
-    user, _scopes, _payload = get_web_user(request, session)
 
     target = session.exec(select(User).where(User.id == app_id)).first()
     if not target:

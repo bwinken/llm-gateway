@@ -88,7 +88,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 ## `admin.py` — 管理面板 + Admin API
 
-**認證**：Web UI 用 `auth.get_web_user`（需 `admin` scope），API 端點用 `deps.get_current_user`（需 `user.is_admin`）
+**認證**：Router 層統一 `Security(get_web_user, scopes=["admin"])`，所有 `/admin/*` 端點（含 REST API）皆走 JWT 認證
 
 ### Web UI 端點
 
@@ -101,7 +101,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `POST` | `/admin/users/{id}/refresh-key` | 重新產生任意使用者的 API key，回傳 JSON |
 | `GET` | `/admin/models` | 模型設定頁面（SPA，透過 API 載入資料） |
 
-### Admin REST API（Bearer token 認證）
+### Admin REST API（JWT 認證，需 admin scope）
 
 | 方法 | 路徑 | 說明 |
 |---|---|---|
@@ -109,7 +109,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `POST` | `/admin/users` | 建立使用者（JSON body：`username`, `daily_limit_usd`, `is_admin`, `owner_id`） |
 | `PATCH` | `/admin/users/{id}` | 更新使用者（`daily_limit_usd`, `is_admin`, `owner_id`） |
 
-### Model Config API（JWT 認證）
+### Model Config API（JWT 認證，需 admin scope）
 
 | 方法 | 路徑 | 說明 |
 |---|---|---|
@@ -124,20 +124,14 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 graph TD
     subgraph "API Key 認證 (deps.py)"
         V1["/v1/models<br/>/v1/chat/completions<br/>/v1/embeddings<br/>/v1/rerank • /v1/score<br/>/v1/responses"]
-        AdminAPI["/admin/users (GET/POST/PATCH)"]
     end
 
     subgraph "JWT 認證 (auth.py via oauth2-proxy)"
-        Dashboard["/dashboard"]
-        AdminWeb["/admin"]
-        AdminModels["/admin/models"]
-        AdminConfig["/admin/api/config"]
+        Dashboard["/ • /dashboard<br/>Security: read scope"]
+        Admin["/admin/*<br/>Security: admin scope<br/>(Web UI + REST API + Model Config)"]
     end
 
     V1 -->|get_current_user| DB["DB: users.api_key"]
-    AdminAPI -->|get_current_user + is_admin| DB
-    Dashboard -->|get_web_user + read scope| JWT["JWT: sub → users.username"]
-    AdminWeb -->|get_web_user + admin scope| JWT
-    AdminModels -->|get_web_user + admin scope| JWT
-    AdminConfig -->|get_web_user + admin scope| JWT
+    Dashboard -->|get_web_user| JWT["JWT: sub → users.username"]
+    Admin -->|get_web_user| JWT
 ```

@@ -49,9 +49,10 @@ Client (Bearer API key) → FastAPI → deps.py (auth + daily limit check)
 ### Dual Auth System
 
 - **API endpoints** (`/v1/*`): API key in `Authorization: Bearer <key>` header → `deps.py:get_current_user()` looks up User by `api_key` in DB
-- **Web UI** (`/`, `/dashboard`, `/admin`): oauth2-proxy handles login via AuthCenter OIDC → nginx `auth_request` validates session → injects `Authorization: Bearer <JWT>` header → `auth.py:get_web_user()` decodes JWT, returns `(User, scopes, payload)`
+- **Web UI + Admin** (`/`, `/dashboard`, `/admin/*`): oauth2-proxy handles login via AuthCenter OIDC → nginx `auth_request` validates session → injects `Authorization: Bearer <JWT>` header → `auth.py:get_web_user()` (FastAPI `Security` dependency) decodes JWT, enforces declared scopes, returns `User`
+- All `/admin/*` routes (including REST API) use JWT auth via router-level `Security(get_web_user, scopes=["admin"])` — no API key auth on admin endpoints
 - JWT validation: RS256, `audience=AUTH_CENTER_APP_ID`, `issuer=AUTH_BASE_URL`, `leeway=5` for clock skew tolerance. Public key loaded from `AUTH_CENTER_PUBLIC_KEY_PATH` with mtime-based reload (key rotation takes effect without restart).
-- Admin access for web UI is determined by `"admin" in scopes` (from AuthCenter JWT), NOT by `user.is_admin` in DB
+- Admin access is determined by `"admin" in scopes` (from AuthCenter JWT), NOT by `user.is_admin` in DB
 - JWT payload fields `display_name` and `org_code` are persisted to the User model on each login (auto-synced from IdP) and displayed in navbar + admin tables
 
 ### Proxy Layer (`app/services/proxy.py`)
@@ -89,7 +90,7 @@ Tests use in-memory SQLite with `StaticPool` (all connections share one DB). Key
 - `FakeStreamResponse` simulates SSE streaming for stream tests
 - Mock httpx client accessible via `client.__httpx_mock__`
 
-When adding new tests, always use the existing `client` fixture and `auth_header()` helper (for API key auth) or `web_auth_header()` helper (for JWT web auth). Set mock responses on `client.__httpx_mock__.post` (non-stream) or `client.__httpx_mock__.send` (stream).
+When adding new tests, always use the existing `client` fixture and `auth_header()` helper (for `/v1/*` API key auth) or `web_auth_header()` helper (for JWT web/admin auth). Set mock responses on `client.__httpx_mock__.post` (non-stream) or `client.__httpx_mock__.send` (stream).
 
 ## Database
 

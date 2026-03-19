@@ -4,11 +4,10 @@ Admin panel: web UI + API endpoints for user management and model configuration.
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Security
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete
@@ -17,7 +16,6 @@ from sqlmodel import Session, func, select
 from app.core.auth import get_web_user
 from app.core.config import APP_TITLE, get_config_data, save_config
 from app.core.database import get_session
-from app.core.deps import get_current_user
 from app.models.schema import AppOwner, User, UsageLog
 from app.services.stats import (
     get_all_users_usage,
@@ -28,22 +26,13 @@ from app.services.stats import (
     get_monthly_totals,
 )
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin"],
+    dependencies=[Security(get_web_user, scopes=["admin"])],
+)
 _templates_dir = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
-
-
-def _require_admin(
-    request: Request, session: Session
-) -> tuple[User, dict]:
-    """Check JWT-based admin auth for web pages.
-
-    Returns (user, jwt_payload).
-    """
-    user, scopes, payload = get_web_user(request, session)
-    if "admin" not in scopes:
-        raise HTTPException(status_code=403, detail="Admin access required.")
-    return user, payload
 
 
 # ── Web UI ──
@@ -54,13 +43,13 @@ _PAGE_SIZE = 15
 @router.get("", response_class=HTMLResponse)
 async def admin_page(
     request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
     limit: int = _PAGE_SIZE,
     offset: int = 0,
     app_limit: int = _PAGE_SIZE,
     app_offset: int = 0,
 ):
-    admin_user, payload = _require_admin(request, session)
 
     # ── Monthly totals (single aggregate query) ──
     totals = get_monthly_totals(session)
@@ -186,7 +175,6 @@ async def create_app_account_web(
     session: Session = Depends(get_session),
 ):
     """Create a new app account (web UI form)."""
-    _require_admin(request, session)
 
     form = await request.form()
     username = (form.get("username") or "").strip()
@@ -227,7 +215,6 @@ async def update_user_owner(
     session: Session = Depends(get_session),
 ):
     """Replace app account owners (comma-separated usernames)."""
-    _require_admin(request, session)
 
     target = session.exec(select(User).where(User.id == user_id)).first()
     if not target:
@@ -265,7 +252,6 @@ async def update_user_limit(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    _require_admin(request, session)
 
     target = session.exec(select(User).where(User.id == user_id)).first()
     if not target:
@@ -285,9 +271,9 @@ async def update_user_limit(
 async def delete_user(
     user_id: int,
     request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
 ):
-    admin_user, _payload = _require_admin(request, session)
 
     target = session.exec(select(User).where(User.id == user_id)).first()
     if not target:
@@ -311,10 +297,8 @@ async def delete_user(
 @router.post("/users/{user_id}/refresh-key")
 async def refresh_user_key(
     user_id: int,
-    request: Request,
     session: Session = Depends(get_session),
 ):
-    _require_admin(request, session)
 
     target = session.exec(select(User).where(User.id == user_id)).first()
     if not target:
@@ -333,11 +317,8 @@ async def refresh_user_key(
 
 @router.get("/users")
 async def list_users_api(
-    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required.")
     users = session.exec(select(User)).all()
 
     # Build owner lookup
@@ -365,12 +346,9 @@ async def list_users_api(
 @router.post("/users")
 async def create_user_api(
     body: dict,
-    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Create a new user account via API (requires admin Bearer token)."""
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required.")
+    """Create a new user account via API (requires admin JWT)."""
 
     username = (body.get("username") or "").strip()
     if not username:
@@ -412,11 +390,8 @@ async def create_user_api(
 async def update_user_api(
     user_id: int,
     body: dict,
-    user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required.")
     target = session.exec(select(User).where(User.id == user_id)).first()
     if not target:
         raise HTTPException(status_code=404, detail="User not found.")
@@ -443,9 +418,9 @@ async def update_user_api(
 @router.get("/models", response_class=HTMLResponse)
 async def admin_models_page(
     request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
 ):
-    admin_user, payload = _require_admin(request, session)
     return templates.TemplateResponse(
         "admin_models.html",
         {
@@ -461,20 +436,14 @@ async def admin_models_page(
 
 
 @router.get("/api/config")
-async def get_config_api(
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    _require_admin(request, session)
+async def get_config_api():
     return JSONResponse(get_config_data())
 
 
 @router.put("/api/config")
 async def save_config_api(
     request: Request,
-    session: Session = Depends(get_session),
 ):
-    _require_admin(request, session)
     body = await request.json()
 
     models = body.get("models")

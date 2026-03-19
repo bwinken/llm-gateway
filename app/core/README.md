@@ -10,10 +10,9 @@ graph TD
     config --> auth["auth.py<br/>JWT 認證"]
     config --> server_state["server_state.py<br/>HTTP Client + 健康快取"]
     database --> deps["deps.py<br/>API Key 認證"]
-    auth --> |get_web_user| WebUI["routers/web_ui.py"]
-    auth --> |get_web_user| Admin["routers/admin.py"]
+    auth --> |Security: get_web_user| WebUI["routers/web_ui.py"]
+    auth --> |Security: get_web_user| Admin["routers/admin.py<br/>(Web UI + REST API)"]
     deps --> |get_current_user| LLM_API["routers/llm_api.py"]
-    deps --> |get_current_user| AdminAPI["routers/admin.py (API)"]
     server_state --> Proxy["services/proxy.py"]
     server_state --> Health["services/health.py"]
 ```
@@ -61,14 +60,26 @@ Browser → nginx → oauth2-proxy (驗證 session cookie)
 
 | 函式 | 回傳 | 說明 |
 |---|---|---|
-| `get_web_user(request, session)` | `(User, scopes, payload)` | 解析 JWT，自動建立新使用者，設定 `is_admin` |
+| `get_web_user(security_scopes, request, session, credentials)` | `User` | FastAPI `Security` dependency：解析 JWT，檢查 scope，自動建立新使用者 |
 | `_decode_jwt(token)` | `dict \| None` | RS256 解碼 + audience/issuer 驗證 |
+| `_sync_user(session, username, display_name, org_code)` | `User` | 查找或建立使用者，同步 IdP 欄位 |
+
+**用法：**
+```python
+# Route 層宣告需要的 scope
+user: User = Security(get_web_user, scopes=["read"])   # read 或 admin 皆可
+user: User = Security(get_web_user, scopes=["admin"])   # 僅 admin
+
+# Router 層統一設定（所有 route 自動套用）
+router = APIRouter(dependencies=[Security(get_web_user, scopes=["admin"])])
+```
 
 **重要行為：**
 - 第一次登入的使用者會自動建立（auto-provision），同時從 JWT 存入 `display_name` 和 `org_code`
 - 後續登入時若 IdP 的 `display_name` 或 `org_code` 有變更，會自動同步更新到 DB
 - 回傳的 `User` 已從 session 中 **expunge**，`is_admin` 是根據 JWT scope 動態設定，不會寫回 DB
-- 測試時會被 patch 為 HS256 驗證
+- `"admin"` scope 自動滿足任何 scope 需求（admin 可以存取 read 頁面）
+- 測試時 `_decode_jwt` 會被 patch 為 HS256 驗證
 
 ---
 
@@ -157,11 +168,11 @@ DB 查詢: SELECT * FROM users WHERE api_key = ?
 
 本專案有兩套獨立的認證機制，分別處理不同的使用場景：
 
-| | API 認證 (`deps.py`) | Web 認證 (`auth.py`) |
+| | API 認證 (`deps.py`) | Web/Admin 認證 (`auth.py`) |
 |---|---|---|
-| **用途** | `/v1/*` API 端點 | Web UI 頁面 |
+| **用途** | `/v1/*` API 端點 | Web UI + Admin（含 REST API） |
 | **認證方式** | API key（Bearer token） | JWT（oauth2-proxy 注入） |
 | **查詢對象** | DB `users.api_key` 欄位 | JWT `sub` claim → DB `users.username` |
 | **額度檢查** | 每次請求前檢查 `daily_limit_usd` | 不檢查（Web UI 僅查看） |
-| **Admin 判斷** | `user.is_admin`（DB 欄位） | `"admin" in scopes`（JWT scope） |
+| **Admin 判斷** | 不適用 | `"admin" in scopes`（JWT scope） |
 | **自動建立帳號** | 否（key 不存在回 401） | 是（首次登入自動 provision） |

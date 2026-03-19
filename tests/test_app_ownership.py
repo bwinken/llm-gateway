@@ -6,7 +6,7 @@ import pytest
 from sqlmodel import Session, select
 
 from app.models.schema import AppOwner, User
-from tests.conftest import auth_header, web_auth_header
+from tests.conftest import web_auth_header
 
 
 @pytest.fixture()
@@ -65,7 +65,7 @@ class TestCreateWithOwner:
                 "username": "app_new_service",
                 "owner_ids": [owner_user.id],
             },
-            headers=auth_header(admin_user.api_key),
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -86,7 +86,7 @@ class TestCreateWithOwner:
         resp = client.post(
             "/admin/users",
             json={"username": "app_solo"},
-            headers=auth_header(admin_user.api_key),
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -100,7 +100,7 @@ class TestUpdateOwner:
         resp = client.patch(
             f"/admin/users/{unowned_app.id}",
             json={"owner_ids": [owner_user.id]},
-            headers=auth_header(admin_user.api_key),
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
         )
         assert resp.status_code == 200
         ao = db_session.exec(
@@ -113,7 +113,7 @@ class TestUpdateOwner:
         resp = client.patch(
             f"/admin/users/{owned_app.id}",
             json={"owner_ids": []},
-            headers=auth_header(admin_user.api_key),
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
         )
         assert resp.status_code == 200
         ao = db_session.exec(
@@ -128,7 +128,7 @@ class TestListUsersIncludesOwner:
     def test_list_includes_owner_ids(self, client, db_session, admin_user, owned_app):
         resp = client.get(
             "/admin/users",
-            headers=auth_header(admin_user.api_key),
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
         )
         assert resp.status_code == 200
         users = resp.json()

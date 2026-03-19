@@ -14,14 +14,17 @@ import os
 from pathlib import Path
 
 import jwt
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, SecurityScopes
 from sqlmodel import Session, select
 
 from app.core.config import AUTH_BASE_URL, AUTH_CENTER_APP_ID, AUTH_CENTER_PUBLIC_KEY_PATH
+from app.core.database import get_session
 from app.core.logger import logger
 from app.models.schema import User
 
 _ALGORITHM = "RS256"
+_bearer = HTTPBearer(auto_error=False)
 
 # Cache public key with mtime check so key rotation takes effect without restart.
 _pk_cache: tuple[float, str] = (0.0, "")
@@ -67,28 +70,8 @@ def _decode_jwt(token: str) -> dict | None:
         return None
 
 
-def get_web_user(request: Request, session: Session) -> tuple[User, list[str], dict]:
-    """Extract and validate the JWT from the Authorization header.
-
-    Returns (User, scopes, payload).
-    Raises HTTPException(401) if the token is missing or invalid.
-    """
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing access token.")
-
-    token = auth.removeprefix("Bearer ")
-    payload = _decode_jwt(token)
-    if payload is None:
-        raise HTTPException(status_code=401, detail="Invalid access token.")
-
-    username: str = payload.get("sub", "")
-    scopes: list[str] = payload.get("scopes", [])
-
-    display_name: str = payload.get("display_name", "")
-    org_code: str = payload.get("org_id", "") or payload.get("org_code", "")
-
-    # Auto-provision user on first visit
+def _sync_user(session: Session, username: str, display_name: str, org_code: str) -> User:
+    """Find or auto-provision a user, syncing IdP fields."""
     user = session.exec(select(User).where(User.username == username)).first()
     if user is None:
         user = User(username=username, display_name=display_name, org_code=org_code)
@@ -97,7 +80,6 @@ def get_web_user(request: Request, session: Session) -> tuple[User, list[str], d
         session.refresh(user)
         logger.info("Auto-provisioned user '{}' via JWT", username)
     else:
-        # Update display_name / org_code if changed in IdP
         changed = False
         if display_name and user.display_name != display_name:
             user.display_name = display_name
@@ -109,8 +91,44 @@ def get_web_user(request: Request, session: Session) -> tuple[User, list[str], d
             session.add(user)
             session.commit()
             session.refresh(user)
-
     session.expunge(user)
-    user.is_admin = "admin" in scopes
+    return user
 
-    return user, scopes, payload
+
+def get_web_user(
+    security_scopes: SecurityScopes,
+    request: Request,
+    session: Session = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> User:
+    """FastAPI Security dependency: validate JWT and enforce declared scopes.
+
+    Usage in routes:
+        user: User = Security(get_web_user, scopes=["read"])   # read or admin
+        user: User = Security(get_web_user, scopes=["admin"])  # admin only
+    """
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Missing access token.")
+
+    payload = _decode_jwt(credentials.credentials)
+    if payload is None:
+        raise HTTPException(status_code=401, detail="Invalid access token.")
+
+    username: str = payload.get("sub", "")
+    token_scopes: list[str] = payload.get("scopes", [])
+    display_name: str = payload.get("display_name", "")
+    org_code: str = payload.get("org_id", "") or payload.get("org_code", "")
+
+    # Check required scopes — "admin" satisfies any scope requirement
+    if security_scopes.scopes:
+        if "admin" not in token_scopes:
+            for scope in security_scopes.scopes:
+                if scope not in token_scopes:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Insufficient scope: '{scope}' required.",
+                    )
+
+    user = _sync_user(session, username, display_name, org_code)
+    user.is_admin = "admin" in token_scopes
+    return user

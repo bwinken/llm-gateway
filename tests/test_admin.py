@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from tests.conftest import auth_header
-from app.models.schema import User
+from tests.conftest import web_auth_header
 
 
 class TestCreateUserAPI:
-    """POST /admin/users (Bearer token auth)."""
+    """POST /admin/users (JWT admin auth)."""
 
     def test_create_app_account(self, client, db_session, admin_user):
         resp = client.post(
             "/admin/users",
             json={"username": "app_my_service", "daily_limit_usd": 50.0},
-            headers=auth_header(admin_user.api_key),
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -26,7 +25,7 @@ class TestCreateUserAPI:
         resp = client.post(
             "/admin/users",
             json={"username": "new_person"},
-            headers=auth_header(admin_user.api_key),
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -37,12 +36,12 @@ class TestCreateUserAPI:
         client.post(
             "/admin/users",
             json={"username": "app_dup"},
-            headers=auth_header(admin_user.api_key),
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
         )
         resp = client.post(
             "/admin/users",
             json={"username": "app_dup"},
-            headers=auth_header(admin_user.api_key),
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
         )
         assert resp.status_code == 409
 
@@ -50,7 +49,7 @@ class TestCreateUserAPI:
         resp = client.post(
             "/admin/users",
             json={"username": ""},
-            headers=auth_header(admin_user.api_key),
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
         )
         assert resp.status_code == 400
 
@@ -58,6 +57,6 @@ class TestCreateUserAPI:
         resp = client.post(
             "/admin/users",
             json={"username": "app_sneaky"},
-            headers=auth_header("sk-testkey123"),
+            headers=web_auth_header(sub="testuser", scopes=["read"]),
         )
         assert resp.status_code == 403
