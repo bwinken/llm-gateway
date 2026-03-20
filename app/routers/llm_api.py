@@ -29,6 +29,8 @@ async def list_models(user: User = Depends(get_current_user)):
     models = []
     for name, route in get_model_routing_snapshot().items():
         model_type = route["type"]
+        if model_type not in ("llm", "vlm"):
+            continue
         models.append(
             {
                 "id": name,
