@@ -108,8 +108,8 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | 方法 | 路徑 | 說明 |
 |---|---|---|
 | `GET` | `/admin/users` | 列出所有使用者（含 `display_name`, `org_code`） |
-| `POST` | `/admin/users` | 建立使用者（JSON body：`username`, `daily_limit_usd`, `is_admin`, `owner_id`） |
-| `PATCH` | `/admin/users/{id}` | 更新使用者（`daily_limit_usd`, `is_admin`, `owner_id`） |
+| `POST` | `/admin/users` | 建立使用者（JSON body：`username`, `daily_limit_usd`, `is_admin`, `owner_ids`） |
+| `PATCH` | `/admin/users/{id}` | 更新使用者（`daily_limit_usd`, `is_admin`, `owner_ids`） |
 
 ### Model Config API（JWT 認證，需 admin scope）
 

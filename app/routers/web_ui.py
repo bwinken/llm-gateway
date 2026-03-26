@@ -172,7 +172,8 @@ async def refresh_owned_app_key(
     if not ownership:
         raise HTTPException(status_code=403, detail="You do not own this app account.")
 
-    target.api_key = f"sk-{uuid.uuid4().hex}"
+    from app.models.schema import _generate_api_key
+    target.api_key = _generate_api_key()
     session.add(target)
     session.commit()
     session.refresh(target)

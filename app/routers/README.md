@@ -108,8 +108,8 @@ When fallback occurs, the response includes an `X-Model-Fallback` header explain
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/admin/users` | List all users (includes `display_name`, `org_code`) |
-| `POST` | `/admin/users` | Create user (JSON body: `username`, `daily_limit_usd`, `is_admin`, `owner_id`) |
-| `PATCH` | `/admin/users/{id}` | Update user (`daily_limit_usd`, `is_admin`, `owner_id`) |
+| `POST` | `/admin/users` | Create user (JSON body: `username`, `daily_limit_usd`, `is_admin`, `owner_ids`) |
+| `PATCH` | `/admin/users/{id}` | Update user (`daily_limit_usd`, `is_admin`, `owner_ids`) |
 
 ### Model Config API (JWT auth, requires admin scope)
 
