@@ -1,8 +1,10 @@
-# Alembic — 資料庫遷移管理
+# Alembic — Database Migration Management
 
-[Alembic](https://alembic.sqlalchemy.org/) 是 SQLAlchemy 的資料庫遷移工具，負責管理 PostgreSQL schema 的版本控制。當 `app/models/schema.py` 中的 Model 定義變更時，Alembic 會產生對應的 migration script，讓資料庫結構安全地升級或降級。
+[中文版](README.zh-TW.md)
 
-## 運作原理
+[Alembic](https://alembic.sqlalchemy.org/) is SQLAlchemy's database migration tool, managing PostgreSQL schema version control. When model definitions in `app/models/schema.py` change, Alembic generates corresponding migration scripts to safely upgrade or downgrade the database schema.
+
+## How It Works
 
 ```
 schema.py (Python Model) ──autogenerate──▶ versions/*.py (migration scripts)
@@ -13,94 +15,97 @@ schema.py (Python Model) ──autogenerate──▶ versions/*.py (migration sc
                                           PostgreSQL schema
 ```
 
-1. **Model 定義** — `app/models/schema.py` 用 SQLModel 定義 `User` 和 `UsageLog` 兩張表
-2. **Autogenerate** — Alembic 比較 Model 與目前資料庫的差異，自動產生 migration script
-3. **Migration script** — 記錄在 `versions/` 目錄，每個檔案包含 `upgrade()` 和 `downgrade()` 函式
-4. **Version chain** — 每個 migration 記錄前一版的 revision ID，形成有序鏈
-5. **alembic_version 表** — PostgreSQL 中會有一張 `alembic_version` 表，記錄目前套用到哪個 revision
+1. **Model definitions** — `app/models/schema.py` defines `User`, `AppOwner`, and `UsageLog` tables using SQLModel
+2. **Autogenerate** — Alembic compares models against current database, auto-generates migration scripts
+3. **Migration scripts** — Stored in `versions/` directory, each file contains `upgrade()` and `downgrade()` functions
+4. **Version chain** — Each migration records the previous revision ID, forming an ordered chain
+5. **alembic_version table** — PostgreSQL maintains an `alembic_version` table tracking the current revision
 
-## 常用指令
+## Common Commands
 
 ```bash
-# 套用所有 pending migrations（部署時必做）
+# Apply all pending migrations (required on deploy)
 uv run alembic upgrade head
 
-# 查看目前資料庫版本
+# View current database version
 uv run alembic current
 
-# 查看尚未套用的 migrations
+# View unapplied migrations
 uv run alembic history --indicate-current
 
-# 修改 schema.py 後，自動產生新的 migration
+# After modifying schema.py, auto-generate a new migration
 uv run alembic revision --autogenerate -m "describe your change"
 
-# 降級一個版本（小心使用）
+# Downgrade one version (use with caution)
 uv run alembic downgrade -1
 
-# 已有資料庫首次納入 Alembic 管理（標記為最新，不執行 migration）
+# First-time Alembic adoption on existing database (mark as current, skip migrations)
 uv run alembic stamp head
 ```
 
-## 目錄結構
+## Directory Structure
 
 ```
 alembic/
-├── README.md          # 本文件
-├── env.py             # 讀取 DATABASE_URL，設定 migration 環境
-├── script.py.mako     # migration 檔案模板
-└── versions/          # migration scripts（按時間順序）
+├── README.md          # This file
+├── README.zh-TW.md    # Chinese version
+├── env.py             # Reads DATABASE_URL, configures migration environment
+├── script.py.mako     # Migration file template
+└── versions/          # Migration scripts (chronological order)
     ├── ae7ecabcf79d_initial_schema_users_and_usage_logs.py
     ├── a3c2d266f101_change_cost_usd_from_float_to_numeric_.py
     ├── b4e1f8a23d01_add_display_name_and_org_code_to_users.py
     ├── c7f3e9b45a02_add_created_at_index_on_usage_logs.py
     ├── d5a2c3e67f04_add_app_owners_table.py
-    └── e8b4f1a23c05_replace_user_created_index_with_covering.py
+    ├── e8b4f1a23c05_replace_user_created_index_with_covering.py
+    └── 5d538cdf0e8b_merge_app_owners_and_covering_index_.py
 ```
 
-## Migration 歷史
+## Migration History
 
-| Revision | 說明 | 日期 |
+| Revision | Description | Date |
 |---|---|---|
-| `ae7ecabcf79d` | 初始 schema：建立 `users` 和 `usage_logs` 表 | 2026-03-11 |
-| `a3c2d266f101` | `cost_usd` 從 `FLOAT` 改為 `NUMERIC(12,6)` 提升精度 | 2026-03-11 |
-| `b4e1f8a23d01` | 新增 `display_name` 和 `org_code` 欄位至 `users` 表 | 2026-03-13 |
-| `c7f3e9b45a02` | 新增 `ix_usage_created_at` 索引（DAU 查詢用） | 2026-03-13 |
-| `d5a2c3e67f04` | 新增 `app_owners` 多對多表（App 帳號擁有者） | 2026-03-14 |
-| `e8b4f1a23c05` | 替換 `ix_usage_user_created` 為 covering index `ix_usage_user_date_cost`（CONCURRENTLY） | 2026-03-15 |
+| `ae7ecabcf79d` | Initial schema: create `users` and `usage_logs` tables | 2026-03-11 |
+| `a3c2d266f101` | Change `cost_usd` from `FLOAT` to `NUMERIC(12,6)` for better precision | 2026-03-11 |
+| `b4e1f8a23d01` | Add `display_name` and `org_code` columns to `users` table | 2026-03-13 |
+| `c7f3e9b45a02` | Add `ix_usage_created_at` index (for DAU queries) | 2026-03-13 |
+| `d5a2c3e67f04` | Add `app_owners` many-to-many table (app account ownership) | 2026-03-14 |
+| `e8b4f1a23c05` | Replace `ix_usage_user_created` with covering index `ix_usage_user_date_cost` (CONCURRENTLY) | 2026-03-15 |
+| `5d538cdf0e8b` | Merge `app_owners` and covering index branches | 2026-03-15 |
 
-## 資料庫 Schema
+## Database Schema
 
 ```mermaid
 erDiagram
     users {
         int id PK
-        varchar username UK "使用者名稱"
-        varchar password_hash "未使用，保留欄位"
-        varchar api_key UK "API 金鑰 (sk-internal-...)"
-        float daily_limit_usd "每日用量上限 (USD)"
-        boolean is_admin "管理員標記"
-        int owner_id FK "擁有者 (app 帳號用)"
-        varchar display_name "顯示名稱 (IdP 同步)"
-        varchar org_code "組織代碼 (IdP 同步)"
-        datetime created_at "建立時間"
+        varchar username UK "Username"
+        varchar password_hash "Unused, legacy field"
+        varchar api_key UK "API key (sk-internal-...)"
+        float daily_limit_usd "Daily usage limit (USD)"
+        boolean is_admin "Admin flag"
+        int owner_id FK "Owner (for app accounts)"
+        varchar display_name "Display name (IdP synced)"
+        varchar org_code "Org code (IdP synced)"
+        datetime created_at "Created time"
     }
 
     usage_logs {
         int id PK
-        int user_id FK "對應 users.id"
-        varchar model "模型別名"
-        varchar model_type "類型 (llm/vlm/embedding/reranker)"
-        int input_tokens "輸入 token 數"
-        int output_tokens "輸出 token 數"
-        numeric_12_6 cost_usd "費用 (USD)"
-        varchar endpoint "API 端點"
-        datetime created_at "請求時間"
+        int user_id FK "References users.id"
+        varchar model "Model alias"
+        varchar model_type "Type (llm/vlm/embedding/reranker)"
+        int input_tokens "Input token count"
+        int output_tokens "Output token count"
+        numeric_12_6 cost_usd "Cost (USD)"
+        varchar endpoint "API endpoint"
+        datetime created_at "Request time"
     }
 
     app_owners {
         int id PK
-        int app_id FK "App 帳號 → users.id"
-        int owner_id FK "擁有者 → users.id"
+        int app_id FK "App account → users.id"
+        int owner_id FK "Owner → users.id"
     }
 
     users ||--o{ usage_logs : "has many"
@@ -108,52 +113,52 @@ erDiagram
     users ||--o{ app_owners : "owns"
 ```
 
-### 表說明
+### Table Details
 
-**users** — 使用者與 App 帳號
+**users** — Users and App Accounts
 
-| 欄位 | 類型 | 說明 |
+| Column | Type | Description |
 |---|---|---|
-| `id` | `INTEGER` PK | 自動遞增主鍵 |
-| `username` | `VARCHAR` UNIQUE | 使用者名稱（OAuth2 SSO 的 `sub` claim） |
-| `password_hash` | `VARCHAR` | 未使用，預設空字串（歷史欄位） |
-| `api_key` | `VARCHAR` UNIQUE | 自動產生，格式 `sk-internal-{timestamp}-{hex8}` |
-| `daily_limit_usd` | `FLOAT` | 每日用量上限，預設 10.0 USD |
-| `is_admin` | `BOOLEAN` | 資料庫中的管理員標記（Web UI admin 由 JWT scope 決定） |
-| `owner_id` | `INTEGER` FK → `users.id` | App 帳號的擁有者，NULL 表示一般使用者帳號 |
-| `display_name` | `VARCHAR` | 顯示名稱，來自 IdP JWT，每次登入自動同步 |
-| `org_code` | `VARCHAR` | 組織代碼，來自 IdP JWT，每次登入自動同步 |
-| `created_at` | `DATETIME` | 建立時間 (UTC) |
+| `id` | `INTEGER` PK | Auto-increment primary key |
+| `username` | `VARCHAR` UNIQUE | Username (OAuth2 SSO `sub` claim) |
+| `password_hash` | `VARCHAR` | Unused, defaults to empty string (legacy field) |
+| `api_key` | `VARCHAR` UNIQUE | Auto-generated, format `sk-internal-{timestamp}-{hex8}` |
+| `daily_limit_usd` | `FLOAT` | Daily usage limit, default 10.0 USD |
+| `is_admin` | `BOOLEAN` | Admin flag in DB (Web UI admin determined by JWT scope) |
+| `owner_id` | `INTEGER` FK → `users.id` | App account owner, NULL for regular user accounts |
+| `display_name` | `VARCHAR` | Display name from IdP JWT, auto-synced on each login |
+| `org_code` | `VARCHAR` | Org code from IdP JWT, auto-synced on each login |
+| `created_at` | `DATETIME` | Creation time (UTC) |
 
-**usage_logs** — API 使用記錄
+**usage_logs** — API Usage Records
 
-| 欄位 | 類型 | 說明 |
+| Column | Type | Description |
 |---|---|---|
-| `id` | `INTEGER` PK | 自動遞增主鍵 |
-| `user_id` | `INTEGER` FK → `users.id` | 請求的使用者 |
-| `model` | `VARCHAR` | 使用的模型別名 |
-| `model_type` | `VARCHAR` | 模型類型：`llm`, `vlm`, `embedding`, `reranker` 等 |
-| `input_tokens` | `INTEGER` | 輸入 token 數量 |
-| `output_tokens` | `INTEGER` | 輸出 token 數量 |
-| `cost_usd` | `NUMERIC(12,6)` | 計算的費用（USD），精度到小數點後 6 位 |
-| `endpoint` | `VARCHAR` | API 端點路徑（如 `/v1/chat/completions`） |
-| `created_at` | `DATETIME` | 請求時間 (UTC) |
+| `id` | `INTEGER` PK | Auto-increment primary key |
+| `user_id` | `INTEGER` FK → `users.id` | Requesting user |
+| `model` | `VARCHAR` | Model alias used |
+| `model_type` | `VARCHAR` | Model type: `llm`, `vlm`, `embedding`, `reranker`, etc. |
+| `input_tokens` | `INTEGER` | Input token count |
+| `output_tokens` | `INTEGER` | Output token count |
+| `cost_usd` | `NUMERIC(12,6)` | Calculated cost (USD), 6 decimal places |
+| `endpoint` | `VARCHAR` | API endpoint path (e.g. `/v1/chat/completions`) |
+| `created_at` | `DATETIME` | Request time (UTC) |
 
-### 索引
+### Indexes
 
-| 索引名稱 | 表 | 欄位 | 說明 |
+| Index Name | Table | Columns | Description |
 |---|---|---|---|
-| `ix_users_username` | `users` | `username` | UNIQUE — 快速查詢使用者 |
-| `ix_users_api_key` | `users` | `api_key` | UNIQUE — API key 認證查詢 |
-| `ix_users_owner_id` | `users` | `owner_id` | App 帳號擁有者查詢 |
-| `ix_usage_user_date_cost` | `usage_logs` | `user_id`, `created_at`, `cost_usd` | Covering index — 每日限額 index-only scan |
-| `ix_usage_created_at` | `usage_logs` | `created_at` | DAU 統計、時間範圍查詢 |
-| `ix_app_owners_app_id` | `app_owners` | `app_id` | App 帳號擁有者查詢 |
-| `ix_app_owners_owner_id` | `app_owners` | `owner_id` | 使用者所屬 App 查詢 |
+| `ix_users_username` | `users` | `username` | UNIQUE — fast user lookup |
+| `ix_users_api_key` | `users` | `api_key` | UNIQUE — API key auth lookup |
+| `ix_users_owner_id` | `users` | `owner_id` | App account owner lookup |
+| `ix_usage_user_date_cost` | `usage_logs` | `user_id`, `created_at`, `cost_usd` | Covering index — daily limit index-only scan |
+| `ix_usage_created_at` | `usage_logs` | `created_at` | DAU stats, time-range queries |
+| `ix_app_owners_app_id` | `app_owners` | `app_id` | App account owner lookup |
+| `ix_app_owners_owner_id` | `app_owners` | `owner_id` | User's owned apps lookup |
 
-## 注意事項
+## Notes
 
-- `env.py` 會從 `app.core.config` 讀取 `DATABASE_URL`，確保 `.env` 已正確設定
-- 自動產生的 migration 需要人工檢查，特別是涉及資料轉換時
-- 正式環境降級前務必備份資料庫
-- 從 SQLite 遷移到 PostgreSQL 請使用 `scripts/migrate_sqlite_to_pg.py`，不是 Alembic
+- `env.py` reads `DATABASE_URL` from `app.core.config` — ensure `.env` is properly configured
+- Auto-generated migrations should be manually reviewed, especially those involving data transformations
+- Always back up the database before downgrading in production
+- For SQLite to PostgreSQL migration, use `scripts/migrate_sqlite_to_pg.py`, not Alembic
