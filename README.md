@@ -1,5 +1,7 @@
 # LLM Gateway
 
+[中文版](README.zh-TW.md)
+
 OpenAI-compatible reverse proxy gateway for [vLLM](https://github.com/vllm-project/vllm) serving clusters.
 Routes, proxies, and monitors traffic from client applications to downstream vLLM instances (LLM, VLM, Embedding, Reranker).
 
@@ -15,6 +17,16 @@ Client App ──▶ LLM Gateway (:8050) ──▶ vLLM Instance A  [LLM]
                     ├── Usage logging (tokens + cost)
                     └── Health monitoring (30s interval)
 ```
+
+## Screenshots
+
+| Welcome | Dashboard |
+|---|---|
+| ![Welcome](docs/screenshots/welcome.png) | ![Dashboard](docs/screenshots/dashboard.png) |
+
+| Admin Panel | Model Config |
+|---|---|
+| ![Admin](docs/screenshots/admin.png) | ![Models](docs/screenshots/models.png) |
 
 ## Features
 
@@ -37,6 +49,7 @@ Client App ──▶ LLM Gateway (:8050) ──▶ vLLM Instance A  [LLM]
 | Framework | FastAPI (async ASGI) |
 | HTTP Client | HTTPX (connection-pooled) |
 | Database | PostgreSQL + SQLModel |
+| Migrations | Alembic |
 | Auth | PyJWT (RS256), [AuthCenter](https://github.com/bwinken/authcenter) OAuth2 |
 | Frontend | Jinja2 + Tailwind CSS (CDN) + Chart.js |
 | Downstream | [vLLM](https://github.com/vllm-project/vllm) (OpenAI-compatible) |
@@ -65,14 +78,15 @@ Edit `config.toml` — set your downstream vLLM server URLs and API keys:
 ```toml
 [models.llm."my-model"]
 real_model = "Qwen/Qwen2.5-72B"
-base_url = "http://192.168.1.100:8000/v1"
+base_url = "http://your-llm-server:8000/v1"
 api_key = "token-abc123"
 ```
 
-Edit `.env` — set database URL and AuthCenter credentials:
+Edit `.env` — set database URL and auth settings:
 
 ```env
 DATABASE_URL=postgresql://llm_gateway:your_password@localhost:5432/llm_gateway
+AUTH_BASE_URL=http://auth.example.com
 ```
 
 ### 3. Start PostgreSQL
@@ -138,6 +152,7 @@ vlm = "backup-vlm"
 | `DATABASE_URL` | PostgreSQL connection string | `postgresql://llm_gateway:password@localhost:5432/llm_gateway` |
 | `AUTH_CENTER_APP_ID` | JWT audience (AuthCenter app ID) | `llm_gateway` |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | RS256 public key path | `./keys/public.pem` |
+| `AUTH_BASE_URL` | JWT issuer URL (AuthCenter base URL) | `auth-center` |
 
 > OAuth2 login settings (OIDC issuer, client secret, redirect URL) are configured in `deploy/.env` for oauth2-proxy. See [deploy/README.md](deploy/README.md).
 
@@ -200,35 +215,35 @@ Open `http://your-gateway` in browser. oauth2-proxy handles SSO login via AuthCe
 
 ## Deployment
 
-使用 user-level systemd 部署，PostgreSQL 以 Docker 執行。詳見 [deploy/README.md](deploy/README.md)。
+Deployed with user-level systemd and PostgreSQL running in Docker. See [deploy/README.md](deploy/README.md) for details.
 
-### 開發用 PostgreSQL
+### Dev PostgreSQL
 
 ```bash
-bash scripts/start-pg-dev.sh start    # 啟動（首次會自動建立容器）
-bash scripts/start-pg-dev.sh stop     # 停止（資料保留）
-bash scripts/start-pg-dev.sh status   # 查看狀態
-bash scripts/start-pg-dev.sh rm       # 刪除容器（資料遺失）
+bash scripts/start-pg-dev.sh start    # Start (auto-creates container on first run)
+bash scripts/start-pg-dev.sh stop     # Stop (data preserved)
+bash scripts/start-pg-dev.sh status   # Check status
+bash scripts/start-pg-dev.sh rm       # Remove container (data lost)
 ```
 
-使用與 `.env.example` 相同的帳號密碼，無需額外設定。
+Uses the same credentials as `.env.example` — no extra configuration needed.
 
-### 資料遷移（SQLite → PostgreSQL）
+### Data Migration (SQLite → PostgreSQL)
 
 ```bash
-# 1. 預覽遷移（不寫入任何資料）
+# 1. Preview migration (no data written)
 uv run python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --dry-run
 
-# 2. 執行完整遷移
+# 2. Full migration
 uv run python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db
 
-# 3. 正式上線前增量同步（只遷移上次之後的新資料）
+# 3. Incremental sync before going live (only migrates new data since last run)
 uv run python scripts/migrate_sqlite_to_pg.py /path/to/llm_gateway.db --sync
 ```
 
-> `--sync` 會根據 PostgreSQL 中最新的 `usage_logs.created_at` 作為 cutoff，只遷移之後的記錄，並同步更新有變更的 user 欄位。原始 SQLite 檔案不會被修改。
+> `--sync` uses the latest `usage_logs.created_at` in PostgreSQL as the cutoff, migrating only newer records and syncing updated user fields. The original SQLite file is not modified.
 
-完整的遷移步驟、注意事項和 checklist 請參考 **[Migration Guide](docs/migration-guide.md)**。
+For the full migration steps, notes, and checklist, see the **[Migration Guide](docs/migration-guide.md)**.
 
 ---
 
@@ -274,7 +289,13 @@ llm-gateway/
 │   ├── env.py                  # Migration environment (reads DATABASE_URL)
 │   └── versions/               # Migration scripts
 ├── scripts/
-│   └── migrate_sqlite_to_pg.py
+│   ├── migrate_sqlite_to_pg.py # SQLite → PostgreSQL migration
+│   ├── cleanup_usage_logs.py   # Usage log retention cleanup
+│   ├── add_owner_id.py         # App ownership assignment helper
+│   └── start-pg-dev.sh         # Dev PostgreSQL container management
+├── docs/
+│   ├── migration-guide.md      # SQLite → PostgreSQL migration guide
+│   └── screenshots/            # UI screenshots
 ├── app/
 │   ├── main.py                 # FastAPI app, lifespan, middleware
 │   ├── core/
@@ -285,7 +306,7 @@ llm-gateway/
 │   │   ├── server_state.py     # httpx client + health cache
 │   │   └── logger.py
 │   ├── models/
-│   │   └── schema.py           # User + UsageLog tables
+│   │   └── schema.py           # User + UsageLog + AppOwner tables
 │   ├── routers/
 │   │   ├── llm_api.py          # /v1/* API endpoints
 │   │   ├── web_ui.py           # Dashboard (Jinja2)
@@ -296,19 +317,26 @@ llm-gateway/
 │   │   └── health.py           # Background health loop
 │   └── templates/
 │       ├── base.html
+│       ├── welcome.html        # Landing / login page
 │       ├── dashboard.html
-│       └── admin.html
+│       ├── admin.html          # User management + leaderboard
+│       └── admin_models.html   # Model config UI
 ├── deploy/
 │   ├── docker-compose.yml      # PostgreSQL + oauth2-proxy
 │   ├── .env.example            # Docker services env vars
 │   ├── setup.sh                # Deployment script
 │   ├── llm-gateway.service     # systemd unit
-│   └── llm-gateway.nginx.conf  # Nginx config (auth_request)
+│   ├── llm-gateway.nginx.conf  # Nginx config (auth_request)
+│   └── README.md               # Deployment guide
 └── tests/
     ├── conftest.py
     ├── test_chat_completions.py
     ├── test_embeddings.py
     ├── test_rerank_score.py
     ├── test_responses.py
-    └── test_vlm.py
+    ├── test_vlm.py
+    ├── test_vision_embedding.py
+    ├── test_vision_rerank_score.py
+    ├── test_admin.py
+    └── test_app_ownership.py
 ```
