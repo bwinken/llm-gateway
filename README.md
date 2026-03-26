@@ -30,7 +30,7 @@ Client App ──▶ LLM Gateway (:8050) ──▶ vLLM Instance A  [LLM]
 
 ## Features
 
-- **OpenAI-compatible API** — `/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/score`, `/v1/responses`, `/v1/models`
+- **OpenAI-compatible API** — `/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/score`, `/v1/responses`, `/v1/models` (LLM/VLM only)
 - **Multi-model routing** — LLM, VLM, Embedding, Vision Embedding, Reranker, Vision Reranker
 - **SSE streaming** — Full Server-Sent Events support for chat completions and responses
 - **Smart fallback** — Configurable per-type fallback model, health-check-aware; `X-Model-Fallback` response header

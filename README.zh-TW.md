@@ -30,7 +30,7 @@ Client App ──▶ LLM Gateway (:8050) ──▶ vLLM Instance A  [LLM]
 
 ## 功能特色
 
-- **OpenAI 相容 API** — `/v1/chat/completions`、`/v1/embeddings`、`/v1/rerank`、`/v1/score`、`/v1/responses`、`/v1/models`
+- **OpenAI 相容 API** — `/v1/chat/completions`、`/v1/embeddings`、`/v1/rerank`、`/v1/score`、`/v1/responses`、`/v1/models`（僅列出 LLM/VLM）
 - **多模型路由** — LLM、VLM、Embedding、Vision Embedding、Reranker、Vision Reranker
 - **SSE 串流** — 完整支援 Server-Sent Events（chat completions 和 responses）
 - **智慧容錯** — 可設定各類型的備援模型，依健康檢查自動切換；回應標頭 `X-Model-Fallback`

@@ -34,7 +34,7 @@ graph LR
 
 | 方法 | 路徑 | 說明 | Proxy 方式 | 允許類型 |
 |---|---|---|---|---|
-| `GET` | `/v1/models` | 列出所有可用模型 | 直接回傳 | — |
+| `GET` | `/v1/models` | 列出可用模型（僅 LLM/VLM） | 直接回傳 | `llm`, `vlm` |
 | `POST` | `/v1/chat/completions` | Chat 對話生成 | `forward_request` | `llm`, `vlm` |
 | `POST` | `/v1/responses` | Responses API | `forward_to_path` | `llm`, `vlm` |
 | `POST` | `/v1/embeddings` | 文字向量嵌入 | `forward_simple_request` | `embedding`, `vision_embedding` |

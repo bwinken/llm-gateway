@@ -34,7 +34,7 @@ graph LR
 
 | Method | Path | Description | Proxy Method | Allowed Types |
 |---|---|---|---|---|
-| `GET` | `/v1/models` | List all available models | Direct response | — |
+| `GET` | `/v1/models` | List available models (LLM/VLM only) | Direct response | `llm`, `vlm` |
 | `POST` | `/v1/chat/completions` | Chat completion generation | `forward_request` | `llm`, `vlm` |
 | `POST` | `/v1/responses` | Responses API | `forward_to_path` | `llm`, `vlm` |
 | `POST` | `/v1/embeddings` | Text embeddings | `forward_simple_request` | `embedding`, `vision_embedding` |
