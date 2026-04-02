@@ -8,3 +8,4 @@ keys/
 .pytest_cache/
 .claude/
 .playwright-mcp/
+monitor/

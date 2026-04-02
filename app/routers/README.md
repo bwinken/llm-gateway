@@ -22,6 +22,7 @@ graph LR
     web_ui --> stats["services/stats.py"]
     admin --> stats
     admin --> config["core/config.py"]
+    admin --> monitor["services/monitor.py"]
 ```
 
 ---
@@ -96,11 +97,13 @@ When fallback occurs, the response includes an `X-Model-Fallback` header explain
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/admin` | Admin home: usage summary, DAU trends, department usage, leaderboards, user management. Supports pagination: `?limit=15&offset=0&app_limit=15&app_offset=0` |
+| `GET` | `/admin` | Admin home: usage summary, DAU trends, department usage, leaderboards, user management. Supports pagination (`?limit=15&offset=0&app_limit=15&app_offset=0`) and server-side search (`?q=keyword`, ILIKE on username/display_name/org_code) |
 | `POST` | `/admin/users/create` | Create app account (form submit, username auto-prefixed with `app_`) |
 | `POST` | `/admin/users/{id}/limit` | Update user daily limit (form submit) |
 | `POST` | `/admin/users/{id}/delete` | Delete user and their usage logs (cannot delete self) |
 | `POST` | `/admin/users/{id}/refresh-key` | Regenerate any user's API key, returns JSON |
+| `POST` | `/admin/users/{id}/monitor` | Toggle request/response monitoring for a user (returns JSON `{ok, monitoring, username}`) |
+| `GET` | `/admin/monitor` | Get monitoring status: list of currently monitored users with per-type file sizes and total disk usage |
 | `GET` | `/admin/models` | Model config page (SPA, loads data via API) |
 
 ### Admin REST API (JWT auth, requires admin scope)
@@ -130,7 +133,7 @@ graph TD
 
     subgraph "JWT Auth (auth.py via oauth2-proxy)"
         Dashboard["/ • /dashboard<br/>Security: read scope"]
-        Admin["/admin/*<br/>Security: admin scope<br/>(Web UI + REST API + Model Config)"]
+        Admin["/admin/*<br/>Security: admin scope<br/>(Web UI + REST API + Model Config + Monitor)"]
     end
 
     V1 -->|get_current_user| DB["DB: users.api_key"]

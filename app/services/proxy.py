@@ -22,6 +22,7 @@ from app.core.database import engine
 from app.core.logger import logger
 from app.core.server_state import get_client, is_alive
 from app.models.schema import UsageLog, User
+from app.services.monitor import is_monitored, log_monitor
 
 
 # ---------------------------------------------------------------------------
@@ -225,21 +226,25 @@ async def forward_request(
     client = get_client()
     target_url = f"{base_url}/chat/completions"
 
+    # Keep a copy of user-facing request body for monitoring (before real_model swap)
+    monitor_body = body.copy()
+    monitor_body["model"] = resolved_alias
+
     if is_stream:
         return await _stream_chat(
             client, target_url, body, downstream_headers, user, resolved_alias, model_type,
-            extra_headers,
+            extra_headers, monitor_body,
         )
     else:
         return await _non_stream_chat(
             client, target_url, body, downstream_headers, user, resolved_alias, model_type,
-            extra_headers,
+            extra_headers, monitor_body,
         )
 
 
 async def _non_stream_chat(
     client, url: str, body: dict, headers: dict, user: User, model: str, model_type: str,
-    extra_headers: dict[str, str] | None = None,
+    extra_headers: dict[str, str] | None = None, monitor_body: dict | None = None,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=120.0)
@@ -252,27 +257,27 @@ async def _non_stream_chat(
 
     data = resp.json()
     usage = data.get("usage", {})
-    _log_usage(
-        user,
-        model,
-        model_type,
-        usage.get("prompt_tokens", 0),
-        usage.get("completion_tokens", 0),
-        "/v1/chat/completions",
-    )
+    input_tk = usage.get("prompt_tokens", 0)
+    output_tk = usage.get("completion_tokens", 0)
+    _log_usage(user, model, model_type, input_tk, output_tk, "/v1/chat/completions")
+    if is_monitored(user.id):
+        cost = float(_calc_cost(model_type, input_tk, output_tk))
+        log_monitor(user.id, monitor_body or body, data, model, "/v1/chat/completions", input_tk, output_tk, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
 
 
 async def _stream_chat(
     client, url: str, body: dict, headers: dict, user: User, model: str, model_type: str,
-    extra_headers: dict[str, str] | None = None,
+    extra_headers: dict[str, str] | None = None, monitor_body: dict | None = None,
 ) -> StreamingResponse:
     req = client.build_request("POST", url, json=body, headers=headers, timeout=120.0)
+    _monitoring = is_monitored(user.id)
 
     async def event_generator():
         input_tokens = 0
         output_tokens = 0
         resp = None
+        chunks: list[dict] = [] if _monitoring else []
         try:
             resp = await client.send(req, stream=True)
             async for line in resp.aiter_lines():
@@ -286,6 +291,8 @@ async def _stream_chat(
                 if line.startswith("data: ") and line != "data: [DONE]":
                     try:
                         chunk = json.loads(line[6:])
+                        if _monitoring:
+                            chunks.append(chunk)
                         usage = chunk.get("usage")
                         if usage:
                             input_tokens = usage.get("prompt_tokens", input_tokens)
@@ -305,6 +312,9 @@ async def _stream_chat(
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
         _log_usage(user, model, model_type, input_tokens, output_tokens, "/v1/chat/completions")
+        if _monitoring:
+            cost = float(_calc_cost(model_type, input_tokens, output_tokens))
+            log_monitor(user.id, monitor_body or body, chunks, model, "/v1/chat/completions", input_tokens, output_tokens, cost, model_type)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
     if extra_headers:
@@ -361,6 +371,11 @@ async def forward_simple_request(
         prompt_tokens = total_tokens
 
     _log_usage(user, resolved_alias, model_type, prompt_tokens, completion_tokens, endpoint_label)
+    if is_monitored(user.id):
+        monitor_body = body.copy()
+        monitor_body["model"] = resolved_alias
+        cost = float(_calc_cost(model_type, prompt_tokens, completion_tokens))
+        log_monitor(user.id, monitor_body, data, resolved_alias, endpoint_label, prompt_tokens, completion_tokens, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
 
 
@@ -428,14 +443,12 @@ async def _passthrough_non_stream(
 
     data = resp.json()
     usage = data.get("usage", {})
-    _log_usage(
-        user,
-        model,
-        model_type,
-        usage.get("input_tokens", usage.get("prompt_tokens", 0)),
-        usage.get("output_tokens", usage.get("completion_tokens", 0)),
-        path_suffix,
-    )
+    input_tk = usage.get("input_tokens", usage.get("prompt_tokens", 0))
+    output_tk = usage.get("output_tokens", usage.get("completion_tokens", 0))
+    _log_usage(user, model, model_type, input_tk, output_tk, path_suffix)
+    if is_monitored(user.id):
+        cost = float(_calc_cost(model_type, input_tk, output_tk))
+        log_monitor(user.id, json.loads(raw_body), data, model, path_suffix, input_tk, output_tk, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
 
 
@@ -445,11 +458,13 @@ async def _passthrough_stream(
     extra_headers: dict[str, str] | None = None,
 ) -> StreamingResponse:
     req = client.build_request("POST", url, content=raw_body, headers=headers, timeout=120.0)
+    _monitoring = is_monitored(user.id)
 
     async def event_generator():
         input_tokens = 0
         output_tokens = 0
         resp = None
+        chunks: list[dict] = []
         try:
             resp = await client.send(req, stream=True)
             async for line in resp.aiter_lines():
@@ -462,6 +477,8 @@ async def _passthrough_stream(
                 if line.startswith("data: ") and line != "data: [DONE]":
                     try:
                         chunk = json.loads(line[6:])
+                        if _monitoring:
+                            chunks.append(chunk)
                         usage = chunk.get("usage")
                         if usage:
                             input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", input_tokens))
@@ -481,6 +498,9 @@ async def _passthrough_stream(
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
         _log_usage(user, model, model_type, input_tokens, output_tokens, path_suffix)
+        if _monitoring:
+            cost = float(_calc_cost(model_type, input_tokens, output_tokens))
+            log_monitor(user.id, json.loads(raw_body), chunks, model, path_suffix, input_tokens, output_tokens, cost, model_type)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
     if extra_headers:

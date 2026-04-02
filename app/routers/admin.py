@@ -17,6 +17,7 @@ from app.core.auth import get_web_user
 from app.core.config import APP_TITLE, get_config_data, save_config
 from app.core.database import get_session
 from app.models.schema import AppOwner, User, UsageLog
+from app.services.monitor import add_monitor, list_monitored, remove_monitor, is_monitored
 from app.services.stats import (
     get_all_users_usage,
     get_dau_trends,
@@ -49,6 +50,7 @@ async def admin_page(
     offset: int = 0,
     app_limit: int = _PAGE_SIZE,
     app_offset: int = 0,
+    q: str = "",
 ):
 
     # ── Monthly totals (single aggregate query) ──
@@ -58,27 +60,33 @@ async def admin_page(
     app_leaderboard = get_leaderboard(session, is_app=True, limit=10)
     user_leaderboard = get_leaderboard(session, is_app=False, limit=10)
 
-    # ── User Management: paginated queries ──
-    user_count_stmt = select(func.count(User.id)).where(~User.username.startswith("app_"))
-    app_count_stmt = select(func.count(User.id)).where(User.username.startswith("app_"))
-    user_total = session.exec(user_count_stmt).one()
-    app_total = session.exec(app_count_stmt).one()
+    # ── User Management: paginated queries with optional search ──
+    search = q.strip()
+    user_base = select(User).where(~User.username.startswith("app_"))
+    app_base = select(User).where(User.username.startswith("app_"))
+
+    if search:
+        like = f"%{search}%"
+        search_filter = (
+            User.username.ilike(like)
+            | User.display_name.ilike(like)
+            | User.org_code.ilike(like)
+        )
+        user_base = user_base.where(search_filter)
+        app_base = app_base.where(search_filter)
+
+    user_total = session.exec(select(func.count()).select_from(user_base.subquery())).one()
+    app_total = session.exec(select(func.count()).select_from(app_base.subquery())).one()
 
     # Clamp offset
     offset = max(0, min(offset, max(user_total - 1, 0)))
     app_offset = max(0, min(app_offset, max(app_total - 1, 0)))
 
     paged_users = session.exec(
-        select(User)
-        .where(~User.username.startswith("app_"))
-        .order_by(User.id)
-        .offset(offset).limit(limit)
+        user_base.order_by(User.id).offset(offset).limit(limit)
     ).all()
     paged_apps = session.exec(
-        select(User)
-        .where(User.username.startswith("app_"))
-        .order_by(User.id)
-        .offset(app_offset).limit(app_limit)
+        app_base.order_by(User.id).offset(app_offset).limit(app_limit)
     ).all()
 
     # Usage maps for paginated users only
@@ -165,6 +173,7 @@ async def admin_page(
             "app_limit": app_limit,
             "app_offset": app_offset,
             "app_total": app_total,
+            "q": search,
         },
     )
 
@@ -466,3 +475,29 @@ async def save_config_api(
 
     save_config(models, pricing, fallback or {})
     return JSONResponse({"ok": True})
+
+
+# ── Request Monitoring ──
+
+@router.post("/users/{user_id}/monitor")
+async def toggle_monitor(
+    user_id: int,
+    session: Session = Depends(get_session),
+):
+    """Toggle request monitoring for a user/app."""
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    if is_monitored(user_id):
+        remove_monitor(user_id)
+        return JSONResponse({"ok": True, "monitoring": False, "username": target.username})
+    else:
+        add_monitor(user_id, target.username)
+        return JSONResponse({"ok": True, "monitoring": True, "username": target.username})
+
+
+@router.get("/monitor")
+async def get_monitor_status():
+    """Return currently monitored users with per-type request counts."""
+    return JSONResponse({"monitored": list_monitored()})

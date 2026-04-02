@@ -75,7 +75,7 @@ All pages are protected by oauth2-proxy + nginx `auth_request` — users must co
 | **User Leaderboard** | User ranking, top-10 by monthly cost descending, shows display_name and org_code badge |
 | **Department Usage** | Usage table grouped by org_code: Users, Cost, Input / Output Tokens, Reqs |
 | **Create App Account** | Form to create new app account: username (auto-prefixed with `app_`), Daily Limit, Owner |
-| **User Management** | Server-side paginated (limit/offset) user table, Users / Apps tab switching |
+| **User Management** | Server-side paginated (limit/offset) user table with server-side search (`q` parameter, ILIKE on username/display_name/org_code), Users / Apps tab switching |
 
 ### Available Actions
 
@@ -85,6 +85,7 @@ All pages are protected by oauth2-proxy + nginx `auth_request` — users must co
 | Update Daily Limit | `POST /admin/users/{id}/limit` | Change user's daily spend limit |
 | View API Key | Button → Modal | View any user's full API key |
 | Regenerate Key | `POST /admin/users/{id}/refresh-key` | Regenerate any user's API key |
+| Toggle Monitor | `POST /admin/users/{id}/monitor` | Enable/disable request/response monitoring for a user |
 | Delete User | `POST /admin/users/{id}/delete` | Delete user and all their usage logs (cannot delete self) |
 
 ---

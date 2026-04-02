@@ -80,6 +80,14 @@ Three forwarding methods, all sharing `_resolve_model()` for health-aware routin
 - Usage is logged per-request to `usage_logs` table with cost calculated from `PRICING_MAP`
 - Model alias (user-facing name) is swapped to `real_model` before forwarding downstream
 
+### Per-User Monitoring (`app/services/monitor.py`)
+
+- Admins can toggle monitoring on individual users via `POST /admin/users/{id}/monitor`; state is in-memory (cleared on restart)
+- When monitoring is active, full request/response payloads are logged as JSONL files under `monitor/{username}/{date}_{type}.jsonl` (e.g. `20260402_chat.jsonl`)
+- Only monitors `llm`, `embedding`, and `reranker` model types (vision variants excluded)
+- File writes happen in a background thread via `asyncio.run_in_executor` (fire-and-forget, non-blocking)
+- `GET /admin/monitor` returns currently monitored users with per-type file sizes and total disk usage; warns at 100 MB per user
+
 ## Testing
 
 Tests use in-memory SQLite with `StaticPool` (all connections share one DB). Key setup in `tests/conftest.py`:

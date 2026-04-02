@@ -245,11 +245,15 @@
                 <button id="umTabApps" onclick="switchUmTab('apps')" class="text-xs font-medium px-3 py-1.5 transition-colors text-t4 hover:text-t2">Apps</button>
             </div>
         </div>
-        <div class="relative">
+        <form action="/admin" method="GET" class="relative flex items-center gap-2">
             <svg class="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-t4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-            <input type="text" id="umSearch" oninput="filterUmTable()" placeholder="Search username..."
+            <input type="text" name="q" value="{{ q }}" placeholder="Search username..."
                    class="gw-input text-sm py-1.5 pl-8 pr-3 w-56">
-        </div>
+            <button type="submit" class="gw-btn gw-btn-ghost text-xs px-2 py-1.5">Search</button>
+            {% if q %}
+            <a href="/admin" class="gw-btn gw-btn-ghost text-xs px-2 py-1.5 text-t4">Clear</a>
+            {% endif %}
+        </form>
     </div>
 
     {# Users table #}
@@ -325,10 +329,10 @@
         </div>
         {% if user_total > 0 %}
         <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)">
-            <a href="?offset={{ [offset - limit, 0]|max }}&limit={{ limit }}&app_offset={{ app_offset }}&app_limit={{ app_limit }}"
+            <a href="?offset={{ [offset - limit, 0]|max }}&limit={{ limit }}&app_offset={{ app_offset }}&app_limit={{ app_limit }}{% if q %}&q={{ q }}{% endif %}"
                class="gw-btn gw-btn-ghost text-xs px-2 py-1 {{ 'opacity-30 pointer-events-none' if offset == 0 }}">&larr; Prev</a>
             <span>{{ offset + 1 }}-{{ [offset + limit, user_total]|min }} of {{ user_total }}</span>
-            <a href="?offset={{ offset + limit }}&limit={{ limit }}&app_offset={{ app_offset }}&app_limit={{ app_limit }}"
+            <a href="?offset={{ offset + limit }}&limit={{ limit }}&app_offset={{ app_offset }}&app_limit={{ app_limit }}{% if q %}&q={{ q }}{% endif %}"
                class="gw-btn gw-btn-ghost text-xs px-2 py-1 {{ 'opacity-30 pointer-events-none' if offset + limit >= user_total }}">&rarr; Next</a>
         </div>
         {% endif %}
@@ -398,10 +402,10 @@
         </div>
         {% if app_total > 0 %}
         <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)">
-            <a href="?offset={{ offset }}&limit={{ limit }}&app_offset={{ [app_offset - app_limit, 0]|max }}&app_limit={{ app_limit }}"
+            <a href="?offset={{ offset }}&limit={{ limit }}&app_offset={{ [app_offset - app_limit, 0]|max }}&app_limit={{ app_limit }}{% if q %}&q={{ q }}{% endif %}"
                class="gw-btn gw-btn-ghost text-xs px-2 py-1 {{ 'opacity-30 pointer-events-none' if app_offset == 0 }}">&larr; Prev</a>
             <span>{{ app_offset + 1 }}-{{ [app_offset + app_limit, app_total]|min }} of {{ app_total }}</span>
-            <a href="?offset={{ offset }}&limit={{ limit }}&app_offset={{ app_offset + app_limit }}&app_limit={{ app_limit }}"
+            <a href="?offset={{ offset }}&limit={{ limit }}&app_offset={{ app_offset + app_limit }}&app_limit={{ app_limit }}{% if q %}&q={{ q }}{% endif %}"
                class="gw-btn gw-btn-ghost text-xs px-2 py-1 {{ 'opacity-30 pointer-events-none' if app_offset + app_limit >= app_total }}">&rarr; Next</a>
         </div>
         {% endif %}
@@ -464,28 +468,14 @@
     // Initialize pagination on load
     lbPage('app', 0); lbPage('user', 0);
 
-    /* ── User Management tabs + search ── */
-    var umActiveTab = 'users';
-
+    /* ── User Management tabs ── */
     function switchUmTab(tab) {
-        umActiveTab = tab;
         document.getElementById('umUsersPanel').classList.toggle('hidden', tab !== 'users');
         document.getElementById('umAppsPanel').classList.toggle('hidden', tab !== 'apps');
         var btnUsers = document.getElementById('umTabUsers');
         var btnApps = document.getElementById('umTabApps');
         btnUsers.className = 'text-xs font-medium px-3 py-1.5 transition-colors ' + (tab === 'users' ? 'bg-n3 text-t1' : 'text-t4 hover:text-t2');
         btnApps.className = 'text-xs font-medium px-3 py-1.5 transition-colors ' + (tab === 'apps' ? 'bg-n3 text-t1' : 'text-t4 hover:text-t2');
-        document.getElementById('umSearch').value = '';
-        filterUmTable();
-    }
-    function filterUmTable() {
-        var q = (document.getElementById('umSearch').value || '').toLowerCase().trim();
-        var bodyId = umActiveTab === 'users' ? 'umUsersBody' : 'umAppsBody';
-        var rows = document.querySelectorAll('#' + bodyId + ' .um-row');
-        rows.forEach(function(r) {
-            var text = r.getAttribute('data-search') || '';
-            r.style.display = (!q || text.indexOf(q) !== -1) ? '' : 'none';
-        });
     }
 
     let currentUserId = null;
