@@ -22,7 +22,7 @@ from app.core.database import engine
 from app.core.logger import logger
 from app.core.server_state import get_client, is_alive
 from app.models.schema import UsageLog, User
-from app.services.monitor import is_monitored, log_monitor
+from app.services.monitor import is_monitored, log_monitor, log_monitor_error
 
 
 # ---------------------------------------------------------------------------
@@ -250,9 +250,11 @@ async def _non_stream_chat(
         resp = await client.post(url, json=body, headers=headers, timeout=120.0)
     except Exception as exc:
         logger.error("Downstream error: {}", exc)
+        log_monitor_error(user.id, monitor_body or body, str(exc), 502, model, "/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
+        log_monitor_error(user.id, monitor_body or body, resp.text[:500], resp.status_code, model, "/v1/chat/completions", model_type)
         return _error_response(resp)
 
     data = resp.json()
@@ -355,9 +357,11 @@ async def forward_simple_request(
         resp = await client.post(target_url, json=body, headers=downstream_headers, timeout=120.0)
     except Exception as exc:
         logger.error("Downstream error: {}", exc)
+        log_monitor_error(user.id, body, str(exc), 502, resolved_alias, endpoint_label, model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
+        log_monitor_error(user.id, body, resp.text[:500], resp.status_code, resolved_alias, endpoint_label, model_type)
         return _error_response(resp)
 
     data = resp.json()
@@ -436,9 +440,11 @@ async def _passthrough_non_stream(
         resp = await client.post(url, content=raw_body, headers=headers, timeout=120.0)
     except Exception as exc:
         logger.error("Downstream error: {}", exc)
+        log_monitor_error(user.id, json.loads(raw_body), str(exc), 502, model, path_suffix, model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
+        log_monitor_error(user.id, json.loads(raw_body), resp.text[:500], resp.status_code, model, path_suffix, model_type)
         return _error_response(resp)
 
     data = resp.json()

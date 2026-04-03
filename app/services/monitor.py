@@ -87,15 +87,14 @@ def _endpoint_to_type(endpoint: str) -> str:
 
 def _write_sync(
     username: str,
-    endpoint: str,
+    filename_type: str,
     record: dict,
 ) -> None:
     """Synchronous file write — runs in a thread via run_in_executor."""
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    req_type = _endpoint_to_type(endpoint)
     user_dir = _MONITOR_DIR / username
     user_dir.mkdir(parents=True, exist_ok=True)
-    filepath = user_dir / f"{date_str}_{req_type}.jsonl"
+    filepath = user_dir / f"{date_str}_{filename_type}.jsonl"
     try:
         with open(filepath, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
@@ -134,8 +133,43 @@ def log_monitor(
         "response": response_body,
     }
 
+    file_type = _endpoint_to_type(endpoint)
     try:
         loop = asyncio.get_running_loop()
-        loop.run_in_executor(None, _write_sync, username, endpoint, record)
+        loop.run_in_executor(None, _write_sync, username, file_type, record)
     except RuntimeError:
-        _write_sync(username, endpoint, record)
+        _write_sync(username, file_type, record)
+
+
+def log_monitor_error(
+    user_id: int,
+    request_body: Any,
+    error: str,
+    status_code: int,
+    model: str,
+    endpoint: str,
+    model_type: str = "",
+) -> None:
+    """Fire-and-forget: log a failed request to {date}_error.jsonl."""
+    if user_id not in _monitored:
+        return
+    if model_type and model_type not in _ALLOWED_TYPES:
+        return
+
+    import asyncio
+
+    username = _monitored[user_id]
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "model": model,
+        "endpoint": endpoint,
+        "status_code": status_code,
+        "error": error,
+        "request": request_body,
+    }
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, _write_sync, username, "error", record)
+    except RuntimeError:
+        _write_sync(username, "error", record)
