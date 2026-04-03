@@ -15,7 +15,7 @@ from typing import Any
 
 from app.core.logger import logger
 
-_MONITOR_DIR = Path(__file__).resolve().parent.parent.parent / "monitor"
+_MONITOR_DIR = Path(os.getenv("MONITOR_DIR", Path(__file__).resolve().parent.parent.parent / "monitor"))
 
 # In-memory set of monitored user IDs
 _monitored: dict[int, str] = {}  # user_id -> username
