@@ -144,6 +144,9 @@ async def admin_page(
     today_dau = dau_data[-1]["dau"] if dau_data else 0
     dept_usage = get_department_usage(session)
 
+    # Currently monitored user IDs (for toggle button state)
+    monitored_ids = {m["user_id"] for m in list_monitored()}
+
     return templates.TemplateResponse(
         "admin.html",
         {
@@ -166,6 +169,7 @@ async def admin_page(
             "current_year": now.year,
             "dau_data": dau_data,
             "today_dau": today_dau,
+            "monitored_ids": monitored_ids,
             # Pagination state
             "limit": limit,
             "offset": offset,
