@@ -10,6 +10,7 @@ from app.core.config import get_model_routing_snapshot
 from app.core.deps import get_current_user
 from app.models.schema import User
 from app.services.proxy import (
+    forward_count_tokens_request,
     forward_messages_request,
     forward_request,
     forward_simple_request,
@@ -70,6 +71,22 @@ async def messages(request: Request, user: User = Depends(get_current_user)):
     back to Anthropic format.
     """
     return await forward_messages_request(request, user, allowed_types=["llm", "vlm"])
+
+
+@router.post("/v1/messages/count_tokens")
+async def messages_count_tokens(
+    request: Request, user: User = Depends(get_current_user)
+):
+    """Anthropic-compatible token counting endpoint.
+
+    Used by Claude Code (and other Anthropic SDK clients) to estimate the
+    input token count of a prospective request — typically for context
+    window tracking. Forwards to the downstream vLLM ``/tokenize`` endpoint
+    and returns ``{"input_tokens": N}``. Not billed.
+    """
+    return await forward_count_tokens_request(
+        request, user, allowed_types=["llm", "vlm"]
+    )
 
 
 @router.post("/v1/embeddings")

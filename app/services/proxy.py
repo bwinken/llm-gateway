@@ -614,6 +614,115 @@ async def _stream_messages(
     )
 
 
+# ---------------------------------------------------------------------------
+# 5. forward_count_tokens_request - Anthropic /v1/messages/count_tokens
+# ---------------------------------------------------------------------------
+
+async def forward_count_tokens_request(
+    request: Request,
+    user: User,
+    allowed_types: list[str],
+) -> JSONResponse:
+    """Anthropic-compatible token counting endpoint.
+
+    Translates the Anthropic-format request to OpenAI chat format and forwards
+    to the downstream vLLM ``/tokenize`` endpoint, which accepts a chat-style
+    ``messages`` payload and returns ``{"count": N, ...}``. The result is
+    repackaged as ``{"input_tokens": N}`` for Anthropic SDK compatibility.
+
+    No usage is recorded — this is a metadata query, not a billable inference
+    call. Auth and daily-limit checks still apply via ``get_current_user``.
+    """
+    try:
+        anthropic_body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    model_name = anthropic_body.get("model", "")
+    resolved_alias, route, fallback_reason = _resolve_model(model_name, allowed_types)
+
+    real_model = route["real_model"]
+    base_url = route["base_url"]
+    downstream_headers = _get_downstream_headers(route)
+    extra_headers = _fallback_headers(fallback_reason)
+
+    openai_body = anthropic_to_openai_request(anthropic_body)
+    # Build a /tokenize payload — vLLM accepts chat-style messages directly
+    tokenize_body: dict[str, Any] = {
+        "model": real_model,
+        "messages": openai_body.get("messages", []),
+        "add_generation_prompt": True,
+    }
+    if openai_body.get("tools"):
+        tokenize_body["tools"] = openai_body["tools"]
+
+    client = get_client()
+    target_url = f"{base_url}/tokenize"
+
+    try:
+        resp = await client.post(
+            target_url, json=tokenize_body, headers=downstream_headers, timeout=30.0,
+        )
+    except Exception as exc:
+        logger.error("count_tokens downstream error: {}", exc)
+        # Fallback: rough estimate from flattened text length
+        approx = _approx_token_count(openai_body.get("messages", []))
+        return JSONResponse(
+            content={"input_tokens": approx},
+            headers=extra_headers,
+        )
+
+    if resp.status_code != 200:
+        logger.warning(
+            "count_tokens downstream returned {} for model={} — falling back to estimate",
+            resp.status_code, resolved_alias,
+        )
+        approx = _approx_token_count(openai_body.get("messages", []))
+        return JSONResponse(
+            content={"input_tokens": approx},
+            headers=extra_headers,
+        )
+
+    try:
+        data = resp.json()
+    except Exception:
+        approx = _approx_token_count(openai_body.get("messages", []))
+        return JSONResponse(
+            content={"input_tokens": approx},
+            headers=extra_headers,
+        )
+
+    # vLLM /tokenize returns {"count": N, "max_model_len": ..., "tokens": [...]}
+    count = data.get("count")
+    if count is None and isinstance(data.get("tokens"), list):
+        count = len(data["tokens"])
+    if count is None:
+        count = _approx_token_count(openai_body.get("messages", []))
+
+    return JSONResponse(
+        content={"input_tokens": int(count)},
+        headers=extra_headers,
+    )
+
+
+def _approx_token_count(messages: list[dict[str, Any]]) -> int:
+    """Rough fallback token estimate (~4 chars per token) used only when the
+    downstream tokenizer is unavailable."""
+    total_chars = 0
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    total_chars += len(part.get("text", ""))
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            total_chars += len(fn.get("name", "")) + len(fn.get("arguments", ""))
+    return max(1, total_chars // 4)
+
+
 async def _passthrough_stream(
     client, url: str, raw_body: bytes, headers: dict,
     user: User, model: str, model_type: str, path_suffix: str,

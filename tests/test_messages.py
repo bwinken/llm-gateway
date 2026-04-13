@@ -496,6 +496,111 @@ class TestMessagesEndpointNonStream:
         assert resp.status_code == 502
 
 
+class TestCountTokensEndpoint:
+
+    def test_count_tokens_basic(self, client, test_user):
+        downstream_body = {"count": 17, "max_model_len": 32768, "tokens": [1, 2, 3]}
+        post_coro, captured = make_post_coro_capture(make_httpx_response(200, downstream_body))
+        client.__httpx_mock__.post = post_coro
+
+        resp = client.post(
+            "/v1/messages/count_tokens",
+            json={
+                "model": "test-llm",
+                "messages": [{"role": "user", "content": "hello world"}],
+            },
+            headers=auth_header(),
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"input_tokens": 17}
+        # Downstream model alias is swapped to real_model
+        assert captured["body"]["model"] == "real-llm-v1"
+        assert captured["body"]["add_generation_prompt"] is True
+        assert captured["body"]["messages"][0]["content"] == "hello world"
+
+    def test_count_tokens_with_system_and_tools(self, client, test_user):
+        downstream_body = {"count": 42}
+        post_coro, captured = make_post_coro_capture(make_httpx_response(200, downstream_body))
+        client.__httpx_mock__.post = post_coro
+
+        resp = client.post(
+            "/v1/messages/count_tokens",
+            json={
+                "model": "test-llm",
+                "system": "You are a helpful assistant.",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {
+                        "name": "get_weather",
+                        "description": "Get weather",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"location": {"type": "string"}},
+                        },
+                    }
+                ],
+            },
+            headers=auth_header(),
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"input_tokens": 42}
+        # System prompt + tools must be included in the tokenize payload
+        assert captured["body"]["messages"][0]["role"] == "system"
+        assert captured["body"]["tools"][0]["function"]["name"] == "get_weather"
+
+    def test_count_tokens_x_api_key(self, client, test_user):
+        client.__httpx_mock__.post = make_post_coro(
+            make_httpx_response(200, {"count": 5})
+        )
+        resp = client.post(
+            "/v1/messages/count_tokens",
+            json={"model": "test-llm", "messages": [{"role": "user", "content": "hi"}]},
+            headers={"x-api-key": "sk-testkey123"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["input_tokens"] == 5
+
+    def test_count_tokens_401_without_auth(self, client):
+        resp = client.post(
+            "/v1/messages/count_tokens",
+            json={"model": "test-llm", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code in (401, 403)
+
+    def test_count_tokens_fallback_on_downstream_error(self, client, test_user):
+        """When /tokenize is unavailable, return a rough estimate instead of 5xx."""
+        client.__httpx_mock__.post = make_post_coro_raise(Exception("connection refused"))
+        resp = client.post(
+            "/v1/messages/count_tokens",
+            json={
+                "model": "test-llm",
+                "messages": [{"role": "user", "content": "hello world this is a test"}],
+            },
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        # Estimate is chars/4, so should be > 0
+        assert resp.json()["input_tokens"] > 0
+
+    def test_count_tokens_fallback_on_404(self, client, test_user):
+        """Some downstreams may not implement /tokenize → fall back to estimate."""
+        client.__httpx_mock__.post = make_post_coro(
+            make_httpx_response(404, {"detail": "Not Found"})
+        )
+        resp = client.post(
+            "/v1/messages/count_tokens",
+            json={
+                "model": "test-llm",
+                "messages": [{"role": "user", "content": "abcdefgh"}],
+            },
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["input_tokens"] >= 1
+
+
 class TestMessagesEndpointStream:
 
     def test_stream_basic(self, client, test_user):
