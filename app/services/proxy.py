@@ -22,6 +22,11 @@ from app.core.database import engine
 from app.core.logger import logger
 from app.core.server_state import get_client, is_alive
 from app.models.schema import UsageLog, User
+from app.services.anthropic_adapter import (
+    AnthropicStreamTranslator,
+    anthropic_to_openai_request,
+    openai_to_anthropic_response,
+)
 from app.services.monitor import is_monitored, log_monitor, log_monitor_error
 
 
@@ -456,6 +461,157 @@ async def _passthrough_non_stream(
         cost = float(_calc_cost(model_type, input_tk, output_tk))
         log_monitor(user.id, json.loads(raw_body), data, model, path_suffix, input_tk, output_tk, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
+
+
+# ---------------------------------------------------------------------------
+# 4. forward_messages_request - Anthropic /v1/messages compatibility
+# ---------------------------------------------------------------------------
+
+async def forward_messages_request(
+    request: Request,
+    user: User,
+    allowed_types: list[str],
+) -> StreamingResponse | JSONResponse:
+    """Accept an Anthropic Messages API request, translate to OpenAI chat
+    completions, forward to the downstream server, then translate the response
+    back to Anthropic format."""
+    try:
+        anthropic_body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    model_name = anthropic_body.get("model", "")
+    resolved_alias, route, fallback_reason = _resolve_model(model_name, allowed_types)
+
+    real_model = route["real_model"]
+    base_url = route["base_url"]
+    model_type = route["type"]
+    downstream_headers = _get_downstream_headers(route)
+    extra_headers = _fallback_headers(fallback_reason)
+
+    openai_body = anthropic_to_openai_request(anthropic_body)
+    openai_body["model"] = real_model
+    is_stream = bool(anthropic_body.get("stream", False))
+
+    if is_stream:
+        # Always include usage in the stream so we can report it back
+        opts = openai_body.get("stream_options") or {}
+        opts["include_usage"] = True
+        openai_body["stream_options"] = opts
+        openai_body["stream"] = True
+
+    client = get_client()
+    target_url = f"{base_url}/chat/completions"
+
+    monitor_body = dict(anthropic_body)
+    monitor_body["model"] = resolved_alias
+
+    if is_stream:
+        return await _stream_messages(
+            client, target_url, openai_body, downstream_headers,
+            user, resolved_alias, model_type, extra_headers, monitor_body,
+        )
+    return await _non_stream_messages(
+        client, target_url, openai_body, downstream_headers,
+        user, resolved_alias, model_type, extra_headers, monitor_body,
+    )
+
+
+async def _non_stream_messages(
+    client, url: str, body: dict, headers: dict, user: User,
+    model_alias: str, model_type: str,
+    extra_headers: dict[str, str] | None = None,
+    monitor_body: dict | None = None,
+) -> JSONResponse:
+    try:
+        resp = await client.post(url, json=body, headers=headers, timeout=120.0)
+    except Exception as exc:
+        logger.error("Downstream error: {}", exc)
+        log_monitor_error(user.id, monitor_body or body, str(exc), 502, model_alias, "/v1/messages", model_type)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+
+    if resp.status_code != 200:
+        log_monitor_error(user.id, monitor_body or body, resp.text[:500], resp.status_code, model_alias, "/v1/messages", model_type)
+        return _error_response(resp)
+
+    openai_data = resp.json()
+    anthropic_data = openai_to_anthropic_response(openai_data, model_alias)
+
+    input_tk = anthropic_data["usage"]["input_tokens"]
+    output_tk = anthropic_data["usage"]["output_tokens"]
+    _log_usage(user, model_alias, model_type, input_tk, output_tk, "/v1/messages")
+    if is_monitored(user.id):
+        cost = float(_calc_cost(model_type, input_tk, output_tk))
+        log_monitor(user.id, monitor_body or body, anthropic_data, model_alias, "/v1/messages", input_tk, output_tk, cost, model_type)
+
+    return JSONResponse(content=anthropic_data, headers=extra_headers)
+
+
+async def _stream_messages(
+    client, url: str, body: dict, headers: dict, user: User,
+    model_alias: str, model_type: str,
+    extra_headers: dict[str, str] | None = None,
+    monitor_body: dict | None = None,
+) -> StreamingResponse:
+    req = client.build_request("POST", url, json=body, headers=headers, timeout=120.0)
+    _monitoring = is_monitored(user.id)
+
+    async def event_generator():
+        translator = AnthropicStreamTranslator(model_alias)
+        chunks: list[dict] = []
+        resp = None
+        try:
+            for event in translator.start():
+                yield event
+
+            resp = await client.send(req, stream=True)
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str == "[DONE]":
+                    continue
+                try:
+                    chunk = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                if _monitoring:
+                    chunks.append(chunk)
+                for event in translator.handle_chunk(chunk):
+                    yield event
+
+            for event in translator.finish():
+                yield event
+        except Exception as exc:
+            logger.error("Stream error: {}", exc)
+            err_payload = json.dumps({"type": "error", "error": {"type": "api_error", "message": str(exc)}})
+            yield f"event: error\ndata: {err_payload}\n\n"
+        finally:
+            if resp is not None:
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
+
+        input_tokens = translator.input_tokens
+        output_tokens = translator.output_tokens
+        if input_tokens == 0 and output_tokens == 0:
+            logger.warning("Anthropic stream for model={} ended with 0 tokens", model_alias)
+        _log_usage(user, model_alias, model_type, input_tokens, output_tokens, "/v1/messages")
+        if _monitoring:
+            cost = float(_calc_cost(model_type, input_tokens, output_tokens))
+            log_monitor(user.id, monitor_body or body, chunks, model_alias, "/v1/messages", input_tokens, output_tokens, cost, model_type)
+
+    resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
+    if extra_headers:
+        resp_headers.update(extra_headers)
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers=resp_headers,
+    )
 
 
 async def _passthrough_stream(

@@ -48,7 +48,7 @@ Client (Bearer API key) → FastAPI → deps.py (auth + daily limit check)
 
 ### Dual Auth System
 
-- **API endpoints** (`/v1/*`): API key in `Authorization: Bearer <key>` header → `deps.py:get_current_user()` looks up User by `api_key` in DB
+- **API endpoints** (`/v1/*`): API key in `Authorization: Bearer <key>` header **or** `x-api-key: <key>` header (Anthropic-style) → `deps.py:get_current_user()` looks up User by `api_key` in DB
 - **Web UI + Admin** (`/`, `/dashboard`, `/admin/*`): oauth2-proxy handles login via AuthCenter OIDC → nginx `auth_request` validates session → injects `Authorization: Bearer <JWT>` header → `auth.py:get_web_user()` (FastAPI `Security` dependency) decodes JWT, enforces declared scopes, returns `User`
 - All `/admin/*` routes (including REST API) use JWT auth via router-level `Security(get_web_user, scopes=["admin"])` — no API key auth on admin endpoints
 - JWT validation: RS256, `audience=AUTH_CENTER_APP_ID`, `issuer=AUTH_BASE_URL`, `leeway=5` for clock skew tolerance. Public key loaded from `AUTH_CENTER_PUBLIC_KEY_PATH` with mtime-based reload (key rotation takes effect without restart).
@@ -57,15 +57,24 @@ Client (Bearer API key) → FastAPI → deps.py (auth + daily limit check)
 
 ### Proxy Layer (`app/services/proxy.py`)
 
-Three forwarding methods, all sharing `_resolve_model()` for health-aware routing:
+Four forwarding methods, all sharing `_resolve_model()` for health-aware routing:
 
 | Method | Used by | Behavior |
 |---|---|---|
 | `forward_request` | `/v1/chat/completions` | Stream + non-stream, SSE parsing |
 | `forward_simple_request` | `/v1/embeddings`, `/v1/rerank`, `/v1/score` | Non-streaming, 120s timeout |
 | `forward_to_path` | `/v1/responses` | Raw pass-through, only mutates model field |
+| `forward_messages_request` | `/v1/messages` | Anthropic→OpenAI translation, OpenAI→Anthropic response, stream + non-stream |
 
 `_resolve_model()` priority: exact match + alive server → alive fallback of same type → best-effort any server of compatible type. Returns `X-Model-Fallback` response header when fallback occurs.
+
+### Anthropic Messages API (`app/services/anthropic_adapter.py`)
+
+`/v1/messages` accepts Anthropic-format requests for any LLM/VLM and works with stock vLLM downstreams. The adapter is purely stateless translation:
+
+- **Request**: `anthropic_to_openai_request()` flattens `system` into a system message, converts `image` blocks (base64/url) to OpenAI `image_url` parts, maps `tool_use`/`tool_result` to OpenAI `tool_calls`/`role:"tool"`, and translates `tools`/`tool_choice` into OpenAI's function-calling schema.
+- **Non-stream response**: `openai_to_anthropic_response()` builds the Anthropic message envelope with `content` blocks (text + tool_use), `stop_reason` mapping (`stop`→`end_turn`, `length`→`max_tokens`, `tool_calls`→`tool_use`), and Anthropic-style `usage` (`input_tokens`/`output_tokens`).
+- **Stream**: `AnthropicStreamTranslator` is a stateful chunk-by-chunk converter that emits the canonical Anthropic SSE event sequence: `message_start` → `content_block_start` → `content_block_delta` (`text_delta` or `input_json_delta`) → `content_block_stop` → `message_delta` (with stop_reason + output_tokens) → `message_stop`. Tool-call deltas are tracked by their OpenAI `index` and mapped to distinct Anthropic content block indices.
 
 ### Configuration
 
