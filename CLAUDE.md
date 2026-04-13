@@ -57,7 +57,7 @@ Client (Bearer API key) → FastAPI → deps.py (auth + daily limit check)
 
 ### Proxy Layer (`app/services/proxy.py`)
 
-Four forwarding methods, all sharing `_resolve_model()` for health-aware routing:
+Five forwarding methods, all sharing `_resolve_model()` for health-aware routing:
 
 | Method | Used by | Behavior |
 |---|---|---|
@@ -65,6 +65,7 @@ Four forwarding methods, all sharing `_resolve_model()` for health-aware routing
 | `forward_simple_request` | `/v1/embeddings`, `/v1/rerank`, `/v1/score` | Non-streaming, 120s timeout |
 | `forward_to_path` | `/v1/responses` | Raw pass-through, only mutates model field |
 | `forward_messages_request` | `/v1/messages` | Anthropic→OpenAI translation, OpenAI→Anthropic response, stream + non-stream |
+| `forward_count_tokens_request` | `/v1/messages/count_tokens` | Forwards to vLLM `/tokenize`, returns `{input_tokens}`; not billed |
 
 `_resolve_model()` priority: exact match + alive server → alive fallback of same type → best-effort any server of compatible type. Returns `X-Model-Fallback` response header when fallback occurs.
 
@@ -75,6 +76,7 @@ Four forwarding methods, all sharing `_resolve_model()` for health-aware routing
 - **Request**: `anthropic_to_openai_request()` flattens `system` into a system message, converts `image` blocks (base64/url) to OpenAI `image_url` parts, maps `tool_use`/`tool_result` to OpenAI `tool_calls`/`role:"tool"`, and translates `tools`/`tool_choice` into OpenAI's function-calling schema.
 - **Non-stream response**: `openai_to_anthropic_response()` builds the Anthropic message envelope with `content` blocks (text + tool_use), `stop_reason` mapping (`stop`→`end_turn`, `length`→`max_tokens`, `tool_calls`→`tool_use`), and Anthropic-style `usage` (`input_tokens`/`output_tokens`).
 - **Stream**: `AnthropicStreamTranslator` is a stateful chunk-by-chunk converter that emits the canonical Anthropic SSE event sequence: `message_start` → `content_block_start` → `content_block_delta` (`text_delta` or `input_json_delta`) → `content_block_stop` → `message_delta` (with stop_reason + output_tokens) → `message_stop`. Tool-call deltas are tracked by their OpenAI `index` and mapped to distinct Anthropic content block indices.
+- **Token counting** (`/v1/messages/count_tokens`): Used by Claude Code and other Anthropic SDK clients for context-window tracking. Translates the Anthropic request via `anthropic_to_openai_request()` and forwards the resulting `messages` (plus `tools`) to vLLM's `/tokenize` endpoint with `add_generation_prompt: true`, then returns `{"input_tokens": N}`. If the downstream tokenizer is unavailable (connection error, 404, malformed body), falls back to a chars/4 estimate so Claude Code clients still get a usable answer instead of a 5xx. Auth/daily-limit checks still apply but the call is **not** logged to `usage_logs` (it's a metadata query, not billable inference).
 
 ### Configuration
 
