@@ -9,7 +9,12 @@ from fastapi import APIRouter, Depends, Request
 from app.core.config import get_model_routing_snapshot
 from app.core.deps import get_current_user
 from app.models.schema import User
-from app.services.proxy import forward_request, forward_simple_request, forward_to_path
+from app.services.proxy import (
+    forward_messages_request,
+    forward_request,
+    forward_simple_request,
+    forward_to_path,
+)
 
 router = APIRouter()
 
@@ -54,6 +59,17 @@ async def responses(request: Request, user: User = Depends(get_current_user)):
     return await forward_to_path(
         request, user, allowed_types=["llm", "vlm"], path_suffix="/responses"
     )
+
+
+@router.post("/v1/messages")
+async def messages(request: Request, user: User = Depends(get_current_user)):
+    """Anthropic Messages API compatibility endpoint.
+
+    Translates Anthropic /v1/messages requests to OpenAI chat completions
+    format, forwards to the downstream LLM/VLM, then translates the response
+    back to Anthropic format.
+    """
+    return await forward_messages_request(request, user, allowed_types=["llm", "vlm"])
 
 
 @router.post("/v1/embeddings")
