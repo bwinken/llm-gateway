@@ -63,17 +63,24 @@ async def responses(request: Request, user: User = Depends(get_current_user)):
 
 
 @router.post("/v1/messages")
+@router.post("/messages")
 async def messages(request: Request, user: User = Depends(get_current_user)):
     """Anthropic Messages API compatibility endpoint.
 
     Translates Anthropic /v1/messages requests to OpenAI chat completions
     format, forwards to the downstream LLM/VLM, then translates the response
     back to Anthropic format.
+
+    Both ``/v1/messages`` and ``/messages`` are accepted so that clients work
+    regardless of whether their ``ANTHROPIC_BASE_URL`` already includes the
+    ``/v1`` prefix (a common Claude Code / Anthropic SDK misconfiguration
+    that otherwise causes a silent 404 on the direct connection).
     """
     return await forward_messages_request(request, user, allowed_types=["llm", "vlm"])
 
 
 @router.post("/v1/messages/count_tokens")
+@router.post("/messages/count_tokens")
 async def messages_count_tokens(
     request: Request, user: User = Depends(get_current_user)
 ):
@@ -83,6 +90,9 @@ async def messages_count_tokens(
     input token count of a prospective request — typically for context
     window tracking. Forwards to the downstream vLLM ``/tokenize`` endpoint
     and returns ``{"input_tokens": N}``. Not billed.
+
+    Mirrors ``/v1/messages`` by also exposing ``/messages/count_tokens`` for
+    clients whose base URL already includes the ``/v1`` prefix.
     """
     return await forward_count_tokens_request(
         request, user, allowed_types=["llm", "vlm"]

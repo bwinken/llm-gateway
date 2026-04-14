@@ -284,6 +284,16 @@ class TestStreamTranslator:
         assert t.output_tokens == 2
         assert t.stop_reason == "end_turn"
 
+        # message_start usage has the full Anthropic shape (zeros upfront
+        # because vLLM reports usage only on the final chunk)
+        assert '"input_tokens": 0' in joined
+        assert '"cache_creation_input_tokens": 0' in joined
+        assert '"cache_read_input_tokens": 0' in joined
+        # message_delta carries the FINAL counts including input_tokens —
+        # Claude Code parses this to drive its context-window indicator
+        assert '"input_tokens": 5' in joined
+        assert '"output_tokens": 2' in joined
+
     def test_tool_call_stream(self):
         t = AnthropicStreamTranslator("claude-x")
         events: list[str] = []
@@ -495,6 +505,56 @@ class TestMessagesEndpointNonStream:
         )
         assert resp.status_code == 502
 
+    def test_beta_query_param_passthrough(self, client, test_user):
+        """Claude Code posts to ``/v1/messages?beta=true``. FastAPI matches
+        the route regardless of undeclared query params, but pin it down so
+        we don't accidentally break the route with a conflicting param
+        declaration in the future."""
+        downstream_body = {
+            "id": "x",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        client.__httpx_mock__.post = make_post_coro(make_httpx_response(200, downstream_body))
+
+        resp = client.post(
+            "/v1/messages?beta=true",
+            json={
+                "model": "test-llm",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+
+    def test_alias_without_v1_prefix(self, client, test_user):
+        """Accept ``/messages`` for clients whose ``ANTHROPIC_BASE_URL`` already
+        ends in ``/v1`` — otherwise their requests would 404 silently, which
+        looks like a timeout on the client side (the symptom reported for
+        the direct connection)."""
+        downstream_body = {
+            "id": "x",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        client.__httpx_mock__.post = make_post_coro(make_httpx_response(200, downstream_body))
+
+        resp = client.post(
+            "/messages",
+            json={
+                "model": "test-llm",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+
 
 class TestCountTokensEndpoint:
 
@@ -584,6 +644,20 @@ class TestCountTokensEndpoint:
         # Estimate is chars/4, so should be > 0
         assert resp.json()["input_tokens"] > 0
 
+    def test_count_tokens_alias_without_v1_prefix(self, client, test_user):
+        """``/messages/count_tokens`` mirrors ``/v1/messages/count_tokens``
+        for clients whose base URL already contains ``/v1``."""
+        client.__httpx_mock__.post = make_post_coro(
+            make_httpx_response(200, {"count": 7})
+        )
+        resp = client.post(
+            "/messages/count_tokens",
+            json={"model": "test-llm", "messages": [{"role": "user", "content": "hi"}]},
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["input_tokens"] == 7
+
     def test_count_tokens_fallback_on_404(self, client, test_user):
         """Some downstreams may not implement /tokenize → fall back to estimate."""
         client.__httpx_mock__.post = make_post_coro(
@@ -638,3 +712,8 @@ class TestMessagesEndpointStream:
         assert "event: content_block_stop" in body
         assert "event: message_delta" in body
         assert "event: message_stop" in body
+        # message_delta usage must include input_tokens in addition to
+        # output_tokens — Claude Code reads this to update its context bar.
+        # Without input_tokens, the client's context indicator resets to 0.
+        assert '"input_tokens": 4' in body
+        assert '"output_tokens": 2' in body

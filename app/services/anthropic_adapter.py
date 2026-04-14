@@ -329,7 +329,17 @@ class AnthropicStreamTranslator:
                     "content": [],
                     "stop_reason": None,
                     "stop_sequence": None,
-                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                    # Downstream vLLM only reports usage on the final chunk,
+                    # so we don't know input_tokens up front. Emit zeros here
+                    # with the full Anthropic usage shape; the real counts
+                    # are delivered in `message_delta` at the end of the
+                    # stream.
+                    "usage": {
+                        "input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                        "output_tokens": 0,
+                    },
                 },
             },
         )
@@ -409,6 +419,11 @@ class AnthropicStreamTranslator:
         if not self._started:
             return
         yield from self._close_current_block()
+        # Real Anthropic `message_delta` usage carries BOTH input_tokens and
+        # output_tokens (plus the cache counters). Claude Code parses this
+        # event to update its context-window indicator, so emitting only
+        # output_tokens causes its context bar to reset to 0. Include the
+        # full shape here for parity.
         yield self._sse(
             "message_delta",
             {
@@ -417,7 +432,12 @@ class AnthropicStreamTranslator:
                     "stop_reason": self.stop_reason or "end_turn",
                     "stop_sequence": None,
                 },
-                "usage": {"output_tokens": self.output_tokens},
+                "usage": {
+                    "input_tokens": self.input_tokens,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "output_tokens": self.output_tokens,
+                },
             },
         )
         yield self._sse("message_stop", {"type": "message_stop"})
