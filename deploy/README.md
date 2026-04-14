@@ -15,9 +15,9 @@
 ```
 Browser → Nginx (:80)
             ├─ /oauth2/*  → oauth2-proxy (:4180)  ← handles login/logout
-            ├─ /v1/*      → Gateway (:8050)        ← API key auth
+            ├─ /v1/*      → Gateway                 ← API key auth
             └─ /*         → auth_request → oauth2-proxy validation
-                          → Gateway (:8050)        ← JWT header auth
+                          → Gateway                 ← JWT header auth
 ```
 
 - **Gateway**: user-level systemd service (Python/FastAPI)

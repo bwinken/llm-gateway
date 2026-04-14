@@ -6,7 +6,7 @@ OpenAI 相容的反向代理閘道，專為 [vLLM](https://github.com/vllm-proje
 將客戶端應用程式的請求路由、代理並監控到下游 vLLM 實例（LLM、VLM、Embedding、Reranker）。
 
 ```
-Client App ──▶ LLM Gateway (:8050) ──▶ vLLM Instance A  [LLM]
+Client App ──▶ LLM Gateway ──▶ vLLM Instance A  [LLM]
                     │                 ──▶ vLLM Instance B  [VLM]
                     │                 ──▶ vLLM Instance C  [Embedding]
                     │                 ──▶ vLLM Instance D  [Reranker]
@@ -105,7 +105,7 @@ bash scripts/start-pg-dev.sh start
 uv run fastapi dev app/main.py
 ```
 
-Gateway 會在 `http://localhost:8050` 啟動。
+Gateway 會在 FastAPI 輸出的 port 啟動（dev 模式預設 8000）。
 
 > **Windows：** 如果出現 `UnicodeEncodeError`，請先設定 `PYTHONUTF8=1`。
 
@@ -168,7 +168,7 @@ vlm = "backup-vlm"
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://your-gateway:8050/v1",
+    base_url="http://your-gateway/v1",
     api_key="sk-your-api-key"
 )
 
@@ -190,7 +190,7 @@ resp = client.embeddings.create(
 ### Rerank
 
 ```bash
-curl http://your-gateway:8050/v1/rerank \
+curl http://your-gateway/v1/rerank \
   -H "Authorization: Bearer sk-your-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -203,7 +203,7 @@ curl http://your-gateway:8050/v1/rerank \
 ### 列出模型
 
 ```bash
-curl http://your-gateway:8050/v1/models \
+curl http://your-gateway/v1/models \
   -H "Authorization: Bearer sk-your-api-key"
 ```
 

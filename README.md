@@ -6,7 +6,7 @@ OpenAI-compatible reverse proxy gateway for [vLLM](https://github.com/vllm-proje
 Routes, proxies, and monitors traffic from client applications to downstream vLLM instances (LLM, VLM, Embedding, Reranker).
 
 ```
-Client App ──▶ LLM Gateway (:8050) ──▶ vLLM Instance A  [LLM]
+Client App ──▶ LLM Gateway ──▶ vLLM Instance A  [LLM]
                     │                 ──▶ vLLM Instance B  [VLM]
                     │                 ──▶ vLLM Instance C  [Embedding]
                     │                 ──▶ vLLM Instance D  [Reranker]
@@ -105,7 +105,7 @@ Place the AuthCenter RS256 public key at `keys/public.pem` (or change `AUTH_CENT
 uv run fastapi dev app/main.py
 ```
 
-The gateway starts at `http://localhost:8050`.
+The gateway starts on the port reported by FastAPI (8000 by default in dev mode).
 
 > **Windows:** If you see `UnicodeEncodeError`, set `PYTHONUTF8=1` first.
 
@@ -168,7 +168,7 @@ All API endpoints require `Authorization: Bearer <api_key>`.
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://your-gateway:8050/v1",
+    base_url="http://your-gateway/v1",
     api_key="sk-your-api-key"
 )
 
@@ -190,7 +190,7 @@ resp = client.embeddings.create(
 ### Rerank
 
 ```bash
-curl http://your-gateway:8050/v1/rerank \
+curl http://your-gateway/v1/rerank \
   -H "Authorization: Bearer sk-your-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -203,7 +203,7 @@ curl http://your-gateway:8050/v1/rerank \
 ### List Models
 
 ```bash
-curl http://your-gateway:8050/v1/models \
+curl http://your-gateway/v1/models \
   -H "Authorization: Bearer sk-your-api-key"
 ```
 
