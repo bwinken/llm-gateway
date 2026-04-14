@@ -11,9 +11,22 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session, func, select
 
 from app.core.database import get_session
+from app.core.logger import logger
 from app.models.schema import UsageLog, User
 
 _bearer = HTTPBearer(auto_error=False)
+
+
+def _mask(key: str) -> str:
+    """Return a short redacted preview of an API key for log messages.
+
+    Shows the first 8 characters and the length so you can diagnose
+    "client sent the wrong key" vs "client sent no key" vs "key got
+    mangled to a different length" without ever logging the full secret.
+    """
+    if not key:
+        return "<empty>"
+    return f"{key[:8]}… (len={len(key)})"
 
 
 def _check_daily_limit(session: Session, user: User) -> None:
@@ -55,6 +68,9 @@ def get_current_user(
         candidates.append(x_api_key)
 
     if not candidates:
+        logger.warning(
+            "Auth rejected: no credentials (no Authorization header and no x-api-key)",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing API key. Provide Authorization: Bearer <key> or x-api-key header.",
@@ -67,6 +83,11 @@ def get_current_user(
             break
 
     if user is None:
+        # Log a masked preview of every credential the client sent so
+        # operators can tell "wrong key" from "no key" from "mangled key"
+        # without leaking the full secret to the log file.
+        previews = ", ".join(_mask(k) for k in candidates)
+        logger.warning("Auth rejected: no user found for candidates [{}]", previews)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key.",
