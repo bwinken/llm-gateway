@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from app.core.config import get_model_routing_snapshot
+from app.core.config import _MODEL_METADATA_KEYS, get_model_routing_snapshot
 from app.core.deps import get_current_user
 from app.models.schema import User
 from app.services.proxy import (
@@ -37,15 +37,22 @@ async def list_models(user: User = Depends(get_current_user)):
         model_type = route["type"]
         if model_type not in ("llm", "vlm"):
             continue
-        models.append(
-            {
-                "id": name,
-                "object": "model",
-                "owned_by": "llm-gateway",
-                "type": model_type,
-                "capability": _TYPE_CAPABILITIES.get(model_type, model_type),
-            }
-        )
+        entry: dict[str, object] = {
+            "id": name,
+            "object": "model",
+            "owned_by": "llm-gateway",
+            "type": model_type,
+            "capability": _TYPE_CAPABILITIES.get(model_type, model_type),
+        }
+        # Surface optional per-model metadata (context_window,
+        # max_output_tokens, supports_*, display_name, ...) when it's
+        # declared in config.toml. Any missing key is simply omitted so
+        # existing configs — which don't set any of these — produce the
+        # exact same response they did before.
+        for meta_key in _MODEL_METADATA_KEYS:
+            if meta_key in route:
+                entry[meta_key] = route[meta_key]
+        models.append(entry)
     return {"object": "list", "data": models}
 
 

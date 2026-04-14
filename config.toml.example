@@ -61,11 +61,24 @@ output_price_per_1m = 0.00
 # ------------------------------------------
 # LLM
 # ------------------------------------------
+# All metadata fields (display_name, context_window, max_output_tokens,
+# supports_tools/vision/prompt_caching) are OPTIONAL. They're surfaced
+# via GET /v1/models so clients that query for capabilities (Cursor,
+# Cline, Continue.dev, future Claude Code versions, ...) get accurate
+# info. Omitting them is fine — the fields just won't appear in the
+# /v1/models response for that alias.
 [models.llm]
 [models.llm."my-llm"]
 real_model = "my-llm-model-name"
 base_url = "http://your-llm-server:8000/v1"
 api_key = "your-api-key"
+# Optional metadata:
+# display_name = "My LLM 72B"
+# context_window = 65536
+# max_output_tokens = 8192
+# supports_tools = true
+# supports_vision = false
+# supports_prompt_caching = false
 
 # ------------------------------------------
 # VLM (Vision Language Model)
@@ -75,6 +88,11 @@ api_key = "your-api-key"
 real_model = "my-vlm-model-name"
 base_url = "http://your-vlm-server:8001/v1"
 api_key = "your-api-key"
+# display_name = "My VLM 32B"
+# context_window = 32768
+# max_output_tokens = 4096
+# supports_tools = true
+# supports_vision = true
 
 # ------------------------------------------
 # Embedding
