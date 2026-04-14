@@ -9,3 +9,4 @@ keys/
 .claude/
 .playwright-mcp/
 monitor/
+logs/
