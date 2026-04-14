@@ -4,6 +4,7 @@ Dependency: extract and validate API key from Authorization header.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 from fastapi import Depends, Header, HTTPException, Security, status
@@ -15,6 +16,26 @@ from app.core.logger import logger
 from app.models.schema import UsageLog, User
 
 _bearer = HTTPBearer(auto_error=False)
+
+
+def _enforce_daily_limit() -> bool:
+    """Whether to hard-block requests once the daily spending limit is hit.
+
+    Defaults to True (current behavior). Set ``ENFORCE_DAILY_LIMIT=false``
+    in the gateway env to flip to "log-only" mode, where overages are
+    warned about in the log but no 429 is raised. Useful during
+    onboarding / load testing / when billing isn't configured yet.
+
+    Read at call time rather than import time so you can toggle it
+    without restarting the whole worker (in practice env vars don't
+    live-reload, but this at least doesn't cache the value anywhere).
+    """
+    return os.getenv("ENFORCE_DAILY_LIMIT", "true").lower() not in (
+        "false",
+        "0",
+        "no",
+        "off",
+    )
 
 
 def _mask(key: str) -> str:
@@ -30,7 +51,19 @@ def _mask(key: str) -> str:
 
 
 def _check_daily_limit(session: Session, user: User) -> None:
-    """Reject if user has exceeded their daily spending limit."""
+    """Reject if user has exceeded their daily spending limit.
+
+    Two escape hatches:
+      - ``user.daily_limit_usd <= 0`` → treated as unlimited for this user
+      - env ``ENFORCE_DAILY_LIMIT=false`` → gateway-wide soft mode (log only)
+
+    In soft mode we still compute the cost and emit a WARNING so an
+    operator tailing the log sees the overage — we just don't 429 it.
+    """
+    # Per-user unlimited: 0 (or negative) disables the check entirely.
+    if user.daily_limit_usd <= 0:
+        return
+
     today_start = datetime.now(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
@@ -40,11 +73,19 @@ def _check_daily_limit(session: Session, user: User) -> None:
         .where(UsageLog.created_at >= today_start)
     )
     today_cost = float(session.exec(stmt).one())
-    if today_cost >= user.daily_limit_usd:
+    if today_cost < user.daily_limit_usd:
+        return
+
+    if _enforce_daily_limit():
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"Daily spending limit (${user.daily_limit_usd}) exceeded. Today: ${today_cost:.4f}.",
         )
+    # Soft mode: let the request through but make the overage visible.
+    logger.warning(
+        "Daily limit exceeded (soft mode) | user={} limit=${} today=${:.4f}",
+        user.username, user.daily_limit_usd, today_cost,
+    )
 
 
 def get_current_user(
