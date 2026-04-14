@@ -411,6 +411,36 @@ class TestMessagesEndpointNonStream:
         )
         assert resp.status_code in (401, 403)
 
+    def test_valid_x_api_key_wins_over_invalid_bearer(self, client, test_user):
+        """Claude Code may send both ``Authorization: Bearer <something>``
+        (e.g. from ANTHROPIC_AUTH_TOKEN or a corporate proxy) and a valid
+        ``x-api-key``. We should let the request through as long as *any*
+        of the supplied credentials is valid — otherwise users get a
+        confusing 401 even though they configured the gateway key
+        correctly."""
+        downstream_body = {
+            "id": "x",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        client.__httpx_mock__.post = make_post_coro(make_httpx_response(200, downstream_body))
+
+        resp = client.post(
+            "/v1/messages",
+            json={
+                "model": "test-llm",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            headers={
+                "Authorization": "Bearer sk-ant-not-our-key",
+                "x-api-key": "sk-testkey123",
+            },
+        )
+        assert resp.status_code == 200
+
     def test_system_prompt_forwarded(self, client, test_user):
         downstream_body = {
             "id": "x",

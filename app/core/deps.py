@@ -11,9 +11,22 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session, func, select
 
 from app.core.database import get_session
+from app.core.logger import logger
 from app.models.schema import UsageLog, User
 
 _bearer = HTTPBearer(auto_error=False)
+
+
+def _mask(key: str) -> str:
+    """Return a short redacted preview of an API key for log messages.
+
+    Shows the first 8 characters and the length so you can diagnose
+    "client sent the wrong key" vs "client sent no key" vs "key got
+    mangled to a different length" without ever logging the full secret.
+    """
+    if not key:
+        return "<empty>"
+    return f"{key[:8]}… (len={len(key)})"
 
 
 def _check_daily_limit(session: Session, user: User) -> None:
@@ -41,19 +54,40 @@ def get_current_user(
 ) -> User:
     # Support both `Authorization: Bearer <key>` (OpenAI-style) and
     # `x-api-key: <key>` (Anthropic-style) for client compatibility.
-    api_key: str | None = None
-    if credentials is not None:
-        api_key = credentials.credentials
-    elif x_api_key:
-        api_key = x_api_key
+    #
+    # When both headers are present we try each in turn rather than picking
+    # one and giving up — this matters for Claude Code, which may send both
+    # headers when ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY are configured
+    # (or when a corporate proxy injects its own Authorization header). The
+    # user should still get in as long as *some* credential they sent is
+    # valid for the gateway.
+    candidates: list[str] = []
+    if credentials is not None and credentials.credentials:
+        candidates.append(credentials.credentials)
+    if x_api_key and x_api_key not in candidates:
+        candidates.append(x_api_key)
 
-    if not api_key:
+    if not candidates:
+        logger.warning(
+            "Auth rejected: no credentials (no Authorization header and no x-api-key)",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing API key. Provide Authorization: Bearer <key> or x-api-key header.",
         )
-    user = session.exec(select(User).where(User.api_key == api_key)).first()
+
+    user: User | None = None
+    for key in candidates:
+        user = session.exec(select(User).where(User.api_key == key)).first()
+        if user is not None:
+            break
+
     if user is None:
+        # Log a masked preview of every credential the client sent so
+        # operators can tell "wrong key" from "no key" from "mangled key"
+        # without leaking the full secret to the log file.
+        previews = ", ".join(_mask(k) for k in candidates)
+        logger.warning("Auth rejected: no user found for candidates [{}]", previews)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key.",
