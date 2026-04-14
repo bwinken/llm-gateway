@@ -14,7 +14,12 @@ from sqlalchemy import delete
 from sqlmodel import Session, func, select
 
 from app.core.auth import get_web_user
-from app.core.config import APP_TITLE, get_config_data, save_config
+from app.core.config import (
+    _MODEL_METADATA_KEYS,
+    APP_TITLE,
+    get_config_data,
+    save_config,
+)
 from app.core.database import get_session
 from app.models.schema import AppOwner, User, UsageLog
 from app.services.monitor import add_monitor, list_monitored, remove_monitor, is_monitored
@@ -466,12 +471,42 @@ async def save_config_api(
     if not isinstance(models, dict) or not isinstance(pricing, dict):
         raise HTTPException(status_code=400, detail="Invalid config format.")
 
-    # Validate model entries have required fields
+    # Validate model entries have required fields + sanity-check metadata
+    _META_TYPES: dict[str, type | tuple[type, ...]] = {
+        "display_name": str,
+        "context_window": int,
+        "max_output_tokens": int,
+        "supports_tools": bool,
+        "supports_vision": bool,
+        "supports_prompt_caching": bool,
+    }
     for alias, info in models.items():
         if not isinstance(info, dict):
             raise HTTPException(status_code=400, detail=f"Invalid model entry: {alias}")
         if not info.get("base_url") or not info.get("type"):
             raise HTTPException(status_code=400, detail=f"Model '{alias}' missing base_url or type.")
+        for key in _MODEL_METADATA_KEYS:
+            if key not in info:
+                continue
+            expected = _META_TYPES[key]
+            value = info[key]
+            # JSON booleans arrive as Python bool which is also an int, so
+            # check bool BEFORE int to avoid accepting True as context_window.
+            if expected is int and isinstance(value, bool):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Model '{alias}' field '{key}' must be an integer, got boolean.",
+                )
+            if not isinstance(value, expected):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Model '{alias}' field '{key}' has wrong type.",
+                )
+            if expected is int and value < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Model '{alias}' field '{key}' must be non-negative.",
+                )
 
     # Validate fallback values are strings
     if fallback and not all(isinstance(v, str) for v in fallback.values()):

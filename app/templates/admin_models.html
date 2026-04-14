@@ -131,16 +131,87 @@ function renderPanels(types) {
     }
 }
 
+// Optional per-model metadata keys — kept in sync with _MODEL_METADATA_KEYS
+// in app/core/config.py. The backend preserves any of these that are
+// present and strips them if absent, so saving with an empty field = unset.
+const META_KEYS = [
+    'display_name',
+    'context_window',
+    'max_output_tokens',
+    'supports_tools',
+    'supports_vision',
+    'supports_prompt_caching',
+];
+
+function hasMeta(info) {
+    return META_KEYS.some(k => info[k] !== undefined && info[k] !== '');
+}
+
 function renderModelRow(alias, info) {
+    const dot = hasMeta(info)
+        ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-ag ml-1" title="Metadata set"></span>'
+        : '';
     return `
         <tr id="row-${alias}">
             <td><span class="text-sm font-mono font-medium text-t1">${escHtml(alias)}</span></td>
             <td><input type="text" value="${escAttr(info.real_model)}" data-alias="${escAttr(alias)}" data-field="real_model" oninput="updateField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
             <td><input type="text" value="${escAttr(info.base_url)}" data-alias="${escAttr(alias)}" data-field="base_url" oninput="updateField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
             <td><input type="text" value="${escAttr(info.api_key || '')}" data-alias="${escAttr(alias)}" data-field="api_key" oninput="updateField(this)" placeholder="(none)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
-            <td class="text-right"><button onclick="deleteModel('${escAttr(alias)}')" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button></td>
+            <td class="text-right whitespace-nowrap">
+                <button onclick="toggleMeta('${escAttr(alias)}')" id="meta-btn-${escAttr(alias)}" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Optional capability metadata surfaced via GET /v1/models">Advanced${dot}</button>
+                <button onclick="deleteModel('${escAttr(alias)}')" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
+            </td>
+        </tr>
+        ${renderMetaRow(alias, info)}
+    `;
+}
+
+function renderMetaRow(alias, info) {
+    const a = escAttr(alias);
+    const visible = hasMeta(info);   // auto-expand rows that already have metadata
+    const displayName = info.display_name ?? '';
+    const ctxWin = info.context_window ?? '';
+    const maxOut = info.max_output_tokens ?? '';
+    const sTools = info.supports_tools === true;
+    const sVis = info.supports_vision === true;
+    const sCache = info.supports_prompt_caching === true;
+    return `
+        <tr id="meta-${a}" class="${visible ? '' : 'hidden'}" style="background:rgba(255,255,255,0.015)">
+            <td colspan="5" class="px-5 py-3">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                    <label class="flex flex-col gap-1">
+                        <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="Human-readable name shown to clients">Display Name</span>
+                        <input type="text" value="${escAttr(displayName)}" data-alias="${a}" data-field="display_name" data-meta="1" oninput="updateField(this)" placeholder="(unset)" class="gw-input text-sm py-1 px-2">
+                    </label>
+                    <label class="flex flex-col gap-1">
+                        <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="Max input tokens the underlying model accepts">Context Window</span>
+                        <input type="number" min="0" step="1024" value="${ctxWin}" data-alias="${a}" data-field="context_window" data-meta="1" oninput="updateField(this)" placeholder="(unset)" class="gw-input text-sm py-1 px-2 font-mono">
+                    </label>
+                    <label class="flex flex-col gap-1">
+                        <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="Max tokens the model can generate in one response">Max Output Tokens</span>
+                        <input type="number" min="0" step="256" value="${maxOut}" data-alias="${a}" data-field="max_output_tokens" data-meta="1" oninput="updateField(this)" placeholder="(unset)" class="gw-input text-sm py-1 px-2 font-mono">
+                    </label>
+                    <label class="flex items-center gap-2 pt-5">
+                        <input type="checkbox" ${sTools ? 'checked' : ''} data-alias="${a}" data-field="supports_tools" data-meta="1" onchange="updateField(this)" class="gw-checkbox">
+                        <span class="text-t3">supports_tools</span>
+                    </label>
+                    <label class="flex items-center gap-2 pt-5">
+                        <input type="checkbox" ${sVis ? 'checked' : ''} data-alias="${a}" data-field="supports_vision" data-meta="1" onchange="updateField(this)" class="gw-checkbox">
+                        <span class="text-t3">supports_vision</span>
+                    </label>
+                    <label class="flex items-center gap-2 pt-5">
+                        <input type="checkbox" ${sCache ? 'checked' : ''} data-alias="${a}" data-field="supports_prompt_caching" data-meta="1" onchange="updateField(this)" class="gw-checkbox">
+                        <span class="text-t3">supports_prompt_caching</span>
+                    </label>
+                </div>
+            </td>
         </tr>
     `;
+}
+
+function toggleMeta(alias) {
+    const row = document.getElementById('meta-' + alias);
+    if (row) row.classList.toggle('hidden');
 }
 
 function renderPricing(types) {
@@ -168,7 +239,27 @@ function renderPricing(types) {
     tbody.innerHTML = rows.join('');
 }
 
-function updateField(el) { const a=el.dataset.alias, f=el.dataset.field; if(config.models[a]) config.models[a][f]=el.value; }
+function updateField(el) {
+    const a = el.dataset.alias, f = el.dataset.field;
+    if (!config.models[a]) return;
+    if (el.dataset.meta) {
+        // Optional metadata: empty field = unset (key removed entirely)
+        if (el.type === 'checkbox') {
+            if (el.checked) config.models[a][f] = true;
+            else delete config.models[a][f];
+        } else if (el.type === 'number') {
+            const v = parseInt(el.value, 10);
+            if (Number.isFinite(v)) config.models[a][f] = v;
+            else delete config.models[a][f];
+        } else {
+            const v = el.value.trim();
+            if (v) config.models[a][f] = v;
+            else delete config.models[a][f];
+        }
+    } else {
+        config.models[a][f] = el.value;
+    }
+}
 function updatePricing(el) { const t=el.dataset.ptype, f=el.dataset.pfield; if(!config.pricing[t])config.pricing[t]={}; config.pricing[t][f]=parseFloat(el.value)||0; }
 function setFallback(type, alias) { config.fallback[type] = alias; }
 
@@ -189,10 +280,16 @@ function deleteModel(alias) {
 }
 
 function collectFromDOM() {
-    // Collect model fields directly from DOM inputs to avoid stale state
+    // Clear every metadata field first so unchecking a checkbox or
+    // clearing a number genuinely removes the key from the saved config
+    // (instead of leaving a stale value from initial load).
+    for (const a in config.models) {
+        for (const k of META_KEYS) delete config.models[a][k];
+    }
+    // Re-collect model fields from DOM inputs. updateField() already
+    // handles metadata type coercion + empty-means-unset.
     document.querySelectorAll('input[data-alias][data-field]').forEach(function(el) {
-        var a = el.dataset.alias, f = el.dataset.field;
-        if (config.models[a]) config.models[a][f] = el.value;
+        updateField(el);
     });
     // Collect pricing fields directly from DOM inputs
     document.querySelectorAll('input[data-ptype][data-pfield]').forEach(function(el) {

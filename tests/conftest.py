@@ -149,6 +149,12 @@ TEST_MODEL_ROUTING: dict[str, dict[str, Any]] = {
         "real_model": "real-vlm-v1",
         "api_key": "VLM_API_KEY",
         "type": "vlm",
+        # Optional metadata — exercises the /v1/models metadata pass-through
+        "display_name": "Test VLM",
+        "context_window": 32768,
+        "max_output_tokens": 4096,
+        "supports_tools": True,
+        "supports_vision": True,
     },
     "test-embedding": {
         "base_url": "http://mock-embed:8080/v1",

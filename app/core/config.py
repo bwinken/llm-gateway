@@ -33,6 +33,20 @@ AUTH_CENTER_PUBLIC_KEY_PATH: str = os.getenv("AUTH_CENTER_PUBLIC_KEY_PATH", "./k
 AUTH_BASE_URL: str = os.getenv("AUTH_BASE_URL", "auth-center")
 
 
+# Optional per-model metadata that can be declared in config.toml and is
+# surfaced to clients via GET /v1/models. Unknown/unspecified keys are
+# simply omitted from the response — the endpoint stays backward
+# compatible for any model entry that doesn't declare them.
+_MODEL_METADATA_KEYS: tuple[str, ...] = (
+    "display_name",
+    "context_window",
+    "max_output_tokens",
+    "supports_tools",
+    "supports_vision",
+    "supports_prompt_caching",
+)
+
+
 def _load_toml() -> dict[str, Any]:
     with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
         return toml.load(f)
@@ -72,12 +86,19 @@ def _build_config(raw: dict[str, Any]) -> tuple[
     model_routing: dict[str, dict[str, Any]] = {}
     for type_key, models in raw.get("models", {}).items():
         for model_name, model_cfg in models.items():
-            model_routing[model_name] = {
+            entry: dict[str, Any] = {
                 "base_url": model_cfg.get("base_url", ""),
                 "real_model": model_cfg.get("real_model", model_name),
                 "api_key": model_cfg.get("api_key", ""),
                 "type": type_key,
             }
+            # Optional metadata surfaced via GET /v1/models. Missing keys
+            # are simply omitted from the response so existing configs
+            # keep working unchanged.
+            for meta_key in _MODEL_METADATA_KEYS:
+                if meta_key in model_cfg:
+                    entry[meta_key] = model_cfg[meta_key]
+            model_routing[model_name] = entry
 
     # --- fallback (type -> preferred fallback model alias) ---
     fallback_map: dict[str, str] = {}
@@ -164,6 +185,11 @@ def save_config(
         }
         if info.get("api_key"):
             entry["api_key"] = info["api_key"]
+        # Preserve any metadata fields the caller passed through so a save
+        # from the admin UI doesn't silently wipe context_window etc.
+        for meta_key in _MODEL_METADATA_KEYS:
+            if meta_key in info:
+                entry[meta_key] = info[meta_key]
         models_section[type_key][alias] = entry
     raw["models"] = models_section
 
