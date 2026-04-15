@@ -326,7 +326,7 @@ llm-gateway/
 │   ├── .env.example            # Docker services env vars
 │   ├── setup.sh                # Deployment script
 │   ├── llm-gateway.service     # systemd unit
-│   ├── llm-gateway.nginx.conf  # Nginx config (auth_request)
+│   ├── llm-gateway-example.nginx.conf  # Nginx config (auth_request)
 │   └── README.md               # Deployment guide
 └── tests/
     ├── conftest.py

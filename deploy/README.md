@@ -133,7 +133,7 @@ docker compose -f deploy/docker-compose.yml up -d
     ├── pgdata/               # PostgreSQL data
     ├── setup.sh              # Deployment script
     ├── llm-gateway.service   # systemd unit
-    └── llm-gateway.nginx.conf
+    └── llm-gateway-example.nginx.conf
 ```
 
 ## Config Files

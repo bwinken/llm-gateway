@@ -326,7 +326,7 @@ llm-gateway/
 │   ├── .env.example            # Docker 服務環境變數
 │   ├── setup.sh                # 部署腳本
 │   ├── llm-gateway.service     # systemd 單元
-│   ├── llm-gateway.nginx.conf  # Nginx 設定 (auth_request)
+│   ├── llm-gateway-example.nginx.conf  # Nginx 設定 (auth_request)
 │   └── README.md               # 部署指南
 └── tests/
     ├── conftest.py
