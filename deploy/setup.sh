@@ -344,7 +344,7 @@ header "Step 9/9  Nginx 設定"
 if ! command -v nginx &>/dev/null; then
     warn "nginx 未安裝，跳過此步驟"
     info "請手動安裝 nginx 並設定反向代理"
-    info "  設定檔模板：$DEPLOY_DIR/llm-gateway-example.nginx.conf"
+    info "  設定檔模板：$DEPLOY_DIR/llm-gateway.nginx.conf"
 else
     # 讀取域名（優先從 deploy/.env 取得）
     DOMAIN_FROM_ENV=$(grep '^OAUTH2_REDIRECT_URL=' "$DEPLOY_DIR/.env" | sed 's|.*://||;s|/.*||')
@@ -356,7 +356,7 @@ else
 
     sed -e "s|__APP_DIR__|$APP_DIR|g" \
         -e "s|llm-gateway.your-domain.com|$NGINX_DOMAIN|g" \
-        "$DEPLOY_DIR/llm-gateway-example.nginx.conf" \
+        "$DEPLOY_DIR/llm-gateway.nginx.conf" \
         | sudo tee /etc/nginx/sites-available/llm-gateway > /dev/null
     sudo ln -sf /etc/nginx/sites-available/llm-gateway /etc/nginx/sites-enabled/llm-gateway
 
