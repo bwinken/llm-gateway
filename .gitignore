@@ -10,3 +10,4 @@ keys/
 .playwright-mcp/
 monitor/
 logs/
+deploy/llm-gateway.nginx.conf
