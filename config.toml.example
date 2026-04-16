@@ -79,6 +79,7 @@ api_key = "your-api-key"
 # supports_tools = true
 # supports_vision = false
 # supports_prompt_caching = false
+# hidden = false          # Hide from user-facing pages and /v1/models (still usable via API)
 
 # ------------------------------------------
 # VLM (Vision Language Model)

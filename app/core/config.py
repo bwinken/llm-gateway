@@ -46,6 +46,12 @@ _MODEL_METADATA_KEYS: tuple[str, ...] = (
     "supports_prompt_caching",
 )
 
+# Internal config keys stored in config.toml and loaded into MODEL_ROUTING
+# but NOT surfaced to API clients via GET /v1/models.
+_MODEL_INTERNAL_KEYS: tuple[str, ...] = (
+    "hidden",
+)
+
 
 def _load_toml() -> dict[str, Any]:
     with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -98,6 +104,9 @@ def _build_config(raw: dict[str, Any]) -> tuple[
             for meta_key in _MODEL_METADATA_KEYS:
                 if meta_key in model_cfg:
                     entry[meta_key] = model_cfg[meta_key]
+            for internal_key in _MODEL_INTERNAL_KEYS:
+                if internal_key in model_cfg:
+                    entry[internal_key] = model_cfg[internal_key]
             model_routing[model_name] = entry
 
     # --- fallback (type -> preferred fallback model alias) ---
@@ -190,6 +199,9 @@ def save_config(
         for meta_key in _MODEL_METADATA_KEYS:
             if meta_key in info:
                 entry[meta_key] = info[meta_key]
+        for internal_key in _MODEL_INTERNAL_KEYS:
+            if internal_key in info:
+                entry[internal_key] = info[internal_key]
         models_section[type_key][alias] = entry
     raw["models"] = models_section
 

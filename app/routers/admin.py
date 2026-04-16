@@ -15,6 +15,7 @@ from sqlmodel import Session, func, select
 
 from app.core.auth import get_web_user
 from app.core.config import (
+    _MODEL_INTERNAL_KEYS,
     _MODEL_METADATA_KEYS,
     APP_TITLE,
     get_config_data,
@@ -480,6 +481,9 @@ async def save_config_api(
         "supports_vision": bool,
         "supports_prompt_caching": bool,
     }
+    _INTERNAL_TYPES: dict[str, type | tuple[type, ...]] = {
+        "hidden": bool,
+    }
     for alias, info in models.items():
         if not isinstance(info, dict):
             raise HTTPException(status_code=400, detail=f"Invalid model entry: {alias}")
@@ -506,6 +510,16 @@ async def save_config_api(
                 raise HTTPException(
                     status_code=400,
                     detail=f"Model '{alias}' field '{key}' must be non-negative.",
+                )
+        for key in _MODEL_INTERNAL_KEYS:
+            if key not in info:
+                continue
+            expected = _INTERNAL_TYPES[key]
+            value = info[key]
+            if not isinstance(value, expected):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Model '{alias}' field '{key}' has wrong type.",
                 )
 
     # Validate fallback values are strings
