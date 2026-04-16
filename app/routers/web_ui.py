@@ -52,10 +52,12 @@ async def index(
     display_name = user.display_name or user.username
     org_code = user.org_code
 
-    # Group models by type for display
+    # Group models by type for display (skip hidden models)
     models_by_type: dict[str, list[str]] = {}
     first_model = ""
     for alias, route in get_model_routing_snapshot().items():
+        if route.get("hidden"):
+            continue
         model_type = route["type"]
         if model_type not in models_by_type:
             models_by_type[model_type] = []
@@ -91,10 +93,12 @@ async def dashboard(
     trend_data = get_daily_trends(session, user.id)
     owned_apps = get_owned_apps_summary(session, user.id)
 
-    # Build grouped server status keyed by raw type
+    # Build grouped server status keyed by raw type (skip hidden models)
     server_groups: dict[str, list[dict]] = {}
     seen_urls: set[str] = set()
     for model_name, route in get_model_routing_snapshot().items():
+        if route.get("hidden"):
+            continue
         base_url = route["base_url"]
         model_type = route["type"]
         if model_type not in server_groups:

@@ -119,7 +119,7 @@ function renderPanels(types) {
                 <div class="overflow-x-auto">
                     <table class="gw-table">
                         <thead><tr>
-                            <th class="gw-tip" data-tip="User-facing model name">Alias</th><th class="gw-tip gw-tip-wide" data-tip="Actual model ID sent to downstream server">Real Model</th><th class="gw-tip gw-tip-wide" data-tip="Downstream vLLM / OpenAI server URL">Base URL</th><th class="gw-tip gw-tip-wide" data-tip="Optional API key for downstream auth">API Key</th><th class="text-right">Actions</th>
+                            <th class="gw-tip" data-tip="User-facing model name">Alias</th><th class="gw-tip gw-tip-wide" data-tip="Actual model ID sent to downstream server">Real Model</th><th class="gw-tip gw-tip-wide" data-tip="Downstream vLLM / OpenAI server URL">Base URL</th><th class="gw-tip gw-tip-wide" data-tip="Optional API key for downstream auth">API Key</th><th class="text-center gw-tip gw-tip-wide" data-tip="Hidden models are not shown to regular users but can still be used via API">Visible</th><th class="text-right">Actions</th>
                         </tr></thead>
                         <tbody>${models.map(([alias, info]) => renderModelRow(alias, info)).join('')}</tbody>
                     </table>
@@ -151,12 +151,21 @@ function renderModelRow(alias, info) {
     const dot = hasMeta(info)
         ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-ag ml-1" title="Metadata set"></span>'
         : '';
+    const isHidden = info.hidden === true;
     return `
-        <tr id="row-${alias}">
+        <tr id="row-${alias}" class="${isHidden ? 'opacity-50' : ''}">
             <td><span class="text-sm font-mono font-medium text-t1">${escHtml(alias)}</span></td>
             <td><input type="text" value="${escAttr(info.real_model)}" data-alias="${escAttr(alias)}" data-field="real_model" oninput="updateField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
             <td><input type="text" value="${escAttr(info.base_url)}" data-alias="${escAttr(alias)}" data-field="base_url" oninput="updateField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
             <td><input type="text" value="${escAttr(info.api_key || '')}" data-alias="${escAttr(alias)}" data-field="api_key" oninput="updateField(this)" placeholder="(none)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
+            <td class="text-center">
+                <button onclick="toggleVisibility('${escAttr(alias)}')" class="p-1.5 rounded-lg transition-colors ${isHidden ? 'text-t4 hover:text-ar' : 'text-ag hover:text-t1'}" title="${isHidden ? 'Hidden from users — click to show' : 'Visible to users — click to hide'}">
+                    ${isHidden
+                        ? '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L6.59 6.59m7.532 7.532l3.29 3.29M3 3l18 18"/></svg>'
+                        : '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>'
+                    }
+                </button>
+            </td>
             <td class="text-right whitespace-nowrap">
                 <button onclick="toggleMeta('${escAttr(alias)}')" id="meta-btn-${escAttr(alias)}" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Optional capability metadata surfaced via GET /v1/models">Advanced${dot}</button>
                 <button onclick="deleteModel('${escAttr(alias)}')" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
@@ -177,7 +186,7 @@ function renderMetaRow(alias, info) {
     const sCache = info.supports_prompt_caching === true;
     return `
         <tr id="meta-${a}" class="${visible ? '' : 'hidden'}" style="background:rgba(255,255,255,0.015)">
-            <td colspan="5" class="px-5 py-3">
+            <td colspan="6" class="px-5 py-3">
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                     <label class="flex flex-col gap-1">
                         <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="Human-readable name shown to clients">Display Name</span>
@@ -212,6 +221,16 @@ function renderMetaRow(alias, info) {
 function toggleMeta(alias) {
     const row = document.getElementById('meta-' + alias);
     if (row) row.classList.toggle('hidden');
+}
+
+function toggleVisibility(alias) {
+    if (!config.models[alias]) return;
+    if (config.models[alias].hidden) {
+        delete config.models[alias].hidden;
+    } else {
+        config.models[alias].hidden = true;
+    }
+    render();
 }
 
 function renderPricing(types) {

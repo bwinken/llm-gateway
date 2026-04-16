@@ -37,6 +37,8 @@ async def list_models(user: User = Depends(get_current_user)):
         model_type = route["type"]
         if model_type not in ("llm", "vlm"):
             continue
+        if route.get("hidden"):
+            continue
         entry: dict[str, object] = {
             "id": name,
             "object": "model",

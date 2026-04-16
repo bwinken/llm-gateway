@@ -10,7 +10,9 @@ their model pickers without us having to hard-code them client-side.
 
 from __future__ import annotations
 
-from tests.conftest import auth_header, web_auth_header
+from unittest.mock import patch
+
+from tests.conftest import TEST_MODEL_ROUTING, auth_header, web_auth_header
 
 
 class TestListModels:
@@ -120,3 +122,39 @@ class TestAdminConfigMetadataValidation:
     def test_rejects_max_output_tokens_as_float(self, client, admin_user):
         resp = self._put(client, admin_user, {"max_output_tokens": 8192.0})
         assert resp.status_code == 400
+
+    def test_accepts_hidden_as_bool(self, client, admin_user):
+        resp = self._put(client, admin_user, {"hidden": True})
+        assert resp.status_code == 200
+
+    def test_rejects_hidden_as_string(self, client, admin_user):
+        resp = self._put(client, admin_user, {"hidden": "yes"})
+        assert resp.status_code == 400
+        assert "hidden" in resp.json()["detail"]
+
+
+class TestHiddenModels:
+    """Hidden models should not appear in /v1/models but can still be used."""
+
+    def _routing_with_hidden(self):
+        """Return a copy of TEST_MODEL_ROUTING with test-llm marked hidden."""
+        routing = {k: dict(v) for k, v in TEST_MODEL_ROUTING.items()}
+        routing["test-llm"]["hidden"] = True
+        return routing
+
+    def test_hidden_model_excluded_from_list(self, client, test_user):
+        routing = self._routing_with_hidden()
+        with patch("app.routers.llm_api.get_model_routing_snapshot", return_value=routing):
+            resp = client.get("/v1/models", headers=auth_header())
+        assert resp.status_code == 200
+        ids = [m["id"] for m in resp.json()["data"]]
+        assert "test-llm" not in ids
+        # Non-hidden model should still be present
+        assert "test-vlm" in ids
+
+    def test_hidden_field_not_surfaced_in_response(self, client, test_user):
+        """Even for non-hidden models, the 'hidden' key should never appear
+        in the /v1/models response (it's an internal config field)."""
+        resp = client.get("/v1/models", headers=auth_header())
+        for m in resp.json()["data"]:
+            assert "hidden" not in m
