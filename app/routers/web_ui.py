@@ -95,7 +95,6 @@ async def dashboard(
 
     # Build grouped server status keyed by raw type (skip hidden models)
     server_groups: dict[str, list[dict]] = {}
-    seen_urls: set[str] = set()
     for model_name, route in get_model_routing_snapshot().items():
         if route.get("hidden"):
             continue
@@ -103,15 +102,13 @@ async def dashboard(
         model_type = route["type"]
         if model_type not in server_groups:
             server_groups[model_type] = []
-        if base_url not in seen_urls:
-            seen_urls.add(base_url)
-            server_groups[model_type].append(
-                {
-                    "name": model_name,
-                    "base_url": base_url,
-                    "alive": is_alive(base_url),
-                }
-            )
+        server_groups[model_type].append(
+            {
+                "name": model_name,
+                "base_url": base_url,
+                "alive": is_alive(base_url),
+            }
+        )
 
     # Budget percentage based on today's cost vs daily limit
     today_cost = get_user_daily_cost(session, user.id)
