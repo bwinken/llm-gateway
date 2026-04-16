@@ -134,7 +134,7 @@ class TestAdminConfigMetadataValidation:
 
 
 class TestHiddenModels:
-    """Hidden models should not appear in /v1/models but can still be used."""
+    """Hidden models are only hidden from web pages, NOT from /v1/models API."""
 
     def _routing_with_hidden(self):
         """Return a copy of TEST_MODEL_ROUTING with test-llm marked hidden."""
@@ -142,19 +142,20 @@ class TestHiddenModels:
         routing["test-llm"]["hidden"] = True
         return routing
 
-    def test_hidden_model_excluded_from_list(self, client, test_user):
+    def test_hidden_model_still_in_api_list(self, client, test_user):
+        """Hidden models should still appear in /v1/models — the hidden flag
+        only affects user-facing web pages (welcome, dashboard)."""
         routing = self._routing_with_hidden()
         with patch("app.routers.llm_api.get_model_routing_snapshot", return_value=routing):
             resp = client.get("/v1/models", headers=auth_header())
         assert resp.status_code == 200
         ids = [m["id"] for m in resp.json()["data"]]
-        assert "test-llm" not in ids
-        # Non-hidden model should still be present
+        assert "test-llm" in ids
         assert "test-vlm" in ids
 
     def test_hidden_field_not_surfaced_in_response(self, client, test_user):
-        """Even for non-hidden models, the 'hidden' key should never appear
-        in the /v1/models response (it's an internal config field)."""
+        """The 'hidden' key should never appear in the /v1/models response
+        (it's an internal config field, not client-facing metadata)."""
         resp = client.get("/v1/models", headers=auth_header())
         for m in resp.json()["data"]:
             assert "hidden" not in m
