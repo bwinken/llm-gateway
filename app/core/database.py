@@ -8,7 +8,7 @@ from app.core.config import DATABASE_URL
 
 _engine_kwargs: dict = {"echo": False}
 if DATABASE_URL.startswith("postgresql"):
-    _engine_kwargs.update(pool_pre_ping=True, pool_size=20, max_overflow=30, pool_timeout=30)
+    _engine_kwargs.update(pool_pre_ping=True, pool_size=20, max_overflow=15, pool_timeout=30)
 engine = create_engine(DATABASE_URL, **_engine_kwargs)
 
 
