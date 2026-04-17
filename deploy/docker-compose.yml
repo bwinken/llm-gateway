@@ -27,6 +27,7 @@ services:
       POSTGRES_USER: ${PG_USER}
       POSTGRES_PASSWORD: ${PG_PASSWORD}
       POSTGRES_DB: ${PG_DB}
+    command: ["postgres", "-c", "max_connections=200"]
     volumes:
       - ${PGDATA_DIR:-./pgdata}:/var/lib/postgresql/data
 
