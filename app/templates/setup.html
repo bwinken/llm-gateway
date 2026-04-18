@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{# ── Header ── #}
+<div class="text-center mt-8 mb-10 gw-anim">
+    <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium mb-6"
+         style="background:rgba(245,166,35,0.08);border:1px solid rgba(245,166,35,0.15);color:#f5a623;">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+        First-Time Setup
+    </div>
+    <h1 class="text-3xl sm:text-4xl font-extrabold text-t1 tracking-tight">
+        Install Trusted Certificate
+    </h1>
+    <p class="mt-4 text-base text-t3 max-w-2xl mx-auto leading-relaxed">
+        To connect to <b>{{ app_title | default("LLM Gateway") }}</b> from browsers and Office add-ins,
+        install our internal CA certificate once.
+    </p>
+</div>
+
+{# ── Steps ── #}
+<div class="max-w-3xl mx-auto space-y-5">
+
+    {# Step 1 #}
+    <div class="gw-card p-6 gw-anim gw-d1">
+        <div class="flex items-start gap-4">
+            <div class="flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center font-bold text-sm"
+                 style="background:rgba(99,152,255,0.1);color:#6398ff">1</div>
+            <div class="flex-1">
+                <h3 class="text-base font-semibold text-t1 mb-2">Download the files</h3>
+                <p class="text-sm text-t3 mb-4">
+                    You need two files: the certificate and an installation script.
+                </p>
+                <div class="flex flex-wrap gap-3">
+                    {% if available["llm-gateway-ca.crt"] %}
+                    <a href="/setup/files/llm-gateway-ca.crt" download
+                       class="gw-btn gw-btn-primary text-sm px-4 py-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                        Download Certificate (.crt)
+                    </a>
+                    {% else %}
+                    <span class="gw-btn gw-btn-ghost text-sm px-4 py-2 opacity-50 cursor-not-allowed">
+                        Certificate not available
+                    </span>
+                    {% endif %}
+
+                    {% if available["install-cert-user.ps1"] %}
+                    <a href="/setup/files/install-cert-user.ps1" download
+                       class="gw-btn gw-btn-ghost text-sm px-4 py-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                        Download PowerShell Script
+                    </a>
+                    {% endif %}
+
+                    {% if available["install-cert.bat"] %}
+                    <a href="/setup/files/install-cert.bat" download
+                       class="gw-btn gw-btn-ghost text-sm px-4 py-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                        Download Batch Script
+                    </a>
+                    {% endif %}
+                </div>
+                <p class="mt-3 text-xs text-t4">
+                    Save both files to the <b>same folder</b> (e.g., <code class="font-mono text-t3">Downloads</code>).
+                </p>
+            </div>
+        </div>
+    </div>
+
+    {# Step 2 #}
+    <div class="gw-card p-6 gw-anim gw-d2">
+        <div class="flex items-start gap-4">
+            <div class="flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center font-bold text-sm"
+                 style="background:rgba(99,152,255,0.1);color:#6398ff">2</div>
+            <div class="flex-1">
+                <h3 class="text-base font-semibold text-t1 mb-2">Run the installer</h3>
+                <p class="text-sm text-t3 mb-4">
+                    Administrator privileges are <b>not</b> required. The certificate is installed for your user only.
+                </p>
+
+                <div class="mb-4">
+                    <div class="text-xs font-semibold text-t4 uppercase tracking-wider mb-2">Option A — PowerShell (recommended)</div>
+                    <ol class="text-sm text-t3 space-y-1.5 list-decimal list-inside pl-1">
+                        <li>Right-click <code class="font-mono text-xs text-t2 bg-n1 px-1.5 py-0.5 rounded">install-cert-user.ps1</code></li>
+                        <li>Select <b>Run with PowerShell</b></li>
+                        <li>If prompted about execution policy, type <code class="font-mono text-xs text-t2 bg-n1 px-1.5 py-0.5 rounded">Y</code> and press Enter</li>
+                    </ol>
+                </div>
+
+                <div>
+                    <div class="text-xs font-semibold text-t4 uppercase tracking-wider mb-2">Option B — Batch file</div>
+                    <ol class="text-sm text-t3 space-y-1.5 list-decimal list-inside pl-1">
+                        <li>Double-click <code class="font-mono text-xs text-t2 bg-n1 px-1.5 py-0.5 rounded">install-cert.bat</code></li>
+                        <li>Wait for <b>&quot;CertUtil: -addstore command completed successfully&quot;</b></li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {# Step 3 #}
+    <div class="gw-card p-6 gw-anim gw-d3">
+        <div class="flex items-start gap-4">
+            <div class="flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center font-bold text-sm"
+                 style="background:rgba(61,214,140,0.1);color:#3dd68c">3</div>
+            <div class="flex-1">
+                <h3 class="text-base font-semibold text-t1 mb-2">Verify</h3>
+                <p class="text-sm text-t3 mb-3">
+                    Close and reopen your browser, then visit the dashboard. You should no longer see a security warning.
+                </p>
+                <a href="/dashboard" class="gw-btn gw-btn-primary text-sm px-4 py-2">
+                    Open Dashboard &rarr;
+                </a>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+{# ── Troubleshooting ── #}
+<div class="max-w-3xl mx-auto mt-10 mb-6 gw-anim gw-d4">
+    <details class="gw-card p-5">
+        <summary class="text-sm font-semibold text-t2 cursor-pointer">Troubleshooting</summary>
+        <div class="mt-4 space-y-3 text-sm text-t3">
+            <div>
+                <b class="text-t2">PowerShell blocked by execution policy?</b>
+                <p class="mt-1">Open PowerShell and run: <code class="font-mono text-xs text-t2 bg-n1 px-1.5 py-0.5 rounded">Set-ExecutionPolicy -Scope CurrentUser RemoteSigned</code></p>
+            </div>
+            <div>
+                <b class="text-t2">Still seeing certificate warning after install?</b>
+                <p class="mt-1">Fully close <b>all</b> browser windows (not just the tab) and reopen. Edge and Chrome cache the cert store on startup.</p>
+            </div>
+            <div>
+                <b class="text-t2">Office add-in still fails?</b>
+                <p class="mt-1">Restart the Office app (Excel, Word, PowerPoint). WebView2 reads the cert store on Office launch.</p>
+            </div>
+            <div>
+                <b class="text-t2">Need help?</b>
+                <p class="mt-1">Contact your IT administrator or the gateway operator.</p>
+            </div>
+        </div>
+    </details>
+</div>
+
+{% endblock %}

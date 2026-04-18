@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Security
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
@@ -179,3 +179,34 @@ async def refresh_owned_app_key(
     session.commit()
     session.refresh(target)
     return JSONResponse({"ok": True, "api_key": target.api_key})
+
+
+# ── Public setup page (no auth — users can't log in without trusting the cert) ──
+
+_SETUP_DIR = Path(__file__).resolve().parent.parent.parent / "setup"
+_SETUP_ALLOWED = {"llm-gateway-ca.crt", "install-cert-user.ps1", "install-cert.bat"}
+
+
+@router.get("/setup", response_class=HTMLResponse)
+async def setup_page(request: Request):
+    """Public page with CA cert download + install instructions."""
+    available = {name: (_SETUP_DIR / name).is_file() for name in _SETUP_ALLOWED}
+    return templates.TemplateResponse(
+        "setup.html",
+        _common_ctx(request, title="Setup", available=available),
+    )
+
+
+@router.get("/setup/files/{filename}")
+async def setup_file(filename: str):
+    """Serve a file from the setup/ directory. Whitelist-only."""
+    if filename not in _SETUP_ALLOWED:
+        raise HTTPException(status_code=404, detail="Not found.")
+    filepath = _SETUP_DIR / filename
+    if not filepath.is_file():
+        raise HTTPException(status_code=404, detail="File not available.")
+    return FileResponse(
+        filepath,
+        filename=filename,
+        media_type="application/octet-stream",
+    )
