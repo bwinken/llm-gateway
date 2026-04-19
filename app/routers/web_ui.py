@@ -221,14 +221,16 @@ async def setup_page(
     request: Request,
     user: User = Security(get_web_user, scopes=["read"]),
 ):
-    """Setup page with CA cert + tooling downloads. Requires login."""
+    """Setup page with CA cert + Claude Code tabs. Requires login."""
     available = {name: (_SETUP_DIR / name).is_file() for name in _SETUP_ALLOWED}
+    claude_code_available = (_SETUP_DIR / "install-claude-code.ps1").is_file()
     return templates.TemplateResponse(
         "setup.html",
         _common_ctx(
             request,
             title="Setup",
             available=available,
+            claude_code_available=claude_code_available,
             user=user,
             display_name=user.display_name or user.username,
             org_code=user.org_code,
