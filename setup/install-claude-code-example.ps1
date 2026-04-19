@@ -62,6 +62,52 @@ $API_KEY     = "__USER_API_KEY__"
 # if your company has one. Leave as-is to use the public registry via proxy.)
 $NPM_REGISTRY = "https://registry.npmjs.org/"
 
+# If your corporate proxy does TLS inspection and breaks npm's TLS chain,
+# set this to $true to tell npm to skip strict-ssl. Insecure; prefer
+# pointing npm at your corporate CA bundle with `npm config set cafile ...`.
+$NPM_STRICT_SSL_OFF = $false
+
+# ── Claude Code runtime settings (written to ~/.claude/settings.json) ──
+#
+# Everything below is OPTIONAL. Leave strings empty / numbers at 0 / bools
+# at $false to skip — the script only writes keys that are configured.
+
+# Default model alias Claude Code should start with (top-level "model" key).
+# Must match an alias served by your gateway. Leave empty to let users pick.
+$DEFAULT_MODEL = ""
+
+# Custom model option — exposed as a picker entry in Claude Code's /model UI.
+$CUSTOM_MODEL_ALIAS        = ""        # e.g. same as $DEFAULT_MODEL
+$CUSTOM_MODEL_DESCRIPTION  = ""        # human-readable, shown in the picker
+$CUSTOM_MODEL_CAPABILITIES = "tools"   # comma-separated: tools, vision, thinking
+
+# Context / output caps. 0 = use Claude Code default.
+$MAX_CONTEXT_TOKENS  = 0               # e.g. 1000000
+$MAX_OUTPUT_TOKENS   = 0               # e.g. 131072
+$AUTO_COMPACT_WINDOW = 0               # e.g. 1000000
+
+# Set $true to pin to a non-1M context (useful when the downstream model
+# doesn't support 1M and you want to avoid accidental over-sending).
+$DISABLE_1M_CONTEXT = $false
+
+# Telemetry / thinking toggles.
+$DISABLE_TELEMETRY            = $true
+$DISABLE_INTERLEAVED_THINKING = $false
+
+# Shell used by the Bash tool (bash / zsh / pwsh). Leave empty for auto-detect.
+$CLAUDE_SHELL = ""
+
+# Windows-only: enable the PowerShell tool. Harmless on other platforms.
+$ENABLE_POWERSHELL_TOOL = $true
+
+# Accessibility-friendly rendering.
+$ENABLE_ACCESSIBILITY = $false
+
+# TLS bypass for Node.js — ONLY needed if your gateway uses a private CA
+# and neither NODE_EXTRA_CA_CERTS nor a system-trust install is an option.
+# Insecure; prefer installing the corporate CA.
+$SKIP_TLS_VERIFY = $false
+
 # ╔═══════════════════════════════════════════════════════════╗
 # ║  1. Detect existing installations                         ║
 # ╚═══════════════════════════════════════════════════════════╝
@@ -220,9 +266,15 @@ if ($PROXY_URL) {
 & npm config set registry $NPM_REGISTRY --location=user
 Write-Ok "npm registry = $NPM_REGISTRY"
 
+if ($NPM_STRICT_SSL_OFF) {
+    & npm config set strict-ssl false --location=user
+    Write-Warn "npm strict-ssl = false (TLS verification bypassed for registry)"
+}
+
 # Make sure npm trusts the same CA bundle (the gateway cert is a separate
-# concern handled by install-cert-user.ps1; this is for npm → registry).
-# If your corporate proxy does TLS inspection, point npm at the bundled CA:
+# concern — install-cert-user.ps1 covers browser / Office clients, not npm).
+# If your corporate proxy does TLS inspection, prefer pointing npm at the
+# bundled CA over disabling strict-ssl:
 #   & npm config set cafile "C:\path\to\corporate-ca-bundle.pem" --location=user
 
 # ╔═══════════════════════════════════════════════════════════╗
@@ -293,17 +345,50 @@ if (Test-Path $settingsFile) {
 
 if (-not $existing.ContainsKey("env")) { $existing["env"] = @{} }
 
-# These three keys route Claude Code to your gateway and suppress all
-# non-essential telemetry / update checks (critical for airgapped use).
-$existing["env"]["ANTHROPIC_BASE_URL"]                   = $GATEWAY_URL
-$existing["env"]["ANTHROPIC_API_KEY"]                    = $API_KEY
+# Core routing — always written. ANTHROPIC_AUTH_TOKEN is written alongside
+# ANTHROPIC_API_KEY so clients that read either variable keep working.
+$existing["env"]["ANTHROPIC_BASE_URL"]                       = $GATEWAY_URL
+$existing["env"]["ANTHROPIC_API_KEY"]                        = $API_KEY
+$existing["env"]["ANTHROPIC_AUTH_TOKEN"]                     = $API_KEY
 $existing["env"]["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+
+if ($DISABLE_TELEMETRY)            { $existing["env"]["DISABLE_TELEMETRY"] = "1" }
+if ($DISABLE_INTERLEAVED_THINKING) { $existing["env"]["DISABLE_INTERLEAVED_THINKING"] = "1" }
+if ($DISABLE_1M_CONTEXT)           { $existing["env"]["CLAUDE_CODE_DISABLE_1M_CONTEXT"] = "1" }
+
+if ($MAX_CONTEXT_TOKENS  -gt 0) { $existing["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"]  = "$MAX_CONTEXT_TOKENS" }
+if ($MAX_OUTPUT_TOKENS   -gt 0) { $existing["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"]   = "$MAX_OUTPUT_TOKENS" }
+if ($AUTO_COMPACT_WINDOW -gt 0) { $existing["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = "$AUTO_COMPACT_WINDOW" }
+
+if ($CLAUDE_SHELL)             { $existing["env"]["CLAUDE_CODE_SHELL"] = $CLAUDE_SHELL }
+if ($ENABLE_POWERSHELL_TOOL)   { $existing["env"]["CLAUDE_CODE_USE_POWERSHELL_TOOL"] = "1" }
+if ($ENABLE_ACCESSIBILITY)     { $existing["env"]["CLAUDE_CODE_ACCESSIBILITY"] = "1" }
+
+if ($CUSTOM_MODEL_ALIAS) {
+    $existing["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION"] = $CUSTOM_MODEL_ALIAS
+    if ($CUSTOM_MODEL_DESCRIPTION)  { $existing["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"] = $CUSTOM_MODEL_DESCRIPTION }
+    if ($CUSTOM_MODEL_CAPABILITIES) { $existing["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"] = $CUSTOM_MODEL_CAPABILITIES }
+}
+
+if ($SKIP_TLS_VERIFY) {
+    $existing["env"]["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+    Write-Warn "NODE_TLS_REJECT_UNAUTHORIZED=0 — TLS verification DISABLED for Claude Code"
+}
+
+if ($PROXY_URL) {
+    $existing["env"]["HTTP_PROXY"]  = $PROXY_URL
+    $existing["env"]["HTTPS_PROXY"] = $PROXY_URL
+    $existing["env"]["NO_PROXY"]    = $NO_PROXY
+}
+
+# Top-level "model" key — the default model Claude Code starts with.
+if ($DEFAULT_MODEL) { $existing["model"] = $DEFAULT_MODEL }
 
 # Write back as pretty JSON
 $existing | ConvertTo-Json -Depth 10 | Set-Content $settingsFile -Encoding UTF8
 Write-Ok "Wrote $settingsFile"
 Write-Info "  ANTHROPIC_BASE_URL = $GATEWAY_URL"
-Write-Info "  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = 1"
+if ($DEFAULT_MODEL) { Write-Info "  model              = $DEFAULT_MODEL" }
 
 # ╔═══════════════════════════════════════════════════════════╗
 # ║  8. Verify                                                ║
@@ -336,8 +421,9 @@ Write-Host "  3. Run:  claude" -ForegroundColor Gray
 Write-Host "     To start an interactive session." -ForegroundColor Gray
 Write-Host ""
 Write-Host "Not working? Check:" -ForegroundColor Yellow
-Write-Host "  - Did you install the CA certificate? (run install-cert-user.ps1)" -ForegroundColor Gray
 Write-Host "  - Is your gateway URL reachable? (try in browser first)" -ForegroundColor Gray
+Write-Host "  - TLS errors? Either install the corporate CA (install-cert-user.ps1)" -ForegroundColor Gray
+Write-Host "    or set `$SKIP_TLS_VERIFY = `$true and re-run this script." -ForegroundColor Gray
 Write-Host "  - Use: claude /doctor     to run built-in diagnostics" -ForegroundColor Gray
 Write-Host ""
 

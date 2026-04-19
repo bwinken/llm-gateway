@@ -197,9 +197,8 @@
                 <div class="text-t2 font-semibold mb-0.5">Install Claude Code (CLI)</div>
                 <div class="text-t4">
                     Anthropic's command-line coding assistant, pre-configured to route through this gateway with
-                    <b>your personal API key</b>. Install the
-                    <button type="button" onclick="switchSetupTab('cert')" class="text-ab hover:text-ac font-medium underline">CA certificate</button>
-                    first.
+                    <b>your personal API key</b>. Runs stand-alone — the CA certificate is only needed for
+                    browser / Office clients.
                 </div>
             </div>
         </div>
@@ -352,7 +351,12 @@
                 </div>
                 <div>
                     <b class="text-t2">TLS / certificate errors on first request?</b>
-                    <p class="mt-1">Install the CA certificate from the <button type="button" onclick="switchSetupTab('cert')" class="text-ab hover:text-ac underline">Certificate</button> tab. Avoid <code class="font-mono text-xs">NODE_TLS_REJECT_UNAUTHORIZED=0</code> unless absolutely necessary.</p>
+                    <p class="mt-1">If your gateway uses a private CA that Node.js can't see, set
+                        <code class="font-mono text-xs text-t2 bg-n1 px-1.5 py-0.5 rounded">NODE_TLS_REJECT_UNAUTHORIZED</code>
+                        to <code class="font-mono text-xs">"0"</code> in <code class="font-mono text-xs">env</code>. Or install the corporate CA via the
+                        <button type="button" onclick="switchSetupTab('cert')" class="text-ab hover:text-ac underline">Certificate</button>
+                        tab for a proper fix.
+                    </p>
                 </div>
                 <div>
                     <b class="text-t2">Stuck on login / auth loop?</b>
