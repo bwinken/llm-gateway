@@ -3,7 +3,7 @@
 {% block content %}
 
 {# ── Header ── #}
-<div class="text-center mt-8 mb-10 gw-anim">
+<div class="text-center mt-8 mb-8 gw-anim">
     <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium mb-6"
          style="background:rgba(245,166,35,0.08);border:1px solid rgba(245,166,35,0.15);color:#f5a623;">
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
@@ -13,9 +13,34 @@
         Install Trusted Certificate
     </h1>
     <p class="mt-4 text-base text-t3 max-w-2xl mx-auto leading-relaxed">
-        To connect to <b>{{ app_title | default("LLM Gateway") }}</b> from browsers and Office add-ins,
-        install our internal CA certificate once.
+        Required to connect to <b>{{ app_title | default("LLM Gateway") }}</b> over HTTPS,
+        including <b>Claude in Office</b> add-ins and other HTTPS API clients.
     </p>
+</div>
+
+{# ── Scope banner: what this page is and isn't for ── #}
+<div class="max-w-3xl mx-auto mb-8 gw-anim">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="gw-card p-4 flex items-start gap-3"
+             style="background:rgba(99,152,255,0.04);border-color:rgba(99,152,255,0.15)">
+            <svg class="w-5 h-5 flex-shrink-0 mt-0.5" style="color:#6398ff" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            <div class="text-sm">
+                <div class="text-t2 font-semibold mb-0.5">This page — CA certificate</div>
+                <div class="text-t4">For Claude in Office, Excel / Word / PowerPoint add-ins, and any HTTPS API client on Windows.</div>
+            </div>
+        </div>
+        <div class="gw-card p-4 flex items-start gap-3">
+            <svg class="w-5 h-5 flex-shrink-0 mt-0.5" style="color:#a78bfa" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+            <div class="text-sm">
+                <div class="text-t2 font-semibold mb-0.5">Not this page — Claude Code CLI</div>
+                <div class="text-t4">
+                    A separate install. Go to
+                    <a href="/dashboard" class="text-ab hover:text-ac font-medium">Dashboard</a>
+                    after installing the certificate.
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 {# ── Steps ── #}
@@ -115,6 +140,29 @@
         </div>
     </div>
 
+</div>
+
+{# ── Next: what to do after installing the cert ── #}
+<div class="max-w-3xl mx-auto mt-10 mb-6 gw-anim gw-d4">
+    <div class="gw-card p-6"
+         style="background:rgba(61,214,140,0.04);border-color:rgba(61,214,140,0.12)">
+        <div class="flex items-start gap-4">
+            <div class="flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center"
+                 style="background:rgba(61,214,140,0.1);color:#3dd68c">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <div class="flex-1">
+                <h3 class="text-base font-semibold text-t1 mb-1">After installing the certificate</h3>
+                <p class="text-sm text-t3 mb-3">
+                    Return to your dashboard to view your API key, monitor usage, and download
+                    <b>Claude Code</b> (pre-configured with your personal key).
+                </p>
+                <a href="/dashboard" class="gw-btn gw-btn-primary text-sm px-4 py-2">
+                    Go to Dashboard &rarr;
+                </a>
+            </div>
+        </div>
+    </div>
 </div>
 
 {# ── Troubleshooting ── #}

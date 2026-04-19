@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Security
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
@@ -24,6 +24,12 @@ from app.services.stats import get_daily_trends, get_owned_apps_summary, get_use
 router = APIRouter()
 _templates_dir = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
+_SETUP_DIR = Path(__file__).resolve().parent.parent.parent / "setup"
+_SETUP_ALLOWED = {
+    "llm-gateway-ca.crt",
+    "install-cert-user.ps1",
+    "install-cert.bat",
+}
 
 
 def _common_ctx(request: Request, **extra) -> dict:
@@ -115,6 +121,8 @@ async def dashboard(
     daily_limit = user.daily_limit_usd if user.daily_limit_usd > 0 else 1.0
     usage_percent = min(100.0, (today_cost / daily_limit) * 100)
 
+    claude_code_available = (_SETUP_DIR / "install-claude-code.ps1").is_file()
+
     return templates.TemplateResponse(
         "dashboard.html",
         _common_ctx(
@@ -133,6 +141,7 @@ async def dashboard(
             now_utc=datetime.now(timezone.utc),
             owned_apps=owned_apps,
             server_groups=server_groups,
+            claude_code_available=claude_code_available,
         ),
     )
 
@@ -181,25 +190,58 @@ async def refresh_owned_app_key(
     return JSONResponse({"ok": True, "api_key": target.api_key})
 
 
-# ── Public setup page (no auth — users can't log in without trusting the cert) ──
+@router.get("/dashboard/install-claude-code.ps1")
+async def personalized_claude_installer(
+    user: User = Security(get_web_user, scopes=["read"]),
+):
+    """Serve install-claude-code.ps1 with the user's API key inlined.
 
-_SETUP_DIR = Path(__file__).resolve().parent.parent.parent / "setup"
-_SETUP_ALLOWED = {"llm-gateway-ca.crt", "install-cert-user.ps1", "install-cert.bat"}
+    Auth'd so the key is never exposed publicly; oauth2-proxy redirects
+    unauthenticated users through SSO first.
+    """
+    template_path = _SETUP_DIR / "install-claude-code.ps1"
+    if not template_path.is_file():
+        raise HTTPException(status_code=404, detail="Installer not available.")
+    script = template_path.read_text(encoding="utf-8").replace(
+        "__USER_API_KEY__", user.api_key
+    )
+    return Response(
+        content=script,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": 'attachment; filename="install-claude-code.ps1"',
+        },
+    )
 
+
+# ── Setup page (requires SSO login) ──
 
 @router.get("/setup", response_class=HTMLResponse)
-async def setup_page(request: Request):
-    """Public page with CA cert download + install instructions."""
+async def setup_page(
+    request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
+):
+    """Setup page with CA cert + tooling downloads. Requires login."""
     available = {name: (_SETUP_DIR / name).is_file() for name in _SETUP_ALLOWED}
     return templates.TemplateResponse(
         "setup.html",
-        _common_ctx(request, title="Setup", available=available),
+        _common_ctx(
+            request,
+            title="Setup",
+            available=available,
+            user=user,
+            display_name=user.display_name or user.username,
+            org_code=user.org_code,
+        ),
     )
 
 
 @router.get("/setup/files/{filename}")
-async def setup_file(filename: str):
-    """Serve a file from the setup/ directory. Whitelist-only."""
+async def setup_file(
+    filename: str,
+    user: User = Security(get_web_user, scopes=["read"]),
+):
+    """Serve a file from the setup/ directory. Requires login; whitelist-only."""
     if filename not in _SETUP_ALLOWED:
         raise HTTPException(status_code=404, detail="Not found.")
     filepath = _SETUP_DIR / filename
