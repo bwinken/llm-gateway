@@ -16,6 +16,7 @@ dependencies = [
     "toml>=0.10.2",
     "alembic>=1.13.0",
     "loguru>=0.7.0",
+    "openpyxl>=3.1.5",
 ]
 
 [dependency-groups]
