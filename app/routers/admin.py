@@ -7,8 +7,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Security
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete
 from sqlmodel import Session, func, select
@@ -24,6 +24,7 @@ from app.core.config import (
 from app.core.database import get_session
 from app.models.schema import AppOwner, User, UsageLog
 from app.services.monitor import add_monitor, list_monitored, remove_monitor, is_monitored
+from app.services.analytics import build_monthly_report, iter_months, parse_ym
 from app.services.stats import (
     get_all_users_usage,
     get_dau_trends,
@@ -32,6 +33,7 @@ from app.services.stats import (
     get_monthly_all_users_usage,
     get_monthly_totals,
 )
+from app.services.usage_export import build_workbook
 
 router = APIRouter(
     prefix="/admin",
@@ -528,6 +530,41 @@ async def save_config_api(
 
     save_config(models, pricing, fallback or {})
     return JSONResponse({"ok": True})
+
+
+# ── Usage Export ──
+
+_MAX_EXPORT_MONTHS = 24
+
+
+@router.get("/api/export/usage.xlsx")
+async def export_usage_report(
+    session: Session = Depends(get_session),
+    from_: str = Query(..., alias="from", description="Start month YYYY-MM (inclusive)"),
+    to: str = Query(..., description="End month YYYY-MM (inclusive)"),
+):
+    """Export a 4-sheet xlsx usage report for the given closed month range."""
+    try:
+        parse_ym(from_)
+        parse_ym(to)
+        months = iter_months(from_, to)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if len(months) > _MAX_EXPORT_MONTHS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Range too wide: {len(months)} months (max {_MAX_EXPORT_MONTHS}).",
+        )
+
+    report = build_monthly_report(session, from_, to)
+    content = build_workbook(report)
+    filename = f"usage_{from_}_to_{to}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── Request Monitoring ──

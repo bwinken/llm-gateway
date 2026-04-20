@@ -167,6 +167,82 @@
     </div>
 </div>
 
+{# ── Usage Export ── #}
+<div class="mb-8 gw-anim gw-d4">
+    <div class="gw-card p-5">
+        <div class="flex flex-wrap items-end justify-between gap-4">
+            <div>
+                <h3 class="text-sm font-bold text-t2 mb-1">Export Usage Report</h3>
+                <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="xlsx with 4 sheets: Summary, By Department, By App, Top 10 Users with rank movement.">
+                    Multi-sheet xlsx across a range of complete months. Department = <code class="font-mono">org_code</code>.
+                </p>
+            </div>
+            <form id="exportForm" class="flex flex-wrap items-end gap-3" onsubmit="return submitExport(event)">
+                <div>
+                    <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">From (month)</label>
+                    <input type="month" name="from" id="exportFrom" required
+                           class="gw-input text-sm py-1.5 px-2 font-mono">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">To (month)</label>
+                    <input type="month" name="to" id="exportTo" required
+                           class="gw-input text-sm py-1.5 px-2 font-mono">
+                </div>
+                <button type="submit" id="exportBtn" class="gw-btn gw-btn-primary text-sm px-4 py-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                    Download xlsx
+                </button>
+            </form>
+        </div>
+        <div id="exportError" class="hidden mt-3 text-xs text-ar"></div>
+    </div>
+</div>
+
+<script>
+(function(){
+    var now = new Date();
+    var currMonth = now.toISOString().slice(0, 7);
+    var prev = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+    var fromDefault = prev.toISOString().slice(0, 7);
+    document.getElementById('exportFrom').value = fromDefault;
+    document.getElementById('exportTo').value = currMonth;
+    document.getElementById('exportFrom').max = currMonth;
+    document.getElementById('exportTo').max = currMonth;
+})();
+
+function submitExport(e) {
+    e.preventDefault();
+    var from = document.getElementById('exportFrom').value;
+    var to = document.getElementById('exportTo').value;
+    var err = document.getElementById('exportError');
+    err.classList.add('hidden');
+    if (!from || !to) { err.textContent = 'Select both months.'; err.classList.remove('hidden'); return false; }
+    if (from > to) { err.textContent = '"From" must be on or before "To".'; err.classList.remove('hidden'); return false; }
+    var btn = document.getElementById('exportBtn');
+    btn.disabled = true; btn.classList.add('opacity-50');
+    var url = '/admin/api/export/usage.xlsx?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to);
+    fetch(url, { credentials: 'same-origin' }).then(function(r){
+        if (!r.ok) return r.text().then(function(t){ throw new Error(t || ('HTTP ' + r.status)); });
+        var disp = r.headers.get('Content-Disposition') || '';
+        var m = disp.match(/filename="([^"]+)"/);
+        var name = m ? m[1] : ('usage_' + from + '_to_' + to + '.xlsx');
+        return r.blob().then(function(blob){ return {blob: blob, name: name}; });
+    }).then(function(d){
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(d.blob);
+        a.download = d.name;
+        document.body.appendChild(a); a.click();
+        setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 0);
+    }).catch(function(e){
+        err.textContent = 'Export failed: ' + (e.message || e);
+        err.classList.remove('hidden');
+    }).finally(function(){
+        btn.disabled = false; btn.classList.remove('opacity-50');
+    });
+    return false;
+}
+</script>
+
 {# ── Department Usage ── #}
 <div class="mb-8 gw-anim gw-d4">
     <div class="gw-card overflow-hidden">
