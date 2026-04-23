@@ -13,6 +13,7 @@ import json
 from decimal import Decimal
 from typing import Any
 
+import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlmodel import Session
@@ -28,6 +29,13 @@ from app.services.anthropic_adapter import (
     openai_to_anthropic_response,
 )
 from app.services.monitor import is_monitored, log_monitor, log_monitor_error
+
+
+# Streaming reads can stall arbitrarily long between chunks (long prefill,
+# reasoning models, queued vLLM batches); let the downstream decide when to
+# stop and rely on client disconnect to unwind stuck requests. Non-stream
+# paths keep a bounded 120s timeout.
+_STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +285,7 @@ async def _stream_chat(
     client, url: str, body: dict, headers: dict, user: User, model: str, model_type: str,
     extra_headers: dict[str, str] | None = None, monitor_body: dict | None = None,
 ) -> StreamingResponse:
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=120.0)
+    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     _monitoring = is_monitored(user.id)
 
     async def event_generator():
@@ -553,7 +561,7 @@ async def _stream_messages(
     extra_headers: dict[str, str] | None = None,
     monitor_body: dict | None = None,
 ) -> StreamingResponse:
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=120.0)
+    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     _monitoring = is_monitored(user.id)
 
     async def event_generator():
@@ -728,7 +736,7 @@ async def _passthrough_stream(
     user: User, model: str, model_type: str, path_suffix: str,
     extra_headers: dict[str, str] | None = None,
 ) -> StreamingResponse:
-    req = client.build_request("POST", url, content=raw_body, headers=headers, timeout=120.0)
+    req = client.build_request("POST", url, content=raw_body, headers=headers, timeout=_STREAM_TIMEOUT)
     _monitoring = is_monitored(user.id)
 
     async def event_generator():
