@@ -254,7 +254,7 @@ async def _non_stream_chat(
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=120.0)
     except Exception as exc:
-        logger.error("Downstream error: {}", exc)
+        logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         log_monitor_error(user.id, monitor_body or body, str(exc), 502, model, "/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
@@ -307,7 +307,7 @@ async def _stream_chat(
                     except (json.JSONDecodeError, KeyError):
                         pass
         except Exception as exc:
-            logger.error("Stream error: {}", exc)
+            logger.error("Stream error: {}: {}", type(exc).__name__, exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
         finally:
             if resp is not None:
@@ -361,7 +361,7 @@ async def forward_simple_request(
     try:
         resp = await client.post(target_url, json=body, headers=downstream_headers, timeout=120.0)
     except Exception as exc:
-        logger.error("Downstream error: {}", exc)
+        logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         log_monitor_error(user.id, body, str(exc), 502, resolved_alias, endpoint_label, model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
@@ -444,7 +444,7 @@ async def _passthrough_non_stream(
     try:
         resp = await client.post(url, content=raw_body, headers=headers, timeout=120.0)
     except Exception as exc:
-        logger.error("Downstream error: {}", exc)
+        logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         log_monitor_error(user.id, json.loads(raw_body), str(exc), 502, model, path_suffix, model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
@@ -526,7 +526,7 @@ async def _non_stream_messages(
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=120.0)
     except Exception as exc:
-        logger.error("Downstream error: {}", exc)
+        logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         log_monitor_error(user.id, monitor_body or body, str(exc), 502, model_alias, "/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
@@ -585,7 +585,7 @@ async def _stream_messages(
             for event in translator.finish():
                 yield event
         except Exception as exc:
-            logger.error("Stream error: {}", exc)
+            logger.error("Stream error: {}: {}", type(exc).__name__, exc)
             err_payload = json.dumps({"type": "error", "error": {"type": "api_error", "message": str(exc)}})
             yield f"event: error\ndata: {err_payload}\n\n"
         finally:
@@ -664,7 +664,7 @@ async def forward_count_tokens_request(
             target_url, json=tokenize_body, headers=downstream_headers, timeout=30.0,
         )
     except Exception as exc:
-        logger.error("count_tokens downstream error: {}", exc)
+        logger.error("count_tokens downstream error: {}: {}", type(exc).__name__, exc)
         # Fallback: rough estimate from flattened text length
         approx = _approx_token_count(openai_body.get("messages", []))
         return JSONResponse(
@@ -757,7 +757,7 @@ async def _passthrough_stream(
                     except (json.JSONDecodeError, KeyError):
                         pass
         except Exception as exc:
-            logger.error("Stream error: {}", exc)
+            logger.error("Stream error: {}: {}", type(exc).__name__, exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
         finally:
             if resp is not None:
