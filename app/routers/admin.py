@@ -17,6 +17,7 @@ from app.core.auth import get_web_user
 from app.core.config import (
     _MODEL_INTERNAL_KEYS,
     _MODEL_METADATA_KEYS,
+    _MODEL_PRICING_KEYS,
     APP_TITLE,
     get_config_data,
     save_config,
@@ -522,6 +523,20 @@ async def save_config_api(
                 raise HTTPException(
                     status_code=400,
                     detail=f"Model '{alias}' field '{key}' has wrong type.",
+                )
+        for key in _MODEL_PRICING_KEYS:
+            if key not in info:
+                continue
+            value = info[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Model '{alias}' field '{key}' must be a number.",
+                )
+            if value < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Model '{alias}' field '{key}' must be non-negative.",
                 )
 
     # Validate fallback values are strings

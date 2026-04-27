@@ -46,6 +46,15 @@ _MODEL_METADATA_KEYS: tuple[str, ...] = (
     "supports_prompt_caching",
 )
 
+# Optional per-model pricing overrides (USD per million tokens).
+# When both are present on a model, they take priority over the
+# per-type [pricing.<type>] block. Old configs without these keys
+# keep working and fall back to the per-type defaults.
+_MODEL_PRICING_KEYS: tuple[str, ...] = (
+    "input_price_per_1m",
+    "output_price_per_1m",
+)
+
 # Internal config keys stored in config.toml and loaded into MODEL_ROUTING
 # but NOT surfaced to API clients via GET /v1/models.
 _MODEL_INTERNAL_KEYS: tuple[str, ...] = (
@@ -107,6 +116,9 @@ def _build_config(raw: dict[str, Any]) -> tuple[
             for internal_key in _MODEL_INTERNAL_KEYS:
                 if internal_key in model_cfg:
                     entry[internal_key] = model_cfg[internal_key]
+            for price_key in _MODEL_PRICING_KEYS:
+                if price_key in model_cfg:
+                    entry[price_key] = float(model_cfg[price_key])
             model_routing[model_name] = entry
 
     # --- fallback (type -> preferred fallback model alias) ---
@@ -202,6 +214,9 @@ def save_config(
         for internal_key in _MODEL_INTERNAL_KEYS:
             if internal_key in info:
                 entry[internal_key] = info[internal_key]
+        for price_key in _MODEL_PRICING_KEYS:
+            if price_key in info:
+                entry[price_key] = float(info[price_key])
         models_section[type_key][alias] = entry
     raw["models"] = models_section
 

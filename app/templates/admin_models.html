@@ -143,8 +143,13 @@ const META_KEYS = [
     'supports_prompt_caching',
 ];
 
+// Per-model pricing override keys — when both are set on a model they
+// take priority over the per-type [pricing.<type>] block.
+const PRICE_KEYS = ['input_price_per_1m', 'output_price_per_1m'];
+
 function hasMeta(info) {
-    return META_KEYS.some(k => info[k] !== undefined && info[k] !== '');
+    return META_KEYS.some(k => info[k] !== undefined && info[k] !== '')
+        || PRICE_KEYS.some(k => info[k] !== undefined && info[k] !== '');
 }
 
 function renderModelRow(alias, info) {
@@ -167,7 +172,7 @@ function renderModelRow(alias, info) {
                 </button>
             </td>
             <td class="text-right whitespace-nowrap">
-                <button onclick="toggleMeta('${escAttr(alias)}')" id="meta-btn-${escAttr(alias)}" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Optional capability metadata surfaced via GET /v1/models">Advanced${dot}</button>
+                <button onclick="toggleMeta('${escAttr(alias)}')" id="meta-btn-${escAttr(alias)}" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Optional metadata + per-model pricing override (otherwise uses per-type defaults)">Advanced${dot}</button>
                 <button onclick="deleteModel('${escAttr(alias)}')" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
             </td>
         </tr>
@@ -184,9 +189,11 @@ function renderMetaRow(alias, info) {
     const sTools = info.supports_tools === true;
     const sVis = info.supports_vision === true;
     const sCache = info.supports_prompt_caching === true;
+    const inPrice = info.input_price_per_1m ?? '';
+    const outPrice = info.output_price_per_1m ?? '';
     return `
         <tr id="meta-${a}" class="${visible ? '' : 'hidden'}" style="background:rgba(255,255,255,0.015)">
-            <td colspan="6" class="px-5 py-3">
+            <td colspan="6" class="px-5 py-3 space-y-3">
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                     <label class="flex flex-col gap-1">
                         <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="Human-readable name shown to clients">Display Name</span>
@@ -211,6 +218,16 @@ function renderMetaRow(alias, info) {
                     <label class="flex items-center gap-2 pt-5">
                         <input type="checkbox" ${sCache ? 'checked' : ''} data-alias="${a}" data-field="supports_prompt_caching" data-meta="1" onchange="updateField(this)" class="gw-checkbox">
                         <span class="text-t3">supports_prompt_caching</span>
+                    </label>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs pt-2" style="border-top:1px solid rgba(255,255,255,0.04)">
+                    <label class="flex flex-col gap-1">
+                        <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="Per-model input price override (USD per 1M tokens). Leave blank to use the per-type default below.">Input Price (per 1M)</span>
+                        <input type="number" min="0" step="0.01" value="${inPrice}" data-alias="${a}" data-field="input_price_per_1m" data-price="1" oninput="updateField(this)" placeholder="(use type default)" class="gw-input text-sm py-1 px-2 font-mono">
+                    </label>
+                    <label class="flex flex-col gap-1">
+                        <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="Per-model output price override (USD per 1M tokens). Leave blank to use the per-type default below.">Output Price (per 1M)</span>
+                        <input type="number" min="0" step="0.01" value="${outPrice}" data-alias="${a}" data-field="output_price_per_1m" data-price="1" oninput="updateField(this)" placeholder="(use type default)" class="gw-input text-sm py-1 px-2 font-mono">
                     </label>
                 </div>
             </td>
@@ -261,7 +278,12 @@ function renderPricing(types) {
 function updateField(el) {
     const a = el.dataset.alias, f = el.dataset.field;
     if (!config.models[a]) return;
-    if (el.dataset.meta) {
+    if (el.dataset.price) {
+        // Per-model price override: empty = unset (falls back to per-type)
+        const v = parseFloat(el.value);
+        if (Number.isFinite(v) && v >= 0) config.models[a][f] = v;
+        else delete config.models[a][f];
+    } else if (el.dataset.meta) {
         // Optional metadata: empty field = unset (key removed entirely)
         if (el.type === 'checkbox') {
             if (el.checked) config.models[a][f] = true;

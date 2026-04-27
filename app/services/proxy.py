@@ -115,10 +115,21 @@ def _error_response(resp) -> JSONResponse:
     return JSONResponse(content=content, status_code=resp.status_code)
 
 
-def _calc_cost(model_type: str, input_tokens: int, output_tokens: int) -> Decimal:
-    pricing = PRICING_MAP.get(model_type, PRICING_MAP.get("_default", {}))
-    inp_price = Decimal(str(pricing.get("input_price_per_1m", 0.0)))
-    out_price = Decimal(str(pricing.get("output_price_per_1m", 0.0)))
+def _calc_cost(
+    model_alias: str,
+    model_type: str,
+    input_tokens: int,
+    output_tokens: int,
+) -> Decimal:
+    """Cost lookup priority: per-model override → per-type → default."""
+    route = MODEL_ROUTING.get(model_alias) or {}
+    if "input_price_per_1m" in route and "output_price_per_1m" in route:
+        inp_price = Decimal(str(route["input_price_per_1m"]))
+        out_price = Decimal(str(route["output_price_per_1m"]))
+    else:
+        pricing = PRICING_MAP.get(model_type, PRICING_MAP.get("_default", {}))
+        inp_price = Decimal(str(pricing.get("input_price_per_1m", 0.0)))
+        out_price = Decimal(str(pricing.get("output_price_per_1m", 0.0)))
     return (input_tokens * inp_price + output_tokens * out_price) / 1_000_000
 
 
@@ -184,7 +195,7 @@ def _log_usage(
     """Fire-and-forget usage logging in a background thread."""
     import asyncio
 
-    cost = _calc_cost(model_type, input_tokens, output_tokens)
+    cost = _calc_cost(model, model_type, input_tokens, output_tokens)
     try:
         loop = asyncio.get_running_loop()
         loop.run_in_executor(
@@ -276,7 +287,7 @@ async def _non_stream_chat(
     output_tk = usage.get("completion_tokens", 0)
     _log_usage(user, model, model_type, input_tk, output_tk, "/v1/chat/completions")
     if is_monitored(user.id):
-        cost = float(_calc_cost(model_type, input_tk, output_tk))
+        cost = float(_calc_cost(model, model_type, input_tk, output_tk))
         log_monitor(user.id, monitor_body or body, data, model, "/v1/chat/completions", input_tk, output_tk, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
 
@@ -328,7 +339,7 @@ async def _stream_chat(
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
         _log_usage(user, model, model_type, input_tokens, output_tokens, "/v1/chat/completions")
         if _monitoring:
-            cost = float(_calc_cost(model_type, input_tokens, output_tokens))
+            cost = float(_calc_cost(model, model_type, input_tokens, output_tokens))
             log_monitor(user.id, monitor_body or body, chunks, model, "/v1/chat/completions", input_tokens, output_tokens, cost, model_type)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
@@ -391,7 +402,7 @@ async def forward_simple_request(
     if is_monitored(user.id):
         monitor_body = body.copy()
         monitor_body["model"] = resolved_alias
-        cost = float(_calc_cost(model_type, prompt_tokens, completion_tokens))
+        cost = float(_calc_cost(resolved_alias, model_type, prompt_tokens, completion_tokens))
         log_monitor(user.id, monitor_body, data, resolved_alias, endpoint_label, prompt_tokens, completion_tokens, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
 
@@ -466,7 +477,7 @@ async def _passthrough_non_stream(
     output_tk = usage.get("output_tokens", usage.get("completion_tokens", 0))
     _log_usage(user, model, model_type, input_tk, output_tk, path_suffix)
     if is_monitored(user.id):
-        cost = float(_calc_cost(model_type, input_tk, output_tk))
+        cost = float(_calc_cost(model, model_type, input_tk, output_tk))
         log_monitor(user.id, json.loads(raw_body), data, model, path_suffix, input_tk, output_tk, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
 
@@ -549,7 +560,7 @@ async def _non_stream_messages(
     output_tk = anthropic_data["usage"]["output_tokens"]
     _log_usage(user, model_alias, model_type, input_tk, output_tk, "/v1/messages")
     if is_monitored(user.id):
-        cost = float(_calc_cost(model_type, input_tk, output_tk))
+        cost = float(_calc_cost(model_alias, model_type, input_tk, output_tk))
         log_monitor(user.id, monitor_body or body, anthropic_data, model_alias, "/v1/messages", input_tk, output_tk, cost, model_type)
 
     return JSONResponse(content=anthropic_data, headers=extra_headers)
@@ -609,7 +620,7 @@ async def _stream_messages(
             logger.warning("Anthropic stream for model={} ended with 0 tokens", model_alias)
         _log_usage(user, model_alias, model_type, input_tokens, output_tokens, "/v1/messages")
         if _monitoring:
-            cost = float(_calc_cost(model_type, input_tokens, output_tokens))
+            cost = float(_calc_cost(model_alias, model_type, input_tokens, output_tokens))
             log_monitor(user.id, monitor_body or body, chunks, model_alias, "/v1/messages", input_tokens, output_tokens, cost, model_type)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
@@ -836,7 +847,7 @@ async def _passthrough_stream(
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
         _log_usage(user, model, model_type, input_tokens, output_tokens, path_suffix)
         if _monitoring:
-            cost = float(_calc_cost(model_type, input_tokens, output_tokens))
+            cost = float(_calc_cost(model, model_type, input_tokens, output_tokens))
             log_monitor(user.id, json.loads(raw_body), chunks, model, path_suffix, input_tokens, output_tokens, cost, model_type)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
