@@ -15,6 +15,7 @@ from app.services.proxy import (
     forward_request,
     forward_simple_request,
     forward_to_path,
+    forward_tokenize_request,
 )
 
 router = APIRouter()
@@ -102,6 +103,20 @@ async def messages_count_tokens(
     clients whose base URL already includes the ``/v1`` prefix.
     """
     return await forward_count_tokens_request(
+        request, user, allowed_types=["llm", "vlm"]
+    )
+
+
+@router.post("/v1/tokenize")
+@router.post("/tokenize")
+async def tokenize(request: Request, user: User = Depends(get_current_user)):
+    """vLLM-native ``/tokenize`` pass-through.
+
+    vLLM exposes ``/tokenize`` (not ``/v1/tokenize``) since it isn't part of
+    the OpenAI API spec. The gateway accepts both paths for client convenience
+    and forwards to the downstream ``/tokenize`` endpoint. Not billed.
+    """
+    return await forward_tokenize_request(
         request, user, allowed_types=["llm", "vlm"]
     )
 

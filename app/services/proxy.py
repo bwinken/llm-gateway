@@ -713,6 +713,64 @@ async def forward_count_tokens_request(
     )
 
 
+# ---------------------------------------------------------------------------
+# 6. forward_tokenize_request - vLLM-native /tokenize pass-through
+# ---------------------------------------------------------------------------
+
+async def forward_tokenize_request(
+    request: Request,
+    user: User,
+    allowed_types: list[str],
+) -> JSONResponse:
+    """Pass-through to the downstream vLLM ``/tokenize`` endpoint.
+
+    Accepts vLLM's native payload (``{"model", "prompt"}`` or
+    ``{"model", "messages", ...}``) and returns the raw vLLM response
+    (``{"count", "max_model_len", "tokens"}``). Only the ``model`` field is
+    rewritten (alias → ``real_model``); everything else is forwarded verbatim.
+
+    Not billed — tokenization is a metadata query, not an inference call —
+    so no row is written to ``usage_logs``. Auth and daily-limit checks still
+    apply via ``get_current_user``.
+    """
+    try:
+        body_json = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    model_name = body_json.get("model", "")
+    _resolved_alias, route, fallback_reason = _resolve_model(model_name, allowed_types)
+
+    body_json["model"] = route["real_model"]
+    base_url = route["base_url"]
+    downstream_headers = _get_downstream_headers(route)
+    extra_headers = _fallback_headers(fallback_reason)
+
+    client = get_client()
+    target_url = f"{base_url}/tokenize"
+
+    try:
+        resp = await client.post(
+            target_url, json=body_json, headers=downstream_headers, timeout=30.0,
+        )
+    except Exception as exc:
+        logger.error("tokenize downstream error: {}: {}", type(exc).__name__, exc)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+
+    if resp.status_code != 200:
+        return _error_response(resp)
+
+    try:
+        data = resp.json()
+    except Exception:
+        return JSONResponse(
+            content={"error": "Downstream returned non-JSON response"},
+            status_code=502,
+        )
+
+    return JSONResponse(content=data, headers=extra_headers)
+
+
 def _approx_token_count(messages: list[dict[str, Any]]) -> int:
     """Rough fallback token estimate (~4 chars per token) used only when the
     downstream tokenizer is unavailable."""
