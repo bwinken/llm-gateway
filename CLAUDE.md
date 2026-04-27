@@ -57,7 +57,7 @@ Client (Bearer API key) → FastAPI → deps.py (auth + daily limit check)
 
 ### Proxy Layer (`app/services/proxy.py`)
 
-Five forwarding methods, all sharing `_resolve_model()` for health-aware routing:
+Six forwarding methods, all sharing `_resolve_model()` for health-aware routing:
 
 | Method | Used by | Behavior |
 |---|---|---|
@@ -66,6 +66,7 @@ Five forwarding methods, all sharing `_resolve_model()` for health-aware routing
 | `forward_to_path` | `/v1/responses` | Raw pass-through, only mutates model field |
 | `forward_messages_request` | `/v1/messages` | Anthropic→OpenAI translation, OpenAI→Anthropic response, stream + non-stream |
 | `forward_count_tokens_request` | `/v1/messages/count_tokens` | Forwards to vLLM `/tokenize`, returns `{input_tokens}`; not billed |
+| `forward_tokenize_request` | `/v1/tokenize`, `/tokenize` | vLLM-native pass-through to downstream `/tokenize`; only mutates model field; not billed |
 
 `_resolve_model()` priority: exact match + alive server → alive fallback of same type → best-effort any server of compatible type. Returns `X-Model-Fallback` response header when fallback occurs.
 
