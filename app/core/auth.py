@@ -18,7 +18,7 @@ from fastapi import Depends, HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, SecurityScopes
 from sqlmodel import Session, select
 
-from app.core.config import AUTH_BASE_URL, AUTH_CENTER_APP_ID, AUTH_CENTER_PUBLIC_KEY_PATH
+from app.core.config import AUTH_BASE_URL, AUTH_CENTER_APP_ID, AUTH_CENTER_PUBLIC_KEY_PATH, get_default_daily_limit
 from app.core.database import get_session
 from app.core.logger import logger
 from app.models.schema import User
@@ -74,7 +74,12 @@ def _sync_user(session: Session, username: str, display_name: str, org_code: str
     """Find or auto-provision a user, syncing IdP fields."""
     user = session.exec(select(User).where(User.username == username)).first()
     if user is None:
-        user = User(username=username, display_name=display_name, org_code=org_code)
+        user = User(
+            username=username,
+            display_name=display_name,
+            org_code=org_code,
+            daily_limit_usd=get_default_daily_limit(),
+        )
         session.add(user)
         session.commit()
         session.refresh(user)

@@ -95,7 +95,14 @@
         <div class="w-full rounded-full h-1.5 mt-2 overflow-hidden bg-n3">
             <div class="h-1.5 rounded-full {{ 'bg-ar' if usage_percent > 90 else 'bg-ag' }} transition-all" style="width: {{ usage_percent }}%"></div>
         </div>
-        <div class="mt-2 text-[11px] text-t4 font-mono">Limit: ${{ user.daily_limit_usd }}/day</div>
+        <div class="mt-2 text-[11px] text-t4 font-mono">
+            {% if user.daily_limit_usd > 0 %}
+                Remaining: <span class="text-t2">${{ "%.4f"|format([user.daily_limit_usd - today_cost, 0]|max) }}</span>
+                <span class="text-t4">/ ${{ user.daily_limit_usd }} today</span>
+            {% else %}
+                <span class="text-ag">Unlimited</span>
+            {% endif %}
+        </div>
     </div>
     <div class="gw-card gw-stat relative p-6 gw-anim gw-d5" style="--accent: linear-gradient(90deg, #a78bfa, #6398ff);">
         <dt class="text-xs font-semibold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Total input + output tokens consumed this month">Total Tokens</dt>

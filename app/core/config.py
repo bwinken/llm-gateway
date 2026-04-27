@@ -261,3 +261,37 @@ def get_config_data() -> dict[str, Any]:
         "pricing": dict(PRICING_MAP),
         "fallback": dict(FALLBACK_MAP),
     }
+
+
+def get_default_daily_limit() -> float:
+    """Return default daily limit (USD) for newly provisioned users.
+
+    Looks up [app].default_daily_limit_usd in config.toml, falling back
+    to 10.0 if missing/invalid. Auto-reloads if config file changed.
+    """
+    _check_auto_reload()
+    val = APP_CONFIG.get("default_daily_limit_usd", 10.0)
+    try:
+        return max(0.0, float(val))
+    except (TypeError, ValueError):
+        return 10.0
+
+
+def set_default_daily_limit(value: float) -> None:
+    """Persist new default daily limit to config.toml and reload."""
+    raw = _load_toml()
+    app_section = raw.get("app") or {}
+    app_section["default_daily_limit_usd"] = float(value)
+    raw["app"] = app_section
+
+    dir_path = _CONFIG_PATH.parent
+    fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix=".toml.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            toml.dump(raw, f)
+        os.replace(tmp_path, _CONFIG_PATH)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
+
+    reload_config()

@@ -14,13 +14,16 @@ from sqlalchemy import delete
 from sqlmodel import Session, func, select
 
 from app.core.auth import get_web_user
+from app.core.logger import logger
 from app.core.config import (
     _MODEL_INTERNAL_KEYS,
     _MODEL_METADATA_KEYS,
     _MODEL_PRICING_KEYS,
     APP_TITLE,
     get_config_data,
+    get_default_daily_limit,
     save_config,
+    set_default_daily_limit,
 )
 from app.core.database import get_session
 from app.models.schema import AppOwner, User, UsageLog
@@ -179,6 +182,7 @@ async def admin_page(
             "dau_data": dau_data,
             "today_dau": today_dau,
             "monitored_ids": monitored_ids,
+            "default_daily_limit": get_default_daily_limit(),
             # Pagination state
             "limit": limit,
             "offset": offset,
@@ -285,6 +289,45 @@ async def update_user_limit(
         target.daily_limit_usd = float(new_limit)
         session.add(target)
         session.commit()
+
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/default-limit")
+async def update_default_limit(
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Set default daily limit. Bumps any user below the new floor up to it.
+
+    Users with daily_limit_usd = 0 (unlimited) are never modified.
+    Users already above the floor are never modified.
+    """
+    form = await request.form()
+    raw_value = form.get("new_default")
+    if raw_value is None:
+        raise HTTPException(status_code=400, detail="Missing new_default.")
+    try:
+        new_default = float(raw_value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="new_default must be a number.")
+    if new_default < 0:
+        raise HTTPException(status_code=400, detail="new_default must be non-negative.")
+
+    set_default_daily_limit(new_default)
+
+    # Bulk-bump users below the new floor (skip unlimited users).
+    from sqlalchemy import update as sql_update
+    stmt = (
+        sql_update(User)
+        .where(User.daily_limit_usd > 0)
+        .where(User.daily_limit_usd < new_default)
+        .values(daily_limit_usd=new_default)
+    )
+    result = session.exec(stmt)
+    session.commit()
+    bumped = result.rowcount or 0
+    logger.info("Default daily limit set to ${} — bumped {} users", new_default, bumped)
 
     return RedirectResponse(url="/admin", status_code=303)
 
