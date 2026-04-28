@@ -60,3 +60,31 @@ class TestCreateUserAPI:
             headers=web_auth_header(sub="testuser", scopes=["read"]),
         )
         assert resp.status_code == 403
+
+    def test_export_users_csv(self, client, db_session, admin_user):
+        from app.models.schema import User
+
+        db_session.add(User(username="alice", display_name="Alice Wu", org_code="ENG", daily_limit_usd=20.0))
+        db_session.add(User(username="app_billing", display_name="", org_code="", daily_limit_usd=0.0))
+        db_session.commit()
+
+        resp = client.get(
+            "/admin/api/export/users.csv",
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/csv")
+        body = resp.content.decode("utf-8-sig")
+        assert "username,display_name,org_code" in body.splitlines()[0]
+        assert "alice" in body
+        assert "Alice Wu" in body
+        assert "ENG" in body
+        # app_* accounts excluded
+        assert "app_billing" not in body
+
+    def test_export_users_csv_requires_admin(self, client, db_session):
+        resp = client.get(
+            "/admin/api/export/users.csv",
+            headers=web_auth_header(sub="testuser", scopes=["read"]),
+        )
+        assert resp.status_code == 403
