@@ -156,11 +156,11 @@ def anthropic_to_openai_request(body: dict[str, Any]) -> dict[str, Any]:
                 else:
                     msg_out["content"] = regular_blocks
             else:
-                msg_out["content"] = None if tool_calls else ""
+                msg_out["content"] = ""
             if tool_calls:
                 msg_out["tool_calls"] = tool_calls
             # Skip empty placeholders left over from pure tool_result messages
-            if msg_out["content"] in (None, "") and not tool_calls and tool_results:
+            if msg_out["content"] == "" and not tool_calls and tool_results:
                 continue
             openai_messages.append(msg_out)
 
