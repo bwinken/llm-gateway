@@ -31,6 +31,7 @@ Client App ──▶ LLM Gateway ──▶ vLLM Instance A  [LLM]
 ## 功能特色
 
 - **OpenAI 相容 API** — `/v1/chat/completions`、`/v1/embeddings`、`/v1/rerank`、`/v1/score`、`/v1/responses`、`/v1/models`（僅列出 LLM/VLM）
+- **Anthropic Messages API** — `/v1/messages` 與 `/v1/messages/count_tokens`，可直接搭配 Anthropic Python SDK 與 Claude Code（後端可接任何 vLLM LLM/VLM）
 - **多模型路由** — LLM、VLM、Embedding、Vision Embedding、Reranker、Vision Reranker
 - **SSE 串流** — 完整支援 Server-Sent Events（chat completions 和 responses）
 - **智慧容錯** — 可設定各類型的備援模型，依健康檢查自動切換；回應標頭 `X-Model-Fallback`
@@ -199,6 +200,35 @@ curl http://your-gateway/v1/rerank \
     "documents": ["AI is...", "Machine learning is..."]
   }'
 ```
+
+### Anthropic Messages API
+
+`/v1/messages` 接收 Anthropic 格式的請求，會即時轉譯成 OpenAI 格式送往下游 vLLM 伺服器，可搭配任何 LLM/VLM 模型。支援串流、tool use、與圖片輸入。
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="http://your-gateway",
+    api_key="sk-your-api-key",  # gateway 的 API key，不是 Anthropic 的
+)
+
+resp = client.messages.create(
+    model="my-model",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+```
+
+**Claude Code 支援。** 把 Claude Code 指向 gateway 即可使用任何本地 LLM 當後端：
+
+```bash
+ANTHROPIC_BASE_URL=http://your-gateway \
+ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
+claude
+```
+
+Adapter 會處理 tool calls（`tool_use` ↔ OpenAI `tool_calls`）、圖片、system prompt、stop reason 對應、與串流 SSE 事件順序。`/v1/messages/count_tokens` 會轉送到下游的 tokenizer，讓 Claude Code 的 context-window 顯示維持精確。
 
 ### 列出模型
 

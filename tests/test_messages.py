@@ -170,6 +170,11 @@ class TestRequestTranslation:
         assert assistant_msg["tool_calls"][0]["function"]["name"] == "get_weather"
         args = json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
         assert args["location"] == "SF"
+        # Pure tool_use assistant messages must use empty-string content,
+        # not null. Some vLLM tool parsers (hermes / mistral / llama3) reject
+        # `content: null` with a 400, which appears to Claude Code clients
+        # as a hung/empty response.
+        assert assistant_msg["content"] == ""
         tool_msg = out["messages"][2]
         assert tool_msg["tool_call_id"] == "toolu_01"
         assert tool_msg["content"] == "72F sunny"

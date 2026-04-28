@@ -31,6 +31,7 @@ Client App ──▶ LLM Gateway ──▶ vLLM Instance A  [LLM]
 ## Features
 
 - **OpenAI-compatible API** — `/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/score`, `/v1/responses`, `/v1/models` (LLM/VLM only)
+- **Anthropic Messages API** — `/v1/messages` and `/v1/messages/count_tokens`, drop-in compatible with the Anthropic Python SDK and Claude Code (works against any vLLM LLM/VLM downstream)
 - **Multi-model routing** — LLM, VLM, Embedding, Vision Embedding, Reranker, Vision Reranker
 - **SSE streaming** — Full Server-Sent Events support for chat completions and responses
 - **Smart fallback** — Configurable per-type fallback model, health-check-aware; `X-Model-Fallback` response header
@@ -199,6 +200,35 @@ curl http://your-gateway/v1/rerank \
     "documents": ["AI is...", "Machine learning is..."]
   }'
 ```
+
+### Anthropic Messages API
+
+`/v1/messages` accepts Anthropic-format requests for any LLM/VLM model and translates them on the fly to OpenAI format for the downstream vLLM server. Supports streaming, tool use, and vision.
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="http://your-gateway",
+    api_key="sk-your-api-key",  # the gateway API key, not Anthropic's
+)
+
+resp = client.messages.create(
+    model="my-model",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+```
+
+**Claude Code support.** Point Claude Code at the gateway to use any local LLM as the backend:
+
+```bash
+ANTHROPIC_BASE_URL=http://your-gateway \
+ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
+claude
+```
+
+The adapter handles tool calls (`tool_use` ↔ OpenAI `tool_calls`), images, system prompts, stop reason mapping, and streaming SSE event sequencing. `/v1/messages/count_tokens` is forwarded to the downstream tokenizer so Claude Code's context-window indicator stays accurate.
 
 ### List Models
 
