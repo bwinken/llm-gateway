@@ -625,6 +625,63 @@ async def export_usage_report(
     )
 
 
+@router.get("/api/export/users.csv")
+async def export_users_csv(session: Session = Depends(get_session)):
+    """Export all real users (excluding app_* accounts) as CSV for mass mailing."""
+    import csv
+    import io
+
+    users = session.exec(
+        select(User)
+        .where(~User.username.startswith("app_"))
+        .order_by(User.org_code, User.username)
+    ).all()
+
+    monthly = get_monthly_all_users_usage(session)
+
+    last_active_rows = session.exec(
+        select(UsageLog.user_id, func.max(UsageLog.created_at)).group_by(UsageLog.user_id)
+    ).all()
+    last_active = {int(r[0]): r[1] for r in last_active_rows}
+
+    def fmt_dt(dt: datetime | None) -> str:
+        if dt is None:
+            return ""
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    buf = io.StringIO()
+    buf.write("﻿")  # UTF-8 BOM so Excel opens CJK correctly
+    writer = csv.writer(buf)
+    writer.writerow([
+        "username", "display_name", "org_code", "is_admin",
+        "daily_limit_usd", "created_at",
+        "monthly_cost_usd", "monthly_requests", "last_active_at",
+    ])
+    for u in users:
+        m = monthly.get(u.id or 0, {})
+        writer.writerow([
+            u.username,
+            u.display_name or "",
+            u.org_code or "",
+            "true" if u.is_admin else "false",
+            f"{u.daily_limit_usd:.2f}",
+            fmt_dt(u.created_at),
+            f"{m.get('cost', 0.0):.6f}",
+            m.get("requests", 0),
+            fmt_dt(last_active.get(u.id or 0)),
+        ])
+
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    filename = f"users_{today}.csv"
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ── Request Monitoring ──
 
 @router.post("/users/{user_id}/monitor")
