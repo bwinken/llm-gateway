@@ -119,9 +119,9 @@ function renderPanels(types) {
                 <div class="overflow-x-auto">
                     <table class="gw-table">
                         <thead><tr>
-                            <th class="gw-tip" data-tip="User-facing model name">Alias</th><th class="gw-tip gw-tip-wide" data-tip="Actual model ID sent to downstream server">Real Model</th><th class="gw-tip gw-tip-wide" data-tip="Downstream vLLM / OpenAI server URL">Base URL</th><th class="gw-tip gw-tip-wide" data-tip="Optional API key for downstream auth">API Key</th><th class="text-center gw-tip gw-tip-wide" data-tip="Hidden models are not shown to regular users but can still be used via API">Visible</th><th class="text-right">Actions</th>
+                            <th class="gw-tip" data-tip="User-facing model name">Alias</th><th class="gw-tip gw-tip-wide" data-tip="Actual model ID sent to downstream server">Real Model</th><th class="gw-tip gw-tip-wide" data-tip="Downstream vLLM / OpenAI server URL">Base URL</th><th class="gw-tip gw-tip-wide" data-tip="Optional API key for downstream auth">API Key</th><th class="text-right gw-tip gw-tip-wide" data-tip="Per-model input price (USD per 1M tokens). Blank = use the type default below.">Input $/1M</th><th class="text-right gw-tip gw-tip-wide" data-tip="Per-model output price (USD per 1M tokens). Blank = use the type default below.">Output $/1M</th><th class="text-center gw-tip gw-tip-wide" data-tip="Hidden models are not shown to regular users but can still be used via API">Visible</th><th class="text-right">Actions</th>
                         </tr></thead>
-                        <tbody>${models.map(([alias, info]) => renderModelRow(alias, info)).join('')}</tbody>
+                        <tbody>${models.map(([alias, info]) => renderModelRow(alias, info, t)).join('')}</tbody>
                     </table>
                 </div>` : `
                 <div class="px-5 py-10 text-center text-sm text-t4">No models configured for this type.</div>`}
@@ -143,26 +143,34 @@ const META_KEYS = [
     'supports_prompt_caching',
 ];
 
-// Per-model pricing override keys — when both are set on a model they
-// take priority over the per-type [pricing.<type>] block.
-const PRICE_KEYS = ['input_price_per_1m', 'output_price_per_1m'];
-
 function hasMeta(info) {
-    return META_KEYS.some(k => info[k] !== undefined && info[k] !== '')
-        || PRICE_KEYS.some(k => info[k] !== undefined && info[k] !== '');
+    return META_KEYS.some(k => info[k] !== undefined && info[k] !== '');
 }
 
-function renderModelRow(alias, info) {
+function typeDefaultPrice(type, field) {
+    const p = config.pricing[type] || config.pricing['_default'];
+    if (!p) return '';
+    const v = p[field];
+    return (v === undefined || v === null) ? '' : String(v);
+}
+
+function renderModelRow(alias, info, type) {
     const dot = hasMeta(info)
         ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-ag ml-1" title="Metadata set"></span>'
         : '';
     const isHidden = info.hidden === true;
+    const inPrice = info.input_price_per_1m ?? '';
+    const outPrice = info.output_price_per_1m ?? '';
+    const inPh = typeDefaultPrice(type, 'input_price_per_1m');
+    const outPh = typeDefaultPrice(type, 'output_price_per_1m');
     return `
         <tr id="row-${alias}" class="${isHidden ? 'opacity-50' : ''}">
             <td><span class="text-sm font-mono font-medium text-t1">${escHtml(alias)}</span></td>
             <td><input type="text" value="${escAttr(info.real_model)}" data-alias="${escAttr(alias)}" data-field="real_model" oninput="updateField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
             <td><input type="text" value="${escAttr(info.base_url)}" data-alias="${escAttr(alias)}" data-field="base_url" oninput="updateField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
             <td><input type="text" value="${escAttr(info.api_key || '')}" data-alias="${escAttr(alias)}" data-field="api_key" oninput="updateField(this)" placeholder="(none)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
+            <td><input type="number" min="0" step="0.01" value="${inPrice}" data-alias="${escAttr(alias)}" data-field="input_price_per_1m" data-price="1" oninput="updateField(this)" placeholder="${escAttr(inPh)}" title="Blank = use type default (${escAttr(inPh || 'unset')})" class="gw-input w-24 text-sm py-1 px-2 font-mono text-right"></td>
+            <td><input type="number" min="0" step="0.01" value="${outPrice}" data-alias="${escAttr(alias)}" data-field="output_price_per_1m" data-price="1" oninput="updateField(this)" placeholder="${escAttr(outPh)}" title="Blank = use type default (${escAttr(outPh || 'unset')})" class="gw-input w-24 text-sm py-1 px-2 font-mono text-right"></td>
             <td class="text-center">
                 <button onclick="toggleVisibility('${escAttr(alias)}')" class="p-1.5 rounded-lg transition-colors ${isHidden ? 'text-t4 hover:text-ar' : 'text-ag hover:text-t1'}" title="${isHidden ? 'Hidden from users — click to show' : 'Visible to users — click to hide'}">
                     ${isHidden
@@ -172,7 +180,7 @@ function renderModelRow(alias, info) {
                 </button>
             </td>
             <td class="text-right whitespace-nowrap">
-                <button onclick="toggleMeta('${escAttr(alias)}')" id="meta-btn-${escAttr(alias)}" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Optional metadata + per-model pricing override (otherwise uses per-type defaults)">Advanced${dot}</button>
+                <button onclick="toggleMeta('${escAttr(alias)}')" id="meta-btn-${escAttr(alias)}" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Optional metadata: display name, context window, capabilities">Advanced${dot}</button>
                 <button onclick="deleteModel('${escAttr(alias)}')" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
             </td>
         </tr>
@@ -189,11 +197,9 @@ function renderMetaRow(alias, info) {
     const sTools = info.supports_tools === true;
     const sVis = info.supports_vision === true;
     const sCache = info.supports_prompt_caching === true;
-    const inPrice = info.input_price_per_1m ?? '';
-    const outPrice = info.output_price_per_1m ?? '';
     return `
         <tr id="meta-${a}" class="${visible ? '' : 'hidden'}" style="background:rgba(255,255,255,0.015)">
-            <td colspan="6" class="px-5 py-3 space-y-3">
+            <td colspan="8" class="px-5 py-3 space-y-3">
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                     <label class="flex flex-col gap-1">
                         <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="Human-readable name shown to clients">Display Name</span>
@@ -218,16 +224,6 @@ function renderMetaRow(alias, info) {
                     <label class="flex items-center gap-2 pt-5">
                         <input type="checkbox" ${sCache ? 'checked' : ''} data-alias="${a}" data-field="supports_prompt_caching" data-meta="1" onchange="updateField(this)" class="gw-checkbox">
                         <span class="text-t3">supports_prompt_caching</span>
-                    </label>
-                </div>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs pt-2" style="border-top:1px solid rgba(255,255,255,0.04)">
-                    <label class="flex flex-col gap-1">
-                        <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="Per-model input price override (USD per 1M tokens). Leave blank to use the per-type default below.">Input Price (per 1M)</span>
-                        <input type="number" min="0" step="0.01" value="${inPrice}" data-alias="${a}" data-field="input_price_per_1m" data-price="1" oninput="updateField(this)" placeholder="(use type default)" class="gw-input text-sm py-1 px-2 font-mono">
-                    </label>
-                    <label class="flex flex-col gap-1">
-                        <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="Per-model output price override (USD per 1M tokens). Leave blank to use the per-type default below.">Output Price (per 1M)</span>
-                        <input type="number" min="0" step="0.01" value="${outPrice}" data-alias="${a}" data-field="output_price_per_1m" data-price="1" oninput="updateField(this)" placeholder="(use type default)" class="gw-input text-sm py-1 px-2 font-mono">
                     </label>
                 </div>
             </td>
