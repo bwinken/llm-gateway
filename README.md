@@ -2,20 +2,21 @@
 
 [中文版](README.zh-TW.md)
 
-OpenAI-compatible reverse proxy gateway for [vLLM](https://github.com/vllm-project/vllm) serving clusters.
-Routes, proxies, and monitors traffic from client applications to downstream vLLM instances (LLM, VLM, Embedding, Reranker).
+OpenAI-compatible reverse proxy gateway for [vLLM](https://github.com/vllm-project/vllm) serving clusters and Azure OpenAI deployments.
+Routes, proxies, and monitors traffic from client applications to downstream LLM/VLM/Embedding/Reranker backends.
 
 ```
-Client App ──▶ LLM Gateway ──▶ vLLM Instance A  [LLM]
-                    │                 ──▶ vLLM Instance B  [VLM]
-                    │                 ──▶ vLLM Instance C  [Embedding]
-                    │                 ──▶ vLLM Instance D  [Reranker]
+Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A  [LLM]
+                    │                          ──▶ vLLM Instance B  [VLM]
+                    │                          ──▶ vLLM Instance C  [Embedding]
+                    │                          ──▶ vLLM Instance D  [Reranker]
+                    │             /azure/v1/* ──▶ Azure OpenAI deployment(s)
                     │
                     ├── Auth (API key / OAuth2 SSO)
-                    ├── Routing (model alias → vLLM instance)
-                    ├── Smart fallback (health-aware)
-                    ├── Usage logging (tokens + cost)
-                    └── Health monitoring (30s interval)
+                    ├── Routing (model alias → vLLM instance / Azure deployment)
+                    ├── Smart fallback (health-aware, vLLM only)
+                    ├── Usage logging (tokens + cost; shared across both backends)
+                    └── Health monitoring (30s interval, vLLM only)
 ```
 
 ## Screenshots
@@ -30,18 +31,19 @@ Client App ──▶ LLM Gateway ──▶ vLLM Instance A  [LLM]
 
 ## Features
 
-- **OpenAI-compatible API** — `/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/score`, `/v1/responses`, `/v1/models` (LLM/VLM only)
+- **OpenAI-compatible API** — `/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/score`, `/v1/responses`, `/v1/tokenize`, `/v1/models` (LLM/VLM only)
 - **Anthropic Messages API** — `/v1/messages` and `/v1/messages/count_tokens`, drop-in compatible with the Anthropic Python SDK and Claude Code (works against any vLLM LLM/VLM downstream)
+- **Azure OpenAI backend** — Same client, same API key, same billing — point to `/azure/v1/*` to hit configured Azure deployments (chat completions, embeddings, Anthropic Messages all supported)
 - **Multi-model routing** — LLM, VLM, Embedding, Vision Embedding, Reranker, Vision Reranker
 - **SSE streaming** — Full Server-Sent Events support for chat completions and responses
-- **Smart fallback** — Configurable per-type fallback model, health-check-aware; `X-Model-Fallback` response header
-- **Tiered pricing** — Per-type input/output token pricing with automatic cost calculation
-- **Usage tracking** — Per-user token and cost logging to PostgreSQL
-- **OAuth2 SSO** — [AuthCenter](https://github.com/bwinken/authcenter) integration with RS256 JWT, auto-provisioning users
+- **Smart fallback** — Configurable per-type fallback model, health-check-aware; `X-Model-Fallback` response header (vLLM path)
+- **Tiered pricing** — Per-type defaults plus optional per-model overrides on either vLLM or Azure entries
+- **Usage tracking** — Per-user token and cost logging to PostgreSQL (shared across `/v1/*` and `/azure/v1/*`)
+- **OAuth2 SSO** — [AuthCenter](https://github.com/bwinken/authcenter) integration with RS256 JWT, auto-provisioning users with a configurable default daily limit
 - **Dual auth** — API key (Bearer token) for SDK/API, oauth2-proxy + JWT for web UI
-- **Web dashboard** — Usage stats, Chart.js trend charts, grouped server health status
-- **Admin panel** — User management, leaderboards, daily limit control, model config UI (routing/pricing/fallback)
-- **Background health checks** — Periodic pings to all downstream servers
+- **Web dashboard** — Usage stats, remaining-quota indicator, Chart.js trend charts, grouped server health status
+- **Admin panel** — User management, leaderboards, runtime-adjustable default daily limit, model config UI (routing/pricing/fallback)
+- **Background health checks** — Periodic pings to all downstream vLLM servers
 
 ## Tech Stack
 
@@ -74,13 +76,26 @@ cp config.toml.example config.toml
 cp .env.example .env
 ```
 
-Edit `config.toml` — set your downstream vLLM server URLs and API keys:
+Edit `config.toml` — set your downstream vLLM server URLs and API keys (and, optionally, Azure OpenAI deployments):
 
 ```toml
+[app]
+default_daily_limit_usd = 10.0   # New users auto-provision with this; admins can change it at runtime
+
 [models.llm."my-model"]
 real_model = "Qwen/Qwen2.5-72B"
 base_url = "http://your-llm-server:8000/v1"
 api_key = "token-abc123"
+# Optional per-model pricing override (USD per 1M tokens); falls back to [pricing.llm] then [pricing] defaults
+# input_price_per_1m = 0.50
+# output_price_per_1m = 1.50
+
+[azure_models."gpt-4o-mini-azure"]
+type        = "llm"
+endpoint    = "https://my-resource.openai.azure.com"
+deployment  = "gpt-4o-mini"
+api_key     = "azure-key-here"
+api_version = "2024-08-01-preview"
 ```
 
 Edit `.env` — set database URL and auth settings:
@@ -135,12 +150,25 @@ input_price_per_1m = 0.50
 output_price_per_1m = 1.50
 ```
 
-Per-type fallback model (optional). When a model's server is down, prefer this model as fallback:
+Lookup order for cost calculation: per-model `input_price_per_1m` / `output_price_per_1m` on the model entry → per-type `[pricing.<type>]` → top-level `[pricing]` defaults.
+
+Per-type fallback model (optional, vLLM path only). When a model's server is down, prefer this model as fallback:
 
 ```toml
 [fallback]
 llm = "backup-llm"
 vlm = "backup-vlm"
+```
+
+Azure OpenAI deployments (optional). Each entry exposes a deployment as a model alias served from `/azure/v1/*`:
+
+```toml
+[azure_models."gpt-4o-mini-azure"]
+type        = "llm"          # llm | vlm | embedding
+endpoint    = "https://my-resource.openai.azure.com"
+deployment  = "gpt-4o-mini"
+api_key     = "azure-key"
+api_version = "2024-08-01-preview"
 ```
 
 > All model routing, pricing, and fallback settings can also be managed through the **Admin Panel → Model Config** web UI, which reads and writes `config.toml` directly.
@@ -235,6 +263,30 @@ The adapter handles tool calls (`tool_use` ↔ OpenAI `tool_calls`), images, sys
 ```bash
 curl http://your-gateway/v1/models \
   -H "Authorization: Bearer sk-your-api-key"
+```
+
+### Azure OpenAI
+
+Azure-backed deployments configured under `[azure_models.*]` are served from `/azure/v1/*` with the same gateway API key. Azure aliases are intentionally not listed under `/v1/models`.
+
+```python
+client = OpenAI(
+    base_url="http://your-gateway/azure/v1",
+    api_key="sk-your-api-key",   # gateway key, not the Azure key
+)
+
+resp = client.chat.completions.create(
+    model="gpt-4o-mini-azure",   # alias from [azure_models.<alias>]
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+```
+
+Anthropic SDK / Claude Code can target Azure too via `/azure/messages`:
+
+```bash
+ANTHROPIC_BASE_URL=http://your-gateway/azure \
+ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
+claude
 ```
 
 ### Web Dashboard
@@ -338,11 +390,14 @@ llm-gateway/
 │   ├── models/
 │   │   └── schema.py           # User + UsageLog + AppOwner tables
 │   ├── routers/
-│   │   ├── llm_api.py          # /v1/* API endpoints
+│   │   ├── vllm_api.py         # /v1/* API endpoints (vLLM backend)
+│   │   ├── azure_api.py        # /azure/v1/* API endpoints (Azure OpenAI backend)
 │   │   ├── web_ui.py           # Dashboard (Jinja2)
 │   │   └── admin.py            # Admin panel + API
 │   ├── services/
-│   │   ├── proxy.py            # Core proxy + fallback + logging
+│   │   ├── vllm_proxy.py       # vLLM proxy + fallback + logging
+│   │   ├── azure_proxy.py      # Azure OpenAI proxy (shares auth/billing/monitoring)
+│   │   ├── anthropic_adapter.py # Anthropic Messages translation (used by both backends)
 │   │   ├── stats.py            # Dashboard aggregations
 │   │   └── health.py           # Background health loop
 │   └── templates/

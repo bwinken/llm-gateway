@@ -14,8 +14,10 @@ graph TD
     database --> deps["deps.py<br/>API Key Auth"]
     auth --> |Security: get_web_user| WebUI["routers/web_ui.py"]
     auth --> |Security: get_web_user| Admin["routers/admin.py<br/>(Web UI + REST API)"]
-    deps --> |get_current_user| LLM_API["routers/llm_api.py"]
-    server_state --> Proxy["services/proxy.py"]
+    deps --> |get_current_user| LLM_API["routers/vllm_api.py"]
+    deps --> |get_current_user| AzureAPI["routers/azure_api.py"]
+    server_state --> VllmProxy["services/vllm_proxy.py"]
+    server_state --> AzureProxy["services/azure_proxy.py"]
     server_state --> Health["services/health.py"]
 ```
 
@@ -34,17 +36,29 @@ Parses `config.toml` and `.env`, producing global configuration objects.
 | `AUTH_CENTER_APP_ID` | `str` | `.env` | JWT audience validation value |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | `str` | `.env` | RS256 public key path |
 | `AUTH_BASE_URL` | `str` | `.env` | JWT issuer validation value (default `auth-center`) |
-| `MODEL_ROUTING` | `dict[str, dict]` | `config.toml` | Model routing table: alias → `{base_url, real_model, api_key, type}` |
-| `PRICING_MAP` | `dict[str, dict]` | `config.toml` | Pricing table: type → `{input_price_per_1m, output_price_per_1m}` |
-| `FALLBACK_MAP` | `dict[str, str]` | `config.toml` | Fallback table: type → preferred fallback model alias |
+| `APP_CONFIG` | `dict` | `config.toml` `[app]` | App-level settings (e.g. `default_daily_limit_usd`, default `10.0`) |
+| `MODEL_ROUTING` | `dict[str, dict]` | `config.toml` | vLLM routing table: alias → `{base_url, real_model, api_key, type}` plus optional metadata and per-model pricing overrides |
+| `PRICING_MAP` | `dict[str, dict]` | `config.toml` | Pricing table: type → `{input_price_per_1m, output_price_per_1m}` (with `_default` entry) |
+| `FALLBACK_MAP` | `dict[str, str]` | `config.toml` | Fallback table: type → preferred fallback model alias (vLLM only) |
+| `AZURE_MODELS` | `dict[str, dict]` | `config.toml` `[azure_models.*]` | Azure routing: alias → `{type, endpoint, deployment, api_key, api_version, ...}` |
+
+**Optional per-model fields** (handled by `_MODEL_METADATA_KEYS`, `_MODEL_INTERNAL_KEYS`, `_MODEL_PRICING_KEYS`):
+
+- Metadata surfaced via `GET /v1/models` / `/azure/v1/models`: `display_name`, `context_window`, `max_output_tokens`, `supports_tools`, `supports_vision`, `supports_prompt_caching`
+- Internal flags: `hidden` (not surfaced to clients)
+- Pricing overrides: `input_price_per_1m`, `output_price_per_1m`. When present on a model entry they take priority over `[pricing.<type>]`, which in turn falls back to `[pricing]` defaults (`_default`).
 
 **Key functions:**
 
 | Function | Description |
 |---|---|
-| `reload_config()` | Re-reads `config.toml`, updates global dicts in-place (thread-safe) |
-| `save_config(models, pricing, fallback)` | Writes back to `config.toml` (atomic write) and auto-reloads |
-| `get_config_data()` | Returns JSON-serializable config snapshot (for Admin UI) |
+| `reload_config()` | Re-reads `config.toml`, updates all global dicts in-place (thread-safe; multi-worker safe via mtime auto-reload) |
+| `save_config(models, pricing, fallback, azure_models=None)` | Writes back to `config.toml` (atomic write) and auto-reloads |
+| `get_config_data()` | Returns JSON-serializable config snapshot — `{models, pricing, fallback, azure_models}` (for Admin UI) |
+| `get_model_routing_snapshot()` | Shallow copy of `MODEL_ROUTING` safe for iteration |
+| `get_azure_models_snapshot()` | Shallow copy of `AZURE_MODELS` safe for iteration |
+| `get_default_daily_limit()` | Reads `APP_CONFIG.default_daily_limit_usd`, defaults to `10.0` if missing/invalid |
+| `set_default_daily_limit(value)` | Persists new default daily limit to `[app]` section and reloads |
 
 ---
 

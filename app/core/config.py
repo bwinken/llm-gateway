@@ -67,13 +67,20 @@ def _load_toml() -> dict[str, Any]:
         return toml.load(f)
 
 
+# Required and optional keys for [azure_models.*] entries
+_AZURE_REQUIRED_KEYS: tuple[str, ...] = ("type", "endpoint", "deployment", "api_key")
+_AZURE_OPTIONAL_KEYS: tuple[str, ...] = ("api_version",)
+_AZURE_DEFAULT_API_VERSION = "2024-08-01-preview"
+
+
 def _build_config(raw: dict[str, Any]) -> tuple[
     dict[str, Any],
     dict[str, dict[str, Any]],
     dict[str, dict[str, float]],
     dict[str, str],
+    dict[str, dict[str, Any]],
 ]:
-    """Return (APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP)."""
+    """Return (APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP, AZURE_MODELS)."""
 
     # --- app ---
     app_config: dict[str, Any] = raw.get("app", {})
@@ -127,11 +134,34 @@ def _build_config(raw: dict[str, Any]) -> tuple[
         if isinstance(alias, str):
             fallback_map[type_key] = alias
 
-    return app_config, model_routing, pricing_map, fallback_map
+    # --- azure_models (Azure OpenAI deployments — separate routing) ---
+    azure_models: dict[str, dict[str, Any]] = {}
+    for alias, cfg in raw.get("azure_models", {}).items():
+        if not isinstance(cfg, dict):
+            continue
+        entry: dict[str, Any] = {
+            "type": cfg.get("type", "llm"),
+            "endpoint": cfg.get("endpoint", "").rstrip("/"),
+            "deployment": cfg.get("deployment", ""),
+            "api_key": cfg.get("api_key", ""),
+            "api_version": cfg.get("api_version", _AZURE_DEFAULT_API_VERSION),
+        }
+        for meta_key in _MODEL_METADATA_KEYS:
+            if meta_key in cfg:
+                entry[meta_key] = cfg[meta_key]
+        for internal_key in _MODEL_INTERNAL_KEYS:
+            if internal_key in cfg:
+                entry[internal_key] = cfg[internal_key]
+        for price_key in _MODEL_PRICING_KEYS:
+            if price_key in cfg:
+                entry[price_key] = float(cfg[price_key])
+        azure_models[alias] = entry
+
+    return app_config, model_routing, pricing_map, fallback_map, azure_models
 
 
 _raw = _load_toml()
-APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP = _build_config(_raw)
+APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP, AZURE_MODELS = _build_config(_raw)
 
 _config_lock = threading.Lock()
 _config_mtime: float = _CONFIG_PATH.stat().st_mtime
@@ -166,30 +196,35 @@ def reload_config() -> None:
         _config_mtime = _CONFIG_PATH.stat().st_mtime
     except OSError:
         pass
-    _, new_routing, new_pricing, new_fallback = _build_config(raw)
+    _, new_routing, new_pricing, new_fallback, new_azure = _build_config(raw)
 
     # Pre-compute stale keys outside the lock
     stale_routing = set(MODEL_ROUTING) - set(new_routing)
     stale_pricing = set(PRICING_MAP) - set(new_pricing)
     stale_fallback = set(FALLBACK_MAP) - set(new_fallback)
+    stale_azure = set(AZURE_MODELS) - set(new_azure)
 
     with _config_lock:
-        # Swap all three dicts as close together as possible
+        # Swap all dicts as close together as possible
         MODEL_ROUTING.update(new_routing)
         PRICING_MAP.update(new_pricing)
         FALLBACK_MAP.update(new_fallback)
+        AZURE_MODELS.update(new_azure)
         for k in stale_routing:
             MODEL_ROUTING.pop(k, None)
         for k in stale_pricing:
             PRICING_MAP.pop(k, None)
         for k in stale_fallback:
             FALLBACK_MAP.pop(k, None)
+        for k in stale_azure:
+            AZURE_MODELS.pop(k, None)
 
 
 def save_config(
     models: dict[str, dict[str, Any]],
     pricing: dict[str, dict[str, float]],
     fallback: dict[str, str],
+    azure_models: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Write config back to config.toml and reload globals."""
     raw = _load_toml()
@@ -236,6 +271,31 @@ def save_config(
     # Rebuild [fallback] section
     raw["fallback"] = {k: v for k, v in fallback.items() if v}
 
+    # Rebuild [azure_models.*] section
+    if azure_models is not None:
+        azure_section: dict[str, dict[str, Any]] = {}
+        for alias, info in azure_models.items():
+            entry: dict[str, Any] = {
+                "type": info.get("type", "llm"),
+                "endpoint": (info.get("endpoint") or "").rstrip("/"),
+                "deployment": info.get("deployment", ""),
+                "api_key": info.get("api_key", ""),
+                "api_version": info.get("api_version") or _AZURE_DEFAULT_API_VERSION,
+            }
+            for meta_key in _MODEL_METADATA_KEYS:
+                if meta_key in info:
+                    entry[meta_key] = info[meta_key]
+            for internal_key in _MODEL_INTERNAL_KEYS:
+                if internal_key in info:
+                    entry[internal_key] = info[internal_key]
+            for price_key in _MODEL_PRICING_KEYS:
+                if price_key in info:
+                    entry[price_key] = float(info[price_key])
+            azure_section[alias] = entry
+        raw["azure_models"] = azure_section
+    elif "azure_models" in raw and not raw.get("azure_models"):
+        raw.pop("azure_models", None)
+
     # Atomic write: write to temp file then rename to prevent corruption
     dir_path = _CONFIG_PATH.parent
     fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix=".toml.tmp")
@@ -260,7 +320,14 @@ def get_config_data() -> dict[str, Any]:
         "models": dict(MODEL_ROUTING),
         "pricing": dict(PRICING_MAP),
         "fallback": dict(FALLBACK_MAP),
+        "azure_models": dict(AZURE_MODELS),
     }
+
+
+def get_azure_models_snapshot() -> dict[str, dict[str, Any]]:
+    """Return a shallow copy of AZURE_MODELS safe for iteration."""
+    _check_auto_reload()
+    return dict(AZURE_MODELS)
 
 
 def get_default_daily_limit() -> float:

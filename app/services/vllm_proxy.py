@@ -116,14 +116,18 @@ def _error_response(resp) -> JSONResponse:
 
 
 def _calc_cost(
-    model_alias: str,
+    route: dict[str, Any],
     model_type: str,
     input_tokens: int,
     output_tokens: int,
 ) -> Decimal:
-    """Cost lookup priority: per-model override → per-type → default."""
-    route = MODEL_ROUTING.get(model_alias) or {}
-    if "input_price_per_1m" in route and "output_price_per_1m" in route:
+    """Cost lookup priority: per-model override on `route` → per-type → default.
+
+    The caller passes the route dict it already resolved (a MODEL_ROUTING entry
+    for vLLM, an AZURE_MODELS entry for Azure, ...). This function stays
+    agnostic to which downstream backend produced the route.
+    """
+    if route and "input_price_per_1m" in route and "output_price_per_1m" in route:
         inp_price = Decimal(str(route["input_price_per_1m"]))
         out_price = Decimal(str(route["output_price_per_1m"]))
     else:
@@ -191,11 +195,19 @@ def _log_usage(
     input_tokens: int,
     output_tokens: int,
     endpoint: str,
+    route: dict[str, Any] | None = None,
 ) -> None:
-    """Fire-and-forget usage logging in a background thread."""
+    """Fire-and-forget usage logging in a background thread.
+
+    If `route` is omitted, looks up MODEL_ROUTING by alias (vLLM default
+    behaviour). Azure callers should pass their AZURE_MODELS entry so any
+    per-model price override there is honoured at the DB level.
+    """
     import asyncio
 
-    cost = _calc_cost(model, model_type, input_tokens, output_tokens)
+    if route is None:
+        route = MODEL_ROUTING.get(model, {})
+    cost = _calc_cost(route, model_type, input_tokens, output_tokens)
     try:
         loop = asyncio.get_running_loop()
         loop.run_in_executor(
@@ -257,18 +269,19 @@ async def forward_request(
     if is_stream:
         return await _stream_chat(
             client, target_url, body, downstream_headers, user, resolved_alias, model_type,
-            extra_headers, monitor_body,
+            extra_headers, monitor_body, route,
         )
     else:
         return await _non_stream_chat(
             client, target_url, body, downstream_headers, user, resolved_alias, model_type,
-            extra_headers, monitor_body,
+            extra_headers, monitor_body, route,
         )
 
 
 async def _non_stream_chat(
     client, url: str, body: dict, headers: dict, user: User, model: str, model_type: str,
     extra_headers: dict[str, str] | None = None, monitor_body: dict | None = None,
+    route: dict[str, Any] | None = None,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=120.0)
@@ -285,9 +298,9 @@ async def _non_stream_chat(
     usage = data.get("usage", {})
     input_tk = usage.get("prompt_tokens", 0)
     output_tk = usage.get("completion_tokens", 0)
-    _log_usage(user, model, model_type, input_tk, output_tk, "/v1/chat/completions")
+    _log_usage(user, model, model_type, input_tk, output_tk, "/v1/chat/completions", route=route)
     if is_monitored(user.id):
-        cost = float(_calc_cost(model, model_type, input_tk, output_tk))
+        cost = float(_calc_cost(route or {}, model_type, input_tk, output_tk))
         log_monitor(user.id, monitor_body or body, data, model, "/v1/chat/completions", input_tk, output_tk, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
 
@@ -295,6 +308,7 @@ async def _non_stream_chat(
 async def _stream_chat(
     client, url: str, body: dict, headers: dict, user: User, model: str, model_type: str,
     extra_headers: dict[str, str] | None = None, monitor_body: dict | None = None,
+    route: dict[str, Any] | None = None,
 ) -> StreamingResponse:
     req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     _monitoring = is_monitored(user.id)
@@ -337,9 +351,9 @@ async def _stream_chat(
 
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
-        _log_usage(user, model, model_type, input_tokens, output_tokens, "/v1/chat/completions")
+        _log_usage(user, model, model_type, input_tokens, output_tokens, "/v1/chat/completions", route=route)
         if _monitoring:
-            cost = float(_calc_cost(model, model_type, input_tokens, output_tokens))
+            cost = float(_calc_cost(route or {}, model_type, input_tokens, output_tokens))
             log_monitor(user.id, monitor_body or body, chunks, model, "/v1/chat/completions", input_tokens, output_tokens, cost, model_type)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
@@ -402,7 +416,7 @@ async def forward_simple_request(
     if is_monitored(user.id):
         monitor_body = body.copy()
         monitor_body["model"] = resolved_alias
-        cost = float(_calc_cost(resolved_alias, model_type, prompt_tokens, completion_tokens))
+        cost = float(_calc_cost(route, model_type, prompt_tokens, completion_tokens))
         log_monitor(user.id, monitor_body, data, resolved_alias, endpoint_label, prompt_tokens, completion_tokens, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
 
@@ -446,12 +460,12 @@ async def forward_to_path(
     if is_stream:
         return await _passthrough_stream(
             client, target_url, raw_body, downstream_headers,
-            user, resolved_alias, model_type, path_suffix, extra_headers,
+            user, resolved_alias, model_type, path_suffix, extra_headers, route,
         )
     else:
         return await _passthrough_non_stream(
             client, target_url, raw_body, downstream_headers,
-            user, resolved_alias, model_type, path_suffix, extra_headers,
+            user, resolved_alias, model_type, path_suffix, extra_headers, route,
         )
 
 
@@ -459,6 +473,7 @@ async def _passthrough_non_stream(
     client, url: str, raw_body: bytes, headers: dict,
     user: User, model: str, model_type: str, path_suffix: str,
     extra_headers: dict[str, str] | None = None,
+    route: dict[str, Any] | None = None,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, content=raw_body, headers=headers, timeout=120.0)
@@ -475,9 +490,9 @@ async def _passthrough_non_stream(
     usage = data.get("usage", {})
     input_tk = usage.get("input_tokens", usage.get("prompt_tokens", 0))
     output_tk = usage.get("output_tokens", usage.get("completion_tokens", 0))
-    _log_usage(user, model, model_type, input_tk, output_tk, path_suffix)
+    _log_usage(user, model, model_type, input_tk, output_tk, path_suffix, route=route)
     if is_monitored(user.id):
-        cost = float(_calc_cost(model, model_type, input_tk, output_tk))
+        cost = float(_calc_cost(route or {}, model_type, input_tk, output_tk))
         log_monitor(user.id, json.loads(raw_body), data, model, path_suffix, input_tk, output_tk, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
 
@@ -528,11 +543,11 @@ async def forward_messages_request(
     if is_stream:
         return await _stream_messages(
             client, target_url, openai_body, downstream_headers,
-            user, resolved_alias, model_type, extra_headers, monitor_body,
+            user, resolved_alias, model_type, extra_headers, monitor_body, route,
         )
     return await _non_stream_messages(
         client, target_url, openai_body, downstream_headers,
-        user, resolved_alias, model_type, extra_headers, monitor_body,
+        user, resolved_alias, model_type, extra_headers, monitor_body, route,
     )
 
 
@@ -541,6 +556,7 @@ async def _non_stream_messages(
     model_alias: str, model_type: str,
     extra_headers: dict[str, str] | None = None,
     monitor_body: dict | None = None,
+    route: dict[str, Any] | None = None,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=120.0)
@@ -558,9 +574,9 @@ async def _non_stream_messages(
 
     input_tk = anthropic_data["usage"]["input_tokens"]
     output_tk = anthropic_data["usage"]["output_tokens"]
-    _log_usage(user, model_alias, model_type, input_tk, output_tk, "/v1/messages")
+    _log_usage(user, model_alias, model_type, input_tk, output_tk, "/v1/messages", route=route)
     if is_monitored(user.id):
-        cost = float(_calc_cost(model_alias, model_type, input_tk, output_tk))
+        cost = float(_calc_cost(route or {}, model_type, input_tk, output_tk))
         log_monitor(user.id, monitor_body or body, anthropic_data, model_alias, "/v1/messages", input_tk, output_tk, cost, model_type)
 
     return JSONResponse(content=anthropic_data, headers=extra_headers)
@@ -571,6 +587,7 @@ async def _stream_messages(
     model_alias: str, model_type: str,
     extra_headers: dict[str, str] | None = None,
     monitor_body: dict | None = None,
+    route: dict[str, Any] | None = None,
 ) -> StreamingResponse:
     req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     _monitoring = is_monitored(user.id)
@@ -618,9 +635,9 @@ async def _stream_messages(
         output_tokens = translator.output_tokens
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Anthropic stream for model={} ended with 0 tokens", model_alias)
-        _log_usage(user, model_alias, model_type, input_tokens, output_tokens, "/v1/messages")
+        _log_usage(user, model_alias, model_type, input_tokens, output_tokens, "/v1/messages", route=route)
         if _monitoring:
-            cost = float(_calc_cost(model_alias, model_type, input_tokens, output_tokens))
+            cost = float(_calc_cost(route or {}, model_type, input_tokens, output_tokens))
             log_monitor(user.id, monitor_body or body, chunks, model_alias, "/v1/messages", input_tokens, output_tokens, cost, model_type)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
@@ -804,6 +821,7 @@ async def _passthrough_stream(
     client, url: str, raw_body: bytes, headers: dict,
     user: User, model: str, model_type: str, path_suffix: str,
     extra_headers: dict[str, str] | None = None,
+    route: dict[str, Any] | None = None,
 ) -> StreamingResponse:
     req = client.build_request("POST", url, content=raw_body, headers=headers, timeout=_STREAM_TIMEOUT)
     _monitoring = is_monitored(user.id)
@@ -845,9 +863,9 @@ async def _passthrough_stream(
 
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
-        _log_usage(user, model, model_type, input_tokens, output_tokens, path_suffix)
+        _log_usage(user, model, model_type, input_tokens, output_tokens, path_suffix, route=route)
         if _monitoring:
-            cost = float(_calc_cost(model, model_type, input_tokens, output_tokens))
+            cost = float(_calc_cost(route or {}, model_type, input_tokens, output_tokens))
             log_monitor(user.id, json.loads(raw_body), chunks, model, path_suffix, input_tokens, output_tokens, cost, model_type)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}

@@ -11,6 +11,7 @@ All pages are protected by oauth2-proxy + nginx `auth_request` — users must co
 /dashboard           → User Dashboard (requires read or admin scope)
 /admin               → Admin Panel (requires admin scope)
 /admin/models        → Model Config (requires admin scope)
+/setup               → CA cert install page (requires read or admin scope; SSO-protected)
 /oauth2/sign_out     → Logout (handled by oauth2-proxy)
 ```
 
@@ -44,9 +45,10 @@ All pages are protected by oauth2-proxy + nginx `auth_request` — users must co
 | Section | Description |
 |---|---|
 | **System Status** | All downstream server health, grouped by type (LLM / VLM / Embedding / Reranker), real-time ONLINE / DOWN |
-| **Stats Cards** | Monthly stat cards: Requests count, Estimated Cost, Budget Usage (progress bar + percentage), Total Tokens (Input / Output) |
+| **Stats Cards** | Monthly stat cards: Requests count, Estimated Cost, Budget Usage (progress bar + percentage + today's `Remaining: $X.XXXX / $Y` display, or "Unlimited" when `daily_limit_usd = 0`), Total Tokens (Input / Output) |
 | **Usage Trend** | Chart.js line chart, 30-day usage trend, toggle between Requests / Cost (USD) views |
 | **My App Accounts** | Owned app account list (visible to owners only), shows API key, monthly usage, Copy / Refresh Key |
+| **Claude Code Installer** | Card to download a personalized PowerShell installer; the script is generated server-side via `GET /dashboard/install-claude-code.ps1` (auth-required), with the user's API key inlined into the template |
 | **API Integration Guide** | Inline code examples: Chat Completions, Embeddings, Rerank, Score, with user's API key and actual host |
 
 ### Available Actions
@@ -75,7 +77,7 @@ All pages are protected by oauth2-proxy + nginx `auth_request` — users must co
 | **User Leaderboard** | User ranking, top-10 by monthly cost descending, shows display_name and org_code badge |
 | **Department Usage** | Usage table grouped by org_code: Users, Cost, Input / Output Tokens, Reqs |
 | **Create App Account** | Form to create new app account: username (auto-prefixed with `app_`), Daily Limit, Owner |
-| **User Management** | Server-side paginated (limit/offset) user table with server-side search (`q` parameter, ILIKE on username/display_name/org_code), Users / Apps tab switching |
+| **User Management** | Server-side paginated (limit/offset) user table with server-side search (`q` parameter, ILIKE on username/display_name/org_code), Users / Apps tab switching. Header shows a **Default Limit** input + Save button (`POST /admin/default-limit`) — sets `[app].default_daily_limit_usd` and bulk-bumps any user with `0 < daily_limit_usd < new_floor` up to the floor (unlimited users with `daily_limit_usd = 0` are never modified) |
 
 ### Available Actions
 
@@ -117,6 +119,28 @@ All pages are protected by oauth2-proxy + nginx `auth_request` — users must co
 
 ---
 
+## `/setup` — CA Certificate Install Page
+
+**File**: `setup.html` ← `web_ui.py`
+**Permission**: JWT scope includes `read` or `admin` (SSO-protected; nginx no longer bypasses oauth2-proxy for `/setup`)
+
+This page is for **Claude desktop / Office** users who need the gateway's internal CA certificate trusted on Windows. The page is intentionally separate from the dashboard's Claude Code installer, and the on-page copy makes the distinction explicit:
+
+- **This page** — CA cert (so corporate browsers and Claude in Office can reach the HTTPS gateway)
+- **Not this page** — Claude Code CLI installer (download from the Dashboard instead)
+
+### Downloads
+
+The user-facing UI offers only the `.bat` installer. The `.ps1` installer (`install-cert-user.ps1`) still lives in `setup/` for ops to use manually but is **not** in the download whitelist (`_SETUP_ALLOWED` in `app/routers/web_ui.py`):
+
+| File | Whitelisted? | Purpose |
+|---|---|---|
+| `llm-gateway-ca.crt` | yes | Internal CA certificate |
+| `install-cert.bat` | yes | Windows batch installer (CurrentUser\Root, no admin required) |
+| `install-cert-user.ps1` | no | PowerShell equivalent — kept in repo for ops, not downloadable |
+
+---
+
 ## Shared Components
 
 ### `base.html` — Base Layout
@@ -141,8 +165,8 @@ Browser → Nginx → auth_request /oauth2/auth → oauth2-proxy validates cooki
 
 | Scope | Accessible Pages |
 |---|---|
-| `read` | `/dashboard` |
-| `admin` | `/dashboard`, `/admin`, `/admin/models` |
+| `read` | `/`, `/dashboard`, `/setup` |
+| `admin` | `/`, `/dashboard`, `/setup`, `/admin`, `/admin/models` |
 
 ### Logout
 

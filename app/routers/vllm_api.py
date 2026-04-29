@@ -1,5 +1,8 @@
 """
-OpenAI-compatible API endpoints.
+OpenAI-compatible API endpoints for the vLLM downstream backend.
+
+Mounted at `/v1/*`. For Azure OpenAI deployments, see `azure_api.py`
+(mounted at `/azure/v1/*`).
 """
 
 from __future__ import annotations
@@ -9,7 +12,7 @@ from fastapi import APIRouter, Depends, Request
 from app.core.config import _MODEL_METADATA_KEYS, get_model_routing_snapshot
 from app.core.deps import get_current_user
 from app.models.schema import User
-from app.services.proxy import (
+from app.services.vllm_proxy import (
     forward_count_tokens_request,
     forward_messages_request,
     forward_request,

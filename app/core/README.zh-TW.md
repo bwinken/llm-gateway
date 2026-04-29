@@ -14,8 +14,10 @@ graph TD
     database --> deps["deps.py<br/>API Key 認證"]
     auth --> |Security: get_web_user| WebUI["routers/web_ui.py"]
     auth --> |Security: get_web_user| Admin["routers/admin.py<br/>(Web UI + REST API)"]
-    deps --> |get_current_user| LLM_API["routers/llm_api.py"]
-    server_state --> Proxy["services/proxy.py"]
+    deps --> |get_current_user| LLM_API["routers/vllm_api.py"]
+    deps --> |get_current_user| AzureAPI["routers/azure_api.py"]
+    server_state --> VllmProxy["services/vllm_proxy.py"]
+    server_state --> AzureProxy["services/azure_proxy.py"]
     server_state --> Health["services/health.py"]
 ```
 
@@ -34,17 +36,29 @@ graph TD
 | `AUTH_CENTER_APP_ID` | `str` | `.env` | JWT audience 驗證值 |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | `str` | `.env` | RS256 公鑰路徑 |
 | `AUTH_BASE_URL` | `str` | `.env` | JWT issuer 驗證值（預設 `auth-center`） |
-| `MODEL_ROUTING` | `dict[str, dict]` | `config.toml` | 模型路由表：alias → `{base_url, real_model, api_key, type}` |
-| `PRICING_MAP` | `dict[str, dict]` | `config.toml` | 定價表：type → `{input_price_per_1m, output_price_per_1m}` |
-| `FALLBACK_MAP` | `dict[str, str]` | `config.toml` | Fallback 表：type → 偏好的 fallback model alias |
+| `APP_CONFIG` | `dict` | `config.toml` `[app]` | App 層級設定(例如 `default_daily_limit_usd`,預設 `10.0`) |
+| `MODEL_ROUTING` | `dict[str, dict]` | `config.toml` | vLLM 路由表:alias → `{base_url, real_model, api_key, type}`,加上可選的 metadata 與 per-model 計價覆寫 |
+| `PRICING_MAP` | `dict[str, dict]` | `config.toml` | 定價表:type → `{input_price_per_1m, output_price_per_1m}`(包含 `_default`) |
+| `FALLBACK_MAP` | `dict[str, str]` | `config.toml` | Fallback 表:type → 偏好的 fallback model alias(僅 vLLM) |
+| `AZURE_MODELS` | `dict[str, dict]` | `config.toml` `[azure_models.*]` | Azure 路由:alias → `{type, endpoint, deployment, api_key, api_version, ...}` |
+
+**Per-model 可選欄位**(由 `_MODEL_METADATA_KEYS`、`_MODEL_INTERNAL_KEYS`、`_MODEL_PRICING_KEYS` 控制):
+
+- 透過 `GET /v1/models` / `/azure/v1/models` 對外揭露的 metadata:`display_name`、`context_window`、`max_output_tokens`、`supports_tools`、`supports_vision`、`supports_prompt_caching`
+- 內部旗標:`hidden`(不對 client 揭露)
+- 計價覆寫:`input_price_per_1m`、`output_price_per_1m`。模型項目上有設定時優先於 `[pricing.<type>]`,後者再 fallback 到 `[pricing]` 預設值(`_default`)。
 
 **關鍵函式：**
 
 | 函式 | 說明 |
 |---|---|
-| `reload_config()` | 重新讀取 `config.toml`，原地更新全域 dict（thread-safe） |
-| `save_config(models, pricing, fallback)` | 寫回 `config.toml`（atomic write）並自動 reload |
-| `get_config_data()` | 回傳 JSON-serializable 的設定快照（Admin UI 用） |
+| `reload_config()` | 重新讀取 `config.toml`,原地更新所有全域 dict(thread-safe;多 worker 也安全 — 透過 mtime 自動 reload) |
+| `save_config(models, pricing, fallback, azure_models=None)` | 寫回 `config.toml`(atomic write)並自動 reload |
+| `get_config_data()` | 回傳 JSON-serializable 的設定快照 — `{models, pricing, fallback, azure_models}`(Admin UI 用) |
+| `get_model_routing_snapshot()` | `MODEL_ROUTING` 的 shallow copy,可安全 iterate |
+| `get_azure_models_snapshot()` | `AZURE_MODELS` 的 shallow copy,可安全 iterate |
+| `get_default_daily_limit()` | 讀取 `APP_CONFIG.default_daily_limit_usd`,缺漏/無效時 fallback 為 `10.0` |
+| `set_default_daily_limit(value)` | 把新的預設每日額度寫回 `[app]` 並 reload |
 
 ---
 

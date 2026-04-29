@@ -15,10 +15,13 @@
 ```
 Browser → Nginx (:80)
             ├─ /oauth2/*  → oauth2-proxy (:4180)  ← 處理登入/登出
-            ├─ /v1/*      → Gateway                 ← API key 認證
+            ├─ /v1/*      → Gateway                 ← API key 認證(vLLM 後端)
+            ├─ /azure/*   → Gateway                 ← API key 認證(Azure OpenAI 後端)
             └─ /*         → auth_request → oauth2-proxy 驗證
                           → Gateway                 ← JWT header 認證
 ```
+
+範例 nginx 設定(`deploy/llm-gateway-example.nginx.conf`)在 HTTP 與 HTTPS 兩個 server context 中都有平行的 `/v1/` 和 `/azure/` 區塊。兩者都不經 oauth2-proxy,直接保留客戶端的 `Authorization: Bearer <api_key>` 轉發給 gateway。
 
 - **Gateway**：user-level systemd service（Python/FastAPI）
 - **PostgreSQL + oauth2-proxy**：Docker Compose（`deploy/docker-compose.yml`）

@@ -27,7 +27,6 @@ templates = Jinja2Templates(directory=str(_templates_dir))
 _SETUP_DIR = Path(__file__).resolve().parent.parent.parent / "setup"
 _SETUP_ALLOWED = {
     "llm-gateway-ca.crt",
-    "install-cert-user.ps1",
     "install-cert.bat",
 }
 

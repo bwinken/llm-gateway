@@ -15,10 +15,13 @@
 ```
 Browser → Nginx (:80)
             ├─ /oauth2/*  → oauth2-proxy (:4180)  ← handles login/logout
-            ├─ /v1/*      → Gateway                 ← API key auth
+            ├─ /v1/*      → Gateway                 ← API key auth (vLLM backend)
+            ├─ /azure/*   → Gateway                 ← API key auth (Azure OpenAI backend)
             └─ /*         → auth_request → oauth2-proxy validation
                           → Gateway                 ← JWT header auth
 ```
+
+The example nginx config (`deploy/llm-gateway-example.nginx.conf`) defines parallel `/v1/` and `/azure/` blocks in both the HTTP and HTTPS server contexts. Both bypass oauth2-proxy and forward straight to the gateway with the client's `Authorization: Bearer <api_key>` header preserved.
 
 - **Gateway**: user-level systemd service (Python/FastAPI)
 - **PostgreSQL + oauth2-proxy**: Docker Compose (`deploy/docker-compose.yml`)

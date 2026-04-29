@@ -194,6 +194,24 @@ TEST_PRICING_MAP: dict[str, dict[str, float]] = {
 
 TEST_FALLBACK_MAP: dict[str, str] = {}
 
+# Azure OpenAI test models — separate map, parallel to MODEL_ROUTING.
+TEST_AZURE_MODELS: dict[str, dict[str, Any]] = {
+    "azure-gpt-4": {
+        "type": "llm",
+        "endpoint": "https://test.openai.azure.com",
+        "deployment": "gpt-4-deploy",
+        "api_key": "azure-test-key",
+        "api_version": "2024-08-01-preview",
+    },
+    "azure-embed": {
+        "type": "embedding",
+        "endpoint": "https://test.openai.azure.com",
+        "deployment": "embed-deploy",
+        "api_key": "azure-test-key",
+        "api_version": "2024-08-01-preview",
+    },
+}
+
 # ---------------------------------------------------------------------------
 # Build a test FastAPI app (no lifespan side-effects)
 # ---------------------------------------------------------------------------
@@ -213,13 +231,15 @@ def _build_test_app() -> FastAPI:
         patch("app.core.config.MODEL_ROUTING", TEST_MODEL_ROUTING),
         patch("app.core.config.PRICING_MAP", TEST_PRICING_MAP),
         patch("app.core.config.FALLBACK_MAP", TEST_FALLBACK_MAP),
+        patch("app.core.config.AZURE_MODELS", TEST_AZURE_MODELS),
     ):
-        from app.routers import admin, llm_api, web_ui
+        from app.routers import admin, azure_api, vllm_api, web_ui
 
     test_app = FastAPI(lifespan=_noop_lifespan)
 
     test_app.include_router(web_ui.router)
-    test_app.include_router(llm_api.router)
+    test_app.include_router(vllm_api.router)
+    test_app.include_router(azure_api.router)
     test_app.include_router(admin.router)
 
     return test_app
@@ -232,16 +252,20 @@ def _build_test_app() -> FastAPI:
 @pytest.fixture(autouse=True)
 def _patch_all():
     """Apply all patches for every test."""
-    import app.services.proxy  # noqa: F811 — ensure module is loaded before patching
+    import app.services.vllm_proxy  # noqa: F811 — ensure module is loaded before patching
 
     with (
-        patch("app.services.proxy.MODEL_ROUTING", TEST_MODEL_ROUTING),
-        patch("app.services.proxy.PRICING_MAP", TEST_PRICING_MAP),
-        patch("app.services.proxy.FALLBACK_MAP", TEST_FALLBACK_MAP),
-        patch("app.services.proxy.get_client", return_value=_mock_httpx_client),
-        patch("app.services.proxy.engine", _test_engine),
-        patch("app.services.proxy.is_alive", return_value=True),
+        patch("app.services.vllm_proxy.MODEL_ROUTING", TEST_MODEL_ROUTING),
+        patch("app.services.vllm_proxy.PRICING_MAP", TEST_PRICING_MAP),
+        patch("app.services.vllm_proxy.FALLBACK_MAP", TEST_FALLBACK_MAP),
+        patch("app.services.vllm_proxy.get_client", return_value=_mock_httpx_client),
+        patch("app.services.vllm_proxy.engine", _test_engine),
+        patch("app.services.vllm_proxy.is_alive", return_value=True),
+        patch("app.services.azure_proxy.AZURE_MODELS", TEST_AZURE_MODELS),
+        patch("app.services.azure_proxy.get_client", return_value=_mock_httpx_client),
+        patch("app.core.config.AZURE_MODELS", TEST_AZURE_MODELS),
         patch("app.core.config.get_model_routing_snapshot", return_value=TEST_MODEL_ROUTING),
+        patch("app.core.config.get_azure_models_snapshot", return_value=TEST_AZURE_MODELS),
         patch("app.core.server_state.get_client", return_value=_mock_httpx_client),
         patch("app.core.auth._decode_jwt", _test_decode_jwt),
     ):

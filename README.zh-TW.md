@@ -2,20 +2,21 @@
 
 [English](README.md)
 
-OpenAI 相容的反向代理閘道，專為 [vLLM](https://github.com/vllm-project/vllm) 叢集設計。
-將客戶端應用程式的請求路由、代理並監控到下游 vLLM 實例（LLM、VLM、Embedding、Reranker）。
+OpenAI 相容的反向代理閘道，可同時整合 [vLLM](https://github.com/vllm-project/vllm) 叢集與 Azure OpenAI 部署。
+將客戶端應用程式的請求路由、代理並監控到下游 LLM/VLM/Embedding/Reranker 後端。
 
 ```
-Client App ──▶ LLM Gateway ──▶ vLLM Instance A  [LLM]
-                    │                 ──▶ vLLM Instance B  [VLM]
-                    │                 ──▶ vLLM Instance C  [Embedding]
-                    │                 ──▶ vLLM Instance D  [Reranker]
+Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A  [LLM]
+                    │                          ──▶ vLLM Instance B  [VLM]
+                    │                          ──▶ vLLM Instance C  [Embedding]
+                    │                          ──▶ vLLM Instance D  [Reranker]
+                    │             /azure/v1/* ──▶ Azure OpenAI 部署
                     │
                     ├── 驗證 (API key / OAuth2 SSO)
-                    ├── 路由 (模型別名 → vLLM 實例)
-                    ├── 智慧容錯 (健康檢查感知)
-                    ├── 用量記錄 (token 數 + 費用)
-                    └── 健康監控 (每 30 秒)
+                    ├── 路由 (模型別名 → vLLM 實例 / Azure deployment)
+                    ├── 智慧容錯 (健康檢查感知，僅 vLLM)
+                    ├── 用量記錄 (token 數 + 費用，兩條路徑共用)
+                    └── 健康監控 (每 30 秒，僅 vLLM)
 ```
 
 ## 畫面截圖
@@ -30,18 +31,19 @@ Client App ──▶ LLM Gateway ──▶ vLLM Instance A  [LLM]
 
 ## 功能特色
 
-- **OpenAI 相容 API** — `/v1/chat/completions`、`/v1/embeddings`、`/v1/rerank`、`/v1/score`、`/v1/responses`、`/v1/models`（僅列出 LLM/VLM）
+- **OpenAI 相容 API** — `/v1/chat/completions`、`/v1/embeddings`、`/v1/rerank`、`/v1/score`、`/v1/responses`、`/v1/tokenize`、`/v1/models`（僅列出 LLM/VLM）
 - **Anthropic Messages API** — `/v1/messages` 與 `/v1/messages/count_tokens`，可直接搭配 Anthropic Python SDK 與 Claude Code（後端可接任何 vLLM LLM/VLM）
+- **Azure OpenAI 後端** — 同一支客戶端、同一把 API key、同一套計費,把 base URL 指到 `/azure/v1/*` 即可呼叫設定的 Azure 部署(支援 chat completions、embeddings、Anthropic Messages)
 - **多模型路由** — LLM、VLM、Embedding、Vision Embedding、Reranker、Vision Reranker
 - **SSE 串流** — 完整支援 Server-Sent Events（chat completions 和 responses）
-- **智慧容錯** — 可設定各類型的備援模型，依健康檢查自動切換；回應標頭 `X-Model-Fallback`
-- **分級計價** — 各類型獨立的 input/output token 價格，自動計算費用
-- **用量追蹤** — 逐請求記錄每位使用者的 token 數與費用至 PostgreSQL
-- **OAuth2 SSO** — 整合 [AuthCenter](https://github.com/bwinken/authcenter)，RS256 JWT 驗證，自動建立使用者
+- **智慧容錯** — 可設定各類型的備援模型，依健康檢查自動切換；回應標頭 `X-Model-Fallback`(僅 vLLM 路徑)
+- **分級計價** — 各類型預設價格，並可在 vLLM 或 Azure 模型上加上 per-model 覆寫
+- **用量追蹤** — 逐請求記錄每位使用者的 token 數與費用至 PostgreSQL（`/v1/*` 與 `/azure/v1/*` 共用）
+- **OAuth2 SSO** — 整合 [AuthCenter](https://github.com/bwinken/authcenter)，RS256 JWT 驗證,自動建立使用者並套用可調整的預設每日額度
 - **雙重驗證** — SDK/API 使用 Bearer API key，Web UI 使用 oauth2-proxy + JWT
-- **Web 儀表板** — 用量統計、Chart.js 趨勢圖、分組的伺服器健康狀態
-- **管理面板** — 使用者管理、排行榜、每日額度控制、模型設定 UI（路由/計價/容錯）
-- **背景健康檢查** — 定期 ping 所有下游伺服器
+- **Web 儀表板** — 用量統計、剩餘額度顯示、Chart.js 趨勢圖、分組的伺服器健康狀態
+- **管理面板** — 使用者管理、排行榜、可在執行期調整的預設每日額度、模型設定 UI(路由/計價/容錯)
+- **背景健康檢查** — 定期 ping 所有下游 vLLM 伺服器
 
 ## 技術堆疊
 
@@ -74,13 +76,26 @@ cp config.toml.example config.toml
 cp .env.example .env
 ```
 
-編輯 `config.toml` — 設定下游 vLLM 伺服器 URL 和 API key：
+編輯 `config.toml` — 設定下游 vLLM 伺服器 URL 和 API key（也可選擇加入 Azure OpenAI 部署）：
 
 ```toml
+[app]
+default_daily_limit_usd = 10.0   # 新使用者預設每日額度,管理員可在執行期調整
+
 [models.llm."my-model"]
 real_model = "Qwen/Qwen2.5-72B"
 base_url = "http://your-llm-server:8000/v1"
 api_key = "token-abc123"
+# 可選的 per-model 計價覆寫(USD / 每百萬 token);不填則 fallback 到 [pricing.llm] 與 [pricing] 預設值
+# input_price_per_1m = 0.50
+# output_price_per_1m = 1.50
+
+[azure_models."gpt-4o-mini-azure"]
+type        = "llm"
+endpoint    = "https://my-resource.openai.azure.com"
+deployment  = "gpt-4o-mini"
+api_key     = "azure-key-here"
+api_version = "2024-08-01-preview"
 ```
 
 編輯 `.env` — 設定資料庫 URL 和驗證相關設定：
@@ -135,12 +150,25 @@ input_price_per_1m = 0.50
 output_price_per_1m = 1.50
 ```
 
-各類型備援模型（選填）。當模型的伺服器離線時，優先使用此模型作為備援：
+費用查詢順序：模型項目上的 `input_price_per_1m` / `output_price_per_1m` per-model 覆寫 → `[pricing.<type>]` → `[pricing]` 預設值。
+
+各類型備援模型（選填，僅 vLLM 路徑）。當模型的伺服器離線時，優先使用此模型作為備援：
 
 ```toml
 [fallback]
 llm = "backup-llm"
 vlm = "backup-vlm"
+```
+
+Azure OpenAI 部署（選填）。每個項目會以模型別名透過 `/azure/v1/*` 對外服務：
+
+```toml
+[azure_models."gpt-4o-mini-azure"]
+type        = "llm"          # llm | vlm | embedding
+endpoint    = "https://my-resource.openai.azure.com"
+deployment  = "gpt-4o-mini"
+api_key     = "azure-key"
+api_version = "2024-08-01-preview"
 ```
 
 > 所有模型路由、計價和容錯設定也可以透過 **管理面板 → 模型設定** 的 Web UI 管理，直接讀寫 `config.toml`。
@@ -235,6 +263,30 @@ Adapter 會處理 tool calls（`tool_use` ↔ OpenAI `tool_calls`）、圖片、
 ```bash
 curl http://your-gateway/v1/models \
   -H "Authorization: Bearer sk-your-api-key"
+```
+
+### Azure OpenAI
+
+設定在 `[azure_models.*]` 的 Azure 部署會透過 `/azure/v1/*` 對外服務,使用同一把 gateway API key。Azure 別名刻意不會出現在 `/v1/models`。
+
+```python
+client = OpenAI(
+    base_url="http://your-gateway/azure/v1",
+    api_key="sk-your-api-key",   # gateway 的 key,不是 Azure 的 key
+)
+
+resp = client.chat.completions.create(
+    model="gpt-4o-mini-azure",   # 即 [azure_models.<alias>] 的 alias
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+```
+
+Anthropic SDK / Claude Code 也可以指向 Azure(走 `/azure/messages`):
+
+```bash
+ANTHROPIC_BASE_URL=http://your-gateway/azure \
+ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
+claude
 ```
 
 ### Web 儀表板
@@ -338,11 +390,14 @@ llm-gateway/
 │   ├── models/
 │   │   └── schema.py           # User + UsageLog + AppOwner 資料表
 │   ├── routers/
-│   │   ├── llm_api.py          # /v1/* API 端點
+│   │   ├── vllm_api.py         # /v1/* API 端點(vLLM 後端)
+│   │   ├── azure_api.py        # /azure/v1/* API 端點(Azure OpenAI 後端)
 │   │   ├── web_ui.py           # 儀表板 (Jinja2)
 │   │   └── admin.py            # 管理面板 + API
 │   ├── services/
-│   │   ├── proxy.py            # 核心代理 + 容錯 + 記錄
+│   │   ├── vllm_proxy.py       # vLLM 代理 + 容錯 + 記錄
+│   │   ├── azure_proxy.py      # Azure OpenAI 代理(共用認證/計費/監控)
+│   │   ├── anthropic_adapter.py # Anthropic Messages 轉譯(兩個後端共用)
 │   │   ├── stats.py            # 儀表板彙總
 │   │   └── health.py           # 背景健康檢查迴圈
 │   └── templates/
