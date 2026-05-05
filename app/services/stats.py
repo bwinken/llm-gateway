@@ -12,15 +12,26 @@ from app.core.timeutil import local_day_start_utc
 from app.models.schema import AppOwner, UsageLog, User
 
 
-def get_user_daily_cost(session: Session, user_id: int) -> float:
-    """Total cost for today (Asia/Taipei calendar day)."""
+def get_user_daily_summary(session: Session, user_id: int) -> dict:
+    """Total tokens, cost, and request count for today (Asia/Taipei day)."""
     today_start = local_day_start_utc()
     stmt = (
-        select(func.coalesce(func.sum(UsageLog.cost_usd), 0))
+        select(
+            func.coalesce(func.sum(UsageLog.input_tokens), 0).label("total_input"),
+            func.coalesce(func.sum(UsageLog.output_tokens), 0).label("total_output"),
+            func.coalesce(func.sum(UsageLog.cost_usd), 0).label("total_cost"),
+            func.count(UsageLog.id).label("total_requests"),
+        )
         .where(UsageLog.user_id == user_id)
         .where(UsageLog.created_at >= today_start)
     )
-    return float(session.exec(stmt).one())
+    row = session.exec(stmt).first()
+    return {
+        "total_input_tokens": int(row[0]) if row else 0,
+        "total_output_tokens": int(row[1]) if row else 0,
+        "total_cost_usd": float(row[2]) if row else 0.0,
+        "total_requests": int(row[3]) if row else 0,
+    }
 
 
 def get_user_monthly_summary(session: Session, user_id: int) -> dict:

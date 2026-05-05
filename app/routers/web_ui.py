@@ -19,7 +19,7 @@ from app.core.auth import get_web_user
 from app.core.config import APP_TITLE, get_azure_models_snapshot, get_model_routing_snapshot
 from app.core.database import get_session
 from app.core.server_state import is_alive
-from app.services.stats import get_daily_trends, get_owned_apps_summary, get_user_daily_cost, get_user_monthly_summary
+from app.services.stats import get_daily_trends, get_owned_apps_summary, get_user_daily_summary, get_user_monthly_summary
 
 router = APIRouter()
 _templates_dir = Path(__file__).resolve().parent.parent / "templates"
@@ -133,8 +133,9 @@ async def dashboard(
             }
         )
 
-    # Budget percentage based on today's cost vs daily limit
-    today_cost = get_user_daily_cost(session, user.id)
+    # Today's totals + budget percentage based on today's cost vs daily limit
+    today = get_user_daily_summary(session, user.id)
+    today_cost = today["total_cost_usd"]
     daily_limit = user.daily_limit_usd if user.daily_limit_usd > 0 else 1.0
     usage_percent = min(100.0, (today_cost / daily_limit) * 100)
 
@@ -170,7 +171,10 @@ async def dashboard(
             total_cost=summary["total_cost_usd"],
             my_input=summary["total_input_tokens"],
             my_output=summary["total_output_tokens"],
+            today_reqs=today["total_requests"],
             today_cost=round(today_cost, 4),
+            today_input=today["total_input_tokens"],
+            today_output=today["total_output_tokens"],
             usage_percent=round(usage_percent, 1),
             trend_data=trend_data,
             now_utc=datetime.now(timezone.utc),
