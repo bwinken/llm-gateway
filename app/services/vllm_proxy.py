@@ -164,11 +164,9 @@ def _log_usage_sync(
             session.commit()
 
             # Post-write daily limit check (soft protection for TOCTOU race)
-            from datetime import datetime, timezone
             from sqlmodel import func, select as sel
-            today_start = datetime.now(timezone.utc).replace(
-                hour=0, minute=0, second=0, microsecond=0,
-            )
+            from app.core.timeutil import local_day_start_utc
+            today_start = local_day_start_utc()
             stmt = (
                 sel(func.coalesce(func.sum(UsageLog.cost_usd), 0))
                 .where(UsageLog.user_id == user_id)

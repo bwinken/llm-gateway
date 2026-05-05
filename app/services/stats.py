@@ -8,12 +8,13 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, func, select
 
+from app.core.timeutil import local_day_start_utc
 from app.models.schema import AppOwner, UsageLog, User
 
 
 def get_user_daily_cost(session: Session, user_id: int) -> float:
-    """Total cost for today (UTC)."""
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    """Total cost for today (Asia/Taipei calendar day)."""
+    today_start = local_day_start_utc()
     stmt = (
         select(func.coalesce(func.sum(UsageLog.cost_usd), 0))
         .where(UsageLog.user_id == user_id)
