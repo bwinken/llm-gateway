@@ -50,7 +50,7 @@ disabled.html        → 已停用使用者點擊任何 HTML 路由時,由 Accou
 | **Usage Trend** | Chart.js 折線圖，近 30 天用量趨勢，可切換 Requests / Cost (USD) 兩種視圖 |
 | **My App Accounts** | 擁有的 App 帳號清單（僅 owner 可見），顯示 API key、月用量，可 Copy / Refresh Key |
 | **Azure Access** | 僅當 `user.can_use_azure or user.is_admin` 時顯示。列出已設定的 Azure 模型別名與其 metadata badge;若使用者有權但目前沒有 Azure 模型,則顯示 "Contact your administrator" |
-| **Claude Code Installer** | 下載個人化 PowerShell 安裝腳本的卡片;伺服器端透過 `GET /dashboard/install-claude-code.ps1`(需登入)即時將使用者的 API key 注入到模板 |
+| **Claude Code Installer** | 下載個人化 batch 安裝腳本的卡片;伺服器端透過 `GET /dashboard/install-claude-code.bat`(需登入)即時將使用者的 API key 注入到模板 |
 | **API Integration Guide** | 內嵌程式碼範例：Chat Completions、Embeddings、Rerank、Score，含使用者的 API key 和實際 host |
 
 ### 可執行操作

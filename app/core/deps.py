@@ -5,7 +5,6 @@ Dependency: extract and validate API key from Authorization header.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 
 from fastapi import Depends, Header, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -14,6 +13,7 @@ from sqlmodel import Session, func, select
 from app.core.auth import AccountDisabledError
 from app.core.database import get_session
 from app.core.logger import logger
+from app.core.timeutil import local_day_start_utc
 from app.models.schema import UsageLog, User
 
 _bearer = HTTPBearer(auto_error=False)
@@ -65,9 +65,7 @@ def _check_daily_limit(session: Session, user: User) -> None:
     if user.daily_limit_usd <= 0:
         return
 
-    today_start = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    today_start = local_day_start_utc()
     stmt = (
         select(func.coalesce(func.sum(UsageLog.cost_usd), 0))
         .where(UsageLog.user_id == user.id)

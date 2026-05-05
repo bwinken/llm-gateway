@@ -165,22 +165,6 @@
 {# ╚═══════════════════════════════════════════════════════════════╝ #}
 <div id="tab-panel-claude-code" class="setup-tab-panel hidden">
 
-    {# WIP banner — the installer flow is still being polished. #}
-    <div class="max-w-3xl mx-auto mb-4 gw-anim">
-        <div class="gw-card p-3 flex items-start gap-3"
-             style="background:rgba(245,166,35,0.06);border-color:rgba(245,166,35,0.18)">
-            <svg class="w-5 h-5 flex-shrink-0 mt-0.5" style="color:#f5a623" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
-            <div class="text-sm flex-1">
-                <div class="text-t2 font-semibold mb-0.5">Installation is work-in-progress</div>
-                <div class="text-t4">
-                    The end-to-end install flow isn't finalised yet. Steps, defaults, and the installer
-                    script may change. If something breaks, fall back to a manual <code class="font-mono text-xs">npm install -g @anthropic-ai/claude-code</code>
-                    and edit <code class="font-mono text-xs">~/.claude/settings.json</code> by hand using the reference below.
-                </div>
-            </div>
-        </div>
-    </div>
-
     <div class="max-w-3xl mx-auto mb-6 gw-anim">
         <div class="gw-card p-4 flex items-start gap-3"
              style="background:rgba(167,139,250,0.04);border-color:rgba(167,139,250,0.15)">
@@ -212,16 +196,16 @@
                     </p>
                     <div class="flex flex-wrap gap-3">
                         {% if claude_code_available %}
-                        <a href="/dashboard/install-claude-code.ps1" download
+                        <a href="/dashboard/install-claude-code.bat" download
                            class="gw-btn gw-btn-primary text-sm px-4 py-2">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                            Download install-claude-code.ps1
+                            Download install-claude-code.bat
                         </a>
                         {% else %}
                         <span class="gw-btn gw-btn-ghost text-sm px-4 py-2 opacity-50 cursor-not-allowed">
                             Installer not available
                         </span>
-                        <span class="text-xs text-t4 self-center">Ask your gateway operator to provide <code class="font-mono">setup/install-claude-code.ps1</code>.</span>
+                        <span class="text-xs text-t4 self-center">Ask your gateway operator to provide <code class="font-mono">setup/install-claude-code.bat</code>.</span>
                         {% endif %}
                     </div>
                 </div>
@@ -236,8 +220,8 @@
                 <div class="flex-1">
                     <h3 class="text-base font-semibold text-t1 mb-2">Run it</h3>
                     <ol class="text-sm text-t3 space-y-1.5 list-decimal list-inside pl-1">
-                        <li>Right-click <code class="font-mono text-xs text-t2 bg-n1 px-1.5 py-0.5 rounded">install-claude-code.ps1</code></li>
-                        <li>Select <b>Run with PowerShell</b></li>
+                        <li>Double-click <code class="font-mono text-xs text-t2 bg-n1 px-1.5 py-0.5 rounded">install-claude-code.bat</code></li>
+                        <li>Wait for <b>&quot;Claude Code installation complete&quot;</b></li>
                         <li>Open a <b>new</b> terminal and run <code class="font-mono text-xs text-t2 bg-n1 px-1.5 py-0.5 rounded">claude -p "hello"</code> to verify</li>
                     </ol>
                 </div>
