@@ -50,7 +50,7 @@ disabled.html        → Rendered by AccountDisabledError handler when a disable
 | **Usage Trend** | Chart.js line chart, 30-day usage trend, toggle between Requests / Cost (USD) views |
 | **My App Accounts** | Owned app account list (visible to owners only), shows API key, monthly usage, Copy / Refresh Key |
 | **Azure Access** | Shown only when `user.can_use_azure or user.is_admin`. Lists configured Azure model aliases with their metadata badges. If the user has access but no Azure models are configured, shows a "Contact your administrator" message |
-| **Claude Code Installer** | Card to download a personalized PowerShell installer; the script is generated server-side via `GET /dashboard/install-claude-code.ps1` (auth-required), with the user's API key inlined into the template |
+| **Claude Code Installer** | Card to download a personalized batch installer; the script is generated server-side via `GET /dashboard/install-claude-code.bat` (auth-required), with the user's API key inlined into the template |
 | **API Integration Guide** | Inline code examples: Chat Completions, Embeddings, Rerank, Score, with user's API key and actual host |
 
 ### Available Actions
