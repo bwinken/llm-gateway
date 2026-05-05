@@ -25,8 +25,30 @@
     </button>
 </div>
 
+{# ── Setup quick links — CA cert + Claude Code installer (prominent up top) ── #}
+<div class="gw-card p-5 mb-8 gw-anim gw-d1 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
+     style="background:rgba(245,166,35,0.04);border-color:rgba(245,166,35,0.18)">
+    <div class="flex items-start gap-3 flex-1">
+        <svg class="w-6 h-6 flex-shrink-0 mt-0.5" style="color:#f5a623" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+        </svg>
+        <div class="text-sm">
+            <div class="text-t1 font-semibold mb-0.5">First-time setup</div>
+            <div class="text-t3">Install the internal CA certificate and the Claude Code CLI — no admin privileges required.</div>
+        </div>
+    </div>
+    <div class="flex flex-wrap gap-2 sm:flex-shrink-0">
+        <a href="/setup#cert" class="gw-btn gw-btn-ghost text-sm px-3 py-2 whitespace-nowrap">
+            Certificate &rarr;
+        </a>
+        <a href="/setup#claude-code" class="gw-btn gw-btn-primary text-sm px-3 py-2 whitespace-nowrap">
+            Claude Code &rarr;
+        </a>
+    </div>
+</div>
+
 {# ── System Status ── #}
-<div class="gw-card p-5 mb-8 gw-anim gw-d1">
+<div class="gw-card p-5 mb-8 gw-anim gw-d2">
     <div class="flex flex-col gap-4">
         <div class="flex items-center gap-2 border-b pb-3" style="border-color: rgba(255,255,255,0.04);">
             <div class="gw-dot-on"></div>
@@ -313,23 +335,6 @@
 <div class="mt-8 gw-anim">
     <div class="flex items-center justify-between mb-5">
         <h3 class="text-base font-semibold text-t1">API Integration Guide</h3>
-    </div>
-
-    {# Setup pointer — CA cert + Claude Code live on /setup behind tabs #}
-    <div class="gw-card p-4 mb-5 flex items-start gap-3"
-         style="background:rgba(245,166,35,0.04);border-color:rgba(245,166,35,0.12)">
-        <svg class="w-5 h-5 flex-shrink-0 mt-0.5" style="color:#f5a623" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-        </svg>
-        <div class="flex-1 text-sm">
-            <div class="text-t2 font-medium mb-1">First-time setup?</div>
-            <div class="text-t3">
-                Install the internal CA certificate and Claude Code CLI from the Setup page. No administrator privileges required.
-                <a href="/setup#cert" class="text-ab hover:text-ac font-medium ml-1">Certificate</a>
-                <span class="text-t4 mx-1">·</span>
-                <a href="/setup#claude-code" class="text-ab hover:text-ac font-medium">Claude Code</a>
-            </div>
-        </div>
     </div>
 
     {# Azure access notice — only for users with the can_use_azure flag #}

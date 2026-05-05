@@ -11,7 +11,7 @@ The `/setup` HTML page instructs users to download the certificate and installat
 | `llm-gateway-ca.crt` | **yes** | Your internal CA certificate (PEM/DER format, `.crt` extension) |
 | `install-cert.bat` | **yes** | Batch installer (offered to users) |
 | `install-cert-user.ps1` | no | PowerShell equivalent — kept here for ops to run manually, but not downloadable from the UI |
-| `install-claude-code.ps1` | no (served via personalized endpoint) | Claude Code installer template; the gateway substitutes `__USER_API_KEY__` per request when serving `GET /dashboard/install-claude-code.ps1` |
+| `install-claude-code.bat` | no (served via personalized endpoint) | Claude Code installer template; the gateway substitutes `__USER_API_KEY__` per request when serving `GET /dashboard/install-claude-code.bat` |
 
 ## Setup
 
@@ -23,4 +23,4 @@ The `/setup` HTML page instructs users to download the certificate and installat
 
 - This entire directory is **gitignored** — the cert and scripts live only on the deployed server.
 - Only files matching the whitelist in `app/routers/web_ui.py` (`_SETUP_ALLOWED`) are downloadable. The user-facing UI offers only `install-cert.bat`; the `.ps1` variant remains in this directory for ops use but is not exposed for download.
-- `install-claude-code.ps1` is served via `GET /dashboard/install-claude-code.ps1` (auth-required) which replaces the `__USER_API_KEY__` placeholder with the requesting user's key.
+- `install-claude-code.bat` is served via `GET /dashboard/install-claude-code.bat` (auth-required) which replaces the `__USER_API_KEY__` placeholder with the requesting user's key.
