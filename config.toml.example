@@ -130,3 +130,23 @@ api_key = "your-api-key"
 real_model = "Qwen/Qwen3-VL-Reranker-2B"
 base_url = "http://your-vision-reranker-server:8091/v1"
 api_key = "your-api-key"
+
+
+# ==========================================
+# Azure OpenAI Models (served at /azure/v1/*)
+# ==========================================
+# Routed by deployment name (no health-check / fallback). Same metadata
+# and per-model pricing override fields as [models.*] are accepted.
+# [azure_models."gpt-4o"]
+# type = "llm"
+# endpoint = "https://my-resource.openai.azure.com"
+# deployment = "gpt-4o"
+# api_key = "your-azure-api-key"
+# api_version = "2024-08-01-preview"
+# display_name = "GPT-4o"
+# context_window = 128000
+# max_output_tokens = 16384
+# supports_tools = true
+# supports_vision = true
+# input_price_per_1m = 2.50
+# output_price_per_1m = 10.00
