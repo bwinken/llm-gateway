@@ -12,6 +12,7 @@ All pages are protected by oauth2-proxy + nginx `auth_request` — users must co
 /admin               → Admin Panel (requires admin scope)
 /admin/models        → Model Config (requires admin scope)
 /setup               → CA cert install page (requires read or admin scope; SSO-protected)
+disabled.html        → Rendered by AccountDisabledError handler when a disabled user hits any HTML route
 /oauth2/sign_out     → Logout (handled by oauth2-proxy)
 ```
 
@@ -30,7 +31,7 @@ All pages are protected by oauth2-proxy + nginx `auth_request` — users must co
 | **Quick Start** | Three-step guide: Get API Key → Configure SDK → Send Request |
 | **Code Example** | Python Chat Completions example with user's API key and actual host |
 | **Available Endpoints** | 6 API endpoint table (Chat, Responses, Embeddings, Rerank, Score, Models) |
-| **Available Models** | Model list grouped by type, color-coded (from `MODEL_ROUTING`) |
+| **Available Models** | Model list grouped by type, color-coded (from `MODEL_ROUTING`); each card shows admin-set metadata badges (`display_name`, `context_window`, `tools`, `vision`, `cache`, `max_output_tokens`) when present |
 | **Feature Cards** | Three cards: Health-Aware Routing, Usage Tracking, Drop-In Compatible |
 
 ---
@@ -44,10 +45,11 @@ All pages are protected by oauth2-proxy + nginx `auth_request` — users must co
 
 | Section | Description |
 |---|---|
-| **System Status** | All downstream server health, grouped by type (LLM / VLM / Embedding / Reranker), real-time ONLINE / DOWN |
+| **System Status** | All downstream server health, grouped by type (LLM / VLM / Embedding / Reranker), real-time ONLINE / DOWN. Each model row shows admin-set metadata badges (context window, `tools`, `vision`, `cache`) when set |
 | **Stats Cards** | Monthly stat cards: Requests count, Estimated Cost, Budget Usage (progress bar + percentage + today's `Remaining: $X.XXXX / $Y` display, or "Unlimited" when `daily_limit_usd = 0`), Total Tokens (Input / Output) |
 | **Usage Trend** | Chart.js line chart, 30-day usage trend, toggle between Requests / Cost (USD) views |
 | **My App Accounts** | Owned app account list (visible to owners only), shows API key, monthly usage, Copy / Refresh Key |
+| **Azure Access** | Shown only when `user.can_use_azure or user.is_admin`. Lists configured Azure model aliases with their metadata badges. If the user has access but no Azure models are configured, shows a "Contact your administrator" message |
 | **Claude Code Installer** | Card to download a personalized PowerShell installer; the script is generated server-side via `GET /dashboard/install-claude-code.ps1` (auth-required), with the user's API key inlined into the template |
 | **API Integration Guide** | Inline code examples: Chat Completions, Embeddings, Rerank, Score, with user's API key and actual host |
 
@@ -87,8 +89,12 @@ All pages are protected by oauth2-proxy + nginx `auth_request` — users must co
 | Update Daily Limit | `POST /admin/users/{id}/limit` | Change user's daily spend limit |
 | View API Key | Button → Modal | View any user's full API key |
 | Regenerate Key | `POST /admin/users/{id}/refresh-key` | Regenerate any user's API key |
+| Toggle Azure | `POST /admin/users/{id}/toggle-azure` | Flip `can_use_azure` (purple button when granted, ghost when revoked) |
+| Toggle Disable | `POST /admin/users/{id}/toggle-disable` | Flip `is_disabled` (warn-yellow when disabled, ghost when active). Only renders for non-admin rows; refuses self-disable on the server |
 | Toggle Monitor | `POST /admin/users/{id}/monitor` | Enable/disable request/response monitoring for a user |
 | Delete User | `POST /admin/users/{id}/delete` | Delete user and all their usage logs (cannot delete self) |
+
+> Each user / app row shows the four buttons (Azure, Disable/Enable, Monitor, Delete) in the Actions column. The Disable/Enable button is suppressed for admin rows (`{% if not u.is_admin %}` in the template).
 
 ---
 
@@ -138,6 +144,19 @@ The user-facing UI offers only the `.bat` installer. The `.ps1` installer (`inst
 | `llm-gateway-ca.crt` | yes | Internal CA certificate |
 | `install-cert.bat` | yes | Windows batch installer (CurrentUser\Root, no admin required) |
 | `install-cert-user.ps1` | no | PowerShell equivalent — kept in repo for ops, not downloadable |
+
+---
+
+## `disabled.html` — Account Disabled Page
+
+**File**: `disabled.html` ← rendered by the global `AccountDisabledError` handler in `app/main.py`
+
+Standalone styled error page (no `base.html` chrome) returned with HTTP 403 when a disabled user opens any browser-bound route. The handler discriminates by the `Accept` header:
+
+- `Accept` contains `text/html` → this page (Account Disabled headline + explanation + Sign Out button → `/oauth2/sign_out`)
+- Otherwise → JSON 403 `{"detail": "Account disabled. Contact your administrator."}` (for SDKs and curl)
+
+Admins are exempt from the disable check at auth time, so this page never blocks an admin from logging in to fix the situation.
 
 ---
 

@@ -1,7 +1,7 @@
 # Tests
 
-Pytest suite covering the full HTTP surface of the gateway. **165 tests** in
-17 files; the entire suite runs in ~7 seconds against an in-memory SQLite
+Pytest suite covering the full HTTP surface of the gateway. **174 tests** in
+16 files; the entire suite runs in ~7 seconds against an in-memory SQLite
 database with all downstream HTTP traffic mocked.
 
 ```bash
@@ -88,7 +88,7 @@ sequenceDiagram
 Useful helpers exposed from `conftest`:
 
 - `client` — `TestClient` with mocked deps; `client.__httpx_mock__` is the shared `AsyncMock` you set return values on
-- `test_user` (api_key `sk-testkey123`, daily limit `$100`) and `admin_user` (`sk-adminkey456`, admin scope)
+- `test_user` (api_key `sk-testkey123`, daily limit `$100`, `can_use_azure=True`, `is_disabled=False`) and `admin_user` (`sk-adminkey456`, admin scope)
 - `auth_header(api_key=...)` for `/v1` / `/azure/v1` Bearer auth, `web_auth_header(scopes=...)` for JWT-protected web routes
 - `make_httpx_response(status, json_body)` for non-stream mocks; `FakeStreamResponse(lines)` for SSE mocks
 - `TEST_MODEL_ROUTING` / `TEST_AZURE_MODELS` — the per-test alias maps. Six vLLM aliases (`test-llm`, `test-vlm`, `test-embedding`, `test-reranker`, `test-vision-embedding`, `test-vision-reranker`) and two Azure aliases (`azure-gpt-4`, `azure-embed`).
@@ -199,6 +199,17 @@ App accounts (`app_*` usernames) can have human owners. Tests cover:
 - Setting / clearing an owner via `POST /admin/users/{id}/owner`
 - `GET /admin/users` includes `owners` field with username list
 - `POST /dashboard/app/{id}/refresh-key` — owner can rotate their app's key, non-owners get 403, missing app → 404, no auth → 401
+
+### `test_disable_user.py` — User disable + Azure access flags
+
+| Test class | What it covers |
+|---|---|
+| `TestApiKeyDisabledRejection` | A user with `is_disabled=True` gets 403 on `/v1/*` calls; flipping the flag back makes the same key work again |
+| `TestDisabledHTMLRendering` | The `AccountDisabledError` global handler discriminates by `Accept`: `text/html` → renders `disabled.html` (asserts the page has "Account Disabled" + "Sign Out"); `application/json` → `{"detail": "Account disabled. Contact your administrator."}` |
+| `TestAdminToggle` | `POST /admin/users/{id}/toggle-disable` flips and re-flips the flag; admin cannot disable themselves (400); non-admin scope → 403 |
+| `TestAzureToggle` | `POST /admin/users/{id}/toggle-azure` flips `can_use_azure` (the fixture defaults it to `True`, so first toggle flips to `False`) |
+
+Also note `test_azure_blocked_without_can_use_azure` lives in `test_azure_api.py` — it revokes the fixture default and asserts a 403 from `/azure/v1/*`.
 
 ### `test_daily_limit.py` — Daily spend cap
 

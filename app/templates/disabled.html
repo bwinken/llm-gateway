@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="max-w-md mx-auto mt-20 mb-10 gw-anim">
+    <div class="gw-card p-8 text-center"
+         style="background:rgba(255,92,92,0.04);border-color:rgba(255,92,92,0.18)">
+        <div class="inline-flex items-center justify-center w-14 h-14 rounded-full mb-5"
+             style="background:rgba(255,92,92,0.1);color:#ff5c5c">
+            <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+            </svg>
+        </div>
+        <h1 class="text-2xl font-bold text-t1 mb-2">Account Disabled</h1>
+        <p class="text-sm text-t3 leading-relaxed mb-6">
+            Your account has been temporarily disabled by an administrator.
+            All API and dashboard access is blocked until it is re-enabled.
+        </p>
+        {% if username %}
+        <div class="inline-block px-3 py-1.5 rounded-md text-xs font-mono text-t4 mb-6"
+             style="background:rgba(255,255,255,0.04)">
+            Signed in as <span class="text-t2">{{ username }}</span>
+        </div>
+        {% endif %}
+        <div class="text-xs text-t4 mb-6">
+            If you believe this is an error, please contact your administrator.
+        </div>
+        <div class="flex items-center justify-center gap-3">
+            <a href="/oauth2/sign_out" class="gw-btn gw-btn-ghost text-sm px-4 py-2">
+                Sign Out
+            </a>
+        </div>
+    </div>
+</div>
+
+{% endblock %}

@@ -41,8 +41,9 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 - **用量追蹤** — 逐請求記錄每位使用者的 token 數與費用至 PostgreSQL（`/v1/*` 與 `/azure/v1/*` 共用）
 - **OAuth2 SSO** — 整合 [AuthCenter](https://github.com/bwinken/authcenter)，RS256 JWT 驗證,自動建立使用者並套用可調整的預設每日額度
 - **雙重驗證** — SDK/API 使用 Bearer API key，Web UI 使用 oauth2-proxy + JWT
-- **Web 儀表板** — 用量統計、剩餘額度顯示、Chart.js 趨勢圖、分組的伺服器健康狀態
-- **管理面板** — 使用者管理、排行榜、可在執行期調整的預設每日額度、模型設定 UI(路由/計價/容錯)
+- **使用者層級存取控制** — 管理員可將使用者停用（API key 與 JWT 認證皆會回 403,瀏覽器看到的是樣式化 HTML 頁、API 客戶端拿到 JSON 403),亦可用 `can_use_azure` 旗標單獨授權 Azure 部署的存取(admin 兩者皆免檢查)
+- **Web 儀表板** — 用量統計、剩餘額度顯示、Chart.js 趨勢圖、分組的伺服器健康狀態,模型旁顯示管理員設定的 metadata badge(context window、tools、vision、cache);授權 Azure 存取後另有獨立的 Azure 存取卡片列出可用 Azure 別名
+- **管理面板** — 使用者管理(每列有 Disable / Enable、Azure、Monitor、Delete 四顆按鈕)、排行榜、可在執行期調整的預設每日額度、模型設定 UI(路由/計價/容錯)
 - **背景健康檢查** — 定期 ping 所有下游 vLLM 伺服器
 
 ## 技術堆疊

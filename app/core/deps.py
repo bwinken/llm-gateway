@@ -11,6 +11,7 @@ from fastapi import Depends, Header, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session, func, select
 
+from app.core.auth import AccountDisabledError
 from app.core.database import get_session
 from app.core.logger import logger
 from app.models.schema import UsageLog, User
@@ -133,5 +134,23 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key.",
         )
+    if user.is_disabled and not user.is_admin:
+        # Admin bypass mirrors get_web_user — if an admin row is somehow
+        # flagged disabled (only possible via direct DB edit; the toggle
+        # endpoint blocks self-disable), they can still call the API to
+        # fix the situation. Non-admins always get rejected.
+        logger.warning("Auth rejected: user '{}' is disabled", user.username)
+        raise AccountDisabledError(user.username)
     _check_daily_limit(session, user)
+    return user
+
+
+def require_azure_access(user: User = Depends(get_current_user)) -> User:
+    """Dependency for /azure/v1/* endpoints — additionally checks Azure access flag."""
+    if not user.can_use_azure and not user.is_admin:
+        logger.warning("Azure access denied for user '{}'", user.username)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Azure access not granted. Contact your administrator.",
+        )
     return user

@@ -12,6 +12,7 @@
 /admin               → 管理面板（需 admin scope）
 /admin/models        → 模型設定（需 admin scope）
 /setup               → CA 憑證安裝頁(需 read 或 admin scope;改為 SSO 保護)
+disabled.html        → 已停用使用者點擊任何 HTML 路由時,由 AccountDisabledError handler render
 /oauth2/sign_out     → 登出（由 oauth2-proxy 處理）
 ```
 
@@ -30,7 +31,7 @@
 | **Quick Start** | 三步驟引導：取得 API Key → 設定 SDK → 發送請求 |
 | **Code Example** | Python Chat Completions 範例，含使用者的 API key 和實際 host |
 | **Available Endpoints** | 6 個 API 端點表格（Chat、Responses、Embeddings、Rerank、Score、Models） |
-| **Available Models** | 依類型分組的模型清單，顏色標示（來自 `MODEL_ROUTING`） |
+| **Available Models** | 依類型分組的模型清單,顏色標示(來自 `MODEL_ROUTING`);每張卡片顯示管理員設定的 metadata badge(`display_name`、`context_window`、`tools`、`vision`、`cache`、`max_output_tokens`) |
 | **Feature Cards** | 三張特色卡片：Health-Aware Routing、Usage Tracking、Drop-In Compatible |
 
 ---
@@ -44,10 +45,11 @@
 
 | 區塊 | 說明 |
 |---|---|
-| **System Status** | 所有下游伺服器健康狀態，依類型分組（LLM / VLM / Embedding / Reranker），即時顯示 ONLINE / DOWN |
+| **System Status** | 所有下游伺服器健康狀態,依類型分組(LLM / VLM / Embedding / Reranker),即時顯示 ONLINE / DOWN。每筆模型旁顯示管理員設定的 metadata badge(context window、`tools`、`vision`、`cache`) |
 | **Stats Cards** | 當月統計卡片:Requests 數、Estimated Cost、Budget Usage(進度條 + 百分比 + 當日剩餘額度顯示 `Remaining: $X.XXXX / $Y`,`daily_limit_usd = 0` 時顯示 "Unlimited")、Total Tokens(Input / Output) |
 | **Usage Trend** | Chart.js 折線圖，近 30 天用量趨勢，可切換 Requests / Cost (USD) 兩種視圖 |
 | **My App Accounts** | 擁有的 App 帳號清單（僅 owner 可見），顯示 API key、月用量，可 Copy / Refresh Key |
+| **Azure Access** | 僅當 `user.can_use_azure or user.is_admin` 時顯示。列出已設定的 Azure 模型別名與其 metadata badge;若使用者有權但目前沒有 Azure 模型,則顯示 "Contact your administrator" |
 | **Claude Code Installer** | 下載個人化 PowerShell 安裝腳本的卡片;伺服器端透過 `GET /dashboard/install-claude-code.ps1`(需登入)即時將使用者的 API key 注入到模板 |
 | **API Integration Guide** | 內嵌程式碼範例：Chat Completions、Embeddings、Rerank、Score，含使用者的 API key 和實際 host |
 
@@ -88,8 +90,12 @@
 | Update Default Limit | `POST /admin/default-limit` | 設定預設每日額度,並批次拉高低於 floor 的非無限制使用者 |
 | View API Key | 按鈕 → Modal | 查看任意使用者的完整 API key |
 | Regenerate Key | `POST /admin/users/{id}/refresh-key` | 重新產生任意使用者的 API key |
+| Toggle Azure | `POST /admin/users/{id}/toggle-azure` | 翻轉 `can_use_azure`(已授權時為紫色按鈕,撤銷時為 ghost 樣式) |
+| Toggle Disable | `POST /admin/users/{id}/toggle-disable` | 翻轉 `is_disabled`(停用時為警示黃,啟用時為 ghost)。僅在非 admin 列顯示;後端禁止停用自己 |
 | Toggle Monitor | `POST /admin/users/{id}/monitor` | 開啟/關閉使用者的 request/response 監控 |
 | Delete User | `POST /admin/users/{id}/delete` | 刪除使用者及其所有 usage logs（不可刪除自己） |
+
+> 每筆 user / app 列在 Actions 欄會顯示四顆按鈕(Azure、Disable/Enable、Monitor、Delete)。Disable/Enable 按鈕在 admin 列會被隱藏(template 內 `{% if not u.is_admin %}`)。
 
 ---
 
@@ -139,6 +145,19 @@
 | `llm-gateway-ca.crt` | 是 | 內部 CA 憑證 |
 | `install-cert.bat` | 是 | Windows 批次安裝腳本(裝到 CurrentUser\Root,不需管理員) |
 | `install-cert-user.ps1` | 否 | PowerShell 版本 — 僅留在 repo,不開放下載 |
+
+---
+
+## `disabled.html` — 帳號停用頁面
+
+**檔案**:`disabled.html` ← 由 `app/main.py` 內 `AccountDisabledError` 全域 handler render
+
+獨立的樣式化錯誤頁面(不含 `base.html` 框架),當已停用的使用者透過瀏覽器開啟任何路由時,以 HTTP 403 回傳。Handler 依 `Accept` header 區分:
+
+- `Accept` 含 `text/html` → render 此頁(Account Disabled 標題 + 說明 + Sign Out 按鈕,連到 `/oauth2/sign_out`)
+- 其他 → JSON 403 `{"detail": "Account disabled. Contact your administrator."}`(SDK 與 curl 用)
+
+Admin 在 auth 階段免檢查停用旗標,因此這頁永遠不會擋到 admin 登入修復狀態。
 
 ---
 

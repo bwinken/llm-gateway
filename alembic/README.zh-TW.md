@@ -58,7 +58,8 @@ alembic/
     ├── c7f3e9b45a02_add_created_at_index_on_usage_logs.py
     ├── d5a2c3e67f04_add_app_owners_table.py
     ├── e8b4f1a23c05_replace_user_created_index_with_covering.py
-    └── 5d538cdf0e8b_merge_app_owners_and_covering_index_.py
+    ├── 5d538cdf0e8b_merge_app_owners_and_covering_index_.py
+    └── f3a91c5b8d27_add_is_disabled_and_can_use_azure_to_users.py
 ```
 
 ## Migration 歷史
@@ -72,6 +73,7 @@ alembic/
 | `d5a2c3e67f04` | 新增 `app_owners` 多對多表（App 帳號擁有者） | 2026-03-14 |
 | `e8b4f1a23c05` | 替換 `ix_usage_user_created` 為 covering index `ix_usage_user_date_cost`（CONCURRENTLY） | 2026-03-15 |
 | `5d538cdf0e8b` | 合併 `app_owners` 和 covering index 兩條分支 | 2026-03-15 |
+| `f3a91c5b8d27` | 新增 `is_disabled` 與 `can_use_azure` boolean 欄位至 `users`(`server_default=false`;PG 11+ 為 metadata-only 操作,不會 rewrite 資料表) | 2026-05-05 |
 
 ## 資料庫 Schema
 
@@ -84,6 +86,8 @@ erDiagram
         varchar api_key UK "API 金鑰 (sk-internal-...)"
         float daily_limit_usd "每日用量上限 (USD)"
         boolean is_admin "管理員標記"
+        boolean is_disabled "已停用 (拒絕認證)"
+        boolean can_use_azure "可呼叫 /azure/v1/*"
         int owner_id FK "擁有者 (app 帳號用)"
         varchar display_name "顯示名稱 (IdP 同步)"
         varchar org_code "組織代碼 (IdP 同步)"
@@ -125,6 +129,8 @@ erDiagram
 | `api_key` | `VARCHAR` UNIQUE | 自動產生，格式 `sk-internal-{timestamp}-{hex8}` |
 | `daily_limit_usd` | `FLOAT` | 每日用量上限，預設 10.0 USD |
 | `is_admin` | `BOOLEAN` | 資料庫中的管理員標記（Web UI admin 由 JWT scope 決定） |
+| `is_disabled` | `BOOLEAN` | 預設 `false`。`true` 時 API key 與 JWT 認證皆會回 403(admin 免檢查) |
+| `can_use_azure` | `BOOLEAN` | 預設 `false`。控制 `/azure/v1/*` 端點存取(admin 免檢查) |
 | `owner_id` | `INTEGER` FK → `users.id` | App 帳號的擁有者，NULL 表示一般使用者帳號 |
 | `display_name` | `VARCHAR` | 顯示名稱，來自 IdP JWT，每次登入自動同步 |
 | `org_code` | `VARCHAR` | 組織代碼，來自 IdP JWT，每次登入自動同步 |

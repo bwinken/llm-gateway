@@ -49,15 +49,38 @@
                     </h4>
                     <div class="flex flex-col gap-1.5">
                         {% for s in servers %}
-                        <div class="flex items-center justify-between px-3 py-2 rounded-lg text-sm
+                        <div class="px-3 py-2 rounded-lg text-sm
                             {{ 'bg-[rgba(61,214,140,0.04)] border border-[rgba(61,214,140,0.08)]' if s.alive else 'bg-[rgba(255,92,92,0.04)] border border-[rgba(255,92,92,0.08)]' }}">
-                            <div class="flex items-center gap-2 truncate">
-                                <div class="{{ 'gw-dot-on' if s.alive else 'gw-dot-off' }}"></div>
-                                <span class="font-medium truncate text-t2">{{ s.name }}</span>
+                            <div class="flex items-center justify-between gap-2">
+                                <div class="flex items-center gap-2 truncate">
+                                    <div class="{{ 'gw-dot-on' if s.alive else 'gw-dot-off' }}"></div>
+                                    <span class="font-medium truncate text-t2">{{ s.name }}</span>
+                                </div>
+                                <span class="text-[10px] font-mono {{ 'text-ag' if s.alive else 'text-ar' }} flex-shrink-0">
+                                    {{ 'ONLINE' if s.alive else 'DOWN' }}
+                                </span>
                             </div>
-                            <span class="text-xs font-mono {{ 'text-ag' if s.alive else 'text-ar' }}">
-                                {{ 'ONLINE' if s.alive else 'DOWN' }}
-                            </span>
+                            {% if s.supports_tools or s.supports_vision or s.supports_prompt_caching or s.context_window %}
+                            <div class="flex flex-wrap items-center gap-1 mt-1.5">
+                                {% if s.context_window %}
+                                <span class="text-[10px] font-mono text-t4 gw-tip" data-tip="Context window">
+                                    {{ "{:,}".format(s.context_window) }} ctx
+                                </span>
+                                {% endif %}
+                                {% if s.supports_tools %}
+                                <span class="text-[10px] px-1 py-0.5 rounded gw-tip" data-tip="Function calling / tool use"
+                                      style="background:rgba(99,152,255,0.1);color:#6398ff">tools</span>
+                                {% endif %}
+                                {% if s.supports_vision %}
+                                <span class="text-[10px] px-1 py-0.5 rounded gw-tip" data-tip="Vision (image input)"
+                                      style="background:rgba(167,139,250,0.1);color:#a78bfa">vision</span>
+                                {% endif %}
+                                {% if s.supports_prompt_caching %}
+                                <span class="text-[10px] px-1 py-0.5 rounded gw-tip" data-tip="Prompt caching"
+                                      style="background:rgba(77,217,232,0.1);color:#4dd9e8">cache</span>
+                                {% endif %}
+                            </div>
+                            {% endif %}
                         </div>
                         {% endfor %}
                     </div>
@@ -308,6 +331,50 @@
             </div>
         </div>
     </div>
+
+    {# Azure access notice — only for users with the can_use_azure flag #}
+    {% if azure_access %}
+    <div class="gw-card p-4 mb-5 flex items-start gap-3"
+         style="background:rgba(167,139,250,0.04);border-color:rgba(167,139,250,0.18)">
+        <svg class="w-5 h-5 flex-shrink-0 mt-0.5" style="color:#a78bfa" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+        </svg>
+        <div class="flex-1 text-sm">
+            <div class="flex items-center gap-2 mb-1">
+                <span class="text-t2 font-medium">Azure OpenAI access granted</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                      style="background:rgba(167,139,250,0.12);color:#a78bfa;border:1px solid rgba(167,139,250,0.2)">/azure/v1</span>
+            </div>
+            {% if azure_models %}
+            <div class="text-t3 mb-2">
+                You can use these Azure models. Point your client at <code class="font-mono text-xs text-t2 bg-n1 px-1 py-0.5 rounded">{{ gateway_base | replace('/v1', '/azure/v1') }}</code>:
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                {% for m in azure_models %}
+                <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-n1 border border-[rgba(255,255,255,0.04)]">
+                    <code class="text-xs font-mono text-t1">{{ m.alias }}</code>
+                    {% if m.context_window %}
+                    <span class="text-[10px] font-mono text-t4">{{ "{:,}".format(m.context_window) }} ctx</span>
+                    {% endif %}
+                    {% if m.supports_tools %}
+                    <span class="text-[10px] px-1 rounded gw-tip" data-tip="Function calling"
+                          style="background:rgba(99,152,255,0.1);color:#6398ff">tools</span>
+                    {% endif %}
+                    {% if m.supports_vision %}
+                    <span class="text-[10px] px-1 rounded gw-tip" data-tip="Vision"
+                          style="background:rgba(167,139,250,0.1);color:#a78bfa">vision</span>
+                    {% endif %}
+                </span>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="text-t3">
+                You have access but no Azure models are currently configured. Contact your administrator.
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
 
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {% set endpoints = [

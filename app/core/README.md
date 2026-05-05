@@ -76,9 +76,10 @@ Browser → nginx → oauth2-proxy (validates session cookie)
 
 | Function | Returns | Description |
 |---|---|---|
-| `get_web_user(security_scopes, request, session, credentials)` | `User` | FastAPI `Security` dependency: decodes JWT, checks scopes, auto-creates new users |
+| `get_web_user(security_scopes, request, session, credentials)` | `User` | FastAPI `Security` dependency: decodes JWT, checks scopes, auto-creates new users; raises `AccountDisabledError` if `user.is_disabled` (admins bypass) |
 | `_decode_jwt(token)` | `dict \| None` | RS256 decode + audience/issuer validation |
 | `_sync_user(session, username, display_name, org_code)` | `User` | Find or create user, sync IdP fields |
+| `AccountDisabledError(username)` | exception | Raised by both `get_web_user` and `get_current_user` when `user.is_disabled=True`. Caught by a global handler in `app/main.py` that renders `templates/disabled.html` for `Accept: text/html` requests and returns JSON 403 otherwise |
 
 **Usage:**
 ```python
@@ -105,7 +106,8 @@ FastAPI dependency that extracts the API key from `Authorization: Bearer <api_ke
 
 | Function | Returns | Description |
 |---|---|---|
-| `get_current_user(credentials, session)` | `User` | Validates API key + checks daily limit |
+| `get_current_user(credentials, session)` | `User` | Validates API key + checks daily limit; raises `AccountDisabledError` if `user.is_disabled` (admins bypass) |
+| `require_azure_access(user)` | `User` | Wraps `get_current_user`; additionally returns 403 if `not user.can_use_azure and not user.is_admin`. Used by all `/azure/v1/*` routes |
 | `_check_daily_limit(session, user)` | — | Queries today's cumulative spend; returns 429 if `daily_limit_usd` exceeded |
 
 **Auth flow:**

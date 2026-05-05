@@ -21,6 +21,8 @@ erDiagram
         VARCHAR api_key UK "API 金鑰 sk-internal-{ts}-{hex8}"
         FLOAT daily_limit_usd "每日費用上限 (USD)"
         BOOLEAN is_admin "管理員標記"
+        BOOLEAN is_disabled "已停用 (拒絕認證)"
+        BOOLEAN can_use_azure "可呼叫 /azure/v1/*"
         INTEGER owner_id FK "App 帳號擁有者 → users.id"
         VARCHAR display_name "顯示名稱 (來自 IdP)"
         VARCHAR org_code "組織代碼 (來自 IdP)"
@@ -63,6 +65,8 @@ classDiagram
         +str api_key
         +float daily_limit_usd
         +bool is_admin
+        +bool is_disabled
+        +bool can_use_azure
         +int|None owner_id
         +str display_name
         +str org_code
@@ -80,6 +84,8 @@ classDiagram
 | `api_key` | `VARCHAR` | UNIQUE, INDEX | `_generate_api_key()` | 自動產生，格式 `sk-internal-{unix_timestamp}-{8位hex}`。用於 `/v1/*` API 認證 |
 | `daily_limit_usd` | `FLOAT` | — | `10.0` | 每日花費上限（USD）。超過時 API 回傳 429 Too Many Requests |
 | `is_admin` | `BOOLEAN` | — | `False` | 資料庫中的管理員標記。**注意：Web UI 的 admin 權限由 JWT scope 決定，不看此欄位** |
+| `is_disabled` | `BOOLEAN` | — | `False` | `True` 時 API key 與 JWT 認證皆會丟出 `AccountDisabledError`(HTML 頁或 JSON 403)。**Admin 免檢查**。透過 `POST /admin/users/{id}/toggle-disable` 切換(禁止停用自己) |
+| `can_use_azure` | `BOOLEAN` | — | `False` | 控制 `/azure/v1/*` 端點存取(由 `deps.require_azure_access` 檢查)。**Admin 免檢查**。透過 `POST /admin/users/{id}/toggle-azure` 切換 |
 | `owner_id` | `INTEGER` | FK → `users.id`, INDEX, NULLABLE | `None` | App 帳號的擁有者。`None` 表示一般使用者帳號。Owner 可在 Dashboard 查看並管理所屬 App |
 | `display_name` | `VARCHAR` | — | `""` | 使用者顯示名稱，來自 IdP JWT 的 `display_name` 欄位。每次 Web 登入時自動同步更新 |
 | `org_code` | `VARCHAR` | — | `""` | 組織代碼，來自 IdP JWT 的 `org_code` 欄位。每次 Web 登入時自動同步更新。顯示於 Admin 使用者表格 |

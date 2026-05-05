@@ -76,9 +76,9 @@ When fallback occurs, the response includes an `X-Model-Fallback` header explain
 
 ## `azure_api.py` — Azure OpenAI Compatibility
 
-**Auth**: `deps.get_current_user` (same gateway API key + daily limit as `/v1/*`)
+**Auth**: `deps.require_azure_access` (wraps `get_current_user` and additionally checks `user.can_use_azure`; admins bypass) — same gateway API key + daily limit as `/v1/*`, plus a per-user Azure access flag
 
-Same client API key, same usage logging, same monitoring as the `/v1/*` path. Only the downstream URL/header conventions differ — handled by `services/azure_proxy.py`. Azure deployments are configured under `[azure_models.<alias>]` in `config.toml`.
+Same client API key, same usage logging, same monitoring as the `/v1/*` path. Only the downstream URL/header conventions differ — handled by `services/azure_proxy.py`. Azure deployments are configured under `[azure_models.<alias>]` in `config.toml`. Users without `can_use_azure` (and not admin) get 403 with `"Azure access not granted. Contact your administrator."`.
 
 ### Endpoints
 
@@ -139,6 +139,8 @@ Same client API key, same usage logging, same monitoring as the `/v1/*` path. On
 | `POST` | `/admin/users/{id}/delete` | Delete user and their usage logs (cannot delete self) |
 | `POST` | `/admin/users/{id}/refresh-key` | Regenerate any user's API key, returns JSON |
 | `POST` | `/admin/users/{id}/monitor` | Toggle request/response monitoring for a user (returns JSON `{ok, monitoring, username}`) |
+| `POST` | `/admin/users/{id}/toggle-disable` | Flip the user's `is_disabled` flag. Refuses to disable yourself (400). Allows enabling yourself |
+| `POST` | `/admin/users/{id}/toggle-azure` | Flip the user's `can_use_azure` flag (gates `/azure/v1/*` access) |
 | `POST` | `/admin/default-limit` | Set the default daily limit (USD). Persists to `[app].default_daily_limit_usd` in `config.toml` and bulk-bumps any user with `0 < daily_limit_usd < new_floor` up to the floor (unlimited users with `daily_limit_usd = 0` are never modified) |
 | `GET` | `/admin/monitor` | Get monitoring status: list of currently monitored users with per-type file sizes and total disk usage |
 | `GET` | `/admin/models` | Model config page (SPA, loads data via API) |
@@ -175,7 +177,7 @@ graph TD
     end
 
     V1 -->|get_current_user| DB["DB: users.api_key"]
-    Azure -->|get_current_user| DB
+    Azure -->|require_azure_access<br/>(get_current_user + can_use_azure)| DB
     Dashboard -->|get_web_user| JWT["JWT: sub → users.username"]
     Admin -->|get_web_user| JWT
 ```

@@ -21,6 +21,8 @@ erDiagram
         VARCHAR api_key UK "API key sk-internal-{ts}-{hex8}"
         FLOAT daily_limit_usd "Daily cost limit (USD)"
         BOOLEAN is_admin "Admin flag"
+        BOOLEAN is_disabled "Disabled (rejects auth)"
+        BOOLEAN can_use_azure "Allowed to call /azure/v1/*"
         INTEGER owner_id FK "App account owner → users.id"
         VARCHAR display_name "Display name (from IdP)"
         VARCHAR org_code "Organization code (from IdP)"
@@ -63,6 +65,8 @@ classDiagram
         +str api_key
         +float daily_limit_usd
         +bool is_admin
+        +bool is_disabled
+        +bool can_use_azure
         +int|None owner_id
         +str display_name
         +str org_code
@@ -80,6 +84,8 @@ classDiagram
 | `api_key` | `VARCHAR` | UNIQUE, INDEX | `_generate_api_key()` | Auto-generated, format `sk-internal-{unix_timestamp}-{8-char hex}`. Used for `/v1/*` API auth |
 | `daily_limit_usd` | `FLOAT` | — | `10.0` | Daily spend limit (USD). API returns 429 when exceeded |
 | `is_admin` | `BOOLEAN` | — | `False` | Admin flag in DB. **Note: Web UI admin access is determined by JWT scope, not this field** |
+| `is_disabled` | `BOOLEAN` | — | `False` | When `True`, both API key auth and JWT web auth raise `AccountDisabledError` (HTML page or JSON 403). **Admins bypass** the check. Toggled via `POST /admin/users/{id}/toggle-disable` (refuses self-disable) |
+| `can_use_azure` | `BOOLEAN` | — | `False` | Gates `/azure/v1/*` endpoints (checked by `deps.require_azure_access`). **Admins bypass** the check. Toggled via `POST /admin/users/{id}/toggle-azure` |
 | `owner_id` | `INTEGER` | FK → `users.id`, INDEX, NULLABLE | `None` | App account owner. `None` means regular user account. Owner can view/manage owned apps on Dashboard |
 | `display_name` | `VARCHAR` | — | `""` | Display name from IdP JWT `display_name` field. Auto-synced on each web login |
 | `org_code` | `VARCHAR` | — | `""` | Org code from IdP JWT `org_code` field. Auto-synced on each web login. Shown in Admin user table |

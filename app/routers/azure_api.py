@@ -15,7 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 
 from app.core.config import _MODEL_METADATA_KEYS, get_azure_models_snapshot
-from app.core.deps import get_current_user
+from app.core.deps import require_azure_access
 from app.models.schema import User
 from app.services.azure_proxy import (
     forward_chat_completions,
@@ -37,7 +37,7 @@ _TYPE_CAPABILITIES: dict[str, str] = {
 
 
 @router.get("/azure/v1/models")
-async def list_azure_models(user: User = Depends(get_current_user)):
+async def list_azure_models(user: User = Depends(require_azure_access)):
     """List configured Azure OpenAI deployments as OpenAI-shaped model entries."""
     models = []
     for alias, entry in get_azure_models_snapshot().items():
@@ -59,7 +59,7 @@ async def list_azure_models(user: User = Depends(get_current_user)):
 @router.post("/azure/v1/chat/completions")
 async def azure_chat_completions(
     request: Request,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_azure_access),
 ):
     return await forward_chat_completions(request, user)
 
@@ -67,7 +67,7 @@ async def azure_chat_completions(
 @router.post("/azure/v1/embeddings")
 async def azure_embeddings(
     request: Request,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_azure_access),
 ):
     return await forward_embeddings(request, user)
 
@@ -76,7 +76,7 @@ async def azure_embeddings(
 @router.post("/azure/messages")
 async def azure_messages(
     request: Request,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_azure_access),
 ):
     """Anthropic Messages API compatibility for Azure OpenAI deployments.
 
@@ -91,7 +91,7 @@ async def azure_messages(
 @router.post("/azure/messages/count_tokens")
 async def azure_count_tokens(
     request: Request,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_azure_access),
 ):
     """Token counting for Azure deployments — returns a chars/4 estimate
     (Azure OpenAI does not expose a tokenize endpoint)."""

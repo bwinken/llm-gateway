@@ -24,6 +24,8 @@ class User(SQLModel, table=True):
     api_key: str = Field(index=True, unique=True, default_factory=_generate_api_key)
     daily_limit_usd: float = Field(default=10.0)
     is_admin: bool = Field(default=False)
+    is_disabled: bool = Field(default=False)
+    can_use_azure: bool = Field(default=False)
     owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     display_name: str = Field(default="")
     org_code: str = Field(default="")

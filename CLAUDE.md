@@ -53,12 +53,14 @@ The codebase has two parallel backends sharing the same auth, billing, monitorin
 ### Dual Auth System
 
 - **API endpoints** (`/v1/*`): API key in `Authorization: Bearer <key>` header **or** `x-api-key: <key>` header (Anthropic-style) → `deps.py:get_current_user()` looks up User by `api_key` in DB
+- **Azure endpoints** (`/azure/v1/*`): Same API key, but wrapped via `deps.py:require_azure_access()` which additionally checks `user.can_use_azure` (admins bypass) and 403s otherwise
 - **Web UI + Admin** (`/`, `/dashboard`, `/admin/*`): oauth2-proxy handles login via AuthCenter OIDC → nginx `auth_request` validates session → injects `Authorization: Bearer <JWT>` header → `auth.py:get_web_user()` (FastAPI `Security` dependency) decodes JWT, enforces declared scopes, returns `User`
 - All `/admin/*` routes (including REST API) use JWT auth via router-level `Security(get_web_user, scopes=["admin"])` — no API key auth on admin endpoints
 - `/setup` (CA cert install page) and `/dashboard/install-claude-code.ps1` both require SSO login — they are **not** bypassed by nginx. The page is intended for users already inside the org; the Claude Code installer download is personalized server-side (replaces `__USER_API_KEY__` in `setup/install-claude-code.ps1` with the requesting user's `api_key`)
 - JWT validation: RS256, `audience=AUTH_CENTER_APP_ID`, `issuer=AUTH_BASE_URL`, `leeway=5` for clock skew tolerance. Public key loaded from `AUTH_CENTER_PUBLIC_KEY_PATH` with mtime-based reload (key rotation takes effect without restart).
 - Admin access is determined by `"admin" in scopes` (from AuthCenter JWT), NOT by `user.is_admin` in DB
 - JWT payload fields `display_name` and `org_code` are persisted to the User model on each login (auto-synced from IdP) and displayed in navbar + admin tables
+- **Account disable** (`is_disabled` column on `users`): both `get_current_user` and `get_web_user` raise `AccountDisabledError` when set. A global handler in `app/main.py` discriminates by `Accept` header — `text/html` → renders `templates/disabled.html` (styled page with Sign Out button); otherwise → JSON 403 `{"detail": "Account disabled. Contact your administrator."}`. **Admins bypass** the check (so a misflagged admin row can still log in to fix itself); the `/admin/users/{id}/toggle-disable` endpoint refuses self-disable, so this admin bypass is only ever reachable via direct DB edit.
 
 ### vLLM Proxy Layer (`app/services/vllm_proxy.py`)
 
@@ -150,7 +152,8 @@ When adding new tests, always use the existing `client` fixture and `auth_header
 ## Database
 
 - Production: PostgreSQL (`psycopg2-binary`)
-- Tables: `users` (with auto-generated `api_key`, `display_name`, `org_code`), `usage_logs` (with covering index on `user_id + created_at + cost_usd`), `app_owners` (many-to-many: which users own which app accounts)
+- Tables: `users` (with auto-generated `api_key`, `display_name`, `org_code`, plus boolean access-control flags `is_disabled` and `can_use_azure`), `usage_logs` (with covering index on `user_id + created_at + cost_usd`), `app_owners` (many-to-many: which users own which app accounts)
 - `password_hash` field exists on User model with `default=""` for backward compatibility but is unused
 - `display_name` and `org_code` are synced from IdP JWT on each web login
+- `is_disabled` and `can_use_azure` default to `False`; flipped via the admin panel buttons (`/admin/users/{id}/toggle-disable`, `/admin/users/{id}/toggle-azure`). Admins bypass both checks at auth time
 - `scripts/cleanup_usage_logs.py`: retention cleanup script (default 1 year, dry-run by default, `--execute` to delete)

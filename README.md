@@ -41,8 +41,9 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 - **Usage tracking** — Per-user token and cost logging to PostgreSQL (shared across `/v1/*` and `/azure/v1/*`)
 - **OAuth2 SSO** — [AuthCenter](https://github.com/bwinken/authcenter) integration with RS256 JWT, auto-provisioning users with a configurable default daily limit
 - **Dual auth** — API key (Bearer token) for SDK/API, oauth2-proxy + JWT for web UI
-- **Web dashboard** — Usage stats, remaining-quota indicator, Chart.js trend charts, grouped server health status
-- **Admin panel** — User management, leaderboards, runtime-adjustable default daily limit, model config UI (routing/pricing/fallback)
+- **Per-user access control** — Admins can disable a user (rejects both API key and JWT auth with a styled HTML page or JSON 403) and gate Azure deployments behind a `can_use_azure` flag (admins bypass both)
+- **Web dashboard** — Usage stats, remaining-quota indicator, Chart.js trend charts, grouped server health status with admin-set model metadata badges (context window, tools, vision, cache); separate Azure access card listing configured Azure aliases when granted
+- **Admin panel** — User management with per-row Disable / Enable, Azure, Monitor, and Delete buttons; leaderboards, runtime-adjustable default daily limit, model config UI (routing/pricing/fallback)
 - **Background health checks** — Periodic pings to all downstream vLLM servers
 
 ## Tech Stack

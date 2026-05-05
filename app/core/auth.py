@@ -19,6 +19,17 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, SecurityS
 from sqlmodel import Session, select
 
 from app.core.config import AUTH_BASE_URL, AUTH_CENTER_APP_ID, AUTH_CENTER_PUBLIC_KEY_PATH, get_default_daily_limit
+
+
+class AccountDisabledError(Exception):
+    """Raised when an authenticated user has is_disabled=True.
+
+    Caught by a global exception handler that renders an HTML page for
+    browser requests and returns JSON 403 for API clients.
+    """
+    def __init__(self, username: str = ""):
+        self.username = username
+        super().__init__(f"Account '{username}' is disabled.")
 from app.core.database import get_session
 from app.core.logger import logger
 from app.models.schema import User
@@ -136,4 +147,9 @@ def get_web_user(
 
     user = _sync_user(session, username, display_name, org_code)
     user.is_admin = "admin" in token_scopes
+    if user.is_disabled and not user.is_admin:
+        # Admins keep web-UI access even when their own row is flagged
+        # disabled, so they can never accidentally lock themselves out.
+        logger.warning("Web auth rejected: user '{}' is disabled", user.username)
+        raise AccountDisabledError(user.username)
     return user

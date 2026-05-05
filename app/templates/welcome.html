@@ -167,8 +167,38 @@ resp = client.chat.completions.create(
             </div>
             <div class="flex flex-col gap-1.5">
                 {% for m in models %}
-                <div class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-n1 border border-[rgba(255,255,255,0.03)]">
-                    <code class="text-xs font-mono text-t1">{{ m }}</code>
+                <div class="px-2.5 py-2 rounded-lg bg-n1 border border-[rgba(255,255,255,0.03)]">
+                    <div class="flex items-center justify-between gap-2 mb-1">
+                        <code class="text-xs font-mono text-t1 truncate">{{ m.alias }}</code>
+                        {% if m.context_window %}
+                        <span class="text-[10px] font-mono text-t4 flex-shrink-0 gw-tip" data-tip="Context window (max input tokens)">
+                            {{ "{:,}".format(m.context_window) }} ctx
+                        </span>
+                        {% endif %}
+                    </div>
+                    {% if m.display_name %}
+                    <div class="text-[11px] text-t3 mb-1.5">{{ m.display_name }}</div>
+                    {% endif %}
+                    {% if m.supports_tools or m.supports_vision or m.supports_prompt_caching or m.max_output_tokens %}
+                    <div class="flex flex-wrap items-center gap-1">
+                        {% if m.supports_tools %}
+                        <span class="text-[10px] px-1.5 py-0.5 rounded gw-tip" data-tip="Function calling / tool use"
+                              style="background:rgba(99,152,255,0.1);color:#6398ff;border:1px solid rgba(99,152,255,0.18)">tools</span>
+                        {% endif %}
+                        {% if m.supports_vision %}
+                        <span class="text-[10px] px-1.5 py-0.5 rounded gw-tip" data-tip="Vision (image input)"
+                              style="background:rgba(167,139,250,0.1);color:#a78bfa;border:1px solid rgba(167,139,250,0.18)">vision</span>
+                        {% endif %}
+                        {% if m.supports_prompt_caching %}
+                        <span class="text-[10px] px-1.5 py-0.5 rounded gw-tip" data-tip="Prompt caching support"
+                              style="background:rgba(77,217,232,0.1);color:#4dd9e8;border:1px solid rgba(77,217,232,0.18)">cache</span>
+                        {% endif %}
+                        {% if m.max_output_tokens %}
+                        <span class="text-[10px] px-1.5 py-0.5 rounded font-mono gw-tip" data-tip="Max tokens the model can generate per response"
+                              style="background:rgba(245,166,35,0.08);color:#f5a623;border:1px solid rgba(245,166,35,0.15)">≤{{ "{:,}".format(m.max_output_tokens) }} out</span>
+                        {% endif %}
+                    </div>
+                    {% endif %}
                 </div>
                 {% endfor %}
             </div>

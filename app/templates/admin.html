@@ -423,6 +423,25 @@ function submitExport(e) {
                         </td>
                         <td class="whitespace-nowrap text-right">
                             <div class="flex items-center justify-end gap-2">
+                                <form action="/admin/users/{{ u.id }}/toggle-azure" method="POST" data-username="{{ u.username }}"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.can_use_azure else 'false' }} ? 'Revoke' : 'Grant') + ' Azure access?');">
+                                    <button type="submit"
+                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.can_use_azure else 'gw-btn-ghost' }}"
+                                            style="{{ 'background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.4);color:#cab9ff' if u.can_use_azure else '' }}"
+                                            title="{{ 'Azure granted' if u.can_use_azure else 'No Azure access' }}">
+                                        Azure
+                                    </button>
+                                </form>
+                                {% if not u.is_admin %}
+                                <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-username="{{ u.username }}"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.is_disabled else 'false' }} ? 'Enable' : 'Disable') + ' account?');">
+                                    <button type="submit"
+                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-warn' if u.is_disabled else 'gw-btn-ghost' }}"
+                                            title="{{ 'Account disabled — click to enable' if u.is_disabled else 'Active — click to disable' }}">
+                                        {{ 'Enable' if u.is_disabled else 'Disable' }}
+                                    </button>
+                                </form>
+                                {% endif %}
                                 <button onclick="toggleMonitor({{ u.id }}, this)"
                                         class="gw-btn text-xs px-3 py-1 monitor-btn {{ 'gw-btn-warn' if u.id in monitored_ids else 'gw-btn-ghost' }}"
                                         data-monitoring="{{ 'true' if u.id in monitored_ids else 'false' }}">
@@ -506,6 +525,23 @@ function submitExport(e) {
                         </td>
                         <td class="whitespace-nowrap text-right">
                             <div class="flex items-center justify-end gap-2">
+                                <form action="/admin/users/{{ u.id }}/toggle-azure" method="POST" data-username="{{ u.username }}"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.can_use_azure else 'false' }} ? 'Revoke' : 'Grant') + ' Azure access?');">
+                                    <button type="submit"
+                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.can_use_azure else 'gw-btn-ghost' }}"
+                                            style="{{ 'background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.4);color:#cab9ff' if u.can_use_azure else '' }}"
+                                            title="{{ 'Azure granted' if u.can_use_azure else 'No Azure access' }}">
+                                        Azure
+                                    </button>
+                                </form>
+                                <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-username="{{ u.username }}"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.is_disabled else 'false' }} ? 'Enable' : 'Disable') + ' app?');">
+                                    <button type="submit"
+                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-warn' if u.is_disabled else 'gw-btn-ghost' }}"
+                                            title="{{ 'App disabled — click to enable' if u.is_disabled else 'Active — click to disable' }}">
+                                        {{ 'Enable' if u.is_disabled else 'Disable' }}
+                                    </button>
+                                </form>
                                 <button onclick="toggleMonitor({{ u.id }}, this)"
                                         class="gw-btn text-xs px-3 py-1 monitor-btn {{ 'gw-btn-warn' if u.id in monitored_ids else 'gw-btn-ghost' }}"
                                         data-monitoring="{{ 'true' if u.id in monitored_ids else 'false' }}">

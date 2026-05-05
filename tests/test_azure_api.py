@@ -24,6 +24,13 @@ class TestAzureModelsListing:
         resp = client.get("/azure/v1/models")
         assert resp.status_code == 401
 
+    def test_azure_blocked_without_can_use_azure(self, client, db_session, test_user):
+        # Revoke the default-granted Azure access for this test
+        test_user.can_use_azure = False
+        db_session.add(test_user); db_session.commit()
+        resp = client.get("/azure/v1/models", headers=auth_header())
+        assert resp.status_code == 403
+
 
 class TestAzureChatCompletions:
     def test_chat_completion_basic(self, client):

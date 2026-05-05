@@ -58,7 +58,8 @@ alembic/
     ├── c7f3e9b45a02_add_created_at_index_on_usage_logs.py
     ├── d5a2c3e67f04_add_app_owners_table.py
     ├── e8b4f1a23c05_replace_user_created_index_with_covering.py
-    └── 5d538cdf0e8b_merge_app_owners_and_covering_index_.py
+    ├── 5d538cdf0e8b_merge_app_owners_and_covering_index_.py
+    └── f3a91c5b8d27_add_is_disabled_and_can_use_azure_to_users.py
 ```
 
 ## Migration History
@@ -72,6 +73,7 @@ alembic/
 | `d5a2c3e67f04` | Add `app_owners` many-to-many table (app account ownership) | 2026-03-14 |
 | `e8b4f1a23c05` | Replace `ix_usage_user_created` with covering index `ix_usage_user_date_cost` (CONCURRENTLY) | 2026-03-15 |
 | `5d538cdf0e8b` | Merge `app_owners` and covering index branches | 2026-03-15 |
+| `f3a91c5b8d27` | Add `is_disabled` and `can_use_azure` boolean columns to `users` (`server_default=false`; PG 11+ adds these as a metadata-only operation, no table rewrite) | 2026-05-05 |
 
 ## Database Schema
 
@@ -84,6 +86,8 @@ erDiagram
         varchar api_key UK "API key (sk-internal-...)"
         float daily_limit_usd "Daily usage limit (USD)"
         boolean is_admin "Admin flag"
+        boolean is_disabled "Disabled (rejects auth)"
+        boolean can_use_azure "Allowed to call /azure/v1/*"
         int owner_id FK "Owner (for app accounts)"
         varchar display_name "Display name (IdP synced)"
         varchar org_code "Org code (IdP synced)"
@@ -125,6 +129,8 @@ erDiagram
 | `api_key` | `VARCHAR` UNIQUE | Auto-generated, format `sk-internal-{timestamp}-{hex8}` |
 | `daily_limit_usd` | `FLOAT` | Daily usage limit, default 10.0 USD |
 | `is_admin` | `BOOLEAN` | Admin flag in DB (Web UI admin determined by JWT scope) |
+| `is_disabled` | `BOOLEAN` | Default `false`. When `true`, both API key and JWT auth reject the user with 403 (admins bypass) |
+| `can_use_azure` | `BOOLEAN` | Default `false`. Gates `/azure/v1/*` endpoints (admins bypass) |
 | `owner_id` | `INTEGER` FK → `users.id` | App account owner, NULL for regular user accounts |
 | `display_name` | `VARCHAR` | Display name from IdP JWT, auto-synced on each login |
 | `org_code` | `VARCHAR` | Org code from IdP JWT, auto-synced on each login |

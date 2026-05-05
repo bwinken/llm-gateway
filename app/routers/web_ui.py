@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 from app.models.schema import AppOwner, User
 
 from app.core.auth import get_web_user
-from app.core.config import APP_TITLE, get_model_routing_snapshot
+from app.core.config import APP_TITLE, get_azure_models_snapshot, get_model_routing_snapshot
 from app.core.database import get_session
 from app.core.server_state import is_alive
 from app.services.stats import get_daily_trends, get_owned_apps_summary, get_user_daily_cost, get_user_monthly_summary
@@ -57,8 +57,10 @@ async def index(
     display_name = user.display_name or user.username
     org_code = user.org_code
 
-    # Group models by type for display (skip hidden models)
-    models_by_type: dict[str, list[str]] = {}
+    # Group models by type for display (skip hidden models). Each entry
+    # carries optional admin-set metadata so the welcome page can show
+    # capability badges (tools / vision / cache) and context window.
+    models_by_type: dict[str, list[dict]] = {}
     first_model = ""
     for alias, route in get_model_routing_snapshot().items():
         if route.get("hidden"):
@@ -66,7 +68,15 @@ async def index(
         model_type = route["type"]
         if model_type not in models_by_type:
             models_by_type[model_type] = []
-        models_by_type[model_type].append(alias)
+        models_by_type[model_type].append({
+            "alias": alias,
+            "display_name": route.get("display_name", ""),
+            "context_window": route.get("context_window"),
+            "max_output_tokens": route.get("max_output_tokens"),
+            "supports_tools": route.get("supports_tools", False),
+            "supports_vision": route.get("supports_vision", False),
+            "supports_prompt_caching": route.get("supports_prompt_caching", False),
+        })
         if not first_model and model_type in ("llm", "vlm"):
             first_model = alias
 
@@ -98,7 +108,9 @@ async def dashboard(
     trend_data = get_daily_trends(session, user.id)
     owned_apps = get_owned_apps_summary(session, user.id)
 
-    # Build grouped server status keyed by raw type (skip hidden models)
+    # Build grouped server status keyed by raw type (skip hidden models).
+    # Each entry carries optional metadata for capability badges next to the
+    # online/down indicator.
     server_groups: dict[str, list[dict]] = {}
     for model_name, route in get_model_routing_snapshot().items():
         if route.get("hidden"):
@@ -112,6 +124,12 @@ async def dashboard(
                 "name": model_name,
                 "base_url": base_url,
                 "alive": is_alive(base_url),
+                "display_name": route.get("display_name", ""),
+                "context_window": route.get("context_window"),
+                "max_output_tokens": route.get("max_output_tokens"),
+                "supports_tools": route.get("supports_tools", False),
+                "supports_vision": route.get("supports_vision", False),
+                "supports_prompt_caching": route.get("supports_prompt_caching", False),
             }
         )
 
@@ -121,6 +139,24 @@ async def dashboard(
     usage_percent = min(100.0, (today_cost / daily_limit) * 100)
 
     claude_code_available = (_SETUP_DIR / "install-claude-code.ps1").is_file()
+
+    # Azure access — list configured Azure model aliases when the user has
+    # been granted access. Hidden Azure entries are skipped so admins can
+    # stage models without exposing them yet (mirrors the vLLM `hidden` flag).
+    azure_models: list[dict] = []
+    if user.can_use_azure or user.is_admin:
+        for alias, entry in get_azure_models_snapshot().items():
+            if entry.get("hidden"):
+                continue
+            azure_models.append({
+                "alias": alias,
+                "type": entry.get("type", "llm"),
+                "display_name": entry.get("display_name", ""),
+                "context_window": entry.get("context_window"),
+                "supports_tools": entry.get("supports_tools", False),
+                "supports_vision": entry.get("supports_vision", False),
+                "supports_prompt_caching": entry.get("supports_prompt_caching", False),
+            })
 
     return templates.TemplateResponse(
         "dashboard.html",
@@ -141,6 +177,8 @@ async def dashboard(
             owned_apps=owned_apps,
             server_groups=server_groups,
             claude_code_available=claude_code_available,
+            azure_access=user.can_use_azure or user.is_admin,
+            azure_models=azure_models,
         ),
     )
 

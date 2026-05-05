@@ -75,9 +75,9 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 ## `azure_api.py` — Azure OpenAI 相容
 
-**認證**:`deps.get_current_user`(與 `/v1/*` 共用同一把 gateway API key 與 daily limit)
+**認證**:`deps.require_azure_access`(包裝 `get_current_user`,額外檢查 `user.can_use_azure`;admin 免檢查) — 與 `/v1/*` 共用同一把 gateway API key 與 daily limit,另外多了使用者層級的 Azure 存取旗標
 
-使用同一把客戶端 API key、同一份 usage log、同一套監控。差異只在於下游 URL/Header 慣例,由 `services/azure_proxy.py` 處理。Azure 部署在 `config.toml` 的 `[azure_models.<alias>]` 設定。
+使用同一把客戶端 API key、同一份 usage log、同一套監控。差異只在於下游 URL/Header 慣例,由 `services/azure_proxy.py` 處理。Azure 部署在 `config.toml` 的 `[azure_models.<alias>]` 設定。沒有 `can_use_azure`(且非 admin)的使用者會收到 403 `"Azure access not granted. Contact your administrator."`。
 
 ### 端點
 
@@ -138,6 +138,8 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `POST` | `/admin/users/{id}/delete` | 刪除使用者及其 usage logs（不可刪除自己） |
 | `POST` | `/admin/users/{id}/refresh-key` | 重新產生任意使用者的 API key，回傳 JSON |
 | `POST` | `/admin/users/{id}/monitor` | 切換使用者的 request/response 監控(回傳 JSON `{ok, monitoring, username}`) |
+| `POST` | `/admin/users/{id}/toggle-disable` | 翻轉使用者的 `is_disabled` 旗標。禁止停用自己(回 400);可以重新啟用自己 |
+| `POST` | `/admin/users/{id}/toggle-azure` | 翻轉使用者的 `can_use_azure` 旗標(控制 `/azure/v1/*` 存取) |
 | `POST` | `/admin/default-limit` | 設定預設每日額度(USD)。寫入 `[app].default_daily_limit_usd` 並批次將 `0 < daily_limit_usd < new_floor` 的使用者拉高到新 floor(`daily_limit_usd = 0` 的無限制使用者不會被改動) |
 | `GET` | `/admin/monitor` | 取得監控狀態:目前被監控的使用者及其每類型檔案大小、總磁碟用量 |
 | `GET` | `/admin/models` | 模型設定頁面（SPA，透過 API 載入資料） |
@@ -174,7 +176,7 @@ graph TD
     end
 
     V1 -->|get_current_user| DB["DB: users.api_key"]
-    Azure -->|get_current_user| DB
+    Azure -->|require_azure_access<br/>(get_current_user + can_use_azure)| DB
     Dashboard -->|get_web_user| JWT["JWT: sub → users.username"]
     Admin -->|get_web_user| JWT
 ```

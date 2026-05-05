@@ -237,6 +237,12 @@ def _build_test_app() -> FastAPI:
 
     test_app = FastAPI(lifespan=_noop_lifespan)
 
+    # Register the same AccountDisabledError handler used in production so
+    # tests against /dashboard etc. with disabled users see the same response.
+    from app.main import account_disabled_handler
+    from app.core.auth import AccountDisabledError
+    test_app.add_exception_handler(AccountDisabledError, account_disabled_handler)
+
     test_app.include_router(web_ui.router)
     test_app.include_router(vllm_api.router)
     test_app.include_router(azure_api.router)
@@ -289,6 +295,8 @@ def test_user(db_session: Session) -> User:
         api_key="sk-testkey123",
         daily_limit_usd=100.0,
         is_admin=False,
+        is_disabled=False,
+        can_use_azure=True,   # ← default ON for tests so /azure/v1/* paths exercise normally
     )
     db_session.add(user)
     db_session.commit()

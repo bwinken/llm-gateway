@@ -135,6 +135,8 @@ async def admin_page(
             "api_key": u.api_key,
             "daily_limit_usd": u.daily_limit_usd,
             "is_admin": u.is_admin,
+            "is_disabled": u.is_disabled,
+            "can_use_azure": u.can_use_azure,
             "owners": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
@@ -329,6 +331,40 @@ async def update_default_limit(
     bumped = result.rowcount or 0
     logger.info("Default daily limit set to ${} — bumped {} users", new_default, bumped)
 
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/users/{user_id}/toggle-disable")
+async def toggle_disable(
+    user_id: int,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Flip the user's is_disabled flag. Refuses to disable yourself."""
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if target.id == admin_user.id and not target.is_disabled:
+        raise HTTPException(status_code=400, detail="Cannot disable yourself.")
+    target.is_disabled = not target.is_disabled
+    session.add(target)
+    session.commit()
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/users/{user_id}/toggle-azure")
+async def toggle_azure(
+    user_id: int,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Flip the user's can_use_azure flag."""
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    target.can_use_azure = not target.can_use_azure
+    session.add(target)
+    session.commit()
     return RedirectResponse(url="/admin", status_code=303)
 
 

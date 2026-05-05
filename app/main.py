@@ -10,16 +10,22 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.templating import Jinja2Templates
 
+from app.core.auth import AccountDisabledError
 from app.core.config import APP_TITLE
 from app.core.database import init_db
 from app.core.logger import logger
 from app.core.server_state import close_client, init_client
 from app.routers import admin, azure_api, vllm_api, web_ui
 from app.services.health import health_check_loop
+
+_templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 
 
 @asynccontextmanager
@@ -60,6 +66,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Exception handlers ---
+
+@app.exception_handler(AccountDisabledError)
+async def account_disabled_handler(request: Request, exc: AccountDisabledError):
+    """Render an HTML page for browser requests, return JSON for API clients.
+
+    Discriminates by the Accept header: if the client mentions text/html
+    (browsers, dashboard) we render the styled disabled.html template;
+    otherwise (curl, SDKs, AJAX with `Accept: application/json`) we return
+    the plain JSON 403 the API contract expects.
+    """
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept.lower():
+        return _templates.TemplateResponse(
+            "disabled.html",
+            {
+                "request": request,
+                "app_title": APP_TITLE,
+                "title": "Account Disabled",
+                "username": exc.username,
+                "user": None,
+            },
+            status_code=403,
+        )
+    return JSONResponse(
+        status_code=403,
+        content={"detail": "Account disabled. Contact your administrator."},
+    )
+
 
 # --- Routers ---
 app.include_router(web_ui.router)

@@ -76,9 +76,10 @@ Browser → nginx → oauth2-proxy (驗證 session cookie)
 
 | 函式 | 回傳 | 說明 |
 |---|---|---|
-| `get_web_user(security_scopes, request, session, credentials)` | `User` | FastAPI `Security` dependency：解析 JWT，檢查 scope，自動建立新使用者 |
+| `get_web_user(security_scopes, request, session, credentials)` | `User` | FastAPI `Security` dependency:解析 JWT,檢查 scope,自動建立新使用者;若 `user.is_disabled` 則丟出 `AccountDisabledError`(admin 免檢查) |
 | `_decode_jwt(token)` | `dict \| None` | RS256 解碼 + audience/issuer 驗證 |
 | `_sync_user(session, username, display_name, org_code)` | `User` | 查找或建立使用者，同步 IdP 欄位 |
+| `AccountDisabledError(username)` | 例外類別 | 由 `get_web_user` 與 `get_current_user` 在 `user.is_disabled=True` 時丟出。`app/main.py` 內的全域 handler 在 `Accept: text/html` 時 render `templates/disabled.html`,其他則回 JSON 403 |
 
 **用法：**
 ```python
@@ -105,7 +106,8 @@ FastAPI dependency，從 `Authorization: Bearer <api_key>` header 取出 API key
 
 | 函式 | 回傳 | 說明 |
 |---|---|---|
-| `get_current_user(credentials, session)` | `User` | 驗證 API key + 檢查每日限額 |
+| `get_current_user(credentials, session)` | `User` | 驗證 API key + 檢查每日限額;若 `user.is_disabled` 則丟出 `AccountDisabledError`(admin 免檢查) |
+| `require_azure_access(user)` | `User` | 包裝 `get_current_user`;若 `not user.can_use_azure and not user.is_admin` 則回 403。所有 `/azure/v1/*` 路由都改用這支 |
 | `_check_daily_limit(session, user)` | — | 查詢當日累計花費，超過 `daily_limit_usd` 時回傳 429 |
 
 **認證流程：**
