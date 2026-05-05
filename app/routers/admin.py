@@ -550,9 +550,12 @@ async def save_config_api(
     models = body.get("models")
     pricing = body.get("pricing")
     fallback = body.get("fallback")
+    azure_models = body.get("azure_models")
 
     if not isinstance(models, dict) or not isinstance(pricing, dict):
         raise HTTPException(status_code=400, detail="Invalid config format.")
+    if azure_models is not None and not isinstance(azure_models, dict):
+        raise HTTPException(status_code=400, detail="Invalid azure_models format.")
 
     # Validate model entries have required fields + sanity-check metadata
     _META_TYPES: dict[str, type | tuple[type, ...]] = {
@@ -622,7 +625,63 @@ async def save_config_api(
     if fallback and not all(isinstance(v, str) for v in fallback.values()):
         raise HTTPException(status_code=400, detail="Fallback values must be strings.")
 
-    save_config(models, pricing, fallback or {})
+    # Validate Azure model entries
+    if azure_models:
+        for alias, info in azure_models.items():
+            if not isinstance(info, dict):
+                raise HTTPException(status_code=400, detail=f"Invalid azure model entry: {alias}")
+            for required in ("type", "endpoint", "deployment", "api_key"):
+                if not info.get(required):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Azure model '{alias}' missing required field '{required}'.",
+                    )
+            for key in _MODEL_METADATA_KEYS:
+                if key not in info:
+                    continue
+                expected = _META_TYPES[key]
+                value = info[key]
+                if expected is int and isinstance(value, bool):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Azure model '{alias}' field '{key}' must be an integer, got boolean.",
+                    )
+                if not isinstance(value, expected):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Azure model '{alias}' field '{key}' has wrong type.",
+                    )
+                if expected is int and value < 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Azure model '{alias}' field '{key}' must be non-negative.",
+                    )
+            for key in _MODEL_INTERNAL_KEYS:
+                if key not in info:
+                    continue
+                expected = _INTERNAL_TYPES[key]
+                value = info[key]
+                if not isinstance(value, expected):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Azure model '{alias}' field '{key}' has wrong type.",
+                    )
+            for key in _MODEL_PRICING_KEYS:
+                if key not in info:
+                    continue
+                value = info[key]
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Azure model '{alias}' field '{key}' must be a number.",
+                    )
+                if value < 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Azure model '{alias}' field '{key}' must be non-negative.",
+                    )
+
+    save_config(models, pricing, fallback or {}, azure_models)
     return JSONResponse({"ok": True})
 
 

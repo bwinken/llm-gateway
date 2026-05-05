@@ -30,6 +30,18 @@
     {# Tab Panels #}
     <div id="tabPanels"></div>
 
+    {# Azure OpenAI Models Section #}
+    <div class="gw-card overflow-hidden">
+        <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <div>
+                <h2 class="text-xs font-bold text-t3 uppercase tracking-wider">Azure OpenAI Models</h2>
+                <p class="text-[11px] text-t4 mt-0.5">Served at <code class="font-mono">/azure/v1/*</code>. Routed by deployment, not health-checked.</p>
+            </div>
+            <button onclick="addAzureModel()" class="gw-btn gw-btn-primary text-xs px-3 py-1.5">+ Add Azure Model</button>
+        </div>
+        <div id="azureBody"></div>
+    </div>
+
     {# Pricing Section #}
     <div class="gw-card overflow-hidden">
         <div class="px-5 py-3" style="border-bottom:1px solid rgba(255,255,255,0.04)">
@@ -49,8 +61,9 @@
 </div>
 
 <script>
-let config = { models: {}, pricing: {}, fallback: {} };
+let config = { models: {}, pricing: {}, fallback: {}, azure_models: {} };
 const MODEL_TYPES = ['llm', 'vlm', 'embedding', 'vision_embedding', 'reranker', 'vision_reranker'];
+const AZURE_DEFAULT_API_VERSION = '2024-08-01-preview';
 let activeTab = '';
 
 document.addEventListener('DOMContentLoaded', loadConfig);
@@ -59,6 +72,7 @@ async function loadConfig() {
     try {
         const resp = await fetch('/admin/api/config');
         config = await resp.json();
+        if (!config.azure_models) config.azure_models = {};
         render();
         document.getElementById('loading').classList.add('hidden');
         document.getElementById('mainContent').classList.remove('hidden');
@@ -70,7 +84,7 @@ function render() {
     for (const [alias, info] of Object.entries(config.models)) typesInUse.add(info.type);
     const types = [...typesInUse];
     if (!activeTab || !types.includes(activeTab)) activeTab = types[0];
-    renderTabs(types); renderPanels(types); renderPricing(types);
+    renderTabs(types); renderPanels(types); renderAzure(); renderPricing(types);
 }
 
 function renderTabs(types) {
@@ -300,6 +314,175 @@ function updateField(el) {
 function updatePricing(el) { const t=el.dataset.ptype, f=el.dataset.pfield; if(!config.pricing[t])config.pricing[t]={}; config.pricing[t][f]=parseFloat(el.value)||0; }
 function setFallback(type, alias) { config.fallback[type] = alias; }
 
+// ── Azure OpenAI models ──
+function renderAzure() {
+    const body = document.getElementById('azureBody');
+    const entries = Object.entries(config.azure_models || {});
+    if (!entries.length) {
+        body.innerHTML = `<div class="px-5 py-10 text-center text-sm text-t4">No Azure deployments configured.</div>`;
+        return;
+    }
+    body.innerHTML = `
+        <div class="overflow-x-auto">
+            <table class="gw-table">
+                <thead><tr>
+                    <th class="gw-tip" data-tip="User-facing model name">Alias</th>
+                    <th class="gw-tip" data-tip="Model type — determines pricing tier and routing path">Type</th>
+                    <th class="gw-tip gw-tip-wide" data-tip="Azure resource endpoint, e.g. https://my-resource.openai.azure.com">Endpoint</th>
+                    <th class="gw-tip gw-tip-wide" data-tip="Azure deployment name (set in Azure portal)">Deployment</th>
+                    <th class="gw-tip" data-tip="Azure OpenAI API key">API Key</th>
+                    <th class="gw-tip gw-tip-wide" data-tip="Azure API version. Defaults to ${AZURE_DEFAULT_API_VERSION}">API Version</th>
+                    <th class="text-right gw-tip gw-tip-wide" data-tip="Per-model input price (USD per 1M tokens). Blank = use the type default.">Input $/1M</th>
+                    <th class="text-right gw-tip gw-tip-wide" data-tip="Per-model output price (USD per 1M tokens). Blank = use the type default.">Output $/1M</th>
+                    <th class="text-center gw-tip gw-tip-wide" data-tip="Hidden models are not shown to regular users but can still be used via API">Visible</th>
+                    <th class="text-right">Actions</th>
+                </tr></thead>
+                <tbody>${entries.map(([alias, info]) => renderAzureRow(alias, info)).join('')}</tbody>
+            </table>
+        </div>`;
+}
+
+function renderAzureRow(alias, info) {
+    const dot = hasMeta(info)
+        ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-ag ml-1" title="Metadata set"></span>'
+        : '';
+    const isHidden = info.hidden === true;
+    const inPrice = info.input_price_per_1m ?? '';
+    const outPrice = info.output_price_per_1m ?? '';
+    const inPh = typeDefaultPrice(info.type, 'input_price_per_1m');
+    const outPh = typeDefaultPrice(info.type, 'output_price_per_1m');
+    const typeOpts = MODEL_TYPES.map(t =>
+        `<option value="${t}" ${t === info.type ? 'selected' : ''}>${t}</option>`
+    ).join('');
+    return `
+        <tr id="azrow-${escAttr(alias)}" class="${isHidden ? 'opacity-50' : ''}">
+            <td><span class="text-sm font-mono font-medium text-t1">${escHtml(alias)}</span></td>
+            <td><select data-azalias="${escAttr(alias)}" data-field="type" onchange="updateAzureField(this)" class="gw-input text-sm py-1 px-2">${typeOpts}</select></td>
+            <td><input type="text" value="${escAttr(info.endpoint || '')}" data-azalias="${escAttr(alias)}" data-field="endpoint" oninput="updateAzureField(this)" placeholder="https://my-resource.openai.azure.com" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
+            <td><input type="text" value="${escAttr(info.deployment || '')}" data-azalias="${escAttr(alias)}" data-field="deployment" oninput="updateAzureField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
+            <td><input type="text" value="${escAttr(info.api_key || '')}" data-azalias="${escAttr(alias)}" data-field="api_key" oninput="updateAzureField(this)" placeholder="(required)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
+            <td><input type="text" value="${escAttr(info.api_version || '')}" data-azalias="${escAttr(alias)}" data-field="api_version" oninput="updateAzureField(this)" placeholder="${AZURE_DEFAULT_API_VERSION}" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
+            <td><input type="number" min="0" step="0.01" value="${inPrice}" data-azalias="${escAttr(alias)}" data-field="input_price_per_1m" data-price="1" oninput="updateAzureField(this)" placeholder="${escAttr(inPh)}" title="Blank = use type default (${escAttr(inPh || 'unset')})" class="gw-input w-24 text-sm py-1 px-2 font-mono text-right"></td>
+            <td><input type="number" min="0" step="0.01" value="${outPrice}" data-azalias="${escAttr(alias)}" data-field="output_price_per_1m" data-price="1" oninput="updateAzureField(this)" placeholder="${escAttr(outPh)}" title="Blank = use type default (${escAttr(outPh || 'unset')})" class="gw-input w-24 text-sm py-1 px-2 font-mono text-right"></td>
+            <td class="text-center">
+                <button onclick="toggleAzureVisibility('${escAttr(alias)}')" class="p-1.5 rounded-lg transition-colors ${isHidden ? 'text-t4 hover:text-ar' : 'text-ag hover:text-t1'}" title="${isHidden ? 'Hidden — click to show' : 'Visible — click to hide'}">
+                    ${isHidden
+                        ? '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L6.59 6.59m7.532 7.532l3.29 3.29M3 3l18 18"/></svg>'
+                        : '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>'
+                    }
+                </button>
+            </td>
+            <td class="text-right whitespace-nowrap">
+                <button onclick="toggleAzureMeta('${escAttr(alias)}')" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Optional metadata: display name, context window, capabilities">Advanced${dot}</button>
+                <button onclick="deleteAzureModel('${escAttr(alias)}')" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
+            </td>
+        </tr>
+        ${renderAzureMetaRow(alias, info)}
+    `;
+}
+
+function renderAzureMetaRow(alias, info) {
+    const a = escAttr(alias);
+    const visible = hasMeta(info);
+    const displayName = info.display_name ?? '';
+    const ctxWin = info.context_window ?? '';
+    const maxOut = info.max_output_tokens ?? '';
+    const sTools = info.supports_tools === true;
+    const sVis = info.supports_vision === true;
+    const sCache = info.supports_prompt_caching === true;
+    return `
+        <tr id="azmeta-${a}" class="${visible ? '' : 'hidden'}" style="background:rgba(255,255,255,0.015)">
+            <td colspan="10" class="px-5 py-3 space-y-3">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                    <label class="flex flex-col gap-1">
+                        <span class="text-t4 font-semibold uppercase">Display Name</span>
+                        <input type="text" value="${escAttr(displayName)}" data-azalias="${a}" data-field="display_name" data-meta="1" oninput="updateAzureField(this)" placeholder="(unset)" class="gw-input text-sm py-1 px-2">
+                    </label>
+                    <label class="flex flex-col gap-1">
+                        <span class="text-t4 font-semibold uppercase">Context Window</span>
+                        <input type="number" min="0" step="1024" value="${ctxWin}" data-azalias="${a}" data-field="context_window" data-meta="1" oninput="updateAzureField(this)" placeholder="(unset)" class="gw-input text-sm py-1 px-2 font-mono">
+                    </label>
+                    <label class="flex flex-col gap-1">
+                        <span class="text-t4 font-semibold uppercase">Max Output Tokens</span>
+                        <input type="number" min="0" step="256" value="${maxOut}" data-azalias="${a}" data-field="max_output_tokens" data-meta="1" oninput="updateAzureField(this)" placeholder="(unset)" class="gw-input text-sm py-1 px-2 font-mono">
+                    </label>
+                    <label class="flex items-center gap-2 pt-5">
+                        <input type="checkbox" ${sTools ? 'checked' : ''} data-azalias="${a}" data-field="supports_tools" data-meta="1" onchange="updateAzureField(this)" class="gw-checkbox">
+                        <span class="text-t3">supports_tools</span>
+                    </label>
+                    <label class="flex items-center gap-2 pt-5">
+                        <input type="checkbox" ${sVis ? 'checked' : ''} data-azalias="${a}" data-field="supports_vision" data-meta="1" onchange="updateAzureField(this)" class="gw-checkbox">
+                        <span class="text-t3">supports_vision</span>
+                    </label>
+                    <label class="flex items-center gap-2 pt-5">
+                        <input type="checkbox" ${sCache ? 'checked' : ''} data-azalias="${a}" data-field="supports_prompt_caching" data-meta="1" onchange="updateAzureField(this)" class="gw-checkbox">
+                        <span class="text-t3">supports_prompt_caching</span>
+                    </label>
+                </div>
+            </td>
+        </tr>
+    `;
+}
+
+function toggleAzureMeta(alias) {
+    const row = document.getElementById('azmeta-' + alias);
+    if (row) row.classList.toggle('hidden');
+}
+
+function toggleAzureVisibility(alias) {
+    if (!config.azure_models[alias]) return;
+    if (config.azure_models[alias].hidden) delete config.azure_models[alias].hidden;
+    else config.azure_models[alias].hidden = true;
+    render();
+}
+
+function updateAzureField(el) {
+    const a = el.dataset.azalias, f = el.dataset.field;
+    if (!config.azure_models[a]) return;
+    if (el.dataset.price) {
+        const v = parseFloat(el.value);
+        if (Number.isFinite(v) && v >= 0) config.azure_models[a][f] = v;
+        else delete config.azure_models[a][f];
+    } else if (el.dataset.meta) {
+        if (el.type === 'checkbox') {
+            if (el.checked) config.azure_models[a][f] = true;
+            else delete config.azure_models[a][f];
+        } else if (el.type === 'number') {
+            const v = parseInt(el.value, 10);
+            if (Number.isFinite(v)) config.azure_models[a][f] = v;
+            else delete config.azure_models[a][f];
+        } else {
+            const v = el.value.trim();
+            if (v) config.azure_models[a][f] = v;
+            else delete config.azure_models[a][f];
+        }
+    } else {
+        config.azure_models[a][f] = el.value;
+    }
+}
+
+function addAzureModel() {
+    const alias = prompt('Enter Azure model alias (e.g. gpt-4o):');
+    if (!alias || !alias.trim()) return;
+    const trimmed = alias.trim();
+    if (config.azure_models[trimmed]) { showStatus(`Azure model "${trimmed}" already exists.`, 'error'); return; }
+    if (config.models[trimmed]) { showStatus(`Alias "${trimmed}" already used by a vLLM model.`, 'error'); return; }
+    config.azure_models[trimmed] = {
+        type: 'llm',
+        endpoint: '',
+        deployment: trimmed,
+        api_key: '',
+        api_version: AZURE_DEFAULT_API_VERSION,
+    };
+    render();
+}
+
+function deleteAzureModel(alias) {
+    if (!confirm(`Delete Azure model "${alias}"? Takes effect after saving.`)) return;
+    delete config.azure_models[alias];
+    render();
+}
+
 function addModel(type) {
     const alias = prompt('Enter model alias (e.g. my-llm):');
     if (!alias || !alias.trim()) return;
@@ -323,10 +506,17 @@ function collectFromDOM() {
     for (const a in config.models) {
         for (const k of META_KEYS) delete config.models[a][k];
     }
+    for (const a in config.azure_models) {
+        for (const k of META_KEYS) delete config.azure_models[a][k];
+    }
     // Re-collect model fields from DOM inputs. updateField() already
     // handles metadata type coercion + empty-means-unset.
     document.querySelectorAll('input[data-alias][data-field]').forEach(function(el) {
         updateField(el);
+    });
+    // Re-collect Azure model fields (inputs + selects).
+    document.querySelectorAll('[data-azalias][data-field]').forEach(function(el) {
+        updateAzureField(el);
     });
     // Collect pricing fields directly from DOM inputs
     document.querySelectorAll('input[data-ptype][data-pfield]').forEach(function(el) {
