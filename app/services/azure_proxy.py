@@ -23,7 +23,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.core.config import AZURE_MODELS, _check_auto_reload
 from app.core.logger import logger
 from app.core.server_state import get_client
-from app.services.vllm_proxy import _AUX_NONSTREAM_TIMEOUT, _LLM_NONSTREAM_TIMEOUT
 from app.models.schema import User
 from app.services.anthropic_adapter import (
     AnthropicStreamTranslator,
@@ -110,7 +109,7 @@ async def _non_stream_chat(
     model: str, model_type: str, monitor_body: dict, route: dict,
 ) -> JSONResponse:
     try:
-        resp = await client.post(url, json=body, headers=headers, timeout=_LLM_NONSTREAM_TIMEOUT)
+        resp = await client.post(url, json=body, headers=headers, timeout=120.0)
     except Exception as exc:
         logger.error("Azure downstream error: {}", exc)
         log_monitor_error(user.id, monitor_body, str(exc), 502, model, "/azure/v1/chat/completions", model_type)
@@ -206,7 +205,7 @@ async def forward_embeddings(
     monitor_body = {**body, "model": alias}
 
     try:
-        resp = await client.post(target_url, json=body, headers=headers, timeout=_AUX_NONSTREAM_TIMEOUT)
+        resp = await client.post(target_url, json=body, headers=headers, timeout=120.0)
     except Exception as exc:
         logger.error("Azure downstream error: {}", exc)
         log_monitor_error(user.id, monitor_body, str(exc), 502, alias, "/azure/v1/embeddings", model_type)
@@ -281,7 +280,7 @@ async def _non_stream_messages(
     alias: str, model_type: str, monitor_body: dict, route: dict,
 ) -> JSONResponse:
     try:
-        resp = await client.post(url, json=body, headers=headers, timeout=_LLM_NONSTREAM_TIMEOUT)
+        resp = await client.post(url, json=body, headers=headers, timeout=120.0)
     except Exception as exc:
         logger.error("Azure messages downstream error: {}", exc)
         log_monitor_error(user.id, monitor_body, str(exc), 502, alias, "/azure/v1/messages", model_type)
