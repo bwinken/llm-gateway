@@ -155,6 +155,7 @@ const META_KEYS = [
     'supports_tools',
     'supports_vision',
     'supports_prompt_caching',
+    'is_reasoning',
 ];
 
 function hasMeta(info) {
@@ -211,6 +212,7 @@ function renderMetaRow(alias, info) {
     const sTools = info.supports_tools === true;
     const sVis = info.supports_vision === true;
     const sCache = info.supports_prompt_caching === true;
+    const sReason = info.is_reasoning === true;
     return `
         <tr id="meta-${a}" class="${visible ? '' : 'hidden'}" style="background:rgba(255,255,255,0.015)">
             <td colspan="8" class="px-5 py-3 space-y-3">
@@ -238,6 +240,10 @@ function renderMetaRow(alias, info) {
                     <label class="flex items-center gap-2 pt-5">
                         <input type="checkbox" ${sCache ? 'checked' : ''} data-alias="${a}" data-field="supports_prompt_caching" data-meta="1" onchange="updateField(this)" class="gw-checkbox">
                         <span class="text-t3">supports_prompt_caching</span>
+                    </label>
+                    <label class="flex items-center gap-2 pt-5">
+                        <input type="checkbox" ${sReason ? 'checked' : ''} data-alias="${a}" data-field="is_reasoning" data-meta="1" onchange="updateField(this)" class="gw-checkbox">
+                        <span class="text-t3">is_reasoning</span>
                     </label>
                 </div>
             </td>
@@ -390,6 +396,7 @@ function renderAzureMetaRow(alias, info) {
     const sTools = info.supports_tools === true;
     const sVis = info.supports_vision === true;
     const sCache = info.supports_prompt_caching === true;
+    const sReason = info.is_reasoning === true;
     return `
         <tr id="azmeta-${a}" class="${visible ? '' : 'hidden'}" style="background:rgba(255,255,255,0.015)">
             <td colspan="10" class="px-5 py-3 space-y-3">
@@ -417,6 +424,10 @@ function renderAzureMetaRow(alias, info) {
                     <label class="flex items-center gap-2 pt-5">
                         <input type="checkbox" ${sCache ? 'checked' : ''} data-azalias="${a}" data-field="supports_prompt_caching" data-meta="1" onchange="updateAzureField(this)" class="gw-checkbox">
                         <span class="text-t3">supports_prompt_caching</span>
+                    </label>
+                    <label class="flex items-center gap-2 pt-5">
+                        <input type="checkbox" ${sReason ? 'checked' : ''} data-azalias="${a}" data-field="is_reasoning" data-meta="1" onchange="updateAzureField(this)" class="gw-checkbox">
+                        <span class="text-t3">is_reasoning</span>
                     </label>
                 </div>
             </td>

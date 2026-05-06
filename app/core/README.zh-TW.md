@@ -44,7 +44,7 @@ graph TD
 
 **Per-model 可選欄位**(由 `_MODEL_METADATA_KEYS`、`_MODEL_INTERNAL_KEYS`、`_MODEL_PRICING_KEYS` 控制):
 
-- 透過 `GET /v1/models` / `/azure/v1/models` 對外揭露的 metadata:`display_name`、`context_window`、`max_output_tokens`、`supports_tools`、`supports_vision`、`supports_prompt_caching`
+- 透過 `GET /v1/models` / `/azure/v1/models` 對外揭露的 metadata:`display_name`、`context_window`、`max_output_tokens`、`supports_tools`、`supports_vision`、`supports_prompt_caching`、`is_reasoning`
 - 內部旗標:`hidden`(不對 client 揭露)
 - 計價覆寫:`input_price_per_1m`、`output_price_per_1m`。模型項目上有設定時優先於 `[pricing.<type>]`,後者再 fallback 到 `[pricing]` 預設值(`_default`)。
 

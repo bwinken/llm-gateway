@@ -114,7 +114,7 @@ Azure-specific conventions:
 
 - **`config.toml`**: Parsed at import time by `app/core/config.py` into `APP_CONFIG`, `MODEL_ROUTING`, `PRICING_MAP`, `FALLBACK_MAP`, and `AZURE_MODELS`. Downstream API keys are stored directly here as `api_key`. Sections:
   - `[app]` — `default_daily_limit_usd` (default `10.0`) used when auto-provisioning new users.
-  - `[models.<type>.<alias>]` — vLLM routing: `base_url`, `real_model`, `api_key`. Optional per-model overrides: `input_price_per_1m`, `output_price_per_1m`, plus metadata (`display_name`, `context_window`, `max_output_tokens`, `supports_tools`, `supports_vision`, `supports_prompt_caching`) and internal flags (`hidden`).
+  - `[models.<type>.<alias>]` — vLLM routing: `base_url`, `real_model`, `api_key`. Optional per-model overrides: `input_price_per_1m`, `output_price_per_1m`, plus metadata (`display_name`, `context_window`, `max_output_tokens`, `supports_tools`, `supports_vision`, `supports_prompt_caching`, `is_reasoning`) and internal flags (`hidden`).
   - `[pricing]` and `[pricing.<type>]` — default + per-type pricing (USD per 1M tokens).
   - `[fallback]` — type → preferred fallback alias.
   - `[azure_models.<alias>]` — Azure OpenAI deployments: `type`, `endpoint`, `deployment`, `api_key`, `api_version` (default `2024-08-01-preview`). Same per-model pricing/metadata override fields are accepted.

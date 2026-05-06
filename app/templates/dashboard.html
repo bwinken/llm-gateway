@@ -82,12 +82,16 @@
                                     {{ 'ONLINE' if s.alive else 'DOWN' }}
                                 </span>
                             </div>
-                            {% if s.supports_tools or s.supports_vision or s.supports_prompt_caching or s.context_window %}
+                            {% if s.supports_tools or s.supports_vision or s.supports_prompt_caching or s.is_reasoning or s.context_window %}
                             <div class="flex flex-wrap items-center gap-1 mt-1.5">
                                 {% if s.context_window %}
                                 <span class="text-[10px] font-mono text-t4 gw-tip" data-tip="Context window">
                                     {{ "{:,}".format(s.context_window) }} ctx
                                 </span>
+                                {% endif %}
+                                {% if s.is_reasoning %}
+                                <span class="text-[10px] px-1 py-0.5 rounded gw-tip" data-tip="Reasoning model (emits thinking tokens)"
+                                      style="background:rgba(245,166,35,0.1);color:#f5a623">reasoning</span>
                                 {% endif %}
                                 {% if s.supports_tools %}
                                 <span class="text-[10px] px-1 py-0.5 rounded gw-tip" data-tip="Function calling / tool use"
@@ -142,6 +146,10 @@
                 <code class="text-xs font-mono text-t1">{{ m.alias }}</code>
                 {% if m.context_window %}
                 <span class="text-[10px] font-mono text-t4">{{ "{:,}".format(m.context_window) }} ctx</span>
+                {% endif %}
+                {% if m.is_reasoning %}
+                <span class="text-[10px] px-1 rounded gw-tip" data-tip="Reasoning model"
+                      style="background:rgba(245,166,35,0.1);color:#f5a623">reasoning</span>
                 {% endif %}
                 {% if m.supports_tools %}
                 <span class="text-[10px] px-1 rounded gw-tip" data-tip="Function calling"

@@ -62,7 +62,7 @@ output_price_per_1m = 0.00
 # LLM
 # ------------------------------------------
 # All metadata fields (display_name, context_window, max_output_tokens,
-# supports_tools/vision/prompt_caching) are OPTIONAL. They're surfaced
+# supports_tools/vision/prompt_caching, is_reasoning) are OPTIONAL. They're surfaced
 # via GET /v1/models so clients that query for capabilities (Cursor,
 # Cline, Continue.dev, future Claude Code versions, ...) get accurate
 # info. Omitting them is fine — the fields just won't appear in the
@@ -79,6 +79,7 @@ api_key = "your-api-key"
 # supports_tools = true
 # supports_vision = false
 # supports_prompt_caching = false
+# is_reasoning = false    # Set true for thinking / chain-of-thought models (o1/QwQ/DeepSeek-R1 etc.)
 # hidden = false          # Hide from user-facing pages and /v1/models (still usable via API)
 
 # ------------------------------------------
