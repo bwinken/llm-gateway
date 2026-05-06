@@ -66,7 +66,7 @@ set "DISABLE_TELEMETRY=1"
 set "DISABLE_INTERLEAVED_THINKING=0"
 
 set "CLAUDE_SHELL="
-set "ENABLE_POWERSHELL_TOOL=1"
+set "ENABLE_POWERSHELL_TOOL=0"
 set "ENABLE_ACCESSIBILITY=0"
 
 REM  Set to 1 ONLY if you can't install the corporate CA. Insecure.
@@ -296,7 +296,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "  if('%CUSTOM_MODEL_CAPABILITIES%'){$e['ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES']='%CUSTOM_MODEL_CAPABILITIES%'}};" ^
   "if('%SKIP_TLS_VERIFY%' -eq '1'){$e['NODE_TLS_REJECT_UNAUTHORIZED']='0'};" ^
   "if('%PROXY_URL%'){$e['HTTP_PROXY']='%PROXY_URL%';$e['HTTPS_PROXY']='%PROXY_URL%';$e['NO_PROXY']='%NO_PROXY%'};" ^
-  "if('%DEFAULT_MODEL%'){$s['model']='%DEFAULT_MODEL%'};" ^
+  "if('%DEFAULT_MODEL%'){$s['model']='%DEFAULT_MODEL%';$e['ANTHROPIC_MODEL']='%DEFAULT_MODEL%'};" ^
   "$s|ConvertTo-Json -Depth 10|Set-Content -Path $f -Encoding UTF8;" ^
   "Write-Host '   [OK] Wrote' $f"
 
