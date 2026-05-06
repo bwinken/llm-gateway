@@ -306,8 +306,23 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo      ANTHROPIC_BASE_URL = %GATEWAY_URL%
-if not "%DEFAULT_MODEL%"=="" echo      model              = %DEFAULT_MODEL%
+REM ─ Mask API key for the on-screen summary (show only last 4 chars) ─
+set "API_KEY_MASKED=********"
+if defined API_KEY if not "%API_KEY%"=="__USER_API_KEY__" (
+    set "API_KEY_MASKED=********%API_KEY:~-4%"
+)
+
+echo.
+echo    Settings written to %USERPROFILE%\.claude\settings.json
+echo      ANTHROPIC_BASE_URL        = %GATEWAY_URL%
+echo      ANTHROPIC_API_KEY         = %API_KEY_MASKED%
+if not "%DEFAULT_MODEL%"=="" echo      model                     = %DEFAULT_MODEL%
+if defined GIT_BASH_PATH (
+    echo      CLAUDE_CODE_GIT_BASH_PATH = %GIT_BASH_PATH%
+) else (
+    echo      CLAUDE_CODE_GIT_BASH_PATH = ^(not set^)
+)
+if not "%PROXY_URL%"=="" echo      HTTP_PROXY / HTTPS_PROXY  = %PROXY_URL%
 
 REM ============================================================
 REM  8. Verify
@@ -326,6 +341,34 @@ echo ============================================================
 echo   Claude Code installation complete
 echo ============================================================
 echo.
+
+REM ─ Git Bash advisory ─
+REM PortableGit case: GIT_BASH_PATH was auto-resolved → already in
+REM settings.json, nothing more to do. System-Git case: we don't try
+REM to derive the path (too many install layouts), so tell the user
+REM exactly what to add if Claude Code's Bash tool fails to spawn.
+if not defined GIT_BASH_PATH (
+    if "%GIT_EXISTS%"=="1" (
+        echo [ACTION REQUIRED] CLAUDE_CODE_GIT_BASH_PATH was not auto-set.
+        echo.
+        echo   Your existing Git install was kept, but the installer didn't
+        echo   guess where bash.exe lives. If Claude Code's Bash tool fails
+        echo   ^(common on Windows^), add this to %USERPROFILE%\.claude\settings.json
+        echo   under the "env" block:
+        echo.
+        echo       "CLAUDE_CODE_GIT_BASH_PATH": "C:\\Program Files\\Git\\bin\\bash.exe"
+        echo.
+        echo   Adjust the path if Git is installed elsewhere ^(check 'where git'
+        echo   then look for ..\bin\bash.exe relative to the install root^).
+        echo.
+    ) else (
+        echo [WARN] Git was not installed and CLAUDE_CODE_GIT_BASH_PATH is unset.
+        echo   Claude Code's Bash tool will not work until you install Git
+        echo   ^(or PortableGit^) and add the path to settings.json.
+        echo.
+    )
+)
+
 echo Next steps:
 echo   1. Close this window and open a NEW cmd / Terminal.
 echo      ^(So the updated PATH takes effect.^)
