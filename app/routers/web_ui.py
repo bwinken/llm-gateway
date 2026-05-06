@@ -76,6 +76,7 @@ async def index(
             "supports_tools": route.get("supports_tools", False),
             "supports_vision": route.get("supports_vision", False),
             "supports_prompt_caching": route.get("supports_prompt_caching", False),
+            "is_reasoning": route.get("is_reasoning", False),
         })
         if not first_model and model_type in ("llm", "vlm"):
             first_model = alias
@@ -130,6 +131,7 @@ async def dashboard(
                 "supports_tools": route.get("supports_tools", False),
                 "supports_vision": route.get("supports_vision", False),
                 "supports_prompt_caching": route.get("supports_prompt_caching", False),
+                "is_reasoning": route.get("is_reasoning", False),
             }
         )
 
@@ -157,6 +159,7 @@ async def dashboard(
                 "supports_tools": entry.get("supports_tools", False),
                 "supports_vision": entry.get("supports_vision", False),
                 "supports_prompt_caching": entry.get("supports_prompt_caching", False),
+                "is_reasoning": entry.get("is_reasoning", False),
             })
 
     return templates.TemplateResponse(

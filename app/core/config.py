@@ -44,6 +44,7 @@ _MODEL_METADATA_KEYS: tuple[str, ...] = (
     "supports_tools",
     "supports_vision",
     "supports_prompt_caching",
+    "is_reasoning",
 )
 
 # Optional per-model pricing overrides (USD per million tokens).

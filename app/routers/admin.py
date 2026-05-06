@@ -565,6 +565,7 @@ async def save_config_api(
         "supports_tools": bool,
         "supports_vision": bool,
         "supports_prompt_caching": bool,
+        "is_reasoning": bool,
     }
     _INTERNAL_TYPES: dict[str, type | tuple[type, ...]] = {
         "hidden": bool,

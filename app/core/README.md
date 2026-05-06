@@ -44,7 +44,7 @@ Parses `config.toml` and `.env`, producing global configuration objects.
 
 **Optional per-model fields** (handled by `_MODEL_METADATA_KEYS`, `_MODEL_INTERNAL_KEYS`, `_MODEL_PRICING_KEYS`):
 
-- Metadata surfaced via `GET /v1/models` / `/azure/v1/models`: `display_name`, `context_window`, `max_output_tokens`, `supports_tools`, `supports_vision`, `supports_prompt_caching`
+- Metadata surfaced via `GET /v1/models` / `/azure/v1/models`: `display_name`, `context_window`, `max_output_tokens`, `supports_tools`, `supports_vision`, `supports_prompt_caching`, `is_reasoning`
 - Internal flags: `hidden` (not surfaced to clients)
 - Pricing overrides: `input_price_per_1m`, `output_price_per_1m`. When present on a model entry they take priority over `[pricing.<type>]`, which in turn falls back to `[pricing]` defaults (`_default`).
 
