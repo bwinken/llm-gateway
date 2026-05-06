@@ -246,8 +246,13 @@ async def personalized_claude_installer(
     script = template_path.read_text(encoding="utf-8").replace(
         "__USER_API_KEY__", user.api_key
     )
+    # cmd.exe is fragile with LF-only files (it can merge lines, swallow REM
+    # blocks, and end up running comment text as commands). Normalize all
+    # line endings to CRLF regardless of how the operator saved the template
+    # on the (typically Linux) gateway host.
+    script = script.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
     return Response(
-        content=script,
+        content=script.encode("utf-8"),
         media_type="application/octet-stream",
         headers={
             "Content-Disposition": 'attachment; filename="install-claude-code.bat"',
