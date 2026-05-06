@@ -190,6 +190,14 @@ if "%GIT_EXISTS%"=="0" if not "%GIT_SOURCE%"=="" (
     )
 )
 
+REM ── Resolve bash.exe for Claude Code's Bash tool ──
+REM PortableGit ships bash.exe under bin\, which is NOT on PATH (only
+REM cmd\ is added above). Without CLAUDE_CODE_GIT_BASH_PATH, Claude
+REM Code's Bash tool fails to spawn shells on Windows.
+set "GIT_BASH_PATH="
+if exist "%GIT_TARGET%\bin\bash.exe" set "GIT_BASH_PATH=%GIT_TARGET%\bin\bash.exe"
+if defined GIT_BASH_PATH echo    [OK] Git Bash: %GIT_BASH_PATH%
+
 REM ============================================================
 REM  5. Configure npm proxy + registry
 REM ============================================================
@@ -280,6 +288,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "if([int]'%MAX_OUTPUT_TOKENS%' -gt 0){$e['CLAUDE_CODE_MAX_OUTPUT_TOKENS']='%MAX_OUTPUT_TOKENS%'};" ^
   "if([int]'%AUTO_COMPACT_WINDOW%' -gt 0){$e['CLAUDE_CODE_AUTO_COMPACT_WINDOW']='%AUTO_COMPACT_WINDOW%'};" ^
   "if('%CLAUDE_SHELL%'){$e['CLAUDE_CODE_SHELL']='%CLAUDE_SHELL%'};" ^
+  "if('%GIT_BASH_PATH%'){$e['CLAUDE_CODE_GIT_BASH_PATH']='%GIT_BASH_PATH%'};" ^
   "if('%ENABLE_POWERSHELL_TOOL%' -eq '1'){$e['CLAUDE_CODE_USE_POWERSHELL_TOOL']='1'};" ^
   "if('%ENABLE_ACCESSIBILITY%' -eq '1'){$e['CLAUDE_CODE_ACCESSIBILITY']='1'};" ^
   "if('%CUSTOM_MODEL_ALIAS%'){$e['ANTHROPIC_CUSTOM_MODEL_OPTION']='%CUSTOM_MODEL_ALIAS%';" ^
