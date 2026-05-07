@@ -12,6 +12,17 @@ from app.core.timeutil import local_day_start_utc
 from app.models.schema import AppOwner, UsageLog, User
 
 
+def _local_date(session: Session, col):
+    """SQL expression: Asia/Taipei calendar date of a UTC-wallclock timestamp column.
+
+    Daily aggregates would otherwise bucket by UTC date, splitting Taipei-morning
+    traffic into the previous day's row.
+    """
+    if session.bind is not None and session.bind.dialect.name == "sqlite":
+        return func.date(col, "+8 hours")
+    return func.date(col + timedelta(hours=8))
+
+
 def get_user_daily_summary(session: Session, user_id: int) -> dict:
     """Total tokens, cost, and request count for today (Asia/Taipei day)."""
     today_start = local_day_start_utc()
@@ -62,9 +73,10 @@ def get_daily_trends(session: Session, user_id: int, days: int = 30) -> list[dic
     """Return daily aggregates for the last N days as a list of dicts."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
+    day = _local_date(session, UsageLog.created_at)
     stmt = (
         select(
-            func.date(UsageLog.created_at).label("day"),
+            day.label("day"),
             func.count(UsageLog.id).label("requests"),
             func.coalesce(func.sum(UsageLog.cost_usd), 0).label("cost"),
             func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
@@ -72,8 +84,8 @@ def get_daily_trends(session: Session, user_id: int, days: int = 30) -> list[dic
         )
         .where(UsageLog.user_id == user_id)
         .where(UsageLog.created_at >= cutoff)
-        .group_by(func.date(UsageLog.created_at))
-        .order_by(func.date(UsageLog.created_at))
+        .group_by(day)
+        .order_by(day)
     )
     rows = session.exec(stmt).all()
 
@@ -93,16 +105,17 @@ def get_dau_trends(session: Session, days: int = 30) -> list[dict]:
     """Return daily active user counts for the last N days (excludes app accounts)."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
+    day = _local_date(session, UsageLog.created_at)
     stmt = (
         select(
-            func.date(UsageLog.created_at).label("day"),
+            day.label("day"),
             func.count(func.distinct(UsageLog.user_id)).label("dau"),
         )
         .join(User, UsageLog.user_id == User.id)
         .where(UsageLog.created_at >= cutoff)
         .where(~User.username.startswith("app_"))
-        .group_by(func.date(UsageLog.created_at))
-        .order_by(func.date(UsageLog.created_at))
+        .group_by(day)
+        .order_by(day)
     )
     rows = session.exec(stmt).all()
     return [{"date": str(row[0]), "dau": int(row[1])} for row in rows]
