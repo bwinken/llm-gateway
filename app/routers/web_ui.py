@@ -19,6 +19,7 @@ from app.core.auth import get_web_user
 from app.core.config import APP_TITLE, get_azure_models_snapshot, get_model_routing_snapshot
 from app.core.database import get_session
 from app.core.server_state import is_alive
+from app.core.timeutil import LOCAL_TZ
 from app.services.stats import get_daily_trends, get_owned_apps_summary, get_user_daily_summary, get_user_monthly_summary
 
 router = APIRouter()
@@ -180,7 +181,7 @@ async def dashboard(
             today_output=today["total_output_tokens"],
             usage_percent=round(usage_percent, 1),
             trend_data=trend_data,
-            now_utc=datetime.now(timezone.utc),
+            today_str=datetime.now(LOCAL_TZ).strftime("%Y-%m-%d"),
             owned_apps=owned_apps,
             server_groups=server_groups,
             claude_code_available=claude_code_available,
