@@ -296,28 +296,7 @@
     }
 </script>
 
-{# ── Today's Detail ── #}
 {% set today_str = now_utc.strftime('%Y-%m-%d') %}
-{% set today_data = trend_data | selectattr('date', 'equalto', today_str) | list %}
-{% set td = today_data[0] if today_data else {'reqs': 0, 'cost': 0, 'input_tokens': 0, 'output_tokens': 0} %}
-<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8 gw-anim">
-    <div class="gw-card p-4">
-        <div class="text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1">Today's Requests</div>
-        <div class="text-2xl font-bold text-t1 font-mono tabular-nums">{{ td.reqs }}</div>
-    </div>
-    <div class="gw-card p-4">
-        <div class="text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1">Today's Cost</div>
-        <div class="text-2xl font-bold text-t1 font-mono tabular-nums">${{ "%.4f"|format(td.cost) }}</div>
-    </div>
-    <div class="gw-card p-4">
-        <div class="text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1">Today's Input</div>
-        <div class="text-2xl font-bold text-t1 font-mono tabular-nums">{{ format_token(td.input_tokens) }}</div>
-    </div>
-    <div class="gw-card p-4">
-        <div class="text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1">Today's Output</div>
-        <div class="text-2xl font-bold text-t1 font-mono tabular-nums">{{ format_token(td.output_tokens) }}</div>
-    </div>
-</div>
 
 {# ── Daily Breakdown Table ── #}
 <div class="gw-card overflow-hidden mb-8 gw-anim">
