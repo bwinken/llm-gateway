@@ -3,19 +3,35 @@
 {% block content %}
 
 {# ── Hero ── #}
-<div class="text-center mt-8 mb-14 gw-anim">
-    <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium mb-6"
-         style="background:rgba(99,152,255,0.08);border:1px solid rgba(99,152,255,0.15);color:#6398ff;">
-        <span class="inline-block w-1.5 h-1.5 rounded-full bg-ag"></span>
+<div class="text-center mt-12 mb-16 gw-anim">
+    <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-semibold tracking-wide mb-7"
+         style="background:rgba(99,152,255,0.08);border:1px solid rgba(99,152,255,0.18);color:#7aa9ff;">
+        <span class="relative inline-flex w-1.5 h-1.5">
+            <span class="absolute inline-flex h-full w-full rounded-full bg-ag opacity-50 animate-ping"></span>
+            <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-ag"></span>
+        </span>
         OpenAI-Compatible API Gateway
     </div>
-    <h1 class="text-4xl sm:text-5xl font-extrabold text-t1 tracking-tight leading-tight">
-        Welcome to <span style="background:linear-gradient(135deg,#6398ff,#4dd9e8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">{{ app_title | default("LLM Gateway") }}</span>
+
+    <h1 class="text-[2.5rem] sm:text-[3.25rem] lg:text-[3.75rem] font-extrabold text-t1 leading-[1.05]"
+        style="letter-spacing:-0.022em">
+        Welcome to
+        <span class="block sm:inline relative" style="background:linear-gradient(135deg,#6398ff 0%,#4dd9e8 65%,#a78bfa 110%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">
+            {{ app_title | default("LLM Gateway") }}
+        </span>
     </h1>
-    <p class="mt-4 text-lg text-t3 max-w-2xl mx-auto leading-relaxed">
-        Use your existing OpenAI SDK to access LLM, VLM, Embedding, and Reranker models through a single unified endpoint.
+
+    <div class="gw-hero-rule mt-7"></div>
+
+    <p class="mt-7 text-base sm:text-lg text-t3 max-w-2xl mx-auto leading-relaxed">
+        Use your existing OpenAI SDK to access
+        <span class="text-t2 font-medium">LLM</span>,
+        <span class="text-t2 font-medium">VLM</span>,
+        <span class="text-t2 font-medium">Embedding</span>, and
+        <span class="text-t2 font-medium">Reranker</span> models through a single unified endpoint.
     </p>
-    <div class="mt-8 flex items-center justify-center gap-3 flex-wrap">
+
+    <div class="mt-9 flex items-center justify-center gap-3 flex-wrap">
         <a href="/dashboard" class="gw-btn gw-btn-primary px-6 py-3 text-sm">
             Go to Dashboard &rarr;
         </a>
@@ -26,17 +42,19 @@
             First-Time Setup
         </a>
     </div>
-    <p class="mt-3 text-xs text-t4">
-        Need the CA certificate or Claude Code CLI? Visit
-        <a href="/setup#cert" class="text-ab hover:text-ac">Setup → Certificate</a>
-        or
-        <a href="/setup#claude-code" class="text-ab hover:text-ac">Setup → Claude Code</a>.
+    <p class="mt-4 text-xs text-t4 tracking-wide">
+        Need the CA certificate or Claude Code CLI?
+        <a href="/setup#cert" class="text-ab hover:text-ac transition-colors">Certificate</a>
+        <span class="mx-1.5 text-t4">·</span>
+        <a href="/setup#claude-code" class="text-ab hover:text-ac transition-colors">Claude Code</a>
     </p>
 </div>
 
+<hr class="gw-divider mb-14">
+
 {# ── Quick Start Steps ── #}
 <div class="max-w-4xl mx-auto mb-14 gw-anim gw-d1">
-    <h2 class="text-sm font-bold text-t3 uppercase tracking-wider mb-6 text-center">Quick Start — 3 Steps</h2>
+    <div class="text-center mb-7"><span class="gw-eyebrow">Quick Start &mdash; 3 Steps</span></div>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
 
         {# Step 1 #}
@@ -75,16 +93,14 @@
 
 {# ── Code Example ── #}
 <div class="max-w-4xl mx-auto mb-14 gw-anim gw-d2">
-    <h2 class="text-sm font-bold text-t3 uppercase tracking-wider mb-6 text-center">Example</h2>
-    <div class="gw-card overflow-hidden">
-        <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid rgba(255,255,255,0.04)">
-            <div class="flex items-center gap-3">
-                <span class="text-xs font-bold text-t2">Python — Chat Completions</span>
-            </div>
-            <span class="text-[11px] font-mono text-ab bg-[rgba(99,152,255,0.08)] px-2 py-0.5 rounded border border-[rgba(99,152,255,0.15)]">POST /v1/chat/completions</span>
+    <div class="text-center mb-7"><span class="gw-eyebrow">Example</span></div>
+    <div class="gw-code-window">
+        <div class="gw-code-bar">
+            <span class="gw-code-dots"><span></span><span></span><span></span></span>
+            <span class="text-[11px] font-mono text-t4 ml-1">python &mdash; chat completions</span>
+            <span class="ml-auto text-[10px] font-mono text-ab bg-[rgba(99,152,255,0.08)] px-2 py-0.5 rounded border border-[rgba(99,152,255,0.15)]">POST /v1/chat/completions</span>
         </div>
-        <div class="p-5">
-            <pre class="gw-code p-4 text-sm font-mono overflow-x-auto leading-relaxed"><span class="text-av">from</span> <span class="text-t1">openai</span> <span class="text-av">import</span> <span class="text-t1">OpenAI</span>
+        <pre class="p-5 text-sm font-mono overflow-x-auto leading-relaxed"><span class="text-av">from</span> <span class="text-t1">openai</span> <span class="text-av">import</span> <span class="text-t1">OpenAI</span>
 
 client = OpenAI(
     base_url=<span class="text-ag">"{{ gateway_base }}"</span>,
@@ -96,13 +112,12 @@ resp = client.chat.completions.create(
     messages=[{<span class="text-ag">"role"</span>: <span class="text-ag">"user"</span>, <span class="text-ag">"content"</span>: <span class="text-ag">"Hello!"</span>}]
 )
 <span class="text-t4">print</span>(resp.choices[<span class="text-aa">0</span>].message.content)</pre>
-        </div>
     </div>
 </div>
 
 {# ── Available Endpoints ── #}
 <div class="max-w-4xl mx-auto mb-14 gw-anim gw-d3">
-    <h2 class="text-sm font-bold text-t3 uppercase tracking-wider mb-6 text-center">Available Endpoints</h2>
+    <div class="text-center mb-7"><span class="gw-eyebrow">Available Endpoints</span></div>
     <div class="gw-card overflow-hidden">
         <table class="gw-table">
             <thead><tr>
@@ -159,7 +174,7 @@ resp = client.chat.completions.create(
 {# ── Available Models ── #}
 {% if models_by_type %}
 <div class="max-w-4xl mx-auto mb-14 gw-anim gw-d4">
-    <h2 class="text-sm font-bold text-t3 uppercase tracking-wider mb-6 text-center">Available Models</h2>
+    <div class="text-center mb-7"><span class="gw-eyebrow">Available Models</span></div>
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {% set type_colors = {
             'llm': ('#6398ff', 'rgba(99,152,255,0.08)', 'rgba(99,152,255,0.15)'),
@@ -225,7 +240,9 @@ resp = client.chat.completions.create(
 {% endif %}
 
 {# ── Key Info Cards ── #}
+<hr class="gw-divider mb-12">
 <div class="max-w-4xl mx-auto mb-14 gw-anim gw-d5">
+    <div class="text-center mb-7"><span class="gw-eyebrow">Why this gateway</span></div>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
         <div class="gw-card p-5">
             <div class="text-ab mb-3">

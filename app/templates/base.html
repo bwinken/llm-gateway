@@ -36,11 +36,35 @@
 
     <style>
         /* ── Base ── */
+        html { scroll-behavior: smooth; }
         body {
             background: #0c0d12;
-            background-image: radial-gradient(ellipse at 50% 0%, rgba(99,152,255,0.025) 0%, transparent 55%);
             color: #c4c9d4;
+            position: relative;
+            min-height: 100vh;
         }
+        /* Two layers of atmosphere: a faint dot grid for depth, plus a soft
+           top-glow that anchors the brand colour without dominating. */
+        body::before {
+            content: '';
+            position: fixed; inset: 0; pointer-events: none; z-index: 0;
+            background-image:
+                radial-gradient(rgba(255,255,255,0.025) 1px, transparent 1px);
+            background-size: 32px 32px;
+            background-position: 0 0;
+            mask-image: linear-gradient(180deg, #000 0%, #000 60%, transparent 100%);
+            -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 60%, transparent 100%);
+        }
+        body::after {
+            content: '';
+            position: fixed; inset: 0; pointer-events: none; z-index: 0;
+            background:
+                radial-gradient(60% 80% at 50% -10%, rgba(99,152,255,0.06) 0%, transparent 55%),
+                radial-gradient(40% 60% at 100% 0%, rgba(77,217,232,0.04) 0%, transparent 60%),
+                radial-gradient(40% 60% at 0% 0%,   rgba(167,139,250,0.03) 0%, transparent 60%);
+        }
+        body > * { position: relative; z-index: 1; }
+
         ::selection { background: rgba(99,152,255,0.25); color: #eef0f4; }
         ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-track { background: transparent; }
@@ -69,19 +93,84 @@
 
         /* ── Card ── */
         .gw-card {
-            background: #16171e;
+            background: linear-gradient(180deg, #16171e 0%, #14151c 100%);
             border: 1px solid rgba(255,255,255,0.05);
             border-radius: 12px;
-            transition: border-color 0.25s, box-shadow 0.25s;
+            transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.25s ease;
+            position: relative;
         }
         .gw-card:hover {
-            border-color: rgba(99,152,255,0.1);
-            box-shadow: 0 0 24px rgba(99,152,255,0.025);
+            border-color: rgba(99,152,255,0.14);
+            box-shadow: 0 0 32px rgba(99,152,255,0.04), 0 1px 0 rgba(255,255,255,0.02) inset;
         }
+        /* A subtle gradient stripe across the top edge of stat cards. The pseudo
+           sits above the border so it reads like a colored cap, not a fill. */
         .gw-stat::before {
             content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
             background: var(--accent, linear-gradient(90deg, #6398ff, #4dd9e8));
-            opacity: 0.7; border-radius: 12px 12px 0 0;
+            opacity: 0.85; border-radius: 12px 12px 0 0;
+        }
+
+        /* ── Section divider (faint glow line between major blocks) ── */
+        .gw-divider {
+            height: 1px; border: 0;
+            background: linear-gradient(90deg, transparent 0%, rgba(99,152,255,0.18) 30%, rgba(77,217,232,0.18) 70%, transparent 100%);
+            margin: 0 auto;
+            max-width: 56rem;
+            opacity: 0.55;
+        }
+
+        /* ── Section heading (eyebrow) — small caps with twin accent bars ── */
+        .gw-eyebrow {
+            display: inline-flex; align-items: center; gap: 10px;
+            font-size: 11px; font-weight: 700;
+            letter-spacing: 0.18em; text-transform: uppercase;
+            color: #868da0;
+        }
+        .gw-eyebrow::before, .gw-eyebrow::after {
+            content: ''; width: 28px; height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(99,152,255,0.4));
+        }
+        .gw-eyebrow::after { background: linear-gradient(90deg, rgba(99,152,255,0.4), transparent); }
+
+        /* ── Code block "terminal" frame ── */
+        .gw-code-window {
+            background: #0e0f14;
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+        }
+        .gw-code-window::before {
+            content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.07) 50%, transparent);
+        }
+        .gw-code-bar {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 14px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.025) 0%, transparent 100%);
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+        .gw-code-dots { display: inline-flex; gap: 6px; }
+        .gw-code-dots span {
+            width: 10px; height: 10px; border-radius: 50%;
+            background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.04);
+        }
+        .gw-code-dots span:nth-child(1) { background: rgba(255,92,92,0.28); border-color: rgba(255,92,92,0.18); }
+        .gw-code-dots span:nth-child(2) { background: rgba(245,166,35,0.28); border-color: rgba(245,166,35,0.18); }
+        .gw-code-dots span:nth-child(3) { background: rgba(61,214,140,0.28); border-color: rgba(61,214,140,0.18); }
+
+        /* ── Hero accent bar (animated underline for big headings) ── */
+        .gw-hero-rule {
+            height: 2px; width: 64px; margin: 0 auto;
+            background: linear-gradient(90deg, transparent, #6398ff 35%, #4dd9e8 65%, transparent);
+            border-radius: 2px;
+            position: relative;
+        }
+        .gw-hero-rule::after {
+            content: ''; position: absolute; inset: -3px -8px; z-index: -1;
+            background: linear-gradient(90deg, transparent, rgba(99,152,255,0.25), rgba(77,217,232,0.25), transparent);
+            filter: blur(6px); opacity: 0.7;
         }
 
         /* ── Form ── */
