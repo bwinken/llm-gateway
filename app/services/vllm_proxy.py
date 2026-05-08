@@ -233,6 +233,17 @@ def _fallback_headers(fallback_reason: str | None) -> dict[str, str]:
     return {}
 
 
+def _tokenize_url(base_url: str) -> str:
+    """vLLM exposes /tokenize at the server root, not under /v1, but the
+    configured base_url usually ends in /v1 (so chat/completions etc. resolve
+    correctly). Strip a trailing /v1 before appending /tokenize.
+    """
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3]
+    return f"{root}/tokenize"
+
+
 async def forward_request(
     request: Request,
     user: User,
@@ -691,7 +702,7 @@ async def forward_count_tokens_request(
         tokenize_body["tools"] = openai_body["tools"]
 
     client = get_client()
-    target_url = f"{base_url}/tokenize"
+    target_url = _tokenize_url(base_url)
 
     try:
         resp = await client.post(
@@ -773,7 +784,7 @@ async def forward_tokenize_request(
     extra_headers = _fallback_headers(fallback_reason)
 
     client = get_client()
-    target_url = f"{base_url}/tokenize"
+    target_url = _tokenize_url(base_url)
 
     try:
         resp = await client.post(
