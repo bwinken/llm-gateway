@@ -39,9 +39,11 @@ from app.services.monitor import is_monitored, log_monitor, log_monitor_error
 _STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
 
 # How often to send an Anthropic SSE `event: ping` while a stream is silent.
-# Claude Code treats long gaps without any event as a dead connection, so we
-# emit a heartbeat well below typical client timeouts (often 30s).
-_ANTHROPIC_PING_INTERVAL = 15.0
+# Claude Code treats long gaps without any event as a dead connection. Keep
+# this well below the smallest client idle timeout we expect to see (~15s
+# observed for some Claude Code builds) — at 10s we get ~33% headroom for
+# network jitter, buffer flush, and process scheduling.
+_ANTHROPIC_PING_INTERVAL = 10.0
 _ANTHROPIC_PING_EVENT = "event: ping\ndata: {}\n\n"
 
 
