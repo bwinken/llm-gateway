@@ -30,7 +30,14 @@ from app.services.anthropic_adapter import (
     openai_to_anthropic_response,
 )
 from app.services.monitor import is_monitored, log_monitor, log_monitor_error
-from app.services.vllm_proxy import _approx_token_count, _calc_cost, _error_response, _log_usage
+from app.services.vllm_proxy import (
+    _ANTHROPIC_PING_EVENT,
+    _approx_token_count,
+    _calc_cost,
+    _error_response,
+    _log_usage,
+    _pump_anthropic_lines,
+)
 
 
 def _resolve_azure(alias: str) -> dict[str, Any]:
@@ -307,17 +314,25 @@ async def _stream_messages(
 ) -> StreamingResponse:
     req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
     _monitoring = is_monitored(user.id)
+    logger.info("Stream start | user={} model={} endpoint=/azure/v1/messages", user.username, alias)
 
     async def event_generator():
         translator = AnthropicStreamTranslator(alias)
         chunks: list[dict] = []
-        resp = None
         try:
             for event in translator.start():
                 yield event
 
-            resp = await client.send(req, stream=True)
-            async for line in resp.aiter_lines():
+            async for kind, data in _pump_anthropic_lines(client.send(req, stream=True)):
+                if kind == "ping":
+                    yield _ANTHROPIC_PING_EVENT
+                    continue
+                if kind == "err":
+                    raise data
+                if kind == "done":
+                    break
+                # kind == "line"
+                line = data
                 if not line or not line.startswith("data: "):
                     continue
                 data_str = line[6:]
@@ -338,12 +353,6 @@ async def _stream_messages(
             logger.error("Azure messages stream error: {}", exc)
             err_payload = json.dumps({"type": "error", "error": {"type": "api_error", "message": str(exc)}})
             yield f"event: error\ndata: {err_payload}\n\n"
-        finally:
-            if resp is not None:
-                try:
-                    await resp.aclose()
-                except Exception:
-                    pass
 
         input_tk = translator.input_tokens
         output_tk = translator.output_tokens

@@ -9,6 +9,7 @@ Core proxy logic:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from decimal import Decimal
 from typing import Any
@@ -36,6 +37,62 @@ from app.services.monitor import is_monitored, log_monitor, log_monitor_error
 # stop and rely on client disconnect to unwind stuck requests. Non-stream
 # paths keep a bounded 120s timeout.
 _STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+
+# How often to send an Anthropic SSE `event: ping` while a stream is silent.
+# Claude Code treats long gaps without any event as a dead connection, so we
+# emit a heartbeat well below typical client timeouts (often 30s).
+_ANTHROPIC_PING_INTERVAL = 15.0
+_ANTHROPIC_PING_EVENT = "event: ping\ndata: {}\n\n"
+
+
+async def _pump_anthropic_lines(send_coro, ping_interval: float = _ANTHROPIC_PING_INTERVAL):
+    """Run a streaming HTTP request as a background task and yield events.
+
+    Yields tuples:
+      ('ping', None)        — `ping_interval` seconds passed without new data
+      ('line', str)         — SSE data line from downstream
+      ('err', Exception)    — downstream raised
+      ('done', None)        — stream finished cleanly
+
+    Caller does NOT need to close the response — this helper handles aclose.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    resp_holder: list = []
+
+    async def reader():
+        try:
+            resp = await send_coro
+            resp_holder.append(resp)
+            async for line in resp.aiter_lines():
+                await queue.put(("line", line))
+        except BaseException as e:
+            await queue.put(("err", e))
+        finally:
+            await queue.put(("done", None))
+
+    task = asyncio.create_task(reader())
+    try:
+        while True:
+            try:
+                kind, data = await asyncio.wait_for(queue.get(), timeout=ping_interval)
+            except asyncio.TimeoutError:
+                yield ("ping", None)
+                continue
+            yield (kind, data)
+            if kind in ("done", "err"):
+                return
+    finally:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        for resp in resp_holder:
+            try:
+                await resp.aclose()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -601,19 +658,26 @@ async def _stream_messages(
     req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     _monitoring = is_monitored(user.id)
 
+    logger.info("Stream start | user={} model={} endpoint=/v1/messages", user.username, model_alias)
+
     async def event_generator():
         translator = AnthropicStreamTranslator(model_alias)
         chunks: list[dict] = []
-        resp = None
         try:
             for event in translator.start():
                 yield event
 
-            resp = await client.send(req, stream=True)
-            async for line in resp.aiter_lines():
-                if not line:
+            async for kind, data in _pump_anthropic_lines(client.send(req, stream=True)):
+                if kind == "ping":
+                    yield _ANTHROPIC_PING_EVENT
                     continue
-                if not line.startswith("data: "):
+                if kind == "err":
+                    raise data
+                if kind == "done":
+                    break
+                # kind == "line"
+                line = data
+                if not line or not line.startswith("data: "):
                     continue
                 data_str = line[6:]
                 if data_str == "[DONE]":
@@ -633,12 +697,6 @@ async def _stream_messages(
             logger.error("Stream error: {}: {}", type(exc).__name__, exc)
             err_payload = json.dumps({"type": "error", "error": {"type": "api_error", "message": str(exc)}})
             yield f"event: error\ndata: {err_payload}\n\n"
-        finally:
-            if resp is not None:
-                try:
-                    await resp.aclose()
-                except Exception:
-                    pass
 
         input_tokens = translator.input_tokens
         output_tokens = translator.output_tokens

@@ -63,7 +63,10 @@ set "AUTO_COMPACT_WINDOW=0"
 
 set "DISABLE_1M_CONTEXT=0"
 set "DISABLE_TELEMETRY=1"
-set "DISABLE_INTERLEAVED_THINKING=0"
+REM  Set to 1 because vLLM downstreams typically don't emit Anthropic-style
+REM  thinking blocks; leaving interleaved thinking enabled makes Claude Code
+REM  hold the UI waiting for thinking events that never arrive.
+set "DISABLE_INTERLEAVED_THINKING=1"
 
 set "CLAUDE_SHELL="
 set "ENABLE_POWERSHELL_TOOL=0"
