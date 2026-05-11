@@ -244,6 +244,30 @@ class TestResponseTranslation:
         assert tu["name"] == "get_weather"
         assert tu["input"] == {"location": "SF"}
 
+    def test_reasoning_content_response(self):
+        """vLLM/DeepSeek-style `reasoning_content` becomes an Anthropic
+        `thinking` content block that precedes the answer's text block."""
+        openai_resp = {
+            "id": "chatcmpl-3",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "reasoning_content": "Let me think step by step about this...",
+                        "content": "The answer is 42.",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 20},
+        }
+        out = openai_to_anthropic_response(openai_resp, "qwen3-thinking")
+        # thinking block first, text block second
+        assert out["content"][0]["type"] == "thinking"
+        assert out["content"][0]["thinking"] == "Let me think step by step about this..."
+        assert out["content"][1] == {"type": "text", "text": "The answer is 42."}
+
     def test_max_tokens_reason(self):
         openai_resp = {
             "id": "x",
@@ -298,6 +322,47 @@ class TestStreamTranslator:
         # Claude Code parses this to drive its context-window indicator
         assert '"input_tokens": 5' in joined
         assert '"output_tokens": 2' in joined
+
+    def test_reasoning_then_text_stream(self):
+        """Reasoning chunks open a thinking block; transitioning to content
+        chunks closes the thinking block (with empty signature_delta) and
+        opens a separate text block. Indices are sequential."""
+        t = AnthropicStreamTranslator("qwen3-thinking")
+        events: list[str] = []
+        events.extend(t.start())
+        # Two reasoning chunks — single thinking block
+        events.extend(t.handle_chunk({
+            "choices": [{"index": 0, "delta": {"reasoning_content": "Let me think..."}, "finish_reason": None}]
+        }))
+        events.extend(t.handle_chunk({
+            "choices": [{"index": 0, "delta": {"reasoning_content": " step by step"}, "finish_reason": None}]
+        }))
+        # Then content — should close thinking, open text
+        events.extend(t.handle_chunk({
+            "choices": [{"index": 0, "delta": {"content": "The answer is 42."}, "finish_reason": None}]
+        }))
+        events.extend(t.handle_chunk({
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 20},
+        }))
+        events.extend(t.finish())
+
+        joined = "".join(events)
+        # Both block types appear
+        assert '"type": "thinking"' in joined
+        assert '"type": "text"' in joined
+        # thinking_delta carries the reasoning text
+        assert '"type": "thinking_delta"' in joined
+        assert "Let me think..." in joined
+        assert " step by step" in joined
+        # text_delta carries the answer
+        assert '"type": "text_delta"' in joined
+        assert "The answer is 42." in joined
+        # signature_delta closes the thinking block before content_block_stop
+        assert '"type": "signature_delta"' in joined
+        # Indices: thinking at 0, text at 1
+        assert '"index": 0' in joined
+        assert '"index": 1' in joined
 
     def test_tool_call_stream(self):
         t = AnthropicStreamTranslator("claude-x")

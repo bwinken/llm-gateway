@@ -229,6 +229,15 @@ def openai_to_anthropic_response(
 
     content_blocks: list[dict[str, Any]] = []
 
+    # Reasoning / chain-of-thought. vLLM's --enable-reasoning (and DeepSeek's
+    # own OpenAI-compatible API) put thinking output into a separate
+    # `reasoning_content` field on the message, alongside `content`. We
+    # surface that as an Anthropic `thinking` content block so Claude Code
+    # renders it inside a collapsible "Thought for N seconds" section.
+    reasoning = message.get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning:
+        content_blocks.append({"type": "thinking", "thinking": reasoning, "signature": ""})
+
     text = message.get("content")
     if isinstance(text, str) and text:
         content_blocks.append({"type": "text", "text": text})
@@ -302,7 +311,7 @@ class AnthropicStreamTranslator:
         self.stop_reason: str | None = None
         # Active content block tracking
         self._current_block_index: int = -1
-        self._current_block_type: str | None = None  # "text" | "tool_use"
+        self._current_block_type: str | None = None  # "thinking" | "text" | "tool_use"
         # Tool call state: map openai tool_call index -> our block index
         self._tool_index_to_block: dict[int, int] = {}
         self._started = False
@@ -357,6 +366,22 @@ class AnthropicStreamTranslator:
         choice = choices[0]
         delta = choice.get("delta") or {}
         finish_reason = choice.get("finish_reason")
+
+        # Reasoning delta (vLLM `--enable-reasoning`, DeepSeek, etc. emit
+        # chain-of-thought as a separate `reasoning_content` field). We map
+        # it to an Anthropic `thinking` content block so Claude Code can
+        # render it in its collapsible "Thought" panel.
+        reasoning = delta.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning:
+            yield from self._ensure_thinking_block()
+            yield self._sse(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": self._current_block_index,
+                    "delta": {"type": "thinking_delta", "thinking": reasoning},
+                },
+            )
 
         # Text delta
         text = delta.get("content")
@@ -444,6 +469,28 @@ class AnthropicStreamTranslator:
 
     # -- Internal helpers --------------------------------------------------------
 
+    def _ensure_thinking_block(self) -> Iterator[str]:
+        """Open (or keep open) a thinking content block at the current index.
+
+        Anthropic's wire format expects `content_block_start` with
+        ``{"type": "thinking", "thinking": ""}`` before any
+        ``thinking_delta`` events. Subsequent reasoning deltas can stream into
+        the same block.
+        """
+        if self._current_block_type == "thinking":
+            return
+        yield from self._close_current_block()
+        self._current_block_index += 1
+        self._current_block_type = "thinking"
+        yield self._sse(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": self._current_block_index,
+                "content_block": {"type": "thinking", "thinking": ""},
+            },
+        )
+
     def _ensure_text_block(self) -> Iterator[str]:
         if self._current_block_type == "text":
             return
@@ -462,6 +509,21 @@ class AnthropicStreamTranslator:
     def _close_current_block(self) -> Iterator[str]:
         if self._current_block_type is None:
             return
+        # Anthropic's real wire format emits a `signature_delta` to close a
+        # thinking block (a cryptographic hash of the thinking output for
+        # verification). vLLM-emitted reasoning isn't signed, but Claude
+        # Code expects *some* signature_delta before the stop event to
+        # finalise the thinking block; sending an empty string keeps the
+        # block well-formed without faking a real signature.
+        if self._current_block_type == "thinking":
+            yield self._sse(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": self._current_block_index,
+                    "delta": {"type": "signature_delta", "signature": ""},
+                },
+            )
         yield self._sse(
             "content_block_stop",
             {"type": "content_block_stop", "index": self._current_block_index},
