@@ -268,6 +268,29 @@ class TestResponseTranslation:
         assert out["content"][0]["thinking"] == "Let me think step by step about this..."
         assert out["content"][1] == {"type": "text", "text": "The answer is 42."}
 
+    def test_reasoning_alias_response(self):
+        """Some vLLM builds emit the field as `reasoning` instead of
+        `reasoning_content`; we accept either."""
+        openai_resp = {
+            "id": "chatcmpl-4",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "reasoning": "Here's a thinking process...",
+                        "content": "9.9 is larger.",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 20},
+        }
+        out = openai_to_anthropic_response(openai_resp, "radllm-code")
+        assert out["content"][0]["type"] == "thinking"
+        assert out["content"][0]["thinking"] == "Here's a thinking process..."
+        assert out["content"][1] == {"type": "text", "text": "9.9 is larger."}
+
     def test_max_tokens_reason(self):
         openai_resp = {
             "id": "x",
@@ -363,6 +386,31 @@ class TestStreamTranslator:
         # Indices: thinking at 0, text at 1
         assert '"index": 0' in joined
         assert '"index": 1' in joined
+
+    def test_reasoning_alias_stream(self):
+        """Stream path also accepts `reasoning` as an alias for
+        `reasoning_content` so older / alternate vLLM builds work."""
+        t = AnthropicStreamTranslator("radllm-code")
+        events: list[str] = []
+        events.extend(t.start())
+        events.extend(t.handle_chunk({
+            "choices": [{"index": 0, "delta": {"reasoning": "Thinking..."}, "finish_reason": None}]
+        }))
+        events.extend(t.handle_chunk({
+            "choices": [{"index": 0, "delta": {"content": "Answer."}, "finish_reason": None}]
+        }))
+        events.extend(t.handle_chunk({
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+        }))
+        events.extend(t.finish())
+
+        joined = "".join(events)
+        assert '"type": "thinking"' in joined
+        assert '"type": "thinking_delta"' in joined
+        assert "Thinking..." in joined
+        assert '"type": "text_delta"' in joined
+        assert "Answer." in joined
 
     def test_tool_call_stream(self):
         t = AnthropicStreamTranslator("claude-x")
