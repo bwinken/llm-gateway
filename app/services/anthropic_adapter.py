@@ -230,11 +230,11 @@ def openai_to_anthropic_response(
     content_blocks: list[dict[str, Any]] = []
 
     # Reasoning / chain-of-thought. vLLM's --enable-reasoning (and DeepSeek's
-    # own OpenAI-compatible API) put thinking output into a separate
-    # `reasoning_content` field on the message, alongside `content`. We
-    # surface that as an Anthropic `thinking` content block so Claude Code
-    # renders it inside a collapsible "Thought for N seconds" section.
-    reasoning = message.get("reasoning_content")
+    # own OpenAI-compatible API) put thinking output into a separate field
+    # on the message, alongside `content`. Field name varies by version /
+    # reasoning parser: newer vLLM uses `reasoning_content`, some builds
+    # (and OpenAI's o-series compatibility) use `reasoning`. Accept both.
+    reasoning = message.get("reasoning_content") or message.get("reasoning")
     if isinstance(reasoning, str) and reasoning:
         content_blocks.append({"type": "thinking", "thinking": reasoning, "signature": ""})
 
@@ -368,10 +368,11 @@ class AnthropicStreamTranslator:
         finish_reason = choice.get("finish_reason")
 
         # Reasoning delta (vLLM `--enable-reasoning`, DeepSeek, etc. emit
-        # chain-of-thought as a separate `reasoning_content` field). We map
-        # it to an Anthropic `thinking` content block so Claude Code can
-        # render it in its collapsible "Thought" panel.
-        reasoning = delta.get("reasoning_content")
+        # chain-of-thought as a separate field). Field name varies by
+        # version / parser: `reasoning_content` (newer vLLM) vs `reasoning`
+        # (some builds). Accept both and map to an Anthropic `thinking`
+        # content block so Claude Code renders it in its "Thought" panel.
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
         if isinstance(reasoning, str) and reasoning:
             yield from self._ensure_thinking_block()
             yield self._sse(
