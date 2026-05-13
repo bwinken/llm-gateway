@@ -510,12 +510,13 @@ class AnthropicStreamTranslator:
     def _close_current_block(self) -> Iterator[str]:
         if self._current_block_type is None:
             return
-        # Anthropic's real wire format emits a `signature_delta` to close a
-        # thinking block (a cryptographic hash of the thinking output for
-        # verification). vLLM-emitted reasoning isn't signed, but Claude
-        # Code expects *some* signature_delta before the stop event to
-        # finalise the thinking block; sending an empty string keeps the
-        # block well-formed without faking a real signature.
+        # Real Anthropic emits a `signature_delta` (base64 crypto signature)
+        # before closing a thinking block. vLLM doesn't sign — we send an
+        # empty signature, which observation shows Claude Code accepts (the
+        # collapsible "Thought" panel renders correctly). Omitting the
+        # event entirely would violate the spec's "thinking block must end
+        # with signature_delta then stop" rule and risks regressing some
+        # clients, so keep the empty-signature compromise.
         if self._current_block_type == "thinking":
             yield self._sse(
                 "content_block_delta",

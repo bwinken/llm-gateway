@@ -44,7 +44,11 @@ _STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
 # observed for some Claude Code builds) — at 10s we get ~33% headroom for
 # network jitter, buffer flush, and process scheduling.
 _ANTHROPIC_PING_INTERVAL = 10.0
-_ANTHROPIC_PING_EVENT = "event: ping\ndata: {}\n\n"
+# Real Anthropic's ping carries `{"type": "ping"}` as the data payload.
+# Claude Code parses every SSE event's data as JSON and dispatches on the
+# `type` key — an empty `{}` payload looks malformed to that parser and may
+# cause the client to drop or stall the stream, defeating the ping's purpose.
+_ANTHROPIC_PING_EVENT = 'event: ping\ndata: {"type": "ping"}\n\n'
 
 
 async def _pump_anthropic_lines(send_coro, ping_interval: float = _ANTHROPIC_PING_INTERVAL):
