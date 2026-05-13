@@ -43,7 +43,7 @@ graph LR
 | `POST` | `/v1/embeddings` | 文字向量嵌入 | `forward_simple_request` | `embedding`, `vision_embedding` |
 | `POST` | `/v1/rerank` | 文件重排序 | `forward_simple_request` | `reranker`, `vision_reranker` |
 | `POST` | `/v1/score` | 相關性評分 | `forward_simple_request` | `reranker`, `vision_reranker` |
-| `POST` | `/v1/messages`、`/messages` | Anthropic Messages(轉譯為 OpenAI) | `forward_messages_request` | `llm`, `vlm` |
+| `POST` | `/v1/messages`、`/messages` | Anthropic Messages(轉譯為 OpenAI;`reasoning_content` 串流成 `thinking` block;下游靜默時每 10 秒送 SSE `ping`) | `forward_messages_request` | `llm`, `vlm` |
 | `POST` | `/v1/messages/count_tokens` | Anthropic token 計數(轉送至 vLLM `/tokenize`,失敗時 fallback 為 chars/4) | `forward_count_tokens_request` | `llm`, `vlm` |
 | `POST` | `/v1/tokenize`、`/tokenize` | vLLM 原生 pass-through tokenize | `forward_tokenize_request` | `llm`, `vlm` |
 
@@ -86,7 +86,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `GET` | `/azure/v1/models` | 列出已設定的 Azure 部署(刻意不出現在 `/v1/models`) | 直接回傳 |
 | `POST` | `/azure/v1/chat/completions` | 透過 Azure 部署做 chat completion | `forward_chat_completions` |
 | `POST` | `/azure/v1/embeddings` | 透過 Azure 部署做 embeddings | `forward_embeddings` |
-| `POST` | `/azure/v1/messages`、`/azure/messages` | Anthropic Messages → Azure(共用 `anthropic_adapter`) | `forward_messages` |
+| `POST` | `/azure/v1/messages`、`/azure/messages` | Anthropic Messages → Azure(共用 `anthropic_adapter`;與 vLLM 路徑同樣支援 `thinking` block 轉譯與每 10 秒的 SSE `ping` 心跳) | `forward_messages` |
 | `POST` | `/azure/v1/messages/count_tokens`、`/azure/messages/count_tokens` | Token 計數(chars/4 估算;Azure 沒有 tokenize 端點) | `forward_count_tokens` |
 
 ### Azure 特定行為

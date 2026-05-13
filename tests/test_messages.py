@@ -348,8 +348,9 @@ class TestStreamTranslator:
 
     def test_reasoning_then_text_stream(self):
         """Reasoning chunks open a thinking block; transitioning to content
-        chunks closes the thinking block (with empty signature_delta) and
-        opens a separate text block. Indices are sequential."""
+        chunks closes the thinking block and opens a separate text block.
+        Indices are sequential. No signature_delta is emitted — see
+        _close_current_block for rationale (LiteLLM does the same)."""
         t = AnthropicStreamTranslator("qwen3-thinking")
         events: list[str] = []
         events.extend(t.start())
@@ -381,8 +382,9 @@ class TestStreamTranslator:
         # text_delta carries the answer
         assert '"type": "text_delta"' in joined
         assert "The answer is 42." in joined
-        # signature_delta closes the thinking block before content_block_stop
-        assert '"type": "signature_delta"' in joined
+        # We do NOT emit signature_delta (vLLM has no signature to forward,
+        # and strict Claude Code builds reject empty values).
+        assert '"type": "signature_delta"' not in joined
         # Indices: thinking at 0, text at 1
         assert '"index": 0' in joined
         assert '"index": 1' in joined

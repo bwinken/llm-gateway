@@ -44,7 +44,7 @@ graph LR
 | `POST` | `/v1/embeddings` | Text embeddings | `forward_simple_request` | `embedding`, `vision_embedding` |
 | `POST` | `/v1/rerank` | Document reranking | `forward_simple_request` | `reranker`, `vision_reranker` |
 | `POST` | `/v1/score` | Relevance scoring | `forward_simple_request` | `reranker`, `vision_reranker` |
-| `POST` | `/v1/messages`, `/messages` | Anthropic Messages (translates to OpenAI) | `forward_messages_request` | `llm`, `vlm` |
+| `POST` | `/v1/messages`, `/messages` | Anthropic Messages (translates to OpenAI; streams `reasoning_content` as `thinking` blocks; emits SSE `ping` every 10 s of downstream silence) | `forward_messages_request` | `llm`, `vlm` |
 | `POST` | `/v1/messages/count_tokens` | Anthropic token counting (forwards to vLLM `/tokenize`, falls back to chars/4) | `forward_count_tokens_request` | `llm`, `vlm` |
 | `POST` | `/v1/tokenize`, `/tokenize` | vLLM-native pass-through tokenize | `forward_tokenize_request` | `llm`, `vlm` |
 
@@ -87,7 +87,7 @@ Same client API key, same usage logging, same monitoring as the `/v1/*` path. On
 | `GET` | `/azure/v1/models` | List configured Azure deployments (not on `/v1/models`) | Direct response |
 | `POST` | `/azure/v1/chat/completions` | Chat completion via Azure deployment | `forward_chat_completions` |
 | `POST` | `/azure/v1/embeddings` | Embeddings via Azure deployment | `forward_embeddings` |
-| `POST` | `/azure/v1/messages`, `/azure/messages` | Anthropic Messages → Azure (uses shared `anthropic_adapter`) | `forward_messages` |
+| `POST` | `/azure/v1/messages`, `/azure/messages` | Anthropic Messages → Azure (shared `anthropic_adapter`; same `thinking`-block translation and 10 s SSE `ping` heartbeat as the vLLM path) | `forward_messages` |
 | `POST` | `/azure/v1/messages/count_tokens`, `/azure/messages/count_tokens` | Token counting (chars/4 estimate; Azure has no tokenize endpoint) | `forward_count_tokens` |
 
 ### Azure-specific behavior

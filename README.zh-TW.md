@@ -32,7 +32,7 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 ## 功能特色
 
 - **OpenAI 相容 API** — `/v1/chat/completions`、`/v1/embeddings`、`/v1/rerank`、`/v1/score`、`/v1/responses`、`/v1/tokenize`、`/v1/models`（僅列出 LLM/VLM）
-- **Anthropic Messages API** — `/v1/messages` 與 `/v1/messages/count_tokens`，可直接搭配 Anthropic Python SDK 與 Claude Code（後端可接任何 vLLM LLM/VLM）
+- **Anthropic Messages API** — `/v1/messages` 與 `/v1/messages/count_tokens`，可直接搭配 Anthropic Python SDK 與 Claude Code（後端可接任何 vLLM LLM/VLM）。下游 `reasoning_content`（vLLM `--enable-reasoning`、DeepSeek、Qwen3-thinking）會轉成 Anthropic `thinking` content block;下游靜默時每 10 秒送一次 SSE `ping`,避免 Claude Code 在 reasoning prefill 太長時把連線視為斷線
 - **Azure OpenAI 後端** — 同一支客戶端、同一把 API key、同一套計費,把 base URL 指到 `/azure/v1/*` 即可呼叫設定的 Azure 部署(支援 chat completions、embeddings、Anthropic Messages)
 - **多模型路由** — LLM、VLM、Embedding、Vision Embedding、Reranker、Vision Reranker
 - **SSE 串流** — 完整支援 Server-Sent Events（chat completions 和 responses）
@@ -257,7 +257,7 @@ ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
 ```
 
-Adapter 會處理 tool calls（`tool_use` ↔ OpenAI `tool_calls`）、圖片、system prompt、stop reason 對應、與串流 SSE 事件順序。`/v1/messages/count_tokens` 會轉送到下游的 tokenizer，讓 Claude Code 的 context-window 顯示維持精確。
+Adapter 會處理 tool calls（`tool_use` ↔ OpenAI `tool_calls`）、圖片、system prompt、stop reason 對應、與串流 SSE 事件順序。下游回傳的 `reasoning_content`(vLLM `--enable-reasoning`、DeepSeek、Qwen3-thinking 等)會被轉成 Anthropic 的 `thinking` content block — 串流時送 `thinking_delta`,非串流時在 text block 前面多一個 `thinking` block。下游靜默時(reasoning prefill 太久、vLLM 排隊、header turnaround 慢)gateway 每 10 秒會送一個 Anthropic `event: ping`,讓 Claude Code 不會把連線判定為斷線。`/v1/messages/count_tokens` 會轉送到下游的 tokenizer，讓 Claude Code 的 context-window 顯示維持精確。
 
 ### 列出模型
 

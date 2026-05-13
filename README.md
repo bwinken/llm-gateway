@@ -32,7 +32,7 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 ## Features
 
 - **OpenAI-compatible API** — `/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/score`, `/v1/responses`, `/v1/tokenize`, `/v1/models` (LLM/VLM only)
-- **Anthropic Messages API** — `/v1/messages` and `/v1/messages/count_tokens`, drop-in compatible with the Anthropic Python SDK and Claude Code (works against any vLLM LLM/VLM downstream)
+- **Anthropic Messages API** — `/v1/messages` and `/v1/messages/count_tokens`, drop-in compatible with the Anthropic Python SDK and Claude Code (works against any vLLM LLM/VLM downstream). Streams `reasoning_content` from `--enable-reasoning` / DeepSeek / Qwen3-thinking as Anthropic `thinking` content blocks, and emits SSE `ping` keepalives every 10 s of downstream silence so clients survive long reasoning prefill
 - **Azure OpenAI backend** — Same client, same API key, same billing — point to `/azure/v1/*` to hit configured Azure deployments (chat completions, embeddings, Anthropic Messages all supported)
 - **Multi-model routing** — LLM, VLM, Embedding, Vision Embedding, Reranker, Vision Reranker
 - **SSE streaming** — Full Server-Sent Events support for chat completions and responses
@@ -257,7 +257,7 @@ ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
 ```
 
-The adapter handles tool calls (`tool_use` ↔ OpenAI `tool_calls`), images, system prompts, stop reason mapping, and streaming SSE event sequencing. `/v1/messages/count_tokens` is forwarded to the downstream tokenizer so Claude Code's context-window indicator stays accurate.
+The adapter handles tool calls (`tool_use` ↔ OpenAI `tool_calls`), images, system prompts, stop reason mapping, and streaming SSE event sequencing. Downstream `reasoning_content` (vLLM `--enable-reasoning`, DeepSeek, Qwen3-thinking, etc.) is surfaced as Anthropic `thinking` content blocks — `thinking_delta` events on the stream, a `thinking` block prepended on non-stream responses. While the downstream is silent (long reasoning prefill, queued batch, slow header turnaround) the gateway emits an Anthropic `event: ping` every 10 seconds so Claude Code does not time the connection out. `/v1/messages/count_tokens` is forwarded to the downstream tokenizer so Claude Code's context-window indicator stays accurate.
 
 ### List Models
 

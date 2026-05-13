@@ -511,21 +511,14 @@ class AnthropicStreamTranslator:
         if self._current_block_type is None:
             return
         # Real Anthropic emits a `signature_delta` (base64 crypto signature)
-        # before closing a thinking block. vLLM doesn't sign — we send an
-        # empty signature, which observation shows Claude Code accepts (the
-        # collapsible "Thought" panel renders correctly). Omitting the
-        # event entirely would violate the spec's "thinking block must end
-        # with signature_delta then stop" rule and risks regressing some
-        # clients, so keep the empty-signature compromise.
-        if self._current_block_type == "thinking":
-            yield self._sse(
-                "content_block_delta",
-                {
-                    "type": "content_block_delta",
-                    "index": self._current_block_index,
-                    "delta": {"type": "signature_delta", "signature": ""},
-                },
-            )
+        # before closing a thinking block, but vLLM-emitted reasoning has no
+        # signature to forward. Empirically (cf. LiteLLM's adapter, which
+        # only emits signature_delta when the upstream chunk carries a
+        # non-empty signature string), strict Claude Code builds validate
+        # that signature looks like real base64 — an empty value causes the
+        # thinking block to be rejected and the stream to stall. We skip
+        # the event when no signature exists and let `content_block_stop`
+        # close the block on its own.
         yield self._sse(
             "content_block_stop",
             {"type": "content_block_stop", "index": self._current_block_index},
