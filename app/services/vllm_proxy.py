@@ -1,7 +1,7 @@
 """
 Core proxy logic:
   1. forward_request        - Standard Chat Completion (streaming + non-streaming)
-  2. forward_simple_request - Embeddings & Rerankers (non-streaming, 120s timeout)
+  2. forward_simple_request - Embeddings & Rerankers (non-streaming)
   3. forward_to_path        - Pure pass-through for custom APIs (e.g. /responses)
   4. Type-safe smart fallback
   5. Usage logging
@@ -35,8 +35,9 @@ from app.services.monitor import is_monitored, log_monitor, log_monitor_error
 # Streaming reads can stall arbitrarily long between chunks (long prefill,
 # reasoning models, queued vLLM batches); let the downstream decide when to
 # stop and rely on client disconnect to unwind stuck requests. Non-stream
-# paths keep a bounded 120s timeout.
-_STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+# paths keep a bounded timeout (_NON_STREAM_TIMEOUT).
+_STREAM_TIMEOUT = httpx.Timeout(connect=30.0, read=None, write=30.0, pool=30.0)
+_NON_STREAM_TIMEOUT = 300.0
 
 # How often to send an Anthropic SSE `event: ping` while a stream is silent.
 # Claude Code treats long gaps without any event as a dead connection. Keep
@@ -356,7 +357,7 @@ async def _non_stream_chat(
     route: dict[str, Any] | None = None,
 ) -> JSONResponse:
     try:
-        resp = await client.post(url, json=body, headers=headers, timeout=120.0)
+        resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         log_monitor_error(user.id, monitor_body or body, str(exc), 502, model, "/v1/chat/completions", model_type)
@@ -464,7 +465,7 @@ async def forward_simple_request(
     target_url = f"{base_url}{path_suffix}"
 
     try:
-        resp = await client.post(target_url, json=body, headers=downstream_headers, timeout=120.0)
+        resp = await client.post(target_url, json=body, headers=downstream_headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         log_monitor_error(user.id, body, str(exc), 502, resolved_alias, endpoint_label, model_type)
@@ -548,7 +549,7 @@ async def _passthrough_non_stream(
     route: dict[str, Any] | None = None,
 ) -> JSONResponse:
     try:
-        resp = await client.post(url, content=raw_body, headers=headers, timeout=120.0)
+        resp = await client.post(url, content=raw_body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         log_monitor_error(user.id, json.loads(raw_body), str(exc), 502, model, path_suffix, model_type)
@@ -631,7 +632,7 @@ async def _non_stream_messages(
     route: dict[str, Any] | None = None,
 ) -> JSONResponse:
     try:
-        resp = await client.post(url, json=body, headers=headers, timeout=120.0)
+        resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         log_monitor_error(user.id, monitor_body or body, str(exc), 502, model_alias, "/v1/messages", model_type)
