@@ -82,6 +82,18 @@
                                     {{ 'ONLINE' if s.alive else 'DOWN' }}
                                 </span>
                             </div>
+                            {# Load snapshot from vLLM /metrics — shown only when scrape succeeded #}
+                            {% if s.alive and s.running is not none %}
+                            <div class="flex items-center gap-3 mt-1.5 text-[10px] font-mono">
+                                <span class="text-t4 gw-tip" data-tip="Requests actively generating on this server">
+                                    running <b class="text-t2">{{ s.running }}</b>
+                                </span>
+                                <span class="gw-tip {{ 'text-ar' if s.waiting >= 10 else 'text-aa' if s.waiting > 0 else 'text-t4' }}"
+                                      data-tip="Requests queued waiting for a slot — high values mean this server is overloaded">
+                                    waiting <b>{{ s.waiting }}</b>
+                                </span>
+                            </div>
+                            {% endif %}
                             {% if s.supports_tools or s.supports_vision or s.supports_prompt_caching or s.is_reasoning or s.context_window %}
                             <div class="flex flex-wrap items-center gap-1 mt-1.5">
                                 {% if s.context_window %}

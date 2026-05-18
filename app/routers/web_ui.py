@@ -18,7 +18,7 @@ from app.models.schema import AppOwner, User
 from app.core.auth import get_web_user
 from app.core.config import APP_TITLE, get_azure_models_snapshot, get_model_routing_snapshot
 from app.core.database import get_session
-from app.core.server_state import is_alive
+from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ
 from app.services.stats import get_daily_trends, get_owned_apps_summary, get_user_daily_summary, get_user_monthly_summary
 
@@ -121,6 +121,7 @@ async def dashboard(
         model_type = route["type"]
         if model_type not in server_groups:
             server_groups[model_type] = []
+        metrics = get_metrics(base_url)
         server_groups[model_type].append(
             {
                 "name": model_name,
@@ -133,6 +134,9 @@ async def dashboard(
                 "supports_vision": route.get("supports_vision", False),
                 "supports_prompt_caching": route.get("supports_prompt_caching", False),
                 "is_reasoning": route.get("is_reasoning", False),
+                # Load snapshot from /metrics — None when unavailable.
+                "running": metrics.get("running") if metrics else None,
+                "waiting": metrics.get("waiting") if metrics else None,
             }
         )
 

@@ -150,7 +150,7 @@ DB 查詢: SELECT * FROM users WHERE api_key = ?
 
 ### `server_state.py` — HTTP Client + 健康快取
 
-管理兩個全域 `httpx.AsyncClient` 實例和下游伺服器健康狀態快取。**共用 client** 服務 vLLM 下游（內部 LAN,永遠不走 proxy）。**Azure client**（`_azure_client`）是另一個獨立實例,當 `AZURE_HTTP_PROXY` 環境變數有設定時以 `proxy=AZURE_HTTP_PROXY` 建立;若未設定則不建立 Azure client,`get_azure_client()` 會 fallback 到共用 client。兩個 client 各自獨立,確保即使 Azure 必須走企業 proxy,內部 vLLM 流量仍維持直連。
+管理兩個全域 `httpx.AsyncClient` 實例、下游伺服器健康狀態快取（`_health_cache`）以及每台 vLLM 伺服器的負載指標快取（`_metrics_cache`）。**共用 client** 服務 vLLM 下游（內部 LAN,永遠不走 proxy）。**Azure client**（`_azure_client`）是另一個獨立實例,當 `AZURE_HTTP_PROXY` 環境變數有設定時以 `proxy=AZURE_HTTP_PROXY` 建立;若未設定則不建立 Azure client,`get_azure_client()` 會 fallback 到共用 client。兩個 client 各自獨立,確保即使 Azure 必須走企業 proxy,內部 vLLM 流量仍維持直連。
 
 | 函式 | 說明 |
 |---|---|
@@ -160,7 +160,9 @@ DB 查詢: SELECT * FROM users WHERE api_key = ?
 | `get_azure_client()` | 取得走 proxy 的 Azure AsyncClient;`AZURE_HTTP_PROXY` 未設定時回傳共用 client（`azure_proxy.py` 使用） |
 | `set_alive(base_url, alive)` | 更新健康快取（由 health check loop 呼叫） |
 | `is_alive(base_url)` | 查詢伺服器是否存活 |
-| `prune_cache(active_urls)` | 移除不再存在於 MODEL_ROUTING 的 cache entry |
+| `set_metrics(base_url, metrics)` | 把某台 vLLM 伺服器的 `running` / `waiting` 負載快照存入 `_metrics_cache`（由 health loop 抓取 `/metrics` 後呼叫;傳 `None` 則清除該 entry） |
+| `get_metrics(base_url)` | 回傳該伺服器快取的負載快照,未抓取過則回 `None` |
+| `prune_cache(active_urls)` | 移除不再存在於 MODEL_ROUTING 的健康與指標 cache entry |
 | `all_health()` | 回傳所有伺服器的健康狀態 dict |
 
 **Client 參數：**

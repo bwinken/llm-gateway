@@ -1,7 +1,7 @@
 # Tests
 
-Pytest suite covering the full HTTP surface of the gateway. **191 tests** in
-17 files; the entire suite runs in ~8 seconds against an in-memory SQLite
+Pytest suite covering the full HTTP surface of the gateway. **200 tests** in
+18 files; the entire suite runs in ~8 seconds against an in-memory SQLite
 database with all downstream HTTP traffic mocked.
 
 ```bash
@@ -193,6 +193,15 @@ Pure-function tests on `_calc_cost`, independent of any router.
 |---|---|
 | `TestCalcCostBasics` | Per-model `input_price_per_1m` / `output_price_per_1m` override; fallback to per-type `[pricing.<type>]` when the route carries no override |
 | `TestCachedTokenPricing` | `cached_tokens` billed at the discounted `cached_input_price_per_1m` with the uncached remainder at full input price; no cached price → full input rate even when `cached_tokens` is passed; `cached_tokens=0` is a no-op; cached count clamped to total input (never negative); the vLLM path is unaffected since it never passes `cached_tokens` |
+
+### `test_health_metrics.py` — vLLM `/metrics` load scrape
+
+Pure-function tests on the health loop's metrics helpers (`health.py`),
+independent of any router. Nine tests covering `_metrics_url` (derives the
+`/metrics` URL from an OpenAI-style base_url, stripping a trailing `/v1`)
+and `_parse_vllm_metrics` (parses Prometheus text, sums
+`vllm:num_requests_running` / `vllm:num_requests_waiting` across
+`model_name` labels, returns `None` on a parse miss or non-vLLM output).
 
 ### `test_admin.py` — Admin REST API
 

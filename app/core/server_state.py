@@ -20,6 +20,10 @@ import httpx
 _client: httpx.AsyncClient | None = None
 _azure_client: httpx.AsyncClient | None = None
 _health_cache: dict[str, bool] = {}
+# Per-vLLM-server load snapshot scraped from /metrics, keyed by base_url.
+# Each value is {"running": int, "waiting": int}. Absent when the server's
+# /metrics endpoint is unreachable or disabled.
+_metrics_cache: dict[str, dict[str, int]] = {}
 
 
 async def init_client() -> None:
@@ -77,11 +81,31 @@ def is_alive(base_url: str) -> bool:
     return _health_cache.get(base_url, False)
 
 
+def set_metrics(base_url: str, metrics: dict[str, int] | None) -> None:
+    """Store (or clear) the load snapshot for a vLLM server.
+
+    Pass None to drop the entry — used when /metrics is unreachable so the
+    dashboard falls back to a plain ONLINE/DOWN indicator.
+    """
+    if metrics is None:
+        _metrics_cache.pop(base_url, None)
+    else:
+        _metrics_cache[base_url] = metrics
+
+
+def get_metrics(base_url: str) -> dict[str, int] | None:
+    """Return the latest load snapshot for a vLLM server, or None."""
+    return _metrics_cache.get(base_url)
+
+
 def prune_cache(active_urls: set[str]) -> None:
     """Remove cache entries for base_urls no longer in MODEL_ROUTING."""
     stale = [url for url in _health_cache if url not in active_urls]
     for url in stale:
         del _health_cache[url]
+    stale_metrics = [url for url in _metrics_cache if url not in active_urls]
+    for url in stale_metrics:
+        del _metrics_cache[url]
 
 
 def all_health() -> dict[str, bool]:

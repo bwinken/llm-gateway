@@ -150,7 +150,7 @@ Creates SQLAlchemy engine and provides session factory.
 
 ### `server_state.py` — HTTP Client + Health Cache
 
-Manages two global `httpx.AsyncClient` instances and the downstream server health cache. The **shared client** serves vLLM downstreams (internal LAN, never proxied). The **Azure client** (`_azure_client`) is a separate instance created with `proxy=AZURE_HTTP_PROXY` when that env var is set; if it is unset, no Azure client is created and `get_azure_client()` falls back to the shared client. Keeping the two clients independent ensures internal vLLM traffic stays direct even when Azure must go through a corporate proxy.
+Manages two global `httpx.AsyncClient` instances, the downstream server health cache (`_health_cache`), and the per-vLLM-server load metrics cache (`_metrics_cache`). The **shared client** serves vLLM downstreams (internal LAN, never proxied). The **Azure client** (`_azure_client`) is a separate instance created with `proxy=AZURE_HTTP_PROXY` when that env var is set; if it is unset, no Azure client is created and `get_azure_client()` falls back to the shared client. Keeping the two clients independent ensures internal vLLM traffic stays direct even when Azure must go through a corporate proxy.
 
 | Function | Description |
 |---|---|
@@ -160,7 +160,9 @@ Manages two global `httpx.AsyncClient` instances and the downstream server healt
 | `get_azure_client()` | Gets the proxied Azure AsyncClient, or the shared client when `AZURE_HTTP_PROXY` is unset (used by `azure_proxy.py`) |
 | `set_alive(base_url, alive)` | Updates health cache (called by health check loop) |
 | `is_alive(base_url)` | Queries whether a server is alive |
-| `prune_cache(active_urls)` | Removes cache entries no longer in MODEL_ROUTING |
+| `set_metrics(base_url, metrics)` | Stores a vLLM server's `running` / `waiting` load snapshot in `_metrics_cache` (called by the health loop after a `/metrics` scrape; `None` clears the entry) |
+| `get_metrics(base_url)` | Returns the cached load snapshot for a server, or `None` if not scraped |
+| `prune_cache(active_urls)` | Removes health and metrics cache entries no longer in MODEL_ROUTING |
 | `all_health()` | Returns health status dict for all servers |
 
 **Client parameters:**
