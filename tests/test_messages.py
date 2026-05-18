@@ -179,6 +179,73 @@ class TestRequestTranslation:
         assert tool_msg["tool_call_id"] == "toolu_01"
         assert tool_msg["content"] == "72F sunny"
 
+    def test_thinking_block_preserved_as_reasoning_content(self):
+        """An assistant turn's `thinking` block round-trips back as
+        `reasoning_content` on the OpenAI message so reasoning-aware chat
+        templates (e.g. Qwen3 preserve_thinking) can re-inject it."""
+        body = {
+            "model": "x",
+            "messages": [
+                {"role": "user", "content": "solve it"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "first I consider...", "signature": ""},
+                        {"type": "text", "text": "The answer is 42."},
+                    ],
+                },
+                {"role": "user", "content": "explain more"},
+            ],
+        }
+        out = anthropic_to_openai_request(body)
+        assistant_msg = out["messages"][1]
+        assert assistant_msg["role"] == "assistant"
+        assert assistant_msg["content"] == "The answer is 42."
+        assert assistant_msg["reasoning_content"] == "first I consider..."
+
+    def test_effort_string_mapped(self):
+        for eff, expected in [
+            ("low", "low"), ("medium", "medium"), ("high", "high"),
+            ("max", "high"), ("extra-high", "high"), ("minimal", "low"),
+        ]:
+            body = {
+                "model": "x",
+                "messages": [{"role": "user", "content": "hi"}],
+                "effort": eff,
+            }
+            out = anthropic_to_openai_request(body, is_reasoning=True)
+            assert out["reasoning_effort"] == expected, f"effort={eff}"
+
+    def test_thinking_budget_bucketed_to_effort(self):
+        for budget, expected in [(1024, "low"), (4096, "low"),
+                                 (8192, "medium"), (16384, "medium"),
+                                 (32000, "high")]:
+            body = {
+                "model": "x",
+                "messages": [{"role": "user", "content": "hi"}],
+                "thinking": {"type": "enabled", "budget_tokens": budget},
+            }
+            out = anthropic_to_openai_request(body, is_reasoning=True)
+            assert out["reasoning_effort"] == expected, f"budget={budget}"
+
+    def test_no_effort_when_unset(self):
+        body = {"model": "x", "messages": [{"role": "user", "content": "hi"}]}
+        out = anthropic_to_openai_request(body, is_reasoning=True)
+        assert "reasoning_effort" not in out
+
+    def test_effort_not_emitted_for_non_reasoning_model(self):
+        """A non-reasoning model (is_reasoning=False, the default) never gets
+        reasoning_effort even when the client sends effort/thinking — avoids
+        400s from downstreams that reject the parameter."""
+        body = {
+            "model": "x",
+            "messages": [{"role": "user", "content": "hi"}],
+            "effort": "high",
+            "thinking": {"type": "enabled", "budget_tokens": 32000},
+        }
+        out = anthropic_to_openai_request(body)  # is_reasoning defaults to False
+        assert "reasoning_effort" not in out
+
     def test_stop_sequences_mapped(self):
         body = {
             "model": "x",

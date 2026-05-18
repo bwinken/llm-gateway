@@ -38,6 +38,50 @@ def _map_stop_reason(openai_finish: str | None) -> str | None:
     return _OPENAI_TO_ANTHROPIC_STOP.get(openai_finish, "end_turn")
 
 
+# OpenAI / Azure reasoning_effort accepts low | medium | high. Anthropic
+# clients express reasoning depth two ways:
+#   - a top-level `effort` string (low/medium/high, plus Claude Code's
+#     extra-high / max which we clamp to high)
+#   - `thinking: {"type": "enabled", "budget_tokens": N}` — a token budget
+#     we bucket into the three effort levels.
+_EFFORT_ALIASES: dict[str, str] = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "extra-high": "high",
+    "extra_high": "high",
+    "max": "high",
+    "minimal": "low",
+    "none": "low",
+}
+
+
+def _map_reasoning_effort(body: dict[str, Any]) -> str | None:
+    """Derive an OpenAI `reasoning_effort` value from an Anthropic request.
+
+    Returns None when the request expresses no reasoning preference, so the
+    caller leaves `reasoning_effort` unset and the downstream uses its own
+    default. Downstreams without a reasoning_effort knob (e.g. Qwen3) simply
+    ignore the field — translating it here is harmless and future-proofs the
+    Azure o-series / any model that does honour it.
+    """
+    effort = body.get("effort")
+    if isinstance(effort, str) and effort.strip():
+        return _EFFORT_ALIASES.get(effort.strip().lower(), "high")
+
+    thinking = body.get("thinking")
+    if isinstance(thinking, dict) and thinking.get("type") == "enabled":
+        budget = thinking.get("budget_tokens")
+        if isinstance(budget, (int, float)) and budget > 0:
+            # Anthropic's minimum budget is 1024; bucket conservatively.
+            if budget <= 4096:
+                return "low"
+            if budget <= 16384:
+                return "medium"
+            return "high"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Request: Anthropic -> OpenAI
 # ---------------------------------------------------------------------------
@@ -79,9 +123,19 @@ def _content_to_openai_text(content: Any) -> str:
     return ""
 
 
-def anthropic_to_openai_request(body: dict[str, Any]) -> dict[str, Any]:
+def anthropic_to_openai_request(
+    body: dict[str, Any],
+    is_reasoning: bool = False,
+) -> dict[str, Any]:
     """Translate an Anthropic /v1/messages request body into an OpenAI
-    /v1/chat/completions request body."""
+    /v1/chat/completions request body.
+
+    `is_reasoning` should be the resolved model's `is_reasoning` metadata
+    flag. It gates `reasoning_effort` injection: only models explicitly
+    marked as reasoning models receive the parameter, so a non-reasoning
+    downstream (e.g. a plain Azure gpt-4o deployment) never gets an
+    `reasoning_effort` field it would reject with a 400.
+    """
     openai_messages: list[dict[str, Any]] = []
 
     # System prompt — Anthropic uses a top-level "system" field (string or list)
@@ -103,10 +157,11 @@ def anthropic_to_openai_request(body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(content, list):
             continue
 
-        # Split content blocks: regular blocks vs tool_use/tool_result
+        # Split content blocks: regular blocks vs tool_use/tool_result/thinking
         regular_blocks: list[dict[str, Any]] = []
         tool_calls: list[dict[str, Any]] = []
         tool_results: list[tuple[str, str]] = []  # (tool_use_id, content)
+        thinking_parts: list[str] = []
 
         for block in content:
             if not isinstance(block, dict):
@@ -130,6 +185,16 @@ def anthropic_to_openai_request(body: dict[str, Any]) -> dict[str, Any]:
                 elif not isinstance(tr_content, str):
                     tr_content = json.dumps(tr_content)
                 tool_results.append((block.get("tool_use_id", ""), tr_content))
+            elif btype == "thinking":
+                # Preserve an assistant turn's reasoning across multi-turn
+                # conversations: carry it back as `reasoning_content` (the
+                # field vLLM emits it in). Whether the downstream actually
+                # re-injects it into the prompt depends on its chat template
+                # (e.g. Qwen3's preserve_thinking, set at vLLM startup) —
+                # the gateway just makes sure the data isn't lost.
+                t = block.get("thinking", "")
+                if isinstance(t, str) and t:
+                    thinking_parts.append(t)
             else:
                 converted = _convert_content_block_to_openai(block)
                 if converted is not None:
@@ -147,7 +212,7 @@ def anthropic_to_openai_request(body: dict[str, Any]) -> dict[str, Any]:
             )
 
         # Emit the main message (skip if empty assistant tool-only message)
-        if regular_blocks or tool_calls or not tool_results:
+        if regular_blocks or tool_calls or thinking_parts or not tool_results:
             msg_out: dict[str, Any] = {"role": role}
             if regular_blocks:
                 # If single text block, use plain string for compatibility
@@ -159,8 +224,11 @@ def anthropic_to_openai_request(body: dict[str, Any]) -> dict[str, Any]:
                 msg_out["content"] = ""
             if tool_calls:
                 msg_out["tool_calls"] = tool_calls
+            if thinking_parts:
+                msg_out["reasoning_content"] = "".join(thinking_parts)
             # Skip empty placeholders left over from pure tool_result messages
-            if msg_out["content"] == "" and not tool_calls and tool_results:
+            if (msg_out["content"] == "" and not tool_calls
+                    and not thinking_parts and tool_results):
                 continue
             openai_messages.append(msg_out)
 
@@ -180,6 +248,15 @@ def anthropic_to_openai_request(body: dict[str, Any]) -> dict[str, Any]:
         openai_body["stream"] = body["stream"]
     if "stop_sequences" in body:
         openai_body["stop"] = body["stop_sequences"]
+
+    # Reasoning effort — Anthropic `effort` / `thinking.budget_tokens` mapped
+    # to OpenAI's `reasoning_effort`. Only emitted for models flagged
+    # `is_reasoning` in config so non-reasoning downstreams never receive a
+    # parameter they might reject.
+    if is_reasoning:
+        effort = _map_reasoning_effort(body)
+        if effort is not None:
+            openai_body["reasoning_effort"] = effort
 
     # Tools
     tools = body.get("tools")

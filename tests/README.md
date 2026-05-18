@@ -1,7 +1,7 @@
 # Tests
 
-Pytest suite covering the full HTTP surface of the gateway. **174 tests** in
-16 files; the entire suite runs in ~7 seconds against an in-memory SQLite
+Pytest suite covering the full HTTP surface of the gateway. **183 tests** in
+16 files; the entire suite runs in ~8 seconds against an in-memory SQLite
 database with all downstream HTTP traffic mocked.
 
 ```bash
@@ -117,7 +117,7 @@ The largest file in the suite — covers the Anthropic ↔ OpenAI translator
 
 | Test class | What it covers |
 |---|---|
-| `TestRequestTranslation` | Pure function tests on `anthropic_to_openai_request`: text content, `system` as string vs list, base64 image blocks → OpenAI `image_url` parts, `tools` schema translation, `tool_use` ↔ `tool_calls` round-trip, `stop_sequences` mapped to OpenAI `stop` |
+| `TestRequestTranslation` | Pure function tests on `anthropic_to_openai_request`: text content, `system` as string vs list, base64 image blocks → OpenAI `image_url` parts, `tools` schema translation, `tool_use` ↔ `tool_calls` round-trip, `stop_sequences` mapped to OpenAI `stop`; `thinking` blocks in assistant history preserved as `reasoning_content`; `reasoning_effort` mapping (`effort` string and `thinking` budget buckets) emitted only when `is_reasoning=True` |
 | `TestResponseTranslation` | `openai_to_anthropic_response`: text response, tool call response, `stop_reason` mapping (`length` → `max_tokens`); `reasoning_content` is surfaced as a leading `thinking` content block before the text block |
 | `TestStreamTranslator` | Stateful `AnthropicStreamTranslator` — emits canonical Anthropic SSE event sequence (`message_start` → `content_block_start` → deltas → `message_stop`) for both text and tool calls; `reasoning_content` deltas open a `thinking` block, stream `thinking_delta` events, and close with `content_block_stop` only (no `signature_delta`) before the text block starts |
 | `TestMessagesEndpointNonStream` | End-to-end: basic message, `x-api-key` header (Anthropic-style auth), 401, valid `x-api-key` overrides bad bearer, system prompt forwarded, tool call, downstream 502, `?beta=...` query param pass-through, alias works without `/v1` prefix |

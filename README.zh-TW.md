@@ -258,7 +258,7 @@ ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
 ```
 
-Adapter 會處理 tool calls（`tool_use` ↔ OpenAI `tool_calls`）、圖片、system prompt、stop reason 對應、與串流 SSE 事件順序。下游回傳的 `reasoning_content`(vLLM `--enable-reasoning`、DeepSeek、Qwen3-thinking 等)會被轉成 Anthropic 的 `thinking` content block — 串流時送 `thinking_delta`,非串流時在 text block 前面多一個 `thinking` block。下游靜默時(reasoning prefill 太久、vLLM 排隊、header turnaround 慢)gateway 每 10 秒會送一個 Anthropic `event: ping`,讓 Claude Code 不會把連線判定為斷線。`/v1/messages/count_tokens` 會轉送到下游的 tokenizer，讓 Claude Code 的 context-window 顯示維持精確。
+Adapter 會處理 tool calls（`tool_use` ↔ OpenAI `tool_calls`）、圖片、system prompt、stop reason 對應、與串流 SSE 事件順序。下游回傳的 `reasoning_content`(vLLM `--enable-reasoning`、DeepSeek、Qwen3-thinking 等)會被轉成 Anthropic 的 `thinking` content block — 串流時送 `thinking_delta`,非串流時在 text block 前面多一個 `thinking` block。轉譯是雙向對稱的:請求歷史中 assistant 訊息內的 `thinking` block 會被帶回下游成為 `reasoning_content`,讓推理內容在多輪對話間保留而非被丟棄。對於在 `config.toml` 中標記 `is_reasoning = true` 的模型,adapter 還會把 Anthropic 的推理偏好(`effort` 字串或 `thinking` token 預算)轉成 OpenAI 的 `reasoning_effort`;非推理模型則永遠不會收到此參數。下游靜默時(reasoning prefill 太久、vLLM 排隊、header turnaround 慢)gateway 每 10 秒會送一個 Anthropic `event: ping`,讓 Claude Code 不會把連線判定為斷線。`/v1/messages/count_tokens` 會轉送到下游的 tokenizer，讓 Claude Code 的 context-window 顯示維持精確。
 
 ### 列出模型
 

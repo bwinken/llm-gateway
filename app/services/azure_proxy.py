@@ -256,7 +256,9 @@ async def forward_messages(
     entry = _resolve_azure(alias)
     model_type = entry.get("type", "llm")
 
-    openai_body = anthropic_to_openai_request(anthropic_body)
+    openai_body = anthropic_to_openai_request(
+        anthropic_body, is_reasoning=bool(entry.get("is_reasoning")),
+    )
     # Azure ignores body.model when URL targets a deployment; remove it for tidiness.
     openai_body.pop("model", None)
     is_stream = bool(anthropic_body.get("stream", False))

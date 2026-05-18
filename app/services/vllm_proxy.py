@@ -596,7 +596,9 @@ async def forward_messages_request(
     downstream_headers = _get_downstream_headers(route)
     extra_headers = _fallback_headers(fallback_reason)
 
-    openai_body = anthropic_to_openai_request(anthropic_body)
+    openai_body = anthropic_to_openai_request(
+        anthropic_body, is_reasoning=bool(route.get("is_reasoning")),
+    )
     openai_body["model"] = real_model
     is_stream = bool(anthropic_body.get("stream", False))
 
