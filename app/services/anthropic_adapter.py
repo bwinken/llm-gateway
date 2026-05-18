@@ -545,6 +545,31 @@ class AnthropicStreamTranslator:
         )
         yield self._sse("message_stop", {"type": "message_stop"})
 
+    def fail(self, message: str, error_type: str = "overloaded_error") -> Iterator[str]:
+        """Close any open content block and emit an Anthropic `error` event.
+
+        Used when the downstream stream ended *without* a finish_reason — the
+        connection dropped mid-generation. We must NOT emit a normal
+        `message_stop` in that case: it tells the client the turn completed
+        successfully, so a truncated answer is silently accepted.
+
+        Defaults to `overloaded_error` because a mid-stream truncation is
+        almost always downstream overload (queued vLLM batches, KV-cache
+        pressure). Anthropic SDK clients — Claude Code included — retry
+        `overloaded_error` with exponential backoff, so the user sees a brief
+        pause and an automatic retry rather than a broken, half-finished turn.
+        """
+        if not self._started:
+            return
+        yield from self._close_current_block()
+        yield self._sse(
+            "error",
+            {
+                "type": "error",
+                "error": {"type": error_type, "message": message},
+            },
+        )
+
     # -- Internal helpers --------------------------------------------------------
 
     def _ensure_thinking_block(self) -> Iterator[str]:

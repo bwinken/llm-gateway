@@ -32,12 +32,12 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 ## Features
 
 - **OpenAI-compatible API** — `/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/score`, `/v1/responses`, `/v1/tokenize`, `/v1/models` (LLM/VLM only)
-- **Anthropic Messages API** — `/v1/messages` and `/v1/messages/count_tokens`, drop-in compatible with the Anthropic Python SDK and Claude Code (works against any vLLM LLM/VLM downstream). Streams `reasoning_content` from `--enable-reasoning` / DeepSeek / Qwen3-thinking as Anthropic `thinking` content blocks, and emits SSE `ping` keepalives every 10 s of downstream silence so clients survive long reasoning prefill
+- **Anthropic Messages API** — `/v1/messages` and `/v1/messages/count_tokens`, drop-in compatible with the Anthropic Python SDK and Claude Code (works against any vLLM LLM/VLM downstream). Streams `reasoning_content` from `--enable-reasoning` / DeepSeek / Qwen3-thinking as Anthropic `thinking` content blocks, emits SSE `ping` keepalives every 10 s of downstream silence so clients survive long reasoning prefill, and surfaces a mid-stream downstream disconnect as a retryable `overloaded_error` rather than a falsely-complete turn
 - **Azure OpenAI backend** — Same client, same API key, same billing — point to `/azure/v1/*` to hit configured Azure deployments (chat completions, embeddings, Anthropic Messages all supported)
 - **Multi-model routing** — LLM, VLM, Embedding, Vision Embedding, Reranker, Vision Reranker
 - **SSE streaming** — Full Server-Sent Events support for chat completions and responses
 - **Smart fallback** — Configurable per-type fallback model, health-check-aware; `X-Model-Fallback` response header (vLLM path)
-- **Tiered pricing** — Per-type defaults plus optional per-model overrides on either vLLM or Azure entries
+- **Tiered pricing** — Per-type defaults plus optional per-model overrides on either vLLM or Azure entries, including a discounted `cached_input_price_per_1m` for prompt-cache hits (Azure cached tokens billed at the lower rate)
 - **Usage tracking** — Per-user token and cost logging to PostgreSQL (shared across `/v1/*` and `/azure/v1/*`)
 - **OAuth2 SSO** — [AuthCenter](https://github.com/bwinken/authcenter) integration with RS256 JWT, auto-provisioning users with a configurable default daily limit
 - **Dual auth** — API key (Bearer token) for SDK/API, oauth2-proxy + JWT for web UI
@@ -151,7 +151,7 @@ input_price_per_1m = 0.50
 output_price_per_1m = 1.50
 ```
 
-Lookup order for cost calculation: per-model `input_price_per_1m` / `output_price_per_1m` on the model entry → per-type `[pricing.<type>]` → top-level `[pricing]` defaults.
+Lookup order for cost calculation: per-model `input_price_per_1m` / `output_price_per_1m` on the model entry → per-type `[pricing.<type>]` → top-level `[pricing]` defaults. A model entry may also set `cached_input_price_per_1m`; when present, cache-hit input tokens reported by the backend (e.g. Azure's `prompt_tokens_details.cached_tokens`) are billed at that discounted rate while uncached input bills at the full price.
 
 Per-type fallback model (optional, vLLM path only). When a model's server is down, prefer this model as fallback:
 
@@ -258,7 +258,7 @@ ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
 ```
 
-The adapter handles tool calls (`tool_use` ↔ OpenAI `tool_calls`), images, system prompts, stop reason mapping, and streaming SSE event sequencing. Downstream `reasoning_content` (vLLM `--enable-reasoning`, DeepSeek, Qwen3-thinking, etc.) is surfaced as Anthropic `thinking` content blocks — `thinking_delta` events on the stream, a `thinking` block prepended on non-stream responses. The translation is symmetric: `thinking` blocks in an assistant message's history are carried back downstream as `reasoning_content`, so reasoning is preserved across multi-turn conversations rather than dropped. For models marked `is_reasoning = true` in `config.toml`, the adapter also translates the Anthropic reasoning preference (an `effort` string or a `thinking` token budget) into OpenAI's `reasoning_effort`; non-reasoning models never receive it. While the downstream is silent (long reasoning prefill, queued batch, slow header turnaround) the gateway emits an Anthropic `event: ping` every 10 seconds so Claude Code does not time the connection out. `/v1/messages/count_tokens` is forwarded to the downstream tokenizer so Claude Code's context-window indicator stays accurate.
+The adapter handles tool calls (`tool_use` ↔ OpenAI `tool_calls`), images, system prompts, stop reason mapping, and streaming SSE event sequencing. Downstream `reasoning_content` (vLLM `--enable-reasoning`, DeepSeek, Qwen3-thinking, etc.) is surfaced as Anthropic `thinking` content blocks — `thinking_delta` events on the stream, a `thinking` block prepended on non-stream responses. The translation is symmetric: `thinking` blocks in an assistant message's history are carried back downstream as `reasoning_content`, so reasoning is preserved across multi-turn conversations rather than dropped. For models marked `is_reasoning = true` in `config.toml`, the adapter also translates the Anthropic reasoning preference (an `effort` string or a `thinking` token budget) into OpenAI's `reasoning_effort`; non-reasoning models never receive it. While the downstream is silent (long reasoning prefill, queued batch, slow header turnaround) the gateway emits an Anthropic `event: ping` every 10 seconds so Claude Code does not time the connection out. If a streaming downstream disconnects mid-generation without ever sending a finish reason, the gateway emits a retryable `overloaded_error` instead of a normal `message_stop`, so the client retries rather than treating the truncated turn as complete. `/v1/messages/count_tokens` is forwarded to the downstream tokenizer so Claude Code's context-window indicator stays accurate.
 
 ### List Models
 

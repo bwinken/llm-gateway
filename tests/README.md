@@ -1,7 +1,7 @@
 # Tests
 
-Pytest suite covering the full HTTP surface of the gateway. **183 tests** in
-16 files; the entire suite runs in ~8 seconds against an in-memory SQLite
+Pytest suite covering the full HTTP surface of the gateway. **191 tests** in
+17 files; the entire suite runs in ~8 seconds against an in-memory SQLite
 database with all downstream HTTP traffic mocked.
 
 ```bash
@@ -119,7 +119,7 @@ The largest file in the suite — covers the Anthropic ↔ OpenAI translator
 |---|---|
 | `TestRequestTranslation` | Pure function tests on `anthropic_to_openai_request`: text content, `system` as string vs list, base64 image blocks → OpenAI `image_url` parts, `tools` schema translation, `tool_use` ↔ `tool_calls` round-trip, `stop_sequences` mapped to OpenAI `stop`; `thinking` blocks in assistant history preserved as `reasoning_content`; `reasoning_effort` mapping (`effort` string and `thinking` budget buckets) emitted only when `is_reasoning=True` |
 | `TestResponseTranslation` | `openai_to_anthropic_response`: text response, tool call response, `stop_reason` mapping (`length` → `max_tokens`); `reasoning_content` is surfaced as a leading `thinking` content block before the text block |
-| `TestStreamTranslator` | Stateful `AnthropicStreamTranslator` — emits canonical Anthropic SSE event sequence (`message_start` → `content_block_start` → deltas → `message_stop`) for both text and tool calls; `reasoning_content` deltas open a `thinking` block, stream `thinking_delta` events, and close with `content_block_stop` only (no `signature_delta`) before the text block starts |
+| `TestStreamTranslator` | Stateful `AnthropicStreamTranslator` — emits canonical Anthropic SSE event sequence (`message_start` → `content_block_start` → deltas → `message_stop`) for both text and tool calls; `reasoning_content` deltas open a `thinking` block, stream `thinking_delta` events, and close with `content_block_stop` only (no `signature_delta`) before the text block starts; `test_fail_emits_error_and_closes_block` — a downstream drop with no `finish_reason` closes the open block and emits an `overloaded_error` event instead of `message_stop` |
 | `TestMessagesEndpointNonStream` | End-to-end: basic message, `x-api-key` header (Anthropic-style auth), 401, valid `x-api-key` overrides bad bearer, system prompt forwarded, tool call, downstream 502, `?beta=...` query param pass-through, alias works without `/v1` prefix |
 | `TestCountTokensEndpoint` | `/v1/messages/count_tokens` forwards to vLLM `/tokenize`; falls back to chars/4 estimate on connection error and on 404; `x-api-key` auth; works without `/v1` prefix |
 | `TestMessagesEndpointStream` | Full SSE stream end-to-end against a mocked upstream |
@@ -184,6 +184,15 @@ unknown alias falls back to "any alive LLM".
 | `TestAzureChatCompletions` | Happy path; **asserts the downstream URL is `…/openai/deployments/<deployment>/chat/completions?api-version=…`**, the auth header is `api-key:` (not `Authorization: Bearer`), and `body.model` is stripped before forwarding; unknown alias → 400 |
 | `TestAzureEmbeddings` | Basic embedding call routes correctly |
 | `TestAzureMessagesAnthropic` | Anthropic `/azure/v1/messages` translates to Azure chat/completions and back; `count_tokens` returns a chars/4 estimate (Azure doesn't expose tokenize) |
+
+### `test_pricing.py` — Cost calculation (`_calc_cost`)
+
+Pure-function tests on `_calc_cost`, independent of any router.
+
+| Test class | What it covers |
+|---|---|
+| `TestCalcCostBasics` | Per-model `input_price_per_1m` / `output_price_per_1m` override; fallback to per-type `[pricing.<type>]` when the route carries no override |
+| `TestCachedTokenPricing` | `cached_tokens` billed at the discounted `cached_input_price_per_1m` with the uncached remainder at full input price; no cached price → full input rate even when `cached_tokens` is passed; `cached_tokens=0` is a no-op; cached count clamped to total input (never negative); the vLLM path is unaffected since it never passes `cached_tokens` |
 
 ### `test_admin.py` — Admin REST API
 

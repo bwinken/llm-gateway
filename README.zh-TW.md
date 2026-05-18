@@ -32,12 +32,12 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 ## 功能特色
 
 - **OpenAI 相容 API** — `/v1/chat/completions`、`/v1/embeddings`、`/v1/rerank`、`/v1/score`、`/v1/responses`、`/v1/tokenize`、`/v1/models`（僅列出 LLM/VLM）
-- **Anthropic Messages API** — `/v1/messages` 與 `/v1/messages/count_tokens`，可直接搭配 Anthropic Python SDK 與 Claude Code（後端可接任何 vLLM LLM/VLM）。下游 `reasoning_content`（vLLM `--enable-reasoning`、DeepSeek、Qwen3-thinking）會轉成 Anthropic `thinking` content block;下游靜默時每 10 秒送一次 SSE `ping`,避免 Claude Code 在 reasoning prefill 太長時把連線視為斷線
+- **Anthropic Messages API** — `/v1/messages` 與 `/v1/messages/count_tokens`，可直接搭配 Anthropic Python SDK 與 Claude Code（後端可接任何 vLLM LLM/VLM）。下游 `reasoning_content`（vLLM `--enable-reasoning`、DeepSeek、Qwen3-thinking）會轉成 Anthropic `thinking` content block;下游靜默時每 10 秒送一次 SSE `ping`,避免 Claude Code 在 reasoning prefill 太長時把連線視為斷線;串流中途下游斷線時會回傳可重試的 `overloaded_error`,而非謊稱該輪已完成
 - **Azure OpenAI 後端** — 同一支客戶端、同一把 API key、同一套計費,把 base URL 指到 `/azure/v1/*` 即可呼叫設定的 Azure 部署(支援 chat completions、embeddings、Anthropic Messages)
 - **多模型路由** — LLM、VLM、Embedding、Vision Embedding、Reranker、Vision Reranker
 - **SSE 串流** — 完整支援 Server-Sent Events（chat completions 和 responses）
 - **智慧容錯** — 可設定各類型的備援模型，依健康檢查自動切換；回應標頭 `X-Model-Fallback`(僅 vLLM 路徑)
-- **分級計價** — 各類型預設價格，並可在 vLLM 或 Azure 模型上加上 per-model 覆寫
+- **分級計價** — 各類型預設價格，並可在 vLLM 或 Azure 模型上加上 per-model 覆寫,包含 prompt cache 命中專用的折扣價 `cached_input_price_per_1m`(Azure 的快取 token 以較低費率計價)
 - **用量追蹤** — 逐請求記錄每位使用者的 token 數與費用至 PostgreSQL（`/v1/*` 與 `/azure/v1/*` 共用）
 - **OAuth2 SSO** — 整合 [AuthCenter](https://github.com/bwinken/authcenter)，RS256 JWT 驗證,自動建立使用者並套用可調整的預設每日額度
 - **雙重驗證** — SDK/API 使用 Bearer API key，Web UI 使用 oauth2-proxy + JWT
@@ -151,7 +151,7 @@ input_price_per_1m = 0.50
 output_price_per_1m = 1.50
 ```
 
-費用查詢順序：模型項目上的 `input_price_per_1m` / `output_price_per_1m` per-model 覆寫 → `[pricing.<type>]` → `[pricing]` 預設值。
+費用查詢順序：模型項目上的 `input_price_per_1m` / `output_price_per_1m` per-model 覆寫 → `[pricing.<type>]` → `[pricing]` 預設值。模型項目也可設定 `cached_input_price_per_1m`;設定後,後端回報的快取命中 input token(例如 Azure 的 `prompt_tokens_details.cached_tokens`)會以該折扣費率計價,未命中的 input 仍以全價計費。
 
 各類型備援模型（選填，僅 vLLM 路徑）。當模型的伺服器離線時，優先使用此模型作為備援：
 
@@ -258,7 +258,7 @@ ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
 ```
 
-Adapter 會處理 tool calls（`tool_use` ↔ OpenAI `tool_calls`）、圖片、system prompt、stop reason 對應、與串流 SSE 事件順序。下游回傳的 `reasoning_content`(vLLM `--enable-reasoning`、DeepSeek、Qwen3-thinking 等)會被轉成 Anthropic 的 `thinking` content block — 串流時送 `thinking_delta`,非串流時在 text block 前面多一個 `thinking` block。轉譯是雙向對稱的:請求歷史中 assistant 訊息內的 `thinking` block 會被帶回下游成為 `reasoning_content`,讓推理內容在多輪對話間保留而非被丟棄。對於在 `config.toml` 中標記 `is_reasoning = true` 的模型,adapter 還會把 Anthropic 的推理偏好(`effort` 字串或 `thinking` token 預算)轉成 OpenAI 的 `reasoning_effort`;非推理模型則永遠不會收到此參數。下游靜默時(reasoning prefill 太久、vLLM 排隊、header turnaround 慢)gateway 每 10 秒會送一個 Anthropic `event: ping`,讓 Claude Code 不會把連線判定為斷線。`/v1/messages/count_tokens` 會轉送到下游的 tokenizer，讓 Claude Code 的 context-window 顯示維持精確。
+Adapter 會處理 tool calls（`tool_use` ↔ OpenAI `tool_calls`）、圖片、system prompt、stop reason 對應、與串流 SSE 事件順序。下游回傳的 `reasoning_content`(vLLM `--enable-reasoning`、DeepSeek、Qwen3-thinking 等)會被轉成 Anthropic 的 `thinking` content block — 串流時送 `thinking_delta`,非串流時在 text block 前面多一個 `thinking` block。轉譯是雙向對稱的:請求歷史中 assistant 訊息內的 `thinking` block 會被帶回下游成為 `reasoning_content`,讓推理內容在多輪對話間保留而非被丟棄。對於在 `config.toml` 中標記 `is_reasoning = true` 的模型,adapter 還會把 Anthropic 的推理偏好(`effort` 字串或 `thinking` token 預算)轉成 OpenAI 的 `reasoning_effort`;非推理模型則永遠不會收到此參數。下游靜默時(reasoning prefill 太久、vLLM 排隊、header turnaround 慢)gateway 每 10 秒會送一個 Anthropic `event: ping`,讓 Claude Code 不會把連線判定為斷線。若串流下游在送出 finish reason 前就中途斷線,gateway 會回傳可重試的 `overloaded_error` 而非正常的 `message_stop`,讓客戶端重試而不是把截斷的回合當成已完成。`/v1/messages/count_tokens` 會轉送到下游的 tokenizer，讓 Claude Code 的 context-window 顯示維持精確。
 
 ### 列出模型
 

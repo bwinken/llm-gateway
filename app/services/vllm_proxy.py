@@ -37,7 +37,17 @@ from app.services.monitor import is_monitored, log_monitor, log_monitor_error
 # stop and rely on client disconnect to unwind stuck requests. Non-stream
 # paths keep a bounded timeout (_NON_STREAM_TIMEOUT).
 _STREAM_TIMEOUT = httpx.Timeout(connect=30.0, read=None, write=30.0, pool=30.0)
-_NON_STREAM_TIMEOUT = 300.0
+# Kept just below the nginx `proxy_read_timeout` (300s) so the gateway's own
+# httpx timeout fires first and returns a clean 502, rather than nginx
+# severing the connection mid-flight and the client seeing a raw 504.
+_NON_STREAM_TIMEOUT = 280.0
+
+# Hard ceiling on total downstream silence for a streaming request. The
+# per-chunk read timeout is unbounded (reasoning models stall legitimately),
+# but a truly dead downstream would otherwise hang the request — and its ping
+# heartbeat — forever. After this many seconds with no real chunk, the pump
+# gives up so the caller can surface an error instead of spinning.
+_ANTHROPIC_MAX_IDLE = 300.0
 
 # How often to send an Anthropic SSE `event: ping` while a stream is silent.
 # Claude Code treats long gaps without any event as a dead connection. Keep
@@ -52,13 +62,18 @@ _ANTHROPIC_PING_INTERVAL = 10.0
 _ANTHROPIC_PING_EVENT = 'event: ping\ndata: {"type": "ping"}\n\n'
 
 
-async def _pump_anthropic_lines(send_coro, ping_interval: float = _ANTHROPIC_PING_INTERVAL):
+async def _pump_anthropic_lines(
+    send_coro,
+    ping_interval: float = _ANTHROPIC_PING_INTERVAL,
+    max_idle: float = _ANTHROPIC_MAX_IDLE,
+):
     """Run a streaming HTTP request as a background task and yield events.
 
     Yields tuples:
       ('ping', None)        — `ping_interval` seconds passed without new data
       ('line', str)         — SSE data line from downstream
-      ('err', Exception)    — downstream raised
+      ('err', Exception)    — downstream raised, or `max_idle` seconds passed
+                              with no real data (treated as a dead downstream)
       ('done', None)        — stream finished cleanly
 
     Caller does NOT need to close the response — this helper handles aclose.
@@ -78,13 +93,21 @@ async def _pump_anthropic_lines(send_coro, ping_interval: float = _ANTHROPIC_PIN
             await queue.put(("done", None))
 
     task = asyncio.create_task(reader())
+    idle = 0.0
     try:
         while True:
             try:
                 kind, data = await asyncio.wait_for(queue.get(), timeout=ping_interval)
             except asyncio.TimeoutError:
+                idle += ping_interval
+                if idle >= max_idle:
+                    yield ("err", TimeoutError(
+                        f"downstream produced no data for {max_idle:.0f}s"
+                    ))
+                    return
                 yield ("ping", None)
                 continue
+            idle = 0.0  # real data arrived — reset the idle clock
             yield (kind, data)
             if kind in ("done", "err"):
                 return
@@ -184,21 +207,43 @@ def _calc_cost(
     model_type: str,
     input_tokens: int,
     output_tokens: int,
+    cached_tokens: int = 0,
 ) -> Decimal:
     """Cost lookup priority: per-model override on `route` → per-type → default.
 
     The caller passes the route dict it already resolved (a MODEL_ROUTING entry
     for vLLM, an AZURE_MODELS entry for Azure, ...). This function stays
     agnostic to which downstream backend produced the route.
+
+    `cached_tokens` (a subset of `input_tokens` that hit a prompt cache) is
+    billed at `cached_input_price_per_1m` when that price is configured —
+    used by the Azure path, where Microsoft really does bill cached prompt
+    tokens at a discount. When no cached price is set, or `cached_tokens` is
+    0, all input tokens are charged at the full input price (the vLLM path
+    never passes `cached_tokens`, so its behaviour is unchanged).
     """
+    cached_price = None
     if route and "input_price_per_1m" in route and "output_price_per_1m" in route:
         inp_price = Decimal(str(route["input_price_per_1m"]))
         out_price = Decimal(str(route["output_price_per_1m"]))
+        if "cached_input_price_per_1m" in route:
+            cached_price = Decimal(str(route["cached_input_price_per_1m"]))
     else:
         pricing = PRICING_MAP.get(model_type, PRICING_MAP.get("_default", {}))
         inp_price = Decimal(str(pricing.get("input_price_per_1m", 0.0)))
         out_price = Decimal(str(pricing.get("output_price_per_1m", 0.0)))
-    return (input_tokens * inp_price + output_tokens * out_price) / 1_000_000
+        if "cached_input_price_per_1m" in pricing:
+            cached_price = Decimal(str(pricing["cached_input_price_per_1m"]))
+
+    # Clamp cached_tokens into [0, input_tokens] — defends against a
+    # downstream reporting cached > prompt (shouldn't happen, but cheap).
+    cached = max(0, min(cached_tokens, input_tokens))
+    if cached and cached_price is not None:
+        uncached = input_tokens - cached
+        billable_input = uncached * inp_price + cached * cached_price
+    else:
+        billable_input = input_tokens * inp_price
+    return (billable_input + output_tokens * out_price) / 1_000_000
 
 
 def _log_usage_sync(
@@ -258,18 +303,22 @@ def _log_usage(
     output_tokens: int,
     endpoint: str,
     route: dict[str, Any] | None = None,
+    cached_tokens: int = 0,
 ) -> None:
     """Fire-and-forget usage logging in a background thread.
 
     If `route` is omitted, looks up MODEL_ROUTING by alias (vLLM default
     behaviour). Azure callers should pass their AZURE_MODELS entry so any
     per-model price override there is honoured at the DB level.
+
+    `cached_tokens` lets the Azure path bill prompt-cache hits at the
+    discounted `cached_input_price_per_1m`; vLLM callers omit it.
     """
     import asyncio
 
     if route is None:
         route = MODEL_ROUTING.get(model, {})
-    cost = _calc_cost(route, model_type, input_tokens, output_tokens)
+    cost = _calc_cost(route, model_type, input_tokens, output_tokens, cached_tokens)
     try:
         loop = asyncio.get_running_loop()
         loop.run_in_executor(
@@ -700,8 +749,22 @@ async def _stream_messages(
                 for event in translator.handle_chunk(chunk):
                     yield event
 
-            for event in translator.finish():
-                yield event
+            # A clean end-of-stream WITHOUT a finish_reason means the
+            # downstream connection dropped mid-generation. Emitting a normal
+            # message_stop would tell Claude Code the turn completed (it then
+            # silently accepts a truncated answer) — surface an error instead.
+            if translator.stop_reason is None:
+                logger.warning(
+                    "Anthropic stream ended without finish_reason | model={} — truncated",
+                    model_alias,
+                )
+                for event in translator.fail(
+                    "Downstream stream ended prematurely; the response may be incomplete."
+                ):
+                    yield event
+            else:
+                for event in translator.finish():
+                    yield event
         except Exception as exc:
             logger.error("Stream error: {}: {}", type(exc).__name__, exc)
             err_payload = json.dumps({"type": "error", "error": {"type": "api_error", "message": str(exc)}})

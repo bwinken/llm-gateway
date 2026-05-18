@@ -481,6 +481,29 @@ class TestStreamTranslator:
         assert '"type": "text_delta"' in joined
         assert "Answer." in joined
 
+    def test_fail_emits_error_and_closes_block(self):
+        """When the downstream drops mid-stream (no finish_reason), the proxy
+        calls translator.fail() — it must close the open content block and
+        emit an `error` event, NOT a normal message_stop."""
+        t = AnthropicStreamTranslator("claude-x")
+        events: list[str] = []
+        events.extend(t.start())
+        events.extend(t.handle_chunk({
+            "choices": [{"index": 0, "delta": {"content": "partial ans"}, "finish_reason": None}]
+        }))
+        # downstream dropped — no finish_reason ever arrived
+        assert t.stop_reason is None
+        events.extend(t.fail("Downstream stream ended prematurely."))
+
+        joined = "".join(events)
+        # open text block is closed
+        assert "event: content_block_stop" in joined
+        # an error event is emitted — overloaded_error so Claude Code retries
+        assert "event: error" in joined
+        assert "overloaded_error" in joined
+        # and crucially NOT a normal completion
+        assert "event: message_stop" not in joined
+
     def test_tool_call_stream(self):
         t = AnthropicStreamTranslator("claude-x")
         events: list[str] = []

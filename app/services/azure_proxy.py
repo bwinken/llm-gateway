@@ -74,6 +74,17 @@ def _build_headers(entry: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _cached_tokens(usage: dict) -> int:
+    """Extract prompt-cache hit count from an OpenAI-shape usage object.
+
+    Azure (and OpenAI) report cache hits under
+    `usage.prompt_tokens_details.cached_tokens`; cached_tokens is a subset
+    of prompt_tokens. Returns 0 when caching wasn't used or isn't reported.
+    """
+    details = usage.get("prompt_tokens_details") or {}
+    return details.get("cached_tokens", 0) or 0
+
+
 # ---------------------------------------------------------------------------
 # Chat Completions
 # ---------------------------------------------------------------------------
@@ -131,9 +142,10 @@ async def _non_stream_chat(
     usage = data.get("usage", {})
     input_tk = usage.get("prompt_tokens", 0)
     output_tk = usage.get("completion_tokens", 0)
-    _log_usage(user, model, model_type, input_tk, output_tk, "/azure/v1/chat/completions", route=route)
+    cached_tk = _cached_tokens(usage)
+    _log_usage(user, model, model_type, input_tk, output_tk, "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk)
     if is_monitored(user.id):
-        cost = float(_calc_cost(route, model_type, input_tk, output_tk))
+        cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
         log_monitor(user.id, monitor_body, data, model, "/azure/v1/chat/completions", input_tk, output_tk, cost, model_type)
     return JSONResponse(content=data)
 
@@ -148,6 +160,7 @@ async def _stream_chat(
     async def event_generator():
         input_tokens = 0
         output_tokens = 0
+        cached_tokens = 0
         resp = None
         chunks: list[dict] = []
         try:
@@ -166,6 +179,7 @@ async def _stream_chat(
                         if usage:
                             input_tokens = usage.get("prompt_tokens", input_tokens)
                             output_tokens = usage.get("completion_tokens", output_tokens)
+                            cached_tokens = _cached_tokens(usage) or cached_tokens
                     except (json.JSONDecodeError, KeyError):
                         pass
         except Exception as exc:
@@ -180,9 +194,9 @@ async def _stream_chat(
 
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Azure stream for model={} ended with 0 tokens", model)
-        _log_usage(user, model, model_type, input_tokens, output_tokens, "/azure/v1/chat/completions", route=route)
+        _log_usage(user, model, model_type, input_tokens, output_tokens, "/azure/v1/chat/completions", route=route, cached_tokens=cached_tokens)
         if _monitoring:
-            cost = float(_calc_cost(route, model_type, input_tokens, output_tokens))
+            cost = float(_calc_cost(route, model_type, input_tokens, output_tokens, cached_tokens))
             log_monitor(user.id, monitor_body, chunks, model, "/azure/v1/chat/completions", input_tokens, output_tokens, cost, model_type)
 
     return StreamingResponse(
@@ -304,9 +318,10 @@ async def _non_stream_messages(
     anthropic_data = openai_to_anthropic_response(openai_data, alias)
     input_tk = anthropic_data["usage"]["input_tokens"]
     output_tk = anthropic_data["usage"]["output_tokens"]
-    _log_usage(user, alias, model_type, input_tk, output_tk, "/azure/v1/messages", route=route)
+    cached_tk = _cached_tokens(openai_data.get("usage", {}))
+    _log_usage(user, alias, model_type, input_tk, output_tk, "/azure/v1/messages", route=route, cached_tokens=cached_tk)
     if is_monitored(user.id):
-        cost = float(_calc_cost(route, model_type, input_tk, output_tk))
+        cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
         log_monitor(user.id, monitor_body, anthropic_data, alias, "/azure/v1/messages", input_tk, output_tk, cost, model_type)
     return JSONResponse(content=anthropic_data)
 
@@ -322,6 +337,7 @@ async def _stream_messages(
     async def event_generator():
         translator = AnthropicStreamTranslator(alias)
         chunks: list[dict] = []
+        cached_tk = 0
         try:
             for event in translator.start():
                 yield event
@@ -347,11 +363,27 @@ async def _stream_messages(
                     continue
                 if _monitoring:
                     chunks.append(chunk)
+                chunk_usage = chunk.get("usage")
+                if chunk_usage:
+                    cached_tk = _cached_tokens(chunk_usage) or cached_tk
                 for event in translator.handle_chunk(chunk):
                     yield event
 
-            for event in translator.finish():
-                yield event
+            # No finish_reason on a clean end → downstream dropped mid-stream.
+            # Report an error rather than a normal message_stop so the client
+            # doesn't silently accept a truncated answer.
+            if translator.stop_reason is None:
+                logger.warning(
+                    "Azure messages stream ended without finish_reason | model={} — truncated",
+                    alias,
+                )
+                for event in translator.fail(
+                    "Downstream stream ended prematurely; the response may be incomplete."
+                ):
+                    yield event
+            else:
+                for event in translator.finish():
+                    yield event
         except Exception as exc:
             logger.error("Azure messages stream error: {}", exc)
             err_payload = json.dumps({"type": "error", "error": {"type": "api_error", "message": str(exc)}})
@@ -359,9 +391,9 @@ async def _stream_messages(
 
         input_tk = translator.input_tokens
         output_tk = translator.output_tokens
-        _log_usage(user, alias, model_type, input_tk, output_tk, "/azure/v1/messages", route=route)
+        _log_usage(user, alias, model_type, input_tk, output_tk, "/azure/v1/messages", route=route, cached_tokens=cached_tk)
         if _monitoring:
-            cost = float(_calc_cost(route, model_type, input_tk, output_tk))
+            cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
             log_monitor(user.id, monitor_body, chunks, alias, "/azure/v1/messages", input_tk, output_tk, cost, model_type)
 
     return StreamingResponse(

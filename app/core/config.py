@@ -48,12 +48,16 @@ _MODEL_METADATA_KEYS: tuple[str, ...] = (
 )
 
 # Optional per-model pricing overrides (USD per million tokens).
-# When both are present on a model, they take priority over the
-# per-type [pricing.<type>] block. Old configs without these keys
-# keep working and fall back to the per-type defaults.
+# When `input_price_per_1m` + `output_price_per_1m` are both present on a
+# model, they take priority over the per-type [pricing.<type>] block. Old
+# configs without these keys keep working and fall back to the per-type
+# defaults. `cached_input_price_per_1m` is optional on top of those — used
+# by the Azure path to bill prompt-cache hits at a discount; when absent,
+# cached tokens are charged at the full input price.
 _MODEL_PRICING_KEYS: tuple[str, ...] = (
     "input_price_per_1m",
     "output_price_per_1m",
+    "cached_input_price_per_1m",
 )
 
 # Internal config keys stored in config.toml and loaded into MODEL_ROUTING
