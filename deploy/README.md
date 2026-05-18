@@ -144,7 +144,7 @@ docker compose -f deploy/docker-compose.yml up -d
 | File | Purpose |
 |---|---|
 | `deploy/.env` | Docker services: PG password, OIDC issuer, oauth2-proxy client, etc. |
-| `.env` | Gateway app: DATABASE_URL, AUTH_CENTER_APP_ID |
+| `.env` | Gateway app: DATABASE_URL, AUTH_CENTER_APP_ID, optional AZURE_HTTP_PROXY |
 | `config.toml` | Model routing, pricing, fallback |
 
 ## Nginx Configuration
@@ -171,3 +171,7 @@ export http_proxy=http://proxy.example.com:8080
 ```
 
 For Gateway runtime proxy, uncomment the proxy lines in `llm-gateway.service`.
+
+### Azure-only HTTP proxy
+
+If Azure OpenAI can only be reached through a corporate HTTP proxy while internal vLLM downstreams must stay direct, set `AZURE_HTTP_PROXY` in the Gateway's `.env` instead of a global `http_proxy`. Only `/azure/v1/*` downstream calls are routed through it; vLLM traffic always goes direct. Inline credentials are supported (`AZURE_HTTP_PROXY=http://user:pass@proxy.company.local:8080`).

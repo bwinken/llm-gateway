@@ -183,6 +183,7 @@ api_version = "2024-08-01-preview"
 | `AUTH_CENTER_APP_ID` | JWT audience (AuthCenter app ID) | `llm_gateway` |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | RS256 public key path | `./keys/public.pem` |
 | `AUTH_BASE_URL` | JWT issuer URL (AuthCenter base URL) | `auth-center` |
+| `AZURE_HTTP_PROXY` | Optional HTTP proxy for `/azure/v1/*` downstream traffic only; supports inline credentials (`http://user:pass@proxy:8080`). Unset = Azure reached directly. vLLM traffic is never proxied. | _(unset)_ |
 
 > OAuth2 login settings (OIDC issuer, client secret, redirect URL) are configured in `deploy/.env` for oauth2-proxy. See [deploy/README.md](deploy/README.md).
 

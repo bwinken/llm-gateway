@@ -268,11 +268,12 @@ def _patch_all():
         patch("app.services.vllm_proxy.engine", _test_engine),
         patch("app.services.vllm_proxy.is_alive", return_value=True),
         patch("app.services.azure_proxy.AZURE_MODELS", TEST_AZURE_MODELS),
-        patch("app.services.azure_proxy.get_client", return_value=_mock_httpx_client),
+        patch("app.services.azure_proxy.get_azure_client", return_value=_mock_httpx_client),
         patch("app.core.config.AZURE_MODELS", TEST_AZURE_MODELS),
         patch("app.core.config.get_model_routing_snapshot", return_value=TEST_MODEL_ROUTING),
         patch("app.core.config.get_azure_models_snapshot", return_value=TEST_AZURE_MODELS),
         patch("app.core.server_state.get_client", return_value=_mock_httpx_client),
+        patch("app.core.server_state.get_azure_client", return_value=_mock_httpx_client),
         patch("app.core.auth._decode_jwt", _test_decode_jwt),
     ):
         yield

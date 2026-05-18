@@ -183,6 +183,7 @@ api_version = "2024-08-01-preview"
 | `AUTH_CENTER_APP_ID` | JWT audience（AuthCenter 應用程式 ID） | `llm_gateway` |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | RS256 公鑰路徑 | `./keys/public.pem` |
 | `AUTH_BASE_URL` | JWT issuer URL（AuthCenter 基底 URL） | `auth-center` |
+| `AZURE_HTTP_PROXY` | 選填,僅供 `/azure/v1/*` 下游流量使用的 HTTP proxy;支援內嵌帳密(`http://user:pass@proxy:8080`)。不設定則直連 Azure。vLLM 流量永遠不走 proxy。 | _(未設定)_ |
 
 > OAuth2 登入設定（OIDC issuer、client secret、redirect URL）在 `deploy/.env` 中設定，供 oauth2-proxy 使用。詳見 [deploy/README.md](deploy/README.md)。
 

@@ -36,6 +36,7 @@ Parses `config.toml` and `.env`, producing global configuration objects.
 | `AUTH_CENTER_APP_ID` | `str` | `.env` | JWT audience validation value |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | `str` | `.env` | RS256 public key path |
 | `AUTH_BASE_URL` | `str` | `.env` | JWT issuer validation value (default `auth-center`) |
+| `AZURE_HTTP_PROXY` | `str` | `.env` | Optional HTTP proxy URL for `/azure/v1/*` downstream traffic (empty = direct) |
 | `APP_CONFIG` | `dict` | `config.toml` `[app]` | App-level settings (e.g. `default_daily_limit_usd`, default `10.0`) |
 | `MODEL_ROUTING` | `dict[str, dict]` | `config.toml` | vLLM routing table: alias → `{base_url, real_model, api_key, type}` plus optional metadata and per-model pricing overrides |
 | `PRICING_MAP` | `dict[str, dict]` | `config.toml` | Pricing table: type → `{input_price_per_1m, output_price_per_1m}` (with `_default` entry) |
@@ -149,13 +150,14 @@ Creates SQLAlchemy engine and provides session factory.
 
 ### `server_state.py` — HTTP Client + Health Cache
 
-Manages global `httpx.AsyncClient` and downstream server health cache.
+Manages two global `httpx.AsyncClient` instances and the downstream server health cache. The **shared client** serves vLLM downstreams (internal LAN, never proxied). The **Azure client** (`_azure_client`) is a separate instance created with `proxy=AZURE_HTTP_PROXY` when that env var is set; if it is unset, no Azure client is created and `get_azure_client()` falls back to the shared client. Keeping the two clients independent ensures internal vLLM traffic stays direct even when Azure must go through a corporate proxy.
 
 | Function | Description |
 |---|---|
-| `init_client()` | Creates AsyncClient (timeout 30s, max_connections 200) |
-| `close_client()` | Closes AsyncClient (called on app shutdown) |
-| `get_client()` | Gets AsyncClient instance |
+| `init_client()` | Creates the shared AsyncClient (timeout 30s, max_connections 200), plus the Azure client when `AZURE_HTTP_PROXY` is set |
+| `close_client()` | Closes both AsyncClients (called on app shutdown) |
+| `get_client()` | Gets the shared AsyncClient instance (used by the vLLM path) |
+| `get_azure_client()` | Gets the proxied Azure AsyncClient, or the shared client when `AZURE_HTTP_PROXY` is unset (used by `azure_proxy.py`) |
 | `set_alive(base_url, alive)` | Updates health cache (called by health check loop) |
 | `is_alive(base_url)` | Queries whether a server is alive |
 | `prune_cache(active_urls)` | Removes cache entries no longer in MODEL_ROUTING |

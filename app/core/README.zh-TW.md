@@ -36,6 +36,7 @@ graph TD
 | `AUTH_CENTER_APP_ID` | `str` | `.env` | JWT audience 驗證值 |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | `str` | `.env` | RS256 公鑰路徑 |
 | `AUTH_BASE_URL` | `str` | `.env` | JWT issuer 驗證值（預設 `auth-center`） |
+| `AZURE_HTTP_PROXY` | `str` | `.env` | 選填,供 `/azure/v1/*` 下游流量使用的 HTTP proxy URL（空字串 = 直連） |
 | `APP_CONFIG` | `dict` | `config.toml` `[app]` | App 層級設定(例如 `default_daily_limit_usd`,預設 `10.0`) |
 | `MODEL_ROUTING` | `dict[str, dict]` | `config.toml` | vLLM 路由表:alias → `{base_url, real_model, api_key, type}`,加上可選的 metadata 與 per-model 計價覆寫 |
 | `PRICING_MAP` | `dict[str, dict]` | `config.toml` | 定價表:type → `{input_price_per_1m, output_price_per_1m}`(包含 `_default`) |
@@ -149,13 +150,14 @@ DB 查詢: SELECT * FROM users WHERE api_key = ?
 
 ### `server_state.py` — HTTP Client + 健康快取
 
-管理全域 `httpx.AsyncClient` 和下游伺服器健康狀態快取。
+管理兩個全域 `httpx.AsyncClient` 實例和下游伺服器健康狀態快取。**共用 client** 服務 vLLM 下游（內部 LAN,永遠不走 proxy）。**Azure client**（`_azure_client`）是另一個獨立實例,當 `AZURE_HTTP_PROXY` 環境變數有設定時以 `proxy=AZURE_HTTP_PROXY` 建立;若未設定則不建立 Azure client,`get_azure_client()` 會 fallback 到共用 client。兩個 client 各自獨立,確保即使 Azure 必須走企業 proxy,內部 vLLM 流量仍維持直連。
 
 | 函式 | 說明 |
 |---|---|
-| `init_client()` | 建立 AsyncClient（timeout 30s, max_connections 200） |
-| `close_client()` | 關閉 AsyncClient（app shutdown 時呼叫） |
-| `get_client()` | 取得 AsyncClient 實例 |
+| `init_client()` | 建立共用 AsyncClient（timeout 30s, max_connections 200）;`AZURE_HTTP_PROXY` 有設定時另外建立 Azure client |
+| `close_client()` | 關閉兩個 AsyncClient（app shutdown 時呼叫） |
+| `get_client()` | 取得共用 AsyncClient 實例（vLLM 路徑使用） |
+| `get_azure_client()` | 取得走 proxy 的 Azure AsyncClient;`AZURE_HTTP_PROXY` 未設定時回傳共用 client（`azure_proxy.py` 使用） |
 | `set_alive(base_url, alive)` | 更新健康快取（由 health check loop 呼叫） |
 | `is_alive(base_url)` | 查詢伺服器是否存活 |
 | `prune_cache(active_urls)` | 移除不再存在於 MODEL_ROUTING 的 cache entry |

@@ -94,6 +94,7 @@ Azure-specific conventions:
 - Body's `model` field is stripped before forwarding (Azure routes by deployment in URL).
 - Response bodies are OpenAI-shaped and pass through unchanged; Anthropic responses use the same translator as the vLLM path.
 - Azure models are NOT shown on `/v1/models` or the user-facing dashboard. They appear only on `/azure/v1/models` (and the admin model config UI).
+- **Optional HTTP proxy**: when `AZURE_HTTP_PROXY` is set, all `/azure/v1/*` downstream calls go through that corporate HTTP proxy via a dedicated `httpx.AsyncClient` (`server_state.get_azure_client()`). vLLM downstreams are internal LAN and are never proxied — they always use the shared `get_client()`. When `AZURE_HTTP_PROXY` is unset, `get_azure_client()` falls back to the shared client (unchanged behavior).
 
 ### Cost Calculation
 
@@ -120,12 +121,12 @@ Azure-specific conventions:
   - `[pricing]` and `[pricing.<type>]` — default + per-type pricing (USD per 1M tokens).
   - `[fallback]` — type → preferred fallback alias.
   - `[azure_models.<alias>]` — Azure OpenAI deployments: `type`, `endpoint`, `deployment`, `api_key`, `api_version` (default `2024-08-01-preview`). Same per-model pricing/metadata override fields are accepted.
-- **`.env`**: DATABASE_URL, AUTH_CENTER_APP_ID/PUBLIC_KEY_PATH, AUTH_BASE_URL (JWT issuer).
+- **`.env`**: DATABASE_URL, AUTH_CENTER_APP_ID/PUBLIC_KEY_PATH, AUTH_BASE_URL (JWT issuer), `AZURE_HTTP_PROXY` (optional — routes `/azure/v1/*` downstream traffic through a corporate HTTP proxy; supports inline credentials `http://user:pass@host:port`; vLLM traffic is never proxied).
 - **`deploy/.env`**: Docker Compose settings: PG credentials, OIDC issuer, oauth2-proxy client.
 
 ### Key Patterns
 
-- All downstream HTTP calls use a single shared `httpx.AsyncClient` (initialized in lifespan, accessed via `server_state.get_client()`)
+- vLLM downstream HTTP calls use a single shared `httpx.AsyncClient` (initialized in lifespan, accessed via `server_state.get_client()`); Azure downstream calls use `server_state.get_azure_client()`, which returns a separate proxied client when `AZURE_HTTP_PROXY` is set or falls back to the shared client otherwise
 - Background health check loop pings all unique `base_url`s every 30s, updates `server_state._health_cache`, prunes stale entries (vLLM only; Azure deployments are not health-checked)
 - Usage is logged per-request to `usage_logs` table; cost lookup follows per-model override → per-type → `_default`
 - Model alias (user-facing name) is swapped to `real_model` (vLLM) or routed to its `deployment` (Azure) before forwarding downstream

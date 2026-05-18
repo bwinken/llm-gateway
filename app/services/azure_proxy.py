@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.config import AZURE_MODELS, _check_auto_reload
 from app.core.logger import logger
-from app.core.server_state import get_client
+from app.core.server_state import get_azure_client
 from app.models.schema import User
 from app.services.anthropic_adapter import (
     AnthropicStreamTranslator,
@@ -99,7 +99,7 @@ async def forward_chat_completions(
 
     target_url = _build_url(entry, "chat/completions")
     headers = _build_headers(entry)
-    client = get_client()
+    client = get_azure_client()
 
     monitor_body = {**body, "model": alias}
 
@@ -208,7 +208,7 @@ async def forward_embeddings(
 
     target_url = _build_url(entry, "embeddings")
     headers = _build_headers(entry)
-    client = get_client()
+    client = get_azure_client()
 
     monitor_body = {**body, "model": alias}
 
@@ -269,7 +269,7 @@ async def forward_messages(
 
     target_url = _build_url(entry, "chat/completions")
     headers = _build_headers(entry)
-    client = get_client()
+    client = get_azure_client()
 
     monitor_body = dict(anthropic_body)
     monitor_body["model"] = alias

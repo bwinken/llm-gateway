@@ -1,35 +1,72 @@
 """
 Global httpx.AsyncClient manager and per-server health cache.
+
+Two clients:
+  - `_client`        — used for vLLM downstreams (internal LAN, no proxy)
+  - `_azure_client`  — used for Azure OpenAI; routed through a corporate
+                       HTTP proxy when AZURE_HTTP_PROXY is set, otherwise
+                       falls back to the shared `_client`.
+
+Keeping them separate means internal vLLM traffic never goes through the
+corporate proxy, while external Azure calls can when the deployment needs it.
 """
 
 from __future__ import annotations
 
+import os
+
 import httpx
 
 _client: httpx.AsyncClient | None = None
+_azure_client: httpx.AsyncClient | None = None
 _health_cache: dict[str, bool] = {}
 
 
 async def init_client() -> None:
-    global _client
+    global _client, _azure_client
     _client = httpx.AsyncClient(
         timeout=httpx.Timeout(30.0, connect=10.0),
         limits=httpx.Limits(max_connections=200, max_keepalive_connections=40),
         follow_redirects=True,
     )
+    # Dedicated Azure client through a corporate proxy, if configured.
+    # AZURE_HTTP_PROXY accepts an inline-credentials URL too, e.g.
+    # http://user:pass@proxy.company.local:8080
+    azure_proxy = os.getenv("AZURE_HTTP_PROXY", "").strip()
+    if azure_proxy:
+        _azure_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            limits=httpx.Limits(max_connections=200, max_keepalive_connections=40),
+            follow_redirects=True,
+            proxy=azure_proxy,
+        )
 
 
 async def close_client() -> None:
-    global _client
+    global _client, _azure_client
     if _client is not None:
         await _client.aclose()
         _client = None
+    if _azure_client is not None:
+        await _azure_client.aclose()
+        _azure_client = None
 
 
 def get_client() -> httpx.AsyncClient:
     if _client is None:
         raise RuntimeError("httpx client not initialised – call init_client() first")
     return _client
+
+
+def get_azure_client() -> httpx.AsyncClient:
+    """Return the Azure-bound client.
+
+    Uses the dedicated proxied client when AZURE_HTTP_PROXY is set, otherwise
+    falls back to the shared client (Azure reachable directly).
+    """
+    if _azure_client is not None:
+        return _azure_client
+    return get_client()
 
 
 def set_alive(base_url: str, alive: bool) -> None:

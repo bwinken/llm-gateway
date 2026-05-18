@@ -144,7 +144,7 @@ docker compose -f deploy/docker-compose.yml up -d
 | 檔案 | 用途 |
 |---|---|
 | `deploy/.env` | Docker 服務設定：PG 密碼、OIDC issuer、oauth2-proxy client 等 |
-| `.env` | Gateway 應用設定：DATABASE_URL、AUTH_CENTER_APP_ID |
+| `.env` | Gateway 應用設定：DATABASE_URL、AUTH_CENTER_APP_ID、選填的 AZURE_HTTP_PROXY |
 | `config.toml` | 模型路由、定價、fallback |
 
 ## Nginx 設定
@@ -171,3 +171,7 @@ export http_proxy=http://proxy.example.com:8080
 ```
 
 如需 Gateway runtime proxy，取消 `llm-gateway.service` 中的 proxy 註解。
+
+### 僅 Azure 的 HTTP proxy
+
+若 Azure OpenAI 只能透過企業 HTTP proxy 連線,而內部 vLLM 下游必須直連,請在 Gateway 的 `.env` 設定 `AZURE_HTTP_PROXY`,而非全域 `http_proxy`。只有 `/azure/v1/*` 的下游呼叫會走此 proxy;vLLM 流量永遠直連。支援內嵌帳密(`AZURE_HTTP_PROXY=http://user:pass@proxy.company.local:8080`)。

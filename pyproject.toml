@@ -17,6 +17,10 @@ dependencies = [
     "alembic>=1.13.0",
     "loguru>=0.7.0",
     "openpyxl>=3.1.5",
+    # IANA timezone database — zoneinfo falls back to this when the OS
+    # doesn't ship tz data (Windows, slim/Alpine Docker images). Required
+    # by app/core/timeutil.py's ZoneInfo lookup.
+    "tzdata>=2024.1",
 ]
 
 [dependency-groups]
