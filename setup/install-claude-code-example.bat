@@ -114,9 +114,14 @@ if "%NODE_EXISTS%"=="0" (
         echo    [WARN] Target already exists, skipping copy: %NODE_TARGET%
     ) else (
         if not exist "%NODE_TARGET%" mkdir "%NODE_TARGET%" >nul 2>&1
-        xcopy "%NODE_SOURCE%\*" "%NODE_TARGET%\" /E /I /Y /Q >nul
-        if errorlevel 1 (
-            echo    [ERR] xcopy failed. Check permissions on %NODE_TARGET%.
+        REM robocopy (not xcopy) — npm's node_modules nests deep enough
+        REM to exceed the 260-char path limit, and xcopy silently drops
+        REM those files, leaving a copy that looks fine but is missing
+        REM npm's own bundled dependencies. robocopy handles long paths.
+        REM Exit codes 0-7 are success; 8+ is a real failure.
+        robocopy "%NODE_SOURCE%" "%NODE_TARGET%" /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP >nul
+        if errorlevel 8 (
+            echo    [ERR] robocopy failed. Check permissions / network path.
             pause
             exit /b 1
         )
@@ -153,6 +158,25 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM ── Verify npm's bundled dependencies are intact ──
+REM A truncated copy (xcopy dropping >260-char paths, or an already
+REM incomplete NODE_SOURCE) leaves npm unable to require its own
+REM internal modules (@npmcli/config, graceful-fs, ...). Fail loudly
+REM here instead of with a cryptic MODULE_NOT_FOUND deep inside
+REM `npm install`.
+if not exist "%NODE_DIR%\node_modules\npm\node_modules\@npmcli" (
+    echo    [ERR] This Node.js folder is incomplete - npm's bundled
+    echo    [ERR] dependencies are missing under:
+    echo    [ERR]   %NODE_DIR%\node_modules\npm\node_modules\
+    echo    [ERR] The copy was truncated, or NODE_SOURCE itself is
+    echo    [ERR] incomplete. Re-extract a fresh node-vXX-win-x64.zip
+    echo    [ERR] from nodejs.org ^(unzip locally, do not xcopy^) and
+    echo    [ERR] point NODE_SOURCE at that.
+    pause
+    exit /b 1
+)
+echo    [OK] npm bundled dependencies present
+
 REM ============================================================
 REM  4. Install Git from shared drive (if missing)
 REM ============================================================
@@ -169,9 +193,10 @@ if "%GIT_EXISTS%"=="0" if not "%GIT_SOURCE%"=="" (
             echo    [WARN] Target already exists, skipping copy: %GIT_TARGET%
         ) else (
             if not exist "%GIT_TARGET%" mkdir "%GIT_TARGET%" >nul 2>&1
-            xcopy "%GIT_SOURCE%\*" "%GIT_TARGET%\" /E /I /Y /Q >nul
-            if errorlevel 1 (
-                echo    [WARN] xcopy failed - continuing without Git.
+            REM robocopy — same long-path reason as the Node.js copy above.
+            robocopy "%GIT_SOURCE%" "%GIT_TARGET%" /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP >nul
+            if errorlevel 8 (
+                echo    [WARN] robocopy failed - continuing without Git.
             ) else (
                 echo    [OK] Git copied to %GIT_TARGET%
             )
@@ -243,6 +268,7 @@ call npm install -g "@anthropic-ai/claude-code"
 if errorlevel 1 (
     echo    [ERR] npm install failed.
     echo    [ERR] Common causes:
+    echo    [ERR]   - Incomplete Node.js copy ^(npm 'Cannot find module' errors above^)
     echo    [ERR]   - Proxy URL wrong ^(check %PROXY_URL%^)
     echo    [ERR]   - Registry blocked by firewall
     echo    [ERR]   - TLS inspection - configure 'npm config set cafile' with your corporate CA
