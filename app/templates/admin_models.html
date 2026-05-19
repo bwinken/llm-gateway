@@ -133,7 +133,7 @@ function renderPanels(types) {
                 <div class="overflow-x-auto">
                     <table class="gw-table">
                         <thead><tr>
-                            <th class="gw-tip" data-tip="User-facing model name">Alias</th><th class="gw-tip gw-tip-wide" data-tip="Actual model ID sent to downstream server">Real Model</th><th class="gw-tip gw-tip-wide" data-tip="Downstream vLLM / OpenAI server URL">Base URL</th><th class="gw-tip gw-tip-wide" data-tip="Optional API key for downstream auth">API Key</th><th class="text-right gw-tip gw-tip-wide" data-tip="Per-model input price (USD per 1M tokens). Blank = use the type default below.">Input $/1M</th><th class="text-right gw-tip gw-tip-wide" data-tip="Per-model output price (USD per 1M tokens). Blank = use the type default below.">Output $/1M</th><th class="text-center gw-tip gw-tip-wide" data-tip="Hidden models are not shown to regular users but can still be used via API">Visible</th><th class="text-right">Actions</th>
+                            <th class="gw-tip" data-tip="User-facing model name">Alias</th><th class="gw-tip gw-tip-wide" data-tip="Actual model ID sent to downstream server">Real Model</th><th class="gw-tip gw-tip-wide" data-tip="Downstream vLLM / OpenAI server URL">Base URL</th><th class="gw-tip gw-tip-wide" data-tip="Optional API key for downstream auth">API Key</th><th class="text-center gw-tip gw-tip-wide" data-tip="Hidden models are not shown to regular users but can still be used via API">Visible</th><th class="text-right">Actions</th>
                         </tr></thead>
                         <tbody>${models.map(([alias, info]) => renderModelRow(alias, info, t)).join('')}</tbody>
                     </table>
@@ -158,8 +158,26 @@ const META_KEYS = [
     'is_reasoning',
 ];
 
+// Optional per-model pricing override keys — kept in sync with
+// _MODEL_PRICING_KEYS in app/core/config.py. Blank field = unset.
+const PRICING_KEYS = [
+    'input_price_per_1m',
+    'output_price_per_1m',
+    'cached_input_price_per_1m',
+];
+
 function hasMeta(info) {
     return META_KEYS.some(k => info[k] !== undefined && info[k] !== '');
+}
+
+function hasPricing(info) {
+    return PRICING_KEYS.some(k => info[k] !== undefined && info[k] !== '');
+}
+
+// Advanced row is auto-expanded (and flagged with a dot) when either
+// pricing overrides or metadata are set on the model.
+function hasAdvanced(info) {
+    return hasMeta(info) || hasPricing(info);
 }
 
 function typeDefaultPrice(type, field) {
@@ -169,23 +187,51 @@ function typeDefaultPrice(type, field) {
     return (v === undefined || v === null) ? '' : String(v);
 }
 
-function renderModelRow(alias, info, type) {
-    const dot = hasMeta(info)
-        ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-ag ml-1" title="Metadata set"></span>'
-        : '';
-    const isHidden = info.hidden === true;
+// Renders the per-model pricing-override block shown inside the Advanced row.
+// `kind` is 'alias' for vLLM models (data-alias + updateField) or 'azalias'
+// for Azure deployments (data-azalias + updateAzureField).
+function renderPricingFields(alias, info, kind) {
+    const a = escAttr(alias);
+    const attr = kind === 'azalias' ? 'azalias' : 'alias';
+    const handler = kind === 'azalias' ? 'updateAzureField(this)' : 'updateField(this)';
     const inPrice = info.input_price_per_1m ?? '';
     const outPrice = info.output_price_per_1m ?? '';
-    const inPh = typeDefaultPrice(type, 'input_price_per_1m');
-    const outPh = typeDefaultPrice(type, 'output_price_per_1m');
+    const cachedPrice = info.cached_input_price_per_1m ?? '';
+    const inPh = typeDefaultPrice(info.type, 'input_price_per_1m');
+    const outPh = typeDefaultPrice(info.type, 'output_price_per_1m');
+    const cachedTitle = 'Blank = cached tokens billed at the full input price. '
+        + 'Set to bill prompt-cache hits at a discount (Azure path only).';
+    return `
+        <div>
+            <span class="text-[11px] font-bold text-t3 uppercase tracking-wider">Pricing Overrides (USD per 1M tokens)</span>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs mt-2">
+                <label class="flex flex-col gap-1">
+                    <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="Per-model input price. Blank = use the type default.">Input $/1M</span>
+                    <input type="number" min="0" step="0.01" value="${inPrice}" data-${attr}="${a}" data-field="input_price_per_1m" data-price="1" oninput="${handler}" placeholder="${escAttr(inPh || '(type default)')}" title="Blank = use type default (${escAttr(inPh || 'unset')})" class="gw-input text-sm py-1 px-2 font-mono">
+                </label>
+                <label class="flex flex-col gap-1">
+                    <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="Per-model output price. Blank = use the type default.">Output $/1M</span>
+                    <input type="number" min="0" step="0.01" value="${outPrice}" data-${attr}="${a}" data-field="output_price_per_1m" data-price="1" oninput="${handler}" placeholder="${escAttr(outPh || '(type default)')}" title="Blank = use type default (${escAttr(outPh || 'unset')})" class="gw-input text-sm py-1 px-2 font-mono">
+                </label>
+                <label class="flex flex-col gap-1">
+                    <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="${escAttr(cachedTitle)}">Cached Input $/1M</span>
+                    <input type="number" min="0" step="0.01" value="${cachedPrice}" data-${attr}="${a}" data-field="cached_input_price_per_1m" data-price="1" oninput="${handler}" placeholder="(full input price)" title="${escAttr(cachedTitle)}" class="gw-input text-sm py-1 px-2 font-mono">
+                </label>
+            </div>
+        </div>`;
+}
+
+function renderModelRow(alias, info, type) {
+    const dot = hasAdvanced(info)
+        ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-ag ml-1" title="Pricing or metadata set"></span>'
+        : '';
+    const isHidden = info.hidden === true;
     return `
         <tr id="row-${alias}" class="${isHidden ? 'opacity-50' : ''}">
             <td><span class="text-sm font-mono font-medium text-t1">${escHtml(alias)}</span></td>
-            <td><input type="text" value="${escAttr(info.real_model)}" data-alias="${escAttr(alias)}" data-field="real_model" oninput="updateField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
-            <td><input type="text" value="${escAttr(info.base_url)}" data-alias="${escAttr(alias)}" data-field="base_url" oninput="updateField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
-            <td><input type="text" value="${escAttr(info.api_key || '')}" data-alias="${escAttr(alias)}" data-field="api_key" oninput="updateField(this)" placeholder="(none)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
-            <td><input type="number" min="0" step="0.01" value="${inPrice}" data-alias="${escAttr(alias)}" data-field="input_price_per_1m" data-price="1" oninput="updateField(this)" placeholder="${escAttr(inPh)}" title="Blank = use type default (${escAttr(inPh || 'unset')})" class="gw-input w-24 text-sm py-1 px-2 font-mono text-right"></td>
-            <td><input type="number" min="0" step="0.01" value="${outPrice}" data-alias="${escAttr(alias)}" data-field="output_price_per_1m" data-price="1" oninput="updateField(this)" placeholder="${escAttr(outPh)}" title="Blank = use type default (${escAttr(outPh || 'unset')})" class="gw-input w-24 text-sm py-1 px-2 font-mono text-right"></td>
+            <td><input type="text" value="${escAttr(info.real_model)}" data-alias="${escAttr(alias)}" data-field="real_model" oninput="updateField(this)" class="gw-input w-full min-w-[150px] text-sm py-1.5 px-2.5 font-mono"></td>
+            <td><input type="text" value="${escAttr(info.base_url)}" data-alias="${escAttr(alias)}" data-field="base_url" oninput="updateField(this)" class="gw-input w-full min-w-[280px] text-sm py-1.5 px-2.5 font-mono"></td>
+            <td><input type="text" value="${escAttr(info.api_key || '')}" data-alias="${escAttr(alias)}" data-field="api_key" oninput="updateField(this)" placeholder="(none)" class="gw-input w-full min-w-[220px] text-sm py-1.5 px-2.5 font-mono"></td>
             <td class="text-center">
                 <button onclick="toggleVisibility('${escAttr(alias)}')" class="p-1.5 rounded-lg transition-colors ${isHidden ? 'text-t4 hover:text-ar' : 'text-ag hover:text-t1'}" title="${isHidden ? 'Hidden from users — click to show' : 'Visible to users — click to hide'}">
                     ${isHidden
@@ -195,7 +241,7 @@ function renderModelRow(alias, info, type) {
                 </button>
             </td>
             <td class="text-right whitespace-nowrap">
-                <button onclick="toggleMeta('${escAttr(alias)}')" id="meta-btn-${escAttr(alias)}" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Optional metadata: display name, context window, capabilities">Advanced${dot}</button>
+                <button onclick="toggleMeta('${escAttr(alias)}')" id="meta-btn-${escAttr(alias)}" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Per-model pricing overrides and optional metadata">Advanced${dot}</button>
                 <button onclick="deleteModel('${escAttr(alias)}')" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
             </td>
         </tr>
@@ -205,7 +251,7 @@ function renderModelRow(alias, info, type) {
 
 function renderMetaRow(alias, info) {
     const a = escAttr(alias);
-    const visible = hasMeta(info);   // auto-expand rows that already have metadata
+    const visible = hasAdvanced(info);   // auto-expand rows with pricing or metadata
     const displayName = info.display_name ?? '';
     const ctxWin = info.context_window ?? '';
     const maxOut = info.max_output_tokens ?? '';
@@ -215,8 +261,11 @@ function renderMetaRow(alias, info) {
     const sReason = info.is_reasoning === true;
     return `
         <tr id="meta-${a}" class="${visible ? '' : 'hidden'}" style="background:rgba(255,255,255,0.015)">
-            <td colspan="8" class="px-5 py-3 space-y-3">
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+            <td colspan="6" class="px-5 py-4 space-y-4">
+                ${renderPricingFields(alias, info, 'alias')}
+                <div>
+                <span class="text-[11px] font-bold text-t3 uppercase tracking-wider">Metadata</span>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs mt-2">
                     <label class="flex flex-col gap-1">
                         <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="Human-readable name shown to clients">Display Name</span>
                         <input type="text" value="${escAttr(displayName)}" data-alias="${a}" data-field="display_name" data-meta="1" oninput="updateField(this)" placeholder="(unset)" class="gw-input text-sm py-1 px-2">
@@ -245,6 +294,7 @@ function renderMetaRow(alias, info) {
                         <input type="checkbox" ${sReason ? 'checked' : ''} data-alias="${a}" data-field="is_reasoning" data-meta="1" onchange="updateField(this)" class="gw-checkbox">
                         <span class="text-t3">is_reasoning</span>
                     </label>
+                </div>
                 </div>
             </td>
         </tr>
@@ -338,8 +388,6 @@ function renderAzure() {
                     <th class="gw-tip gw-tip-wide" data-tip="Azure deployment name (set in Azure portal)">Deployment</th>
                     <th class="gw-tip" data-tip="Azure OpenAI API key">API Key</th>
                     <th class="gw-tip gw-tip-wide" data-tip="Azure API version. Defaults to ${AZURE_DEFAULT_API_VERSION}">API Version</th>
-                    <th class="text-right gw-tip gw-tip-wide" data-tip="Per-model input price (USD per 1M tokens). Blank = use the type default.">Input $/1M</th>
-                    <th class="text-right gw-tip gw-tip-wide" data-tip="Per-model output price (USD per 1M tokens). Blank = use the type default.">Output $/1M</th>
                     <th class="text-center gw-tip gw-tip-wide" data-tip="Hidden models are not shown to regular users but can still be used via API">Visible</th>
                     <th class="text-right">Actions</th>
                 </tr></thead>
@@ -349,14 +397,10 @@ function renderAzure() {
 }
 
 function renderAzureRow(alias, info) {
-    const dot = hasMeta(info)
-        ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-ag ml-1" title="Metadata set"></span>'
+    const dot = hasAdvanced(info)
+        ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-ag ml-1" title="Pricing or metadata set"></span>'
         : '';
     const isHidden = info.hidden === true;
-    const inPrice = info.input_price_per_1m ?? '';
-    const outPrice = info.output_price_per_1m ?? '';
-    const inPh = typeDefaultPrice(info.type, 'input_price_per_1m');
-    const outPh = typeDefaultPrice(info.type, 'output_price_per_1m');
     const typeOpts = MODEL_TYPES.map(t =>
         `<option value="${t}" ${t === info.type ? 'selected' : ''}>${t}</option>`
     ).join('');
@@ -364,12 +408,10 @@ function renderAzureRow(alias, info) {
         <tr id="azrow-${escAttr(alias)}" class="${isHidden ? 'opacity-50' : ''}">
             <td><span class="text-sm font-mono font-medium text-t1">${escHtml(alias)}</span></td>
             <td><select data-azalias="${escAttr(alias)}" data-field="type" onchange="updateAzureField(this)" class="gw-input text-sm py-1 px-2">${typeOpts}</select></td>
-            <td><input type="text" value="${escAttr(info.endpoint || '')}" data-azalias="${escAttr(alias)}" data-field="endpoint" oninput="updateAzureField(this)" placeholder="https://my-resource.openai.azure.com" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
-            <td><input type="text" value="${escAttr(info.deployment || '')}" data-azalias="${escAttr(alias)}" data-field="deployment" oninput="updateAzureField(this)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
-            <td><input type="text" value="${escAttr(info.api_key || '')}" data-azalias="${escAttr(alias)}" data-field="api_key" oninput="updateAzureField(this)" placeholder="(required)" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
-            <td><input type="text" value="${escAttr(info.api_version || '')}" data-azalias="${escAttr(alias)}" data-field="api_version" oninput="updateAzureField(this)" placeholder="${AZURE_DEFAULT_API_VERSION}" class="gw-input w-full text-sm py-1 px-2 font-mono"></td>
-            <td><input type="number" min="0" step="0.01" value="${inPrice}" data-azalias="${escAttr(alias)}" data-field="input_price_per_1m" data-price="1" oninput="updateAzureField(this)" placeholder="${escAttr(inPh)}" title="Blank = use type default (${escAttr(inPh || 'unset')})" class="gw-input w-24 text-sm py-1 px-2 font-mono text-right"></td>
-            <td><input type="number" min="0" step="0.01" value="${outPrice}" data-azalias="${escAttr(alias)}" data-field="output_price_per_1m" data-price="1" oninput="updateAzureField(this)" placeholder="${escAttr(outPh)}" title="Blank = use type default (${escAttr(outPh || 'unset')})" class="gw-input w-24 text-sm py-1 px-2 font-mono text-right"></td>
+            <td><input type="text" value="${escAttr(info.endpoint || '')}" data-azalias="${escAttr(alias)}" data-field="endpoint" oninput="updateAzureField(this)" placeholder="https://my-resource.openai.azure.com" class="gw-input w-full min-w-[280px] text-sm py-1.5 px-2.5 font-mono"></td>
+            <td><input type="text" value="${escAttr(info.deployment || '')}" data-azalias="${escAttr(alias)}" data-field="deployment" oninput="updateAzureField(this)" class="gw-input w-full min-w-[150px] text-sm py-1.5 px-2.5 font-mono"></td>
+            <td><input type="text" value="${escAttr(info.api_key || '')}" data-azalias="${escAttr(alias)}" data-field="api_key" oninput="updateAzureField(this)" placeholder="(required)" class="gw-input w-full min-w-[220px] text-sm py-1.5 px-2.5 font-mono"></td>
+            <td><input type="text" value="${escAttr(info.api_version || '')}" data-azalias="${escAttr(alias)}" data-field="api_version" oninput="updateAzureField(this)" placeholder="${AZURE_DEFAULT_API_VERSION}" class="gw-input w-full min-w-[160px] text-sm py-1.5 px-2.5 font-mono"></td>
             <td class="text-center">
                 <button onclick="toggleAzureVisibility('${escAttr(alias)}')" class="p-1.5 rounded-lg transition-colors ${isHidden ? 'text-t4 hover:text-ar' : 'text-ag hover:text-t1'}" title="${isHidden ? 'Hidden — click to show' : 'Visible — click to hide'}">
                     ${isHidden
@@ -379,7 +421,7 @@ function renderAzureRow(alias, info) {
                 </button>
             </td>
             <td class="text-right whitespace-nowrap">
-                <button onclick="toggleAzureMeta('${escAttr(alias)}')" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Optional metadata: display name, context window, capabilities">Advanced${dot}</button>
+                <button onclick="toggleAzureMeta('${escAttr(alias)}')" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Per-model pricing overrides and optional metadata">Advanced${dot}</button>
                 <button onclick="deleteAzureModel('${escAttr(alias)}')" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
             </td>
         </tr>
@@ -389,7 +431,7 @@ function renderAzureRow(alias, info) {
 
 function renderAzureMetaRow(alias, info) {
     const a = escAttr(alias);
-    const visible = hasMeta(info);
+    const visible = hasAdvanced(info);
     const displayName = info.display_name ?? '';
     const ctxWin = info.context_window ?? '';
     const maxOut = info.max_output_tokens ?? '';
@@ -399,8 +441,11 @@ function renderAzureMetaRow(alias, info) {
     const sReason = info.is_reasoning === true;
     return `
         <tr id="azmeta-${a}" class="${visible ? '' : 'hidden'}" style="background:rgba(255,255,255,0.015)">
-            <td colspan="10" class="px-5 py-3 space-y-3">
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+            <td colspan="8" class="px-5 py-4 space-y-4">
+                ${renderPricingFields(alias, info, 'azalias')}
+                <div>
+                <span class="text-[11px] font-bold text-t3 uppercase tracking-wider">Metadata</span>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs mt-2">
                     <label class="flex flex-col gap-1">
                         <span class="text-t4 font-semibold uppercase">Display Name</span>
                         <input type="text" value="${escAttr(displayName)}" data-azalias="${a}" data-field="display_name" data-meta="1" oninput="updateAzureField(this)" placeholder="(unset)" class="gw-input text-sm py-1 px-2">
@@ -429,6 +474,7 @@ function renderAzureMetaRow(alias, info) {
                         <input type="checkbox" ${sReason ? 'checked' : ''} data-azalias="${a}" data-field="is_reasoning" data-meta="1" onchange="updateAzureField(this)" class="gw-checkbox">
                         <span class="text-t3">is_reasoning</span>
                     </label>
+                </div>
                 </div>
             </td>
         </tr>
