@@ -53,6 +53,13 @@ REM  Empty string / 0 / 0 = skip. Only configured keys are written.
 
 set "DEFAULT_MODEL="
 
+REM  Claude Code uses a separate "small fast" model for background tasks
+REM  (conversation title generation, summarization, etc.). It defaults to
+REM  a Claude model name (claude-haiku-*) that the gateway doesn't host,
+REM  so background tasks silently fail. Set this to one of your gateway
+REM  aliases — a small/cheap LLM is ideal.
+set "SMALL_FAST_MODEL="
+
 set "CUSTOM_MODEL_ALIAS="
 set "CUSTOM_MODEL_DESCRIPTION="
 set "CUSTOM_MODEL_CAPABILITIES=tools"
@@ -326,6 +333,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "if('%SKIP_TLS_VERIFY%' -eq '1'){$e['NODE_TLS_REJECT_UNAUTHORIZED']='0'};" ^
   "if('%PROXY_URL%'){$e['HTTP_PROXY']='%PROXY_URL%';$e['HTTPS_PROXY']='%PROXY_URL%';$e['NO_PROXY']='%NO_PROXY%'};" ^
   "if('%DEFAULT_MODEL%'){$s['model']='%DEFAULT_MODEL%';$e['ANTHROPIC_MODEL']='%DEFAULT_MODEL%'};" ^
+  "if('%SMALL_FAST_MODEL%'){$e['ANTHROPIC_SMALL_FAST_MODEL']='%SMALL_FAST_MODEL%'};" ^
   "$s|ConvertTo-Json -Depth 10|Set-Content -Path $f -Encoding UTF8;" ^
   "Write-Host '   [OK] Wrote' $f"
 
@@ -346,6 +354,7 @@ echo    Settings written to %USERPROFILE%\.claude\settings.json
 echo      ANTHROPIC_BASE_URL        = %GATEWAY_URL%
 echo      ANTHROPIC_API_KEY         = %API_KEY_MASKED%
 if not "%DEFAULT_MODEL%"=="" echo      model                     = %DEFAULT_MODEL%
+if not "%SMALL_FAST_MODEL%"=="" echo      ANTHROPIC_SMALL_FAST_MODEL = %SMALL_FAST_MODEL%
 if defined GIT_BASH_PATH (
     echo      CLAUDE_CODE_GIT_BASH_PATH = %GIT_BASH_PATH%
 ) else (
