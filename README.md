@@ -291,26 +291,44 @@ ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
 ```
 
-### Client configuration for the Azure path
+### Client configuration recommendations
+
+The two paths (vLLM `/v1/*` vs Azure `/azure/v1/*`) have different tool-calling strictness, so the right client setup depends on which backend you're targeting.
+
+#### vLLM path (`/v1/*`) — lenient, but the model itself must support tool calling
+
+vLLM downstream calls are a straight chat-completions pass-through; the gateway does not validate tool-call/tool-result pairing. Whatever the client sends gets fed to the model and the model interprets it. This path tolerates mixed-style histories.
+
+What it does require is a **model that supports native function calling** if you want structured tool calls — Qwen 2.5, Llama 3.1+, Hermes, Mistral Large, etc. For a plain chat model that can't emit `tool_calls`, you'll have to rely on the XML-inline style.
+
+| Client | Model supports native function calling | Model doesn't support it |
+|---|---|---|
+| **Roo Code** | **OpenAI** provider + Base URL = `http://your-gateway/v1` | **OpenAI Compatible** provider + same base URL |
+| **Cline / Continue.dev / Cursor** | OpenAI provider + same as above | Most lack an XML fallback — make sure the model supports tool calling |
+| **Claude Code** | `ANTHROPIC_BASE_URL=http://your-gateway` against `/v1/messages` | Same; vLLM path doesn't enforce pairing either way |
+
+#### Azure path (`/azure/v1/*`) — strict, clients cannot mix styles
 
 Every Azure call from the gateway is translated to the **Responses API** (`/openai/v1/responses`), which strictly validates tool-call/tool-result pairing — every `function_call` must have a matching `function_call_output`. Most well-behaved clients obey this automatically, but a few have modes that mix structured tool calls with inline text results in the same conversation, and Azure 400s on the mismatch.
 
-The table below lists the recommended setup per client. Misconfiguration shows up in the log as `Dropping N orphan function_call(s)` WARNINGs and falls back to a safety-net degradation so the conversation can still progress — but **the right config is the durable fix**.
+Misconfiguration shows up in the log as `Dropping N orphan function_call(s)` WARNINGs and falls back to a safety-net degradation so the conversation can still progress — but **the right config is the durable fix**.
 
 | Client | Recommended setup | Gateway endpoint | Notes |
 |---|---|---|---|
 | **Claude Code** | `ANTHROPIC_BASE_URL=http://your-gateway/azure` | `/azure/v1/messages` | Anthropic-native format; every `tool_use` is strictly paired with a `tool_result` |
 | **Anthropic Python SDK** | `Anthropic(base_url="http://your-gateway/azure")` | `/azure/v1/messages` | Same as above |
 | **Roo Code "Anthropic" provider** | API base URL pointing at the gateway | `/azure/v1/messages` | Roo Code in Anthropic mode follows strict `tool_use`/`tool_result` pairing |
-| **Roo Code "OpenAI Native"** (force native function calling) | `base_url=http://your-gateway/azure/v1` | `/azure/v1/chat/completions` | Standard OpenAI shape with strict `tool_calls`/`role:"tool"` pairing |
+| **Roo Code "OpenAI" provider** (recommended) | Base URL = `http://your-gateway/azure/v1`, Custom Model ID = the configured alias | `/azure/v1/chat/completions` | Standard OpenAI shape with strict `tool_calls`/`role:"tool"` pairing — **this is the recommended setup for Roo Code against Azure** |
 | **Roo Code "OpenAI Compatible"** | ⚠️ **avoid** | — | This mode mixes native `tool_calls` with inline `<environment_details>` text results in the next user message. Azure Responses API does not accept the mixed shape |
 | **Cursor / Continue.dev** | `base_url=http://your-gateway/azure/v1` | `/azure/v1/chat/completions` | Standard OpenAI shape |
 | **OpenAI Python SDK** | `OpenAI(base_url="http://your-gateway/azure/v1")` | `/azure/v1/chat/completions` | Same as above |
 
-**Rule of thumb**:
-- **Anthropic-flavour client → `/azure/v1/messages`** (goes through the Anthropic Messages translator)
-- **OpenAI-flavour client → `/azure/v1/chat/completions`** (goes through the OpenAI Chat Completions translator)
-- **Avoid any mode that mixes native function calling with inline text tool results.** Pick one style and stick with it.
+#### Rule of thumb
+
+- **Anthropic-flavour client → `/v1/messages` or `/azure/v1/messages`** (goes through the Anthropic Messages translator)
+- **OpenAI-flavour client → `/v1/chat/completions` or `/azure/v1/chat/completions`** (goes through the OpenAI Chat Completions translator)
+- **On the Azure path, do not use any "mixed-style" mode** (Roo Code's "OpenAI Compatible" is the headline example) — pick one tool-calling style and stick with it.
+- **The vLLM path tolerates mixed styles**, but only if the model and client agree on which tool-calling mechanism they're using.
 
 ### Web Dashboard
 
