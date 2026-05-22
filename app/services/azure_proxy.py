@@ -153,6 +153,47 @@ def _ensure_input(
     responses_body["input"] = [dict(item) for item in _PROBE_PLACEHOLDER_INPUT]
 
 
+def _summarize_input_items(input_items: Any) -> str:
+    """Compact summary of a Responses `input` array, used for diagnostics
+    on 400s that complain about function-call/output pairing. Emits a
+    line-per-item with item type, role, call_id (if any), and any
+    call_id-only function_call → function_call_output orphan pairs.
+    """
+    if not isinstance(input_items, list):
+        return f"<input is {type(input_items).__name__}, not a list>"
+    rows: list[str] = []
+    function_calls: dict[str, int] = {}     # call_id -> position
+    function_outputs: set[str] = set()
+    for i, item in enumerate(input_items):
+        if not isinstance(item, dict):
+            rows.append(f"{i}: <non-dict {type(item).__name__}>")
+            continue
+        itype = item.get("type") or "message"
+        role = item.get("role")
+        cid = item.get("call_id")
+        bits = [f"{i}:{itype}"]
+        if role:
+            bits.append(f"role={role}")
+        if cid:
+            bits.append(f"call_id={cid}")
+        rows.append(" ".join(bits))
+        if itype == "function_call" and cid:
+            function_calls[cid] = i
+        elif itype == "function_call_output" and cid:
+            function_outputs.add(cid)
+    orphans = sorted(cid for cid in function_calls if cid not in function_outputs)
+    extra = sorted(cid for cid in function_outputs if cid not in function_calls)
+    summary = " | ".join(rows)
+    notes = []
+    if orphans:
+        notes.append(f"function_calls without output: {orphans}")
+    if extra:
+        notes.append(f"function_call_outputs without call: {extra}")
+    if notes:
+        summary += " || " + " ; ".join(notes)
+    return summary
+
+
 def _log_azure_error(
     incoming_body: dict[str, Any],
     sent_body: dict[str, Any],
@@ -165,14 +206,17 @@ def _log_azure_error(
     so an operator can see what the client asked, what the gateway
     translated to, and how Azure objected."""
     try:
-        sent_snippet = json.dumps(sent_body, ensure_ascii=False)[:4000]
-        in_snippet = json.dumps(incoming_body, ensure_ascii=False)[:4000]
+        sent_snippet = json.dumps(sent_body, ensure_ascii=False)[:8000]
+        in_snippet = json.dumps(incoming_body, ensure_ascii=False)[:8000]
     except Exception:
-        sent_snippet = repr(sent_body)[:4000]
-        in_snippet = repr(incoming_body)[:4000]
+        sent_snippet = repr(sent_body)[:8000]
+        in_snippet = repr(incoming_body)[:8000]
+    input_summary = _summarize_input_items(sent_body.get("input")) if isinstance(sent_body, dict) else ""
     logger.warning(
-        "Azure returned {} | endpoint={} model={} resp={} | sent_body={} | incoming_body={}",
-        status, endpoint, alias, resp_text[:1000], sent_snippet, in_snippet,
+        "Azure returned {} | endpoint={} model={} resp={} | input_summary={} | "
+        "sent_body={} | incoming_body={}",
+        status, endpoint, alias, resp_text[:1000], input_summary,
+        sent_snippet, in_snippet,
     )
 
 
@@ -374,6 +418,16 @@ async def _stream_chat(
                 if _monitoring:
                     chunks.append(chunk)
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            az_err = translator.derive_error_message()
+            if az_err:
+                # Azure emitted response.failed / response.error mid-stream.
+                # Surface it on the SSE so the client doesn't think the
+                # turn completed normally with empty content.
+                yield (
+                    "data: "
+                    + json.dumps({"error": {"message": f"Azure: {az_err}", "type": "api_error"}})
+                    + "\n\n"
+                )
             yield "data: [DONE]\n\n"
         except Exception as exc:
             logger.error("Azure chat stream error: {}", exc)
@@ -382,6 +436,7 @@ async def _stream_chat(
         input_tk = translator.input_tokens
         output_tk = translator.output_tokens
         cached_tk = translator.cached_tokens
+        err_msg = translator.derive_error_message()
         if input_tk == 0 and output_tk == 0:
             logger.warning("Azure chat stream for model={} ended with 0 tokens", alias)
         if (
@@ -390,9 +445,12 @@ async def _stream_chat(
         ):
             logger.warning(
                 "Empty assistant content from Azure stream | endpoint=/azure/v1/chat/completions "
-                "model={} input_tokens={} output_tokens={} reasoning_chars={} finish={}",
+                "model={} input_tokens={} output_tokens={} reasoning_chars={} finish={} "
+                "event_types={} error={} sent_input_summary={}",
                 alias, input_tk, output_tk,
                 translator.emitted_reasoning_chars, translator.finish_reason,
+                translator.event_type_counts, err_msg,
+                _summarize_input_items(body.get("input")),
             )
         _log_usage(user, alias, model_type, input_tk, output_tk,
                    "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk)
@@ -573,7 +631,22 @@ async def _stream_messages(
             for event in _feed(responses_xlat.finish()):
                 yield event
 
-            if anthropic_xlat.stop_reason is None:
+            az_err = responses_xlat.derive_error_message()
+            if az_err:
+                # Azure emitted response.failed / response.error mid-stream.
+                # Translate it into an Anthropic-shape error so the client
+                # sees an actual failure instead of an empty completion.
+                # error_kind picks the right Anthropic error_type so
+                # Claude Code retries overload but bails on invalid_request
+                # instead of looping fruitlessly.
+                error_kind = responses_xlat.derive_error_kind()
+                logger.warning(
+                    "Azure messages stream surfaced error | model={} error={} kind={}",
+                    alias, az_err, error_kind,
+                )
+                for event in anthropic_xlat.fail(f"Azure: {az_err}", error_type=error_kind):
+                    yield event
+            elif anthropic_xlat.stop_reason is None:
                 logger.warning(
                     "Azure messages stream ended without finish_reason | model={} — truncated",
                     alias,
@@ -593,6 +666,20 @@ async def _stream_messages(
         input_tk = anthropic_xlat.input_tokens or responses_xlat.input_tokens
         output_tk = anthropic_xlat.output_tokens or responses_xlat.output_tokens
         cached_tk = responses_xlat.cached_tokens
+        err_msg = responses_xlat.derive_error_message()
+        if (
+            responses_xlat.emitted_text_chars == 0
+            and not responses_xlat._tool_meta_sent  # noqa: SLF001
+        ):
+            logger.warning(
+                "Empty assistant content from Azure stream | endpoint=/azure/v1/messages "
+                "model={} input_tokens={} output_tokens={} reasoning_chars={} finish={} "
+                "event_types={} error={} sent_input_summary={}",
+                alias, input_tk, output_tk,
+                responses_xlat.emitted_reasoning_chars, responses_xlat.finish_reason,
+                responses_xlat.event_type_counts, err_msg,
+                _summarize_input_items(body.get("input")),
+            )
         _log_usage(user, alias, model_type, input_tk, output_tk,
                    "/azure/v1/messages", route=route, cached_tokens=cached_tk)
         if _monitoring:
