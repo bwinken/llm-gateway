@@ -156,6 +156,84 @@ class TestRequestTranslation:
         assert out["reasoning"] == {"effort": "medium"}
 
 
+class TestOrphanFunctionCallDropping:
+    """Roo Code mixes provider-native tool calls (assistant emits
+    function_call) with inline XML-tagged tool results (user message
+    text). The function_call sits in history without a paired
+    function_call_output, and Azure 400s on the orphan. The translator
+    drops the orphan to keep the conversation moving."""
+
+    def test_orphan_function_call_dropped(self):
+        out = openai_chat_to_responses_request({
+            "messages": [
+                {"role": "user", "content": "look up X"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_orphan",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }],
+                },
+                # No `role: "tool"` here — Roo Code inlined the result
+                # into the next user message instead.
+                {"role": "user", "content": "<result>foo</result> what next?"},
+            ],
+        })
+        types = [it.get("type", "message") for it in out["input"]]
+        assert "function_call" not in types, "orphan should be dropped"
+        # Two message items survived (initial user + follow-up user)
+        assert types.count("message") == 2
+
+    def test_paired_function_call_preserved(self):
+        out = openai_chat_to_responses_request({
+            "messages": [
+                {"role": "user", "content": "look up X"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_paired",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }],
+                },
+                {"role": "tool", "tool_call_id": "call_paired", "content": "result"},
+                {"role": "user", "content": "thanks"},
+            ],
+        })
+        types = [it.get("type", "message") for it in out["input"]]
+        # function_call + function_call_output both present
+        assert "function_call" in types
+        assert "function_call_output" in types
+        # Walk the pairing
+        fc = next(it for it in out["input"] if it.get("type") == "function_call")
+        fco = next(it for it in out["input"] if it.get("type") == "function_call_output")
+        assert fc["call_id"] == fco["call_id"] == "call_paired"
+
+    def test_partial_pairing_drops_only_orphans(self):
+        out = openai_chat_to_responses_request({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "call_X", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}},
+                        {"id": "call_Y", "type": "function",
+                         "function": {"name": "g", "arguments": "{}"}},
+                    ],
+                },
+                # Only Y gets a tool result; X is orphaned.
+                {"role": "tool", "tool_call_id": "call_Y", "content": "y_result"},
+            ],
+        })
+        fcs = [it for it in out["input"] if it.get("type") == "function_call"]
+        assert len(fcs) == 1
+        assert fcs[0]["call_id"] == "call_Y"
+
+
 class TestNonStreamResponseTranslation:
     def test_text_only_response(self):
         data = {
