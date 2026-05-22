@@ -471,3 +471,34 @@ class ResponsesToChatStreamTranslator:
                 if ir:
                     return f"response incomplete: {ir}"
         return None
+
+    def derive_error_kind(self) -> str:
+        """Map a collected Azure error to an Anthropic-style error_type.
+
+        Anthropic SDK clients (Claude Code included) retry
+        ``overloaded_error`` with backoff but surface
+        ``invalid_request_error`` / ``api_error`` as a hard failure. Using
+        the wrong type causes a retry storm when the underlying problem
+        is permanent (tool pairing, malformed request, etc.).
+        """
+        message = (self.derive_error_message() or "").lower()
+        # Walk through error payload `type` / `code` first — these are
+        # authoritative when present.
+        for payload in self.error_payloads:
+            err = payload.get("error") or {}
+            if isinstance(err, dict):
+                etype = (err.get("type") or "").lower()
+                if "rate" in etype or "overload" in etype:
+                    return "overloaded_error"
+                if "invalid" in etype or "request" in etype:
+                    return "invalid_request_error"
+                if "content_filter" in etype or "policy" in etype:
+                    return "invalid_request_error"
+        if any(s in message for s in ("rate limit", "overload", "too many request", "tpm")):
+            return "overloaded_error"
+        if any(s in message for s in (
+            "invalid", "no tool output", "unsupported", "content filter",
+            "policy", "must be provided", "missing", "context length",
+        )):
+            return "invalid_request_error"
+        return "api_error"

@@ -636,11 +636,15 @@ async def _stream_messages(
                 # Azure emitted response.failed / response.error mid-stream.
                 # Translate it into an Anthropic-shape error so the client
                 # sees an actual failure instead of an empty completion.
+                # error_kind picks the right Anthropic error_type so
+                # Claude Code retries overload but bails on invalid_request
+                # instead of looping fruitlessly.
+                error_kind = responses_xlat.derive_error_kind()
                 logger.warning(
-                    "Azure messages stream surfaced error | model={} error={}",
-                    alias, az_err,
+                    "Azure messages stream surfaced error | model={} error={} kind={}",
+                    alias, az_err, error_kind,
                 )
-                for event in anthropic_xlat.fail(f"Azure: {az_err}"):
+                for event in anthropic_xlat.fail(f"Azure: {az_err}", error_type=error_kind):
                     yield event
             elif anthropic_xlat.stop_reason is None:
                 logger.warning(
