@@ -72,8 +72,17 @@ def _resolve_azure(alias: str) -> dict[str, Any]:
 
 
 def _build_responses_url(entry: dict[str, Any]) -> str:
-    """Azure Responses v1 surface: no deployment in URL, no api-version."""
+    """Azure Responses v1 surface: no deployment in URL, no api-version.
+
+    Defensively strips a trailing ``/openai`` from the configured endpoint
+    so operators can paste either the bare host
+    (``https://x.cognitiveservices.azure.com``) or the Roo Code-style base
+    URL (``https://x.cognitiveservices.azure.com/openai``) without
+    producing a doubled ``/openai/openai/...`` path.
+    """
     endpoint = entry["endpoint"].rstrip("/")
+    if endpoint.endswith("/openai"):
+        endpoint = endpoint[: -len("/openai")]
     return f"{endpoint}/openai/v1/responses"
 
 
