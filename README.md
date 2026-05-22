@@ -291,6 +291,17 @@ ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
 ```
 
+For clients that natively speak the Azure Responses API and want Responses-specific features (`previous_response_id`, `store: true`, reasoning items in `input`, etc.) there's also a direct pass-through at `/azure/v1/responses`. Body is forwarded as-is; the gateway only rewrites `body.model` from the configured alias to the Azure deployment name.
+
+```python
+import httpx
+resp = httpx.post(
+    "http://your-gateway/azure/v1/responses",
+    headers={"Authorization": "Bearer sk-your-api-key"},
+    json={"model": "gpt-4o-mini-azure", "input": "Hello"},
+)
+```
+
 ### Client configuration recommendations
 
 The two paths (vLLM `/v1/*` vs Azure `/azure/v1/*`) have different tool-calling strictness, so the right client setup depends on which backend you're targeting.

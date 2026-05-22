@@ -714,3 +714,199 @@ async def forward_count_tokens(
     openai_body = anthropic_to_openai_request(anthropic_body)
     approx = _approx_token_count(openai_body.get("messages", []))
     return JSONResponse(content={"input_tokens": int(approx)})
+
+
+# ---------------------------------------------------------------------------
+# Responses API pass-through (`/azure/v1/responses`)
+# ---------------------------------------------------------------------------
+#
+# This is intentionally separate from the chat completions and messages
+# paths above. Those translate from OpenAI / Anthropic shapes into the
+# Responses API shape; here the client already speaks Responses API and
+# we only rewrite `body.model` from the gateway alias to the Azure
+# deployment name. Useful when the client wants Responses-specific
+# features (previous_response_id, store, reasoning items in input, etc.)
+# that don't survive the chat completions translation.
+#
+# No relationship to vllm_proxy.forward_to_path — that one is for vLLM's
+# internal LAN downstream and carries vLLM-specific concerns (real_model
+# alias swap, fallback headers, alive checks). The Azure path needs none
+# of those, so the code is duplicated rather than abstracted into a
+# generic helper.
+
+
+async def forward_responses(
+    request: Request,
+    user: User,
+) -> StreamingResponse | JSONResponse:
+    """Pure pass-through to Azure ``/openai/v1/responses``.
+
+    Mutates only ``body.model`` (alias -> deployment). The client is
+    responsible for sending Responses-shape input/instructions/etc.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    alias = body.get("model", "")
+    entry = _resolve_azure(alias)
+    model_type = entry.get("type", "llm")
+    deployment = entry["deployment"]
+
+    # Only mutation: alias → deployment name. Everything else is up to the
+    # client. Sampling-param stripping that the chat completions path does
+    # is deliberately NOT applied here: a client speaking Responses API
+    # natively presumably knows which params its target model accepts.
+    body["model"] = deployment
+
+    is_stream = bool(body.get("stream", False))
+    target_url = _build_responses_url(entry)
+    headers = _build_headers(entry)
+    client = get_azure_client()
+
+    monitor_body = {**body, "model": alias}
+
+    if is_stream:
+        return await _stream_responses(
+            client, target_url, body, headers,
+            user, alias, model_type, monitor_body, entry,
+        )
+    return await _non_stream_responses(
+        client, target_url, body, headers,
+        user, alias, model_type, monitor_body, entry,
+    )
+
+
+async def _non_stream_responses(
+    client, url: str, body: dict, headers: dict, user: User,
+    alias: str, model_type: str, monitor_body: dict, route: dict,
+) -> JSONResponse:
+    try:
+        resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
+    except Exception as exc:
+        logger.error("Azure responses downstream error: {}", exc)
+        log_monitor_error(user.id, monitor_body, str(exc), 502, alias,
+                          "/azure/v1/responses", model_type)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+
+    if resp.status_code != 200:
+        _log_azure_error(monitor_body, body, resp.text, resp.status_code,
+                         alias, "/azure/v1/responses")
+        log_monitor_error(user.id, monitor_body, resp.text[:500], resp.status_code,
+                          alias, "/azure/v1/responses", model_type)
+        return _error_response(resp)
+
+    data = resp.json()
+    usage = data.get("usage") or {}
+    input_tk = usage.get("input_tokens", 0) or 0
+    output_tk = usage.get("output_tokens", 0) or 0
+    cached_tk = _cached_tokens_from_responses(usage)
+    _log_usage(user, alias, model_type, input_tk, output_tk,
+               "/azure/v1/responses", route=route, cached_tokens=cached_tk)
+    if is_monitored(user.id):
+        cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
+        log_monitor(user.id, monitor_body, data, alias,
+                    "/azure/v1/responses", input_tk, output_tk, cost, model_type)
+    return JSONResponse(content=data)
+
+
+async def _stream_responses(
+    client, url: str, body: dict, headers: dict, user: User,
+    alias: str, model_type: str, monitor_body: dict, route: dict,
+) -> StreamingResponse | JSONResponse:
+    # Pre-flight to surface 4xx before opening the SSE channel — same
+    # rationale as _stream_chat / _stream_messages.
+    req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
+    try:
+        resp = await client.send(req, stream=True)
+    except Exception as exc:
+        logger.error("Azure responses stream connect error: {}", exc)
+        log_monitor_error(user.id, monitor_body, str(exc), 502, alias,
+                          "/azure/v1/responses", model_type)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+
+    if resp.status_code != 200:
+        err_bytes = await resp.aread()
+        await resp.aclose()
+        err_text = err_bytes.decode("utf-8", "replace")
+        _log_azure_error(monitor_body, body, err_text, resp.status_code,
+                         alias, "/azure/v1/responses")
+        log_monitor_error(user.id, monitor_body, err_text[:500], resp.status_code,
+                          alias, "/azure/v1/responses", model_type)
+        try:
+            err_json = json.loads(err_text)
+        except Exception:
+            err_json = {"error": {"message": err_text[:500]}}
+        return JSONResponse(status_code=resp.status_code, content=err_json)
+
+    _monitoring = is_monitored(user.id)
+    logger.info("Stream start | user={} model={} endpoint=/azure/v1/responses",
+                user.username, alias)
+
+    async def _resp_coro():
+        return resp
+
+    async def event_generator():
+        # Pure SSE pass-through: rebuild each event line-for-line. We
+        # additionally sniff `response.completed` events to extract usage
+        # for billing without altering the bytes the client sees.
+        input_tk = 0
+        output_tk = 0
+        cached_tk = 0
+        recorded_events: list[dict] = []
+        try:
+            async for kind, data in _pump_anthropic_lines(_resp_coro()):
+                if kind == "ping":
+                    # Keep proxies / curl-less clients aware the connection
+                    # is alive while Azure thinks. SSE comments are spec.
+                    yield ": ping\n\n"
+                    continue
+                if kind == "err":
+                    raise data
+                if kind == "done":
+                    break
+                line = data
+                # Re-emit the raw line. aiter_lines strips the trailing
+                # newline so we add it back; the blank line between events
+                # also arrives as an empty string and becomes a "\n".
+                yield (line or "") + "\n"
+                if not line or not line.startswith("data: "):
+                    continue
+                payload = line[6:]
+                if not payload or payload == "[DONE]":
+                    continue
+                try:
+                    event = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                if _monitoring:
+                    recorded_events.append(event)
+                if event.get("type") == "response.completed":
+                    resp_data = event.get("response") or {}
+                    u = resp_data.get("usage") or {}
+                    input_tk = u.get("input_tokens", input_tk) or input_tk
+                    output_tk = u.get("output_tokens", output_tk) or output_tk
+                    cached_tk = _cached_tokens_from_responses(u) or cached_tk
+        except Exception as exc:
+            logger.error("Azure responses stream error: {}", exc)
+            yield (
+                "data: "
+                + json.dumps({"error": {"message": str(exc), "type": "api_error"}})
+                + "\n\n"
+            )
+
+        if input_tk == 0 and output_tk == 0:
+            logger.warning("Azure responses stream for model={} ended with 0 tokens", alias)
+        _log_usage(user, alias, model_type, input_tk, output_tk,
+                   "/azure/v1/responses", route=route, cached_tokens=cached_tk)
+        if _monitoring:
+            cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
+            log_monitor(user.id, monitor_body, recorded_events, alias,
+                        "/azure/v1/responses", input_tk, output_tk, cost, model_type)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )

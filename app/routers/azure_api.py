@@ -21,6 +21,7 @@ from app.services.azure_proxy import (
     forward_chat_completions,
     forward_count_tokens,
     forward_messages,
+    forward_responses,
 )
 
 router = APIRouter()
@@ -61,6 +62,21 @@ async def azure_chat_completions(
     user: User = Depends(require_azure_access),
 ):
     return await forward_chat_completions(request, user)
+
+
+@router.post("/azure/v1/responses")
+async def azure_responses(
+    request: Request,
+    user: User = Depends(require_azure_access),
+):
+    """Direct pass-through to Azure's Responses API.
+
+    Use this when the client already speaks Responses format and wants
+    Responses-specific features (previous_response_id, store, etc.).
+    For OpenAI chat completions clients use ``/azure/v1/chat/completions``;
+    for Anthropic clients use ``/azure/v1/messages``.
+    """
+    return await forward_responses(request, user)
 
 
 @router.post("/azure/v1/messages")

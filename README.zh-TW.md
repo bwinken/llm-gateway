@@ -291,6 +291,17 @@ ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
 ```
 
+如果 client 自己會講 Azure Responses API 原生格式，且想用 Responses-only 的功能（`previous_response_id`、`store: true`、`input` 帶 reasoning items 等等），可以直接打 `/azure/v1/responses` pass-through。Body 整包原樣轉發，gateway 只會把 `body.model` 從 alias 換成 Azure deployment 名稱：
+
+```python
+import httpx
+resp = httpx.post(
+    "http://your-gateway/azure/v1/responses",
+    headers={"Authorization": "Bearer sk-your-api-key"},
+    json={"model": "gpt-4o-mini-azure", "input": "Hello"},
+)
+```
+
 ### Client 設定建議
 
 兩條路徑（vLLM `/v1/*` 跟 Azure `/azure/v1/*`）對 tool calling 嚴格度不同，該怎麼設要看你接的是哪個 backend。

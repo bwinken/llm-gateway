@@ -163,6 +163,80 @@ class TestAzureChatCompletions:
         assert captured["json"].get("instructions") == "be helpful"
 
 
+class TestAzureResponsesPassthrough:
+    """The /azure/v1/responses route is a pure pass-through for clients
+    that already speak Responses API natively. The only mutation is
+    body.model from alias to deployment."""
+
+    def test_passthrough_basic(self, client):
+        client.__httpx_mock__.post = AsyncMock(
+            return_value=_fake_response(200, {
+                "id": "resp_1",
+                "status": "completed",
+                "output": [{
+                    "type": "message", "role": "assistant",
+                    "content": [{"type": "output_text", "text": "ok"}],
+                }],
+                "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+            }),
+        )
+        resp = client.post(
+            "/azure/v1/responses",
+            json={"model": "azure-gpt-4", "input": "hi"},
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        # Body is returned as-is (Responses shape).
+        body = resp.json()
+        assert body["id"] == "resp_1"
+        assert body["output"][0]["content"][0]["text"] == "ok"
+
+    def test_passthrough_swaps_model_alias_to_deployment(self, client):
+        captured: dict = {}
+
+        async def fake_post(url, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers", {})
+            captured["json"] = kwargs.get("json", {})
+            return _fake_response(200, {
+                "id": "resp_x", "status": "completed",
+                "output": [], "usage": {"input_tokens": 1, "output_tokens": 1},
+            })
+
+        client.__httpx_mock__.post = fake_post
+        resp = client.post(
+            "/azure/v1/responses",
+            json={
+                "model": "azure-gpt-4",
+                "input": "hi",
+                "temperature": 0.7,  # pass-through, NOT stripped
+                "previous_response_id": "resp_prev",
+            },
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        # URL: /openai/v1/responses (same as chat completions target)
+        assert captured["url"].endswith("/openai/v1/responses")
+        # Auth header is api-key
+        assert captured["headers"].get("api-key") == "azure-test-key"
+        # body.model swapped to deployment name
+        assert captured["json"]["model"] == "gpt-4-deploy"
+        # input passed through as-is (no translation)
+        assert captured["json"]["input"] == "hi"
+        # Pass-through: temperature and previous_response_id survive
+        # (chat completions path strips temperature; here it's the client's call)
+        assert captured["json"]["temperature"] == 0.7
+        assert captured["json"]["previous_response_id"] == "resp_prev"
+
+    def test_passthrough_unknown_alias_returns_400(self, client):
+        resp = client.post(
+            "/azure/v1/responses",
+            json={"model": "not-configured", "input": "hi"},
+            headers=auth_header(),
+        )
+        assert resp.status_code == 400
+
+
 class TestAzureEmbeddingsRouteRemoved:
     def test_embeddings_route_is_gone(self, client):
         """Responses API has no embeddings; /azure/v1/embeddings is intentionally
