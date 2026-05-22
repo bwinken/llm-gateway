@@ -291,6 +291,27 @@ ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
 ```
 
+### Azure 路徑的 client 設定建議
+
+Gateway 對 Azure 的所有呼叫都轉成 **Responses API**（`/openai/v1/responses`），這條路徑會嚴格驗證 tool call 跟 tool result 的配對 — 每個 `function_call` 必須有對應的 `function_call_output`。多數正規 client 會自動遵守這個規則，但有些 client 在某些設定下會混搭結構化呼叫跟 inline 文字結果，這種混搭會被 Azure 直接 400。
+
+下表列出建議的設定。指錯的話 gateway 會在 log 輸出 `Dropping N orphan function_call(s)` WARNING 提醒，並啟動 safety-net 降級邏輯讓對話勉強跑下去 — 但**正確設定才是長久之計**。
+
+| Client | 建議連線方式 | Gateway endpoint | 備註 |
+|---|---|---|---|
+| **Claude Code** | `ANTHROPIC_BASE_URL=http://your-gateway/azure` | `/azure/v1/messages` | Anthropic 原生格式，每個 `tool_use` 都嚴格配對 `tool_result` |
+| **Anthropic Python SDK** | `Anthropic(base_url="http://your-gateway/azure")` | `/azure/v1/messages` | 同上 |
+| **Roo Code「Anthropic」provider** | API base URL 指向 gateway | `/azure/v1/messages` | Roo Code 在 Anthropic 模式下使用嚴格 `tool_use`/`tool_result` 對應 |
+| **Roo Code「OpenAI Native」**（強制 native function calling） | `base_url=http://your-gateway/azure/v1` | `/azure/v1/chat/completions` | 標準 OpenAI 規範,嚴格 `tool_calls`/`role:"tool"` 配對 |
+| **Roo Code「OpenAI Compatible」** | ⚠️ **避免使用** | — | 該模式會混搭 native `tool_calls` 跟 user message 裡的 inline `<environment_details>` 文字結果,Azure Responses API 不接受這種混搭 |
+| **Cursor / Continue.dev** | `base_url=http://your-gateway/azure/v1` | `/azure/v1/chat/completions` | 標準 OpenAI 格式 |
+| **OpenAI Python SDK** | `OpenAI(base_url="http://your-gateway/azure/v1")` | `/azure/v1/chat/completions` | 同上 |
+
+**重點摘要**:
+- **Anthropic-flavour client → `/azure/v1/messages`**(走 Anthropic Messages 翻譯)
+- **OpenAI-flavour client → `/azure/v1/chat/completions`**(走 OpenAI Chat Completions 翻譯)
+- **避免任何「先 native function calling、再 inline 文字結果」的混搭模式** — 兩種風格擇一即可,不要混
+
 ### Web 儀表板
 
 在瀏覽器開啟 `http://your-gateway`。oauth2-proxy 透過 AuthCenter 處理 SSO 登入。管理功能需要 AuthCenter 中的 `admin` scope。

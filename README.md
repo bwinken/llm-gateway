@@ -291,6 +291,27 @@ ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
 ```
 
+### Client configuration for the Azure path
+
+Every Azure call from the gateway is translated to the **Responses API** (`/openai/v1/responses`), which strictly validates tool-call/tool-result pairing — every `function_call` must have a matching `function_call_output`. Most well-behaved clients obey this automatically, but a few have modes that mix structured tool calls with inline text results in the same conversation, and Azure 400s on the mismatch.
+
+The table below lists the recommended setup per client. Misconfiguration shows up in the log as `Dropping N orphan function_call(s)` WARNINGs and falls back to a safety-net degradation so the conversation can still progress — but **the right config is the durable fix**.
+
+| Client | Recommended setup | Gateway endpoint | Notes |
+|---|---|---|---|
+| **Claude Code** | `ANTHROPIC_BASE_URL=http://your-gateway/azure` | `/azure/v1/messages` | Anthropic-native format; every `tool_use` is strictly paired with a `tool_result` |
+| **Anthropic Python SDK** | `Anthropic(base_url="http://your-gateway/azure")` | `/azure/v1/messages` | Same as above |
+| **Roo Code "Anthropic" provider** | API base URL pointing at the gateway | `/azure/v1/messages` | Roo Code in Anthropic mode follows strict `tool_use`/`tool_result` pairing |
+| **Roo Code "OpenAI Native"** (force native function calling) | `base_url=http://your-gateway/azure/v1` | `/azure/v1/chat/completions` | Standard OpenAI shape with strict `tool_calls`/`role:"tool"` pairing |
+| **Roo Code "OpenAI Compatible"** | ⚠️ **avoid** | — | This mode mixes native `tool_calls` with inline `<environment_details>` text results in the next user message. Azure Responses API does not accept the mixed shape |
+| **Cursor / Continue.dev** | `base_url=http://your-gateway/azure/v1` | `/azure/v1/chat/completions` | Standard OpenAI shape |
+| **OpenAI Python SDK** | `OpenAI(base_url="http://your-gateway/azure/v1")` | `/azure/v1/chat/completions` | Same as above |
+
+**Rule of thumb**:
+- **Anthropic-flavour client → `/azure/v1/messages`** (goes through the Anthropic Messages translator)
+- **OpenAI-flavour client → `/azure/v1/chat/completions`** (goes through the OpenAI Chat Completions translator)
+- **Avoid any mode that mixes native function calling with inline text tool results.** Pick one style and stick with it.
+
 ### Web Dashboard
 
 Open `http://your-gateway` in browser. oauth2-proxy handles SSO login via AuthCenter. Admin features require `admin` scope in AuthCenter.
