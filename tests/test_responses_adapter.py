@@ -130,14 +130,30 @@ class TestRequestTranslation:
         assert "input_text" in types
         assert "input_image" in types
 
-    def test_pass_through_temperature_and_top_p(self):
+    def test_sampling_params_always_stripped(self):
+        """Azure deployments differ on which sampling knobs they accept
+        (gpt-5.4 ok with temperature, gpt-5.4-pro rejects it). To keep
+        the adapter free of per-deployment quirks the Azure path drops
+        all four knobs unconditionally and lets each deployment use its
+        own configured defaults."""
         out = openai_chat_to_responses_request({
             "messages": [{"role": "user", "content": "hi"}],
-            "temperature": 0.7,
+            "temperature": 0,
             "top_p": 0.9,
+            "presence_penalty": 0.2,
+            "frequency_penalty": 0.3,
         })
-        assert out["temperature"] == 0.7
-        assert out["top_p"] == 0.9
+        for k in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
+            assert k not in out, f"{k} should have been stripped"
+
+    def test_reasoning_effort_still_passes_through(self):
+        """`reasoning_effort` is the one knob clients can still influence;
+        it's not a sampling knob and the underlying model accepts it."""
+        out = openai_chat_to_responses_request({
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "medium",
+        })
+        assert out["reasoning"] == {"effort": "medium"}
 
 
 class TestNonStreamResponseTranslation:

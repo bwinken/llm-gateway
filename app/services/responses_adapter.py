@@ -138,6 +138,15 @@ def openai_chat_to_responses_request(
 ) -> dict[str, Any]:
     """Translate an OpenAI chat completions body to a Responses API body.
 
+    Sampling knobs (`temperature`, `top_p`, `presence_penalty`,
+    `frequency_penalty`) are intentionally dropped: Azure deployments
+    vary in which ones they accept (gpt-5.4 accepts `temperature`,
+    gpt-5.4-pro rejects it), so the safe default is to let each
+    deployment use its own configured defaults rather than reflect
+    whatever the client happened to send. `reasoning_effort` is the one
+    knob clients can still influence — it maps to Responses
+    `reasoning.effort` below.
+
     `model` overrides body["model"] when provided (proxy uses this to set
     the Azure deployment name independent of the client-facing alias).
     """
@@ -172,7 +181,7 @@ def openai_chat_to_responses_request(
     if max_out is not None:
         out["max_output_tokens"] = max_out
 
-    for k in ("temperature", "top_p", "stream", "user"):
+    for k in ("stream", "user"):
         if k in body:
             out[k] = body[k]
 
