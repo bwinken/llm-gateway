@@ -33,17 +33,23 @@ async def init_client() -> None:
         limits=httpx.Limits(max_connections=200, max_keepalive_connections=40),
         follow_redirects=True,
     )
-    # Dedicated Azure client through a corporate proxy, if configured.
-    # AZURE_HTTP_PROXY accepts an inline-credentials URL too, e.g.
-    # http://user:pass@proxy.company.local:8080
+    # Dedicated Azure client. Created when either a corporate HTTP proxy is
+    # configured (AZURE_HTTP_PROXY) or SSL verification needs to be disabled
+    # (AZURE_INSECURE=true, e.g. when traversing a corporate TLS-inspecting
+    # proxy that re-signs certificates with an untrusted CA).
+    # AZURE_HTTP_PROXY accepts inline credentials: http://user:pass@host:port
     azure_proxy = os.getenv("AZURE_HTTP_PROXY", "").strip()
-    if azure_proxy:
-        _azure_client = httpx.AsyncClient(
+    azure_insecure = os.getenv("AZURE_INSECURE", "").strip().lower() in ("1", "true", "yes")
+    if azure_proxy or azure_insecure:
+        kwargs: dict = dict(
             timeout=httpx.Timeout(30.0, connect=10.0),
             limits=httpx.Limits(max_connections=200, max_keepalive_connections=40),
             follow_redirects=True,
-            proxy=azure_proxy,
+            verify=not azure_insecure,
         )
+        if azure_proxy:
+            kwargs["proxy"] = azure_proxy
+        _azure_client = httpx.AsyncClient(**kwargs)
 
 
 async def close_client() -> None:
