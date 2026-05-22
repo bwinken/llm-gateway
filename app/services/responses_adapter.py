@@ -25,6 +25,7 @@ need a second Anthropic-aware translator on the Responses side.
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from typing import Any, Iterator
 
@@ -328,6 +329,7 @@ class ResponsesToChatStreamTranslator:
     def __init__(self, model_alias: str):
         self.model_alias = model_alias
         self.chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        self.created = int(time.time())
         self.input_tokens = 0
         self.output_tokens = 0
         self.cached_tokens = 0
@@ -350,6 +352,7 @@ class ResponsesToChatStreamTranslator:
         chunk: dict[str, Any] = {
             "id": self.chunk_id,
             "object": "chat.completion.chunk",
+            "created": self.created,
             "model": self.model_alias,
             "choices": [choice],
         }
