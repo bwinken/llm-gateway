@@ -29,6 +29,8 @@ import time
 import uuid
 from typing import Any, Iterator
 
+from app.core.logger import logger
+
 
 # ---------------------------------------------------------------------------
 # Request: OpenAI chat completions -> Azure Responses API
@@ -133,6 +135,44 @@ def _convert_tool_choice(tc: Any) -> Any:
     return None
 
 
+def _drop_orphan_function_calls(
+    input_items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Remove `function_call` items whose `call_id` has no matching
+    `function_call_output` later in the list.
+
+    Some clients (Roo Code with mixed provider-native + XML tool flow)
+    leave dangling function_call entries in their conversation history
+    because they inline the tool result as plain text in the next user
+    message instead of round-tripping it via `role: "tool"`. Azure
+    Responses validates pairing and 400s on the orphan; dropping the
+    function_call from the replay keeps the conversation moving without
+    that error.
+
+    Returns (cleaned_items, dropped_call_ids).
+    """
+    outputs = {
+        item.get("call_id")
+        for item in input_items
+        if isinstance(item, dict)
+        and item.get("type") == "function_call_output"
+        and item.get("call_id")
+    }
+    dropped: list[str] = []
+    cleaned: list[dict[str, Any]] = []
+    for item in input_items:
+        if (
+            isinstance(item, dict)
+            and item.get("type") == "function_call"
+            and item.get("call_id")
+            and item.get("call_id") not in outputs
+        ):
+            dropped.append(item.get("call_id"))
+            continue
+        cleaned.append(item)
+    return cleaned, dropped
+
+
 def openai_chat_to_responses_request(
     body: dict[str, Any],
     model: str | None = None,
@@ -168,6 +208,17 @@ def openai_chat_to_responses_request(
                             instructions_parts.append(t)
             continue
         input_items.extend(_message_to_responses_items(msg))
+
+    # Drop dangling function_call items whose tool result never round-
+    # tripped via `role: "tool"` (Roo Code's mixed-style history). Azure
+    # 400s on orphans; preserving conversation flow is more important
+    # than the unanswered tool call.
+    input_items, dropped = _drop_orphan_function_calls(input_items)
+    if dropped:
+        logger.warning(
+            "Dropping {} orphan function_call(s) from Responses input | call_ids={}",
+            len(dropped), dropped,
+        )
 
     out: dict[str, Any] = {
         "model": model if model is not None else body.get("model", ""),
