@@ -115,6 +115,44 @@ def _has_input(responses_body: dict[str, Any]) -> bool:
     return False
 
 
+_PROBE_PLACEHOLDER_INPUT: list[dict[str, Any]] = [{
+    "role": "user",
+    "content": [{"type": "input_text", "text": "."}],
+}]
+
+
+def _ensure_input(
+    responses_body: dict[str, Any],
+    incoming_body: dict[str, Any],
+    alias: str,
+    endpoint: str,
+) -> None:
+    """If translation collapsed to empty ``input`` (typical Roo Code probe
+    sending only a system message), inject a minimal placeholder so Azure
+    returns 200 instead of 400. Logs the original request so operators can
+    tell genuine probes from translator regressions.
+    """
+    if _has_input(responses_body):
+        return
+    msgs = incoming_body.get("messages") if isinstance(incoming_body, dict) else None
+    role_summary = (
+        [m.get("role") for m in msgs if isinstance(m, dict)]
+        if isinstance(msgs, list) else None
+    )
+    try:
+        in_snippet = json.dumps(incoming_body, ensure_ascii=False)[:4000]
+    except Exception:
+        in_snippet = repr(incoming_body)[:4000]
+    logger.warning(
+        "Empty Responses input after translation — injecting probe placeholder | "
+        "endpoint={} model={} message_count={} roles={} incoming_body={}",
+        endpoint, alias,
+        len(role_summary) if role_summary is not None else None,
+        role_summary, in_snippet,
+    )
+    responses_body["input"] = [dict(item) for item in _PROBE_PLACEHOLDER_INPUT]
+
+
 def _log_azure_error(
     incoming_body: dict[str, Any],
     sent_body: dict[str, Any],
@@ -127,14 +165,14 @@ def _log_azure_error(
     so an operator can see what the client asked, what the gateway
     translated to, and how Azure objected."""
     try:
-        sent_snippet = json.dumps(sent_body, ensure_ascii=False)[:800]
-        in_snippet = json.dumps(incoming_body, ensure_ascii=False)[:400]
+        sent_snippet = json.dumps(sent_body, ensure_ascii=False)[:4000]
+        in_snippet = json.dumps(incoming_body, ensure_ascii=False)[:4000]
     except Exception:
-        sent_snippet = repr(sent_body)[:800]
-        in_snippet = repr(incoming_body)[:400]
+        sent_snippet = repr(sent_body)[:4000]
+        in_snippet = repr(incoming_body)[:4000]
     logger.warning(
         "Azure returned {} | endpoint={} model={} resp={} | sent_body={} | incoming_body={}",
-        status, endpoint, alias, resp_text[:500], sent_snippet, in_snippet,
+        status, endpoint, alias, resp_text[:1000], sent_snippet, in_snippet,
     )
 
 
@@ -205,23 +243,7 @@ async def forward_chat_completions(
     if is_stream:
         responses_body["stream"] = True
 
-    if not _has_input(responses_body):
-        try:
-            in_snippet = json.dumps(body, ensure_ascii=False)[:600]
-        except Exception:
-            in_snippet = repr(body)[:600]
-        logger.warning(
-            "Refusing to forward empty Responses request | endpoint=/azure/v1/chat/completions "
-            "model={} incoming_body={}",
-            alias, in_snippet,
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Translated request to Azure has no `input`. "
-                "Provide at least one non-system message."
-            ),
-        )
+    _ensure_input(responses_body, body, alias, "/azure/v1/chat/completions")
 
     target_url = _build_responses_url(entry)
     headers = _build_headers(entry)
@@ -412,23 +434,7 @@ async def forward_messages(
     if is_stream:
         responses_body["stream"] = True
 
-    if not _has_input(responses_body):
-        try:
-            in_snippet = json.dumps(anthropic_body, ensure_ascii=False)[:600]
-        except Exception:
-            in_snippet = repr(anthropic_body)[:600]
-        logger.warning(
-            "Refusing to forward empty Responses request | endpoint=/azure/v1/messages "
-            "model={} incoming_body={}",
-            alias, in_snippet,
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Translated request to Azure has no `input`. "
-                "Provide at least one non-system message."
-            ),
-        )
+    _ensure_input(responses_body, anthropic_body, alias, "/azure/v1/messages")
 
     target_url = _build_responses_url(entry)
     headers = _build_headers(entry)
