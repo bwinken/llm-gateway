@@ -101,6 +101,43 @@ def _cached_tokens_from_responses(usage: dict) -> int:
     return details.get("cached_tokens", 0) or 0
 
 
+def _has_input(responses_body: dict[str, Any]) -> bool:
+    """Azure rejects Responses requests where neither `input` nor
+    `previous_response_id` is provided. `input` may be a non-empty string
+    or a non-empty list; an empty list still 400s."""
+    if responses_body.get("previous_response_id"):
+        return True
+    inp = responses_body.get("input")
+    if isinstance(inp, str):
+        return bool(inp)
+    if isinstance(inp, list):
+        return len(inp) > 0
+    return False
+
+
+def _log_azure_error(
+    incoming_body: dict[str, Any],
+    sent_body: dict[str, Any],
+    resp_text: str,
+    status: int,
+    alias: str,
+    endpoint: str,
+) -> None:
+    """Surface Azure 4xx/5xx responses with both halves of the conversation
+    so an operator can see what the client asked, what the gateway
+    translated to, and how Azure objected."""
+    try:
+        sent_snippet = json.dumps(sent_body, ensure_ascii=False)[:800]
+        in_snippet = json.dumps(incoming_body, ensure_ascii=False)[:400]
+    except Exception:
+        sent_snippet = repr(sent_body)[:800]
+        in_snippet = repr(incoming_body)[:400]
+    logger.warning(
+        "Azure returned {} | endpoint={} model={} resp={} | sent_body={} | incoming_body={}",
+        status, endpoint, alias, resp_text[:500], sent_snippet, in_snippet,
+    )
+
+
 def _warn_if_empty_translation(
     raw: dict[str, Any],
     chat_data: dict[str, Any],
@@ -168,6 +205,24 @@ async def forward_chat_completions(
     if is_stream:
         responses_body["stream"] = True
 
+    if not _has_input(responses_body):
+        try:
+            in_snippet = json.dumps(body, ensure_ascii=False)[:600]
+        except Exception:
+            in_snippet = repr(body)[:600]
+        logger.warning(
+            "Refusing to forward empty Responses request | endpoint=/azure/v1/chat/completions "
+            "model={} incoming_body={}",
+            alias, in_snippet,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Translated request to Azure has no `input`. "
+                "Provide at least one non-system message."
+            ),
+        )
+
     target_url = _build_responses_url(entry)
     headers = _build_headers(entry)
     client = get_azure_client()
@@ -177,17 +232,18 @@ async def forward_chat_completions(
     if is_stream:
         return await _stream_chat(
             client, target_url, responses_body, headers,
-            user, alias, model_type, monitor_body, entry,
+            user, alias, model_type, monitor_body, entry, body,
         )
     return await _non_stream_chat(
         client, target_url, responses_body, headers,
-        user, alias, model_type, monitor_body, entry,
+        user, alias, model_type, monitor_body, entry, body,
     )
 
 
 async def _non_stream_chat(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
+    incoming_body: dict,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
@@ -198,6 +254,8 @@ async def _non_stream_chat(
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
+        _log_azure_error(incoming_body, body, resp.text, resp.status_code,
+                         alias, "/azure/v1/chat/completions")
         log_monitor_error(user.id, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/azure/v1/chat/completions", model_type)
         return _error_response(resp)
@@ -221,11 +279,44 @@ async def _non_stream_chat(
 async def _stream_chat(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
-) -> StreamingResponse:
+    incoming_body: dict,
+) -> StreamingResponse | JSONResponse:
+    # Pre-flight: open the stream and check status BEFORE handing it to the
+    # SSE pump. Without this an Azure 4xx is returned as a JSON error body
+    # whose lines don't begin with `data: ` and get silently dropped, making
+    # the client see an empty-but-successful stream.
     req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
+    try:
+        resp = await client.send(req, stream=True)
+    except Exception as exc:
+        logger.error("Azure stream connect error: {}", exc)
+        log_monitor_error(user.id, monitor_body, str(exc), 502, alias,
+                          "/azure/v1/chat/completions", model_type)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+
+    if resp.status_code != 200:
+        err_bytes = await resp.aread()
+        await resp.aclose()
+        err_text = err_bytes.decode("utf-8", "replace")
+        _log_azure_error(incoming_body, body, err_text, resp.status_code,
+                         alias, "/azure/v1/chat/completions")
+        log_monitor_error(user.id, monitor_body, err_text[:500], resp.status_code,
+                          alias, "/azure/v1/chat/completions", model_type)
+        try:
+            err_json = json.loads(err_text)
+        except Exception:
+            err_json = {"error": {"message": err_text[:500]}}
+        return JSONResponse(status_code=resp.status_code, content=err_json)
+
     _monitoring = is_monitored(user.id)
     logger.info("Stream start | user={} model={} endpoint=/azure/v1/chat/completions",
                 user.username, alias)
+
+    async def _resp_coro():
+        # _pump_anthropic_lines awaits its argument and calls aclose() in
+        # its finally block, so wrap the already-opened response in a coro
+        # to reuse the pump's lifecycle/ping handling without re-sending.
+        return resp
 
     async def event_generator():
         translator = ResponsesToChatStreamTranslator(alias)
@@ -236,7 +327,7 @@ async def _stream_chat(
                     chunks.append(chunk)
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-            async for kind, data in _pump_anthropic_lines(client.send(req, stream=True)):
+            async for kind, data in _pump_anthropic_lines(_resp_coro()):
                 if kind == "ping":
                     # vLLM-style ping isn't part of the chat completions SSE
                     # contract; emit an SSE comment so proxies don't strip it.
@@ -321,6 +412,24 @@ async def forward_messages(
     if is_stream:
         responses_body["stream"] = True
 
+    if not _has_input(responses_body):
+        try:
+            in_snippet = json.dumps(anthropic_body, ensure_ascii=False)[:600]
+        except Exception:
+            in_snippet = repr(anthropic_body)[:600]
+        logger.warning(
+            "Refusing to forward empty Responses request | endpoint=/azure/v1/messages "
+            "model={} incoming_body={}",
+            alias, in_snippet,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Translated request to Azure has no `input`. "
+                "Provide at least one non-system message."
+            ),
+        )
+
     target_url = _build_responses_url(entry)
     headers = _build_headers(entry)
     client = get_azure_client()
@@ -331,17 +440,18 @@ async def forward_messages(
     if is_stream:
         return await _stream_messages(
             client, target_url, responses_body, headers,
-            user, alias, model_type, monitor_body, entry,
+            user, alias, model_type, monitor_body, entry, anthropic_body,
         )
     return await _non_stream_messages(
         client, target_url, responses_body, headers,
-        user, alias, model_type, monitor_body, entry,
+        user, alias, model_type, monitor_body, entry, anthropic_body,
     )
 
 
 async def _non_stream_messages(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
+    incoming_body: dict,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
@@ -352,6 +462,8 @@ async def _non_stream_messages(
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
+        _log_azure_error(incoming_body, body, resp.text, resp.status_code,
+                         alias, "/azure/v1/messages")
         log_monitor_error(user.id, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/azure/v1/messages", model_type)
         return _error_response(resp)
@@ -375,11 +487,39 @@ async def _non_stream_messages(
 async def _stream_messages(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
-) -> StreamingResponse:
+    incoming_body: dict,
+) -> StreamingResponse | JSONResponse:
+    # Pre-flight to surface 4xx before opening the SSE channel — same
+    # rationale as _stream_chat.
     req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
+    try:
+        resp = await client.send(req, stream=True)
+    except Exception as exc:
+        logger.error("Azure messages stream connect error: {}", exc)
+        log_monitor_error(user.id, monitor_body, str(exc), 502, alias,
+                          "/azure/v1/messages", model_type)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+
+    if resp.status_code != 200:
+        err_bytes = await resp.aread()
+        await resp.aclose()
+        err_text = err_bytes.decode("utf-8", "replace")
+        _log_azure_error(incoming_body, body, err_text, resp.status_code,
+                         alias, "/azure/v1/messages")
+        log_monitor_error(user.id, monitor_body, err_text[:500], resp.status_code,
+                          alias, "/azure/v1/messages", model_type)
+        try:
+            err_json = json.loads(err_text)
+        except Exception:
+            err_json = {"type": "error", "error": {"type": "api_error", "message": err_text[:500]}}
+        return JSONResponse(status_code=resp.status_code, content=err_json)
+
     _monitoring = is_monitored(user.id)
     logger.info("Stream start | user={} model={} endpoint=/azure/v1/messages",
                 user.username, alias)
+
+    async def _resp_coro():
+        return resp
 
     async def event_generator():
         # Two-stage translator chain: Responses SSE -> synthetic OpenAI chat
@@ -403,7 +543,7 @@ async def _stream_messages(
             for event in _feed(responses_xlat.start()):
                 yield event
 
-            async for kind, data in _pump_anthropic_lines(client.send(req, stream=True)):
+            async for kind, data in _pump_anthropic_lines(_resp_coro()):
                 if kind == "ping":
                     yield _ANTHROPIC_PING_EVENT
                     continue

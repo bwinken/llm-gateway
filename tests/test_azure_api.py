@@ -135,6 +135,29 @@ class TestAzureChatCompletions:
         )
         assert resp.status_code == 400
 
+    def test_empty_messages_returns_400_without_calling_azure(self, client):
+        """An incoming request whose messages collapse to no Responses
+        `input` items (e.g. system-only) is rejected at the gateway with
+        400, instead of forwarding an empty body Azure would 400 on."""
+        called = {"n": 0}
+
+        async def fake_post(*args, **kwargs):
+            called["n"] += 1
+            return _fake_response(200, _responses_payload("ok", 1, 1))
+
+        client.__httpx_mock__.post = fake_post
+        resp = client.post(
+            "/azure/v1/chat/completions",
+            json={
+                "model": "azure-gpt-4",
+                "messages": [{"role": "system", "content": "be helpful"}],
+            },
+            headers=auth_header(),
+        )
+        assert resp.status_code == 400
+        assert "input" in resp.json()["detail"].lower()
+        assert called["n"] == 0  # never reached Azure
+
 
 class TestAzureEmbeddingsRouteRemoved:
     def test_embeddings_route_is_gone(self, client):
