@@ -341,6 +341,12 @@ class ResponsesToChatStreamTranslator:
         self._tool_meta_sent: set[str] = set()
         self._next_tool_index = 0
         self._saw_function_call = False
+        # Diagnostics: collect event types we processed (with a counter) and
+        # any error payloads Azure emitted mid-stream so the proxy can
+        # surface a meaningful error to the client instead of an empty
+        # stream-ended-normally.
+        self.event_type_counts: dict[str, int] = {}
+        self.error_payloads: list[dict[str, Any]] = []
 
     def _chunk(
         self,
@@ -365,6 +371,7 @@ class ResponsesToChatStreamTranslator:
 
     def handle_event(self, event: dict[str, Any]) -> Iterator[dict[str, Any]]:
         etype = event.get("type", "")
+        self.event_type_counts[etype] = self.event_type_counts.get(etype, 0) + 1
 
         if etype == "response.output_text.delta":
             delta = event.get("delta") or ""
@@ -430,6 +437,9 @@ class ResponsesToChatStreamTranslator:
         elif etype in ("response.failed", "response.error", "error"):
             self.saw_completed = True
             self.finish_reason = "stop"
+            # Capture the error payload so the proxy can surface it as an
+            # actual error to the client instead of an empty completion.
+            self.error_payloads.append(event)
 
     def finish(self) -> Iterator[dict[str, Any]]:
         usage_payload: dict[str, Any] = {
@@ -444,3 +454,20 @@ class ResponsesToChatStreamTranslator:
             finish_reason=self.finish_reason or "stop",
             usage=usage_payload,
         )
+
+    def derive_error_message(self) -> str | None:
+        """Best-effort extraction of an error message from collected
+        response.failed / response.error / error events.
+        """
+        for payload in self.error_payloads:
+            err = payload.get("error") or {}
+            if isinstance(err, dict):
+                msg = err.get("message")
+                if msg:
+                    return str(msg)
+            resp = payload.get("response") or {}
+            if isinstance(resp, dict):
+                ir = (resp.get("incomplete_details") or {}).get("reason")
+                if ir:
+                    return f"response incomplete: {ir}"
+        return None

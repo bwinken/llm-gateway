@@ -418,6 +418,16 @@ async def _stream_chat(
                 if _monitoring:
                     chunks.append(chunk)
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            az_err = translator.derive_error_message()
+            if az_err:
+                # Azure emitted response.failed / response.error mid-stream.
+                # Surface it on the SSE so the client doesn't think the
+                # turn completed normally with empty content.
+                yield (
+                    "data: "
+                    + json.dumps({"error": {"message": f"Azure: {az_err}", "type": "api_error"}})
+                    + "\n\n"
+                )
             yield "data: [DONE]\n\n"
         except Exception as exc:
             logger.error("Azure chat stream error: {}", exc)
@@ -426,6 +436,7 @@ async def _stream_chat(
         input_tk = translator.input_tokens
         output_tk = translator.output_tokens
         cached_tk = translator.cached_tokens
+        err_msg = translator.derive_error_message()
         if input_tk == 0 and output_tk == 0:
             logger.warning("Azure chat stream for model={} ended with 0 tokens", alias)
         if (
@@ -434,9 +445,12 @@ async def _stream_chat(
         ):
             logger.warning(
                 "Empty assistant content from Azure stream | endpoint=/azure/v1/chat/completions "
-                "model={} input_tokens={} output_tokens={} reasoning_chars={} finish={}",
+                "model={} input_tokens={} output_tokens={} reasoning_chars={} finish={} "
+                "event_types={} error={} sent_input_summary={}",
                 alias, input_tk, output_tk,
                 translator.emitted_reasoning_chars, translator.finish_reason,
+                translator.event_type_counts, err_msg,
+                _summarize_input_items(body.get("input")),
             )
         _log_usage(user, alias, model_type, input_tk, output_tk,
                    "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk)
@@ -617,7 +631,18 @@ async def _stream_messages(
             for event in _feed(responses_xlat.finish()):
                 yield event
 
-            if anthropic_xlat.stop_reason is None:
+            az_err = responses_xlat.derive_error_message()
+            if az_err:
+                # Azure emitted response.failed / response.error mid-stream.
+                # Translate it into an Anthropic-shape error so the client
+                # sees an actual failure instead of an empty completion.
+                logger.warning(
+                    "Azure messages stream surfaced error | model={} error={}",
+                    alias, az_err,
+                )
+                for event in anthropic_xlat.fail(f"Azure: {az_err}"):
+                    yield event
+            elif anthropic_xlat.stop_reason is None:
                 logger.warning(
                     "Azure messages stream ended without finish_reason | model={} — truncated",
                     alias,
@@ -637,6 +662,20 @@ async def _stream_messages(
         input_tk = anthropic_xlat.input_tokens or responses_xlat.input_tokens
         output_tk = anthropic_xlat.output_tokens or responses_xlat.output_tokens
         cached_tk = responses_xlat.cached_tokens
+        err_msg = responses_xlat.derive_error_message()
+        if (
+            responses_xlat.emitted_text_chars == 0
+            and not responses_xlat._tool_meta_sent  # noqa: SLF001
+        ):
+            logger.warning(
+                "Empty assistant content from Azure stream | endpoint=/azure/v1/messages "
+                "model={} input_tokens={} output_tokens={} reasoning_chars={} finish={} "
+                "event_types={} error={} sent_input_summary={}",
+                alias, input_tk, output_tk,
+                responses_xlat.emitted_reasoning_chars, responses_xlat.finish_reason,
+                responses_xlat.event_type_counts, err_msg,
+                _summarize_input_items(body.get("input")),
+            )
         _log_usage(user, alias, model_type, input_tk, output_tk,
                    "/azure/v1/messages", route=route, cached_tokens=cached_tk)
         if _monitoring:
