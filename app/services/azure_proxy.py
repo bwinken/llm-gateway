@@ -153,6 +153,47 @@ def _ensure_input(
     responses_body["input"] = [dict(item) for item in _PROBE_PLACEHOLDER_INPUT]
 
 
+def _summarize_input_items(input_items: Any) -> str:
+    """Compact summary of a Responses `input` array, used for diagnostics
+    on 400s that complain about function-call/output pairing. Emits a
+    line-per-item with item type, role, call_id (if any), and any
+    call_id-only function_call → function_call_output orphan pairs.
+    """
+    if not isinstance(input_items, list):
+        return f"<input is {type(input_items).__name__}, not a list>"
+    rows: list[str] = []
+    function_calls: dict[str, int] = {}     # call_id -> position
+    function_outputs: set[str] = set()
+    for i, item in enumerate(input_items):
+        if not isinstance(item, dict):
+            rows.append(f"{i}: <non-dict {type(item).__name__}>")
+            continue
+        itype = item.get("type") or "message"
+        role = item.get("role")
+        cid = item.get("call_id")
+        bits = [f"{i}:{itype}"]
+        if role:
+            bits.append(f"role={role}")
+        if cid:
+            bits.append(f"call_id={cid}")
+        rows.append(" ".join(bits))
+        if itype == "function_call" and cid:
+            function_calls[cid] = i
+        elif itype == "function_call_output" and cid:
+            function_outputs.add(cid)
+    orphans = sorted(cid for cid in function_calls if cid not in function_outputs)
+    extra = sorted(cid for cid in function_outputs if cid not in function_calls)
+    summary = " | ".join(rows)
+    notes = []
+    if orphans:
+        notes.append(f"function_calls without output: {orphans}")
+    if extra:
+        notes.append(f"function_call_outputs without call: {extra}")
+    if notes:
+        summary += " || " + " ; ".join(notes)
+    return summary
+
+
 def _log_azure_error(
     incoming_body: dict[str, Any],
     sent_body: dict[str, Any],
@@ -165,14 +206,17 @@ def _log_azure_error(
     so an operator can see what the client asked, what the gateway
     translated to, and how Azure objected."""
     try:
-        sent_snippet = json.dumps(sent_body, ensure_ascii=False)[:4000]
-        in_snippet = json.dumps(incoming_body, ensure_ascii=False)[:4000]
+        sent_snippet = json.dumps(sent_body, ensure_ascii=False)[:8000]
+        in_snippet = json.dumps(incoming_body, ensure_ascii=False)[:8000]
     except Exception:
-        sent_snippet = repr(sent_body)[:4000]
-        in_snippet = repr(incoming_body)[:4000]
+        sent_snippet = repr(sent_body)[:8000]
+        in_snippet = repr(incoming_body)[:8000]
+    input_summary = _summarize_input_items(sent_body.get("input")) if isinstance(sent_body, dict) else ""
     logger.warning(
-        "Azure returned {} | endpoint={} model={} resp={} | sent_body={} | incoming_body={}",
-        status, endpoint, alias, resp_text[:1000], sent_snippet, in_snippet,
+        "Azure returned {} | endpoint={} model={} resp={} | input_summary={} | "
+        "sent_body={} | incoming_body={}",
+        status, endpoint, alias, resp_text[:1000], input_summary,
+        sent_snippet, in_snippet,
     )
 
 
