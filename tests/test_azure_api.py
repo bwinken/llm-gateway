@@ -135,14 +135,15 @@ class TestAzureChatCompletions:
         )
         assert resp.status_code == 400
 
-    def test_empty_messages_returns_400_without_calling_azure(self, client):
-        """An incoming request whose messages collapse to no Responses
-        `input` items (e.g. system-only) is rejected at the gateway with
-        400, instead of forwarding an empty body Azure would 400 on."""
-        called = {"n": 0}
+    def test_system_only_message_injects_probe_placeholder(self, client):
+        """Roo Code's connection-validate probes send only a system
+        message, which collapses to empty Responses `input`. Rather than
+        400, the gateway injects a minimal user placeholder so the probe
+        gets a 200 and the IDE marks the provider as working."""
+        captured: dict = {}
 
-        async def fake_post(*args, **kwargs):
-            called["n"] += 1
+        async def fake_post(url, **kwargs):
+            captured["json"] = kwargs.get("json", {})
             return _fake_response(200, _responses_payload("ok", 1, 1))
 
         client.__httpx_mock__.post = fake_post
@@ -154,9 +155,12 @@ class TestAzureChatCompletions:
             },
             headers=auth_header(),
         )
-        assert resp.status_code == 400
-        assert "input" in resp.json()["detail"].lower()
-        assert called["n"] == 0  # never reached Azure
+        assert resp.status_code == 200
+        # Azure call DID happen, and the body has non-empty `input`.
+        assert "input" in captured["json"]
+        assert len(captured["json"]["input"]) >= 1
+        # System hoisted to instructions, placeholder went into input.
+        assert captured["json"].get("instructions") == "be helpful"
 
 
 class TestAzureEmbeddingsRouteRemoved:
