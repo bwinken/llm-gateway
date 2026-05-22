@@ -136,14 +136,24 @@ api_key = "your-api-key"
 # ==========================================
 # Azure OpenAI Models (served at /azure/v1/*)
 # ==========================================
-# Routed by deployment name (no health-check / fallback). Same metadata
-# and per-model pricing override fields as [models.*] are accepted.
+# The gateway sends every Azure LLM/VLM call to the v1 Responses API
+# (/openai/v1/responses), so:
+#  - `endpoint` is the bare resource host. A trailing `/openai` is
+#    stripped automatically.
+#  - `deployment` is the Azure portal deployment name. The gateway sets
+#    body.model to this on each request.
+#  - `api_version` is accepted for backward compatibility but currently
+#    unused; the v1 Responses surface does not take an api-version query.
+#  - Routed by deployment name (no health-check / fallback). Same
+#    metadata and per-model pricing override fields as [models.*] are
+#    accepted.
+#  - Responses API does not cover embeddings; `/azure/v1/embeddings` is
+#    intentionally not exposed. Configure embeddings on a vLLM backend.
 # [azure_models."gpt-4o"]
 # type = "llm"
-# endpoint = "https://my-resource.openai.azure.com"
+# endpoint = "https://my-resource.cognitiveservices.azure.com"
 # deployment = "gpt-4o"
 # api_key = "your-azure-api-key"
-# api_version = "2024-08-01-preview"
 # display_name = "GPT-4o"
 # context_window = 128000
 # max_output_tokens = 16384

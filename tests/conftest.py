@@ -119,15 +119,25 @@ def make_httpx_response(
 
 
 class FakeStreamResponse:
-    """Simulates an httpx streaming response with aiter_lines."""
+    """Simulates an httpx streaming response with aiter_lines.
 
-    def __init__(self, lines: list[str], status_code: int = 200):
+    `body_bytes` lets a test set the full error body for the pre-flight
+    `aread()` path the Azure stream proxy uses on non-200 status codes.
+    Defaults to joining the SSE lines so happy-path tests don't have to
+    care.
+    """
+
+    def __init__(self, lines: list[str], status_code: int = 200, body_bytes: bytes | None = None):
         self.status_code = status_code
         self._lines = lines
+        self._body_bytes = body_bytes if body_bytes is not None else ("\n".join(lines) + "\n").encode()
 
     async def aiter_lines(self):
         for line in self._lines:
             yield line
+
+    async def aread(self):
+        return self._body_bytes
 
     async def aclose(self):
         pass

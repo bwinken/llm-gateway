@@ -291,6 +291,57 @@ ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
 ```
 
+如果 client 自己會講 Azure Responses API 原生格式，且想用 Responses-only 的功能（`previous_response_id`、`store: true`、`input` 帶 reasoning items 等等），可以直接打 `/azure/v1/responses` pass-through。Body 整包原樣轉發，gateway 只會把 `body.model` 從 alias 換成 Azure deployment 名稱：
+
+```python
+import httpx
+resp = httpx.post(
+    "http://your-gateway/azure/v1/responses",
+    headers={"Authorization": "Bearer sk-your-api-key"},
+    json={"model": "gpt-4o-mini-azure", "input": "Hello"},
+)
+```
+
+### Client 設定建議
+
+兩條路徑（vLLM `/v1/*` 跟 Azure `/azure/v1/*`）對 tool calling 嚴格度不同，該怎麼設要看你接的是哪個 backend。
+
+#### vLLM 路徑（`/v1/*`）— 寬鬆，但模型本身要支援 tool calling
+
+Gateway 對 vLLM 的呼叫是**直接 pass-through chat completions**，不驗證 tool call/result 的配對 — 怎麼丟給 vLLM，vLLM 就怎麼餵給 model，model 自己看著辦。所以這條路徑對 client 端的「混搭」風格也包容。
+
+但是 model 端**得支援 native function calling** 才能用結構化 tool calls。常見支援的 model 有 Qwen 2.5、Llama 3.1+、Hermes、Mistral Large 等。如果你部署的是純 chat model（不會 emit `tool_calls`），只能走 XML inline 風格。
+
+| Client | 模型支援 native function calling | 不支援 native function calling |
+|---|---|---|
+| **Roo Code** | **OpenAI** provider + Base URL = `http://your-gateway/v1` | **OpenAI Compatible** provider + 同 base URL |
+| **Cline / Continue.dev / Cursor** | OpenAI provider + 同上 | 多數沒 XML 後備，需要確保 model 支援 |
+| **Claude Code** | `ANTHROPIC_BASE_URL=http://your-gateway` 走 `/v1/messages` | 同左，vLLM 不嚴格驗證 |
+
+#### Azure 路徑（`/azure/v1/*`）— 嚴格，client 不能混搭
+
+Gateway 對 Azure 的所有呼叫都轉成 **Responses API**（`/openai/v1/responses`），這條路徑會嚴格驗證 tool call 跟 tool result 的配對 — 每個 `function_call` 必須有對應的 `function_call_output`。多數正規 client 會自動遵守這個規則，但有些 client 在某些設定下會混搭結構化呼叫跟 inline 文字結果，這種混搭會被 Azure 直接 400。
+
+指錯的話 gateway 會在 log 輸出 `Dropping N orphan function_call(s)` WARNING 提醒，並啟動 safety-net 降級邏輯讓對話勉強跑下去 — 但**正確設定才是長久之計**。
+
+| Client | 建議連線方式 | Gateway endpoint | 備註 |
+|---|---|---|---|
+| **Claude Code** | `ANTHROPIC_BASE_URL=http://your-gateway/azure` | `/azure/v1/messages` | Anthropic 原生格式，每個 `tool_use` 都嚴格配對 `tool_result` |
+| **Anthropic Python SDK** | `Anthropic(base_url="http://your-gateway/azure")` | `/azure/v1/messages` | 同上 |
+| **Roo Code「Anthropic」provider** | API base URL 指向 gateway | `/azure/v1/messages` | Roo Code 在 Anthropic 模式下使用嚴格 `tool_use`/`tool_result` 對應 |
+| **Roo Code「OpenAI」provider**（推薦） | Base URL = `http://your-gateway/azure/v1`，Custom Model ID 填 alias | `/azure/v1/chat/completions` | 標準 OpenAI 規範，嚴格 `tool_calls`/`role:"tool"` 配對 — **這是 Roo Code 接 Azure 的推薦設定** |
+| **Roo Code「OpenAI Compatible」** | ⚠️ **避免使用** | — | 該模式會混搭 native `tool_calls` 跟 user message 裡的 inline `<environment_details>` 文字結果，Azure Responses API 不接受這種混搭 |
+| **Cursor / Continue.dev** | `base_url=http://your-gateway/azure/v1` | `/azure/v1/chat/completions` | 標準 OpenAI 格式 |
+| **OpenAI Python SDK** | `OpenAI(base_url="http://your-gateway/azure/v1")` | `/azure/v1/chat/completions` | 同上 |
+| **OpenAI Python SDK 1.40+ Responses API** | `OpenAI(base_url="http://your-gateway/azure/v1").responses.create(...)` | `/azure/v1/responses` | Responses 直接 pass-through;當你需要用到 `previous_response_id`、`store: true` 或其他 Responses 專屬功能時用。這條路徑**不會** strip sampling params,由 client 自己負責 |
+
+#### Rule of thumb
+
+- **Anthropic-flavour client → `/v1/messages` 或 `/azure/v1/messages`**（走 Anthropic Messages 翻譯）
+- **OpenAI-flavour client → `/v1/chat/completions` 或 `/azure/v1/chat/completions`**（走 OpenAI Chat Completions 翻譯）
+- **Azure 路徑請務必避免「混搭」mode**（典型例外：Roo Code「OpenAI Compatible」）— 兩種 tool calling 風格擇一，不要混
+- **vLLM 路徑混搭沒事**，但前提是 model 跟 client 端對 tool calling 的支援能對上
+
 ### Web 儀表板
 
 在瀏覽器開啟 `http://your-gateway`。oauth2-proxy 透過 AuthCenter 處理 SSO 登入。管理功能需要 AuthCenter 中的 `admin` scope。

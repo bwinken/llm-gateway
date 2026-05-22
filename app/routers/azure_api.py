@@ -21,6 +21,7 @@ from app.services.azure_proxy import (
     forward_chat_completions,
     forward_count_tokens,
     forward_messages,
+    forward_responses,
 )
 
 router = APIRouter()
@@ -36,8 +37,14 @@ _TYPE_CAPABILITIES: dict[str, str] = {
 
 
 @router.get("/azure/v1/models")
+@router.get("/azure/models")
 async def list_azure_models(user: User = Depends(require_azure_access)):
-    """List configured Azure OpenAI deployments as OpenAI-shaped model entries."""
+    """List configured Azure OpenAI deployments as OpenAI-shaped model entries.
+
+    Both ``/azure/v1/models`` and ``/azure/models`` are accepted so clients
+    work regardless of whether their base URL already includes the ``/v1``
+    prefix.
+    """
     models = []
     for alias, entry in get_azure_models_snapshot().items():
         model_type = entry.get("type", "llm")
@@ -56,11 +63,38 @@ async def list_azure_models(user: User = Depends(require_azure_access)):
 
 
 @router.post("/azure/v1/chat/completions")
+@router.post("/azure/chat/completions")
 async def azure_chat_completions(
     request: Request,
     user: User = Depends(require_azure_access),
 ):
+    """OpenAI chat completions for Azure deployments.
+
+    Both ``/azure/v1/chat/completions`` and ``/azure/chat/completions`` are
+    accepted so clients work regardless of whether their base URL already
+    includes the ``/v1`` prefix.
+    """
     return await forward_chat_completions(request, user)
+
+
+@router.post("/azure/v1/responses")
+@router.post("/azure/responses")
+async def azure_responses(
+    request: Request,
+    user: User = Depends(require_azure_access),
+):
+    """Direct pass-through to Azure's Responses API.
+
+    Use this when the client already speaks Responses format and wants
+    Responses-specific features (previous_response_id, store, etc.).
+    For OpenAI chat completions clients use ``/azure/v1/chat/completions``;
+    for Anthropic clients use ``/azure/v1/messages``.
+
+    Both ``/azure/v1/responses`` and ``/azure/responses`` are accepted so
+    clients work regardless of whether their base URL already includes
+    the ``/v1`` prefix (mirrors the ``/azure/messages`` alias).
+    """
+    return await forward_responses(request, user)
 
 
 @router.post("/azure/v1/messages")

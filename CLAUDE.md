@@ -79,22 +79,38 @@ Six forwarding methods, all sharing `_resolve_model()` for health-aware routing:
 
 ### Azure OpenAI Proxy Layer (`app/services/azure_proxy.py`)
 
-Parallel to the vLLM path; routed by `app/routers/azure_api.py` and shares the same auth, daily-limit, monitoring, pricing, and `_log_usage` machinery.
+Parallel to the vLLM path; routed by `app/routers/azure_api.py` and shares the same auth, daily-limit, monitoring, pricing, and `_log_usage` machinery. **All Azure LLM/VLM calls go to the Responses API** (`/openai/v1/responses`); the chat-completions and Anthropic surfaces are translated internally via `responses_adapter`. This avoids per-model API surface decisions — gpt-5 / o-series pro variants only accept Responses, gpt-4o accepts both, so collapsing to Responses gives one code path.
 
 | Method | Used by | Behavior |
 |---|---|---|
-| `forward_chat_completions` | `/azure/v1/chat/completions` | Stream + non-stream |
-| `forward_embeddings` | `/azure/v1/embeddings` | Non-streaming |
-| `forward_messages` | `/azure/v1/messages`, `/azure/messages` | Anthropic→OpenAI request via `anthropic_adapter`, then Azure-shaped forwarding |
+| `forward_chat_completions` | `/azure/v1/chat/completions` | Translates OpenAI chat → Responses, forwards, translates Responses → OpenAI chat. Stream + non-stream. |
+| `forward_messages` | `/azure/v1/messages`, `/azure/messages` | Chains `anthropic_adapter` (Anthropic ↔ OpenAI) with `responses_adapter` (OpenAI ↔ Responses). Stream + non-stream. |
+| `forward_responses` | `/azure/v1/responses` | Pure pass-through for clients that already speak Responses API. Only mutates `body.model` (alias → deployment). Stream + non-stream. |
 | `forward_count_tokens` | `/azure/v1/messages/count_tokens`, `/azure/messages/count_tokens` | Returns chars/4 estimate (Azure has no tokenize endpoint); not billed |
 
+There is intentionally no `/azure/v1/embeddings` endpoint — Responses API doesn't cover embeddings. Configure embedding models on a vLLM backend instead.
+
 Azure-specific conventions:
-- URL is `{endpoint}/openai/deployments/{deployment}/{path}?api-version=...` (no `_resolve_model` / fallback — alias maps directly to a deployment).
-- Auth header is `api-key: <key>` (not `Authorization: Bearer`).
-- Body's `model` field is stripped before forwarding (Azure routes by deployment in URL).
-- Response bodies are OpenAI-shaped and pass through unchanged; Anthropic responses use the same translator as the vLLM path.
+- URL is `{endpoint}/openai/v1/responses` for all LLM/VLM calls — the v1 "no api-version" surface. `_build_responses_url` defensively strips a trailing `/openai` from the configured `endpoint` so operators can paste either the bare host or the Roo Code-style base URL.
+- Auth header is `api-key: <key>` (not `Authorization: Bearer`). AAD tokens not supported.
+- Body's `model` field is **set to the Azure deployment name** before forwarding (the v1 surface routes by `model` in the body, not the URL).
+- Responses-shape downstream payloads are translated back to OpenAI chat completions shape (or further to Anthropic, depending on the entry endpoint) before returning to the client.
 - Azure models are NOT shown on `/v1/models` or the user-facing dashboard. They appear only on `/azure/v1/models` (and the admin model config UI).
+- **Sampling-knob stripping**: `temperature`, `top_p`, `presence_penalty`, `frequency_penalty` are dropped unconditionally on the chat-completions and messages paths because Azure deployments vary in which they accept (gpt-5.4 OK with temperature, gpt-5.4-pro 400s). Each deployment uses its own configured defaults. `reasoning_effort` survives. The pure pass-through `/azure/v1/responses` path does *not* strip — the client owns those params.
+- **Empty-input probe placeholder**: when translation collapses to empty `input` (typical Roo Code "validate connection" probe that sends only a system message), a minimal `{"role": "user", "content": [{"type": "input_text", "text": "."}]}` is injected so Azure returns 200 instead of 400. Logged via `Empty Responses input after translation — injecting probe placeholder`.
+- **Orphan function_call drop**: after translating the message history, any `function_call` item whose `call_id` has no matching `function_call_output` is dropped (`Dropping N orphan function_call(s)` WARNING). Safety net for clients (Roo Code in "OpenAI Compatible" mode) that mix native `tool_calls` with inline XML tool results — Azure Responses strictly validates pairing.
+- **Stream error surfacing**: when Azure emits `response.failed` / `response.error` / `error` mid-stream, the translator captures the payload and the proxy surfaces it as a proper error chunk (chat completions: `data: {"error": ...}`, Anthropic: `event: error`). Without this the stream looked successful-but-empty. The error_type for Anthropic is picked by `ResponsesToChatStreamTranslator.derive_error_kind()` — `invalid_request_error` for pairing/content-filter/invalid-arg, `overloaded_error` for rate-limit/overload (which Claude Code retries with backoff), `api_error` otherwise.
+- **Stream 4xx pre-flight**: stream paths open the upstream connection and check `status_code` *before* handing it to the SSE pump. An Azure 400 returned as a JSON body (no `data:` lines) would otherwise be silently dropped by the pump and look like a successful-but-empty stream. On 4xx, the proxy closes the upstream, returns a JSON error to the client, and logs `Azure returned <code>` with both the sent body and the incoming body for diagnosis. `_summarize_input_items` adds an `input_summary=...` line that walks every input item and flags orphan function_calls.
 - **Optional HTTP proxy**: when `AZURE_HTTP_PROXY` is set, all `/azure/v1/*` downstream calls go through that corporate HTTP proxy via a dedicated `httpx.AsyncClient` (`server_state.get_azure_client()`). vLLM downstreams are internal LAN and are never proxied — they always use the shared `get_client()`. When `AZURE_HTTP_PROXY` is unset, `get_azure_client()` falls back to the shared client (unchanged behavior).
+- **Optional TLS bypass**: `AZURE_INSECURE=true` makes the Azure-bound httpx client run with `verify=False` (equivalent to `curl --insecure`). Use only when a corporate TLS-inspecting proxy re-signs Azure's certificate with a CA that isn't in the system trust store. Affects only the Azure client; vLLM traffic is unchanged. The dedicated Azure client is created whenever **either** `AZURE_HTTP_PROXY` or `AZURE_INSECURE` is set.
+
+### Responses Adapter (`app/services/responses_adapter.py`)
+
+Stateless translator between OpenAI chat completions shape (the gateway's internal pivot) and the Azure Responses API. Three public entry points:
+
+- `openai_chat_to_responses_request(body, model=None)` — translates `messages` to `input` items (system role hoisted to top-level `instructions`), `max_tokens` / `max_completion_tokens` → `max_output_tokens`, OpenAI tool schema → Responses flat-form tools, `reasoning_effort` → `reasoning.effort`. Calls `_drop_orphan_function_calls` to remove dangling `function_call` items. Sampling knobs are dropped; `stream`, `user`, `stop` pass through.
+- `responses_to_openai_chat_response(data, model_alias)` — walks `output[]` items: `message` parts become assistant text, `function_call` items become OpenAI `tool_calls`, `reasoning` summaries become `message.reasoning_content`. `usage.input_tokens` ↔ `usage.prompt_tokens` and `usage.input_tokens_details.cached_tokens` ↔ `usage.prompt_tokens_details.cached_tokens`.
+- `ResponsesToChatStreamTranslator` — converts Azure Responses SSE events into OpenAI chat completion chunk dicts. Tracks event-type counts, emitted text / reasoning char counts, error payloads (`derive_error_message()` / `derive_error_kind()`), and tool-call ID → chunk-index mapping. Each chunk carries `created` (Unix timestamp at translator instantiation) and `object: "chat.completion.chunk"` so OpenAI-compatible clients accept them.
 
 ### Cost Calculation
 
@@ -102,7 +118,7 @@ Azure-specific conventions:
 
 **Pricing lookup priority** (per request): per-model override on the route dict (`input_price_per_1m` / `output_price_per_1m`) → per-type `[pricing.<type>]` → `[pricing]` defaults (`_default`). Both vLLM `[models.<type>.<alias>]` and `[azure_models.<alias>]` entries can carry the per-model override fields.
 
-**Prompt-cache discount**: when the route dict carries `cached_input_price_per_1m`, `_calc_cost` bills the `cached_tokens` portion of input at that discounted rate and the remaining (uncached) input at the full `input_price_per_1m`; without the override all input bills at the full rate. The Azure path extracts `usage.prompt_tokens_details.cached_tokens` from the downstream response and passes it through `_log_usage` → `_calc_cost`; the vLLM path never passes `cached_tokens`, so vLLM costs are unchanged. No DB schema change — `usage_logs` is unchanged; only the computed `cost_usd` reflects the discount.
+**Prompt-cache discount**: when the route dict carries `cached_input_price_per_1m`, `_calc_cost` bills the `cached_tokens` portion of input at that discounted rate and the remaining (uncached) input at the full `input_price_per_1m`; without the override all input bills at the full rate. The Azure path extracts `usage.input_tokens_details.cached_tokens` from the Responses-shape downstream response (`_cached_tokens_from_responses`) and passes it through `_log_usage` → `_calc_cost`; the vLLM path never passes `cached_tokens`, so vLLM costs are unchanged. No DB schema change — `usage_logs` is unchanged; only the computed `cost_usd` reflects the discount.
 
 ### Anthropic Messages API (`app/services/anthropic_adapter.py`)
 
