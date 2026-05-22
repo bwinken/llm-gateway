@@ -1,21 +1,30 @@
 """
-Azure OpenAI proxy.
+Azure OpenAI proxy — Responses API edition.
 
-Translates OpenAI-style requests on `/azure/v1/*` to Azure OpenAI's URL
-and header conventions, then streams the (already OpenAI-shaped) response
-back to the client unchanged.
+All Azure LLM/VLM traffic from the gateway goes to the v1 Responses API
+endpoint (``{endpoint}/openai/v1/responses``). Clients still speak OpenAI
+chat completions (on ``/azure/v1/chat/completions``) or Anthropic Messages
+(on ``/azure/v1/messages``); the translation to/from Responses happens
+internally via ``responses_adapter``.
 
-Key differences from vLLM/OpenAI handled here:
-  * URL pattern: {endpoint}/openai/deployments/{deployment}/{path}?api-version=...
-  * Auth header: `api-key: <key>` instead of `Authorization: Bearer <key>`
-  * The `model` field in the request body is replaced by the deployment in
-    the URL — Azure ignores body.model when the URL targets a deployment.
+Why: newer Azure deployments (gpt-5 series, o-series pro variants) reject
+``/chat/completions`` with 400 "operation unsupported". Routing every Azure
+call through Responses API keeps a single code path and makes the gateway
+forward-compatible with future reasoning-only models.
+
+Key conventions:
+  * URL pattern: ``{endpoint}/openai/v1/responses`` (no api-version query)
+  * Auth header: ``api-key: <key>`` (resource key) — AAD tokens not supported
+  * Body's ``model`` field is set to the Azure *deployment name*; the
+    public-facing alias is held separately for logging/cost lookup.
+  * Embeddings are not supported via Responses API; ``/azure/v1/embeddings``
+    is intentionally not exposed.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Iterator
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -30,6 +39,11 @@ from app.services.anthropic_adapter import (
     openai_to_anthropic_response,
 )
 from app.services.monitor import is_monitored, log_monitor, log_monitor_error
+from app.services.responses_adapter import (
+    ResponsesToChatStreamTranslator,
+    openai_chat_to_responses_request,
+    responses_to_openai_chat_response,
+)
 from app.services.vllm_proxy import (
     _ANTHROPIC_PING_EVENT,
     _NON_STREAM_TIMEOUT,
@@ -42,7 +56,6 @@ from app.services.vllm_proxy import (
 
 
 def _resolve_azure(alias: str) -> dict[str, Any]:
-    """Return the azure model entry for `alias`, or raise 400."""
     _check_auto_reload()
     entry = AZURE_MODELS.get(alias)
     if not entry:
@@ -58,35 +71,40 @@ def _resolve_azure(alias: str) -> dict[str, Any]:
     return entry
 
 
-def _build_url(entry: dict[str, Any], path: str) -> str:
-    """Build the Azure URL for a given API path (e.g. 'chat/completions')."""
+def _build_responses_url(entry: dict[str, Any]) -> str:
+    """Azure Responses v1 surface: no deployment in URL, no api-version."""
     endpoint = entry["endpoint"].rstrip("/")
-    deployment = entry["deployment"]
-    api_version = entry.get("api_version") or "2024-08-01-preview"
-    return f"{endpoint}/openai/deployments/{deployment}/{path}?api-version={api_version}"
+    return f"{endpoint}/openai/v1/responses"
 
 
 def _build_headers(entry: dict[str, Any]) -> dict[str, str]:
-    """Azure auth uses `api-key` header (not Bearer)."""
     return {
         "Content-Type": "application/json",
         "api-key": entry.get("api_key", ""),
     }
 
 
-def _cached_tokens(usage: dict) -> int:
-    """Extract prompt-cache hit count from an OpenAI-shape usage object.
-
-    Azure (and OpenAI) report cache hits under
-    `usage.prompt_tokens_details.cached_tokens`; cached_tokens is a subset
-    of prompt_tokens. Returns 0 when caching wasn't used or isn't reported.
+def _cached_tokens_from_responses(usage: dict) -> int:
+    """Responses API reports prompt-cache hits under
+    ``usage.input_tokens_details.cached_tokens``.
     """
-    details = usage.get("prompt_tokens_details") or {}
+    details = usage.get("input_tokens_details") or {}
     return details.get("cached_tokens", 0) or 0
 
 
+def _parse_responses_sse_event(data_str: str) -> dict[str, Any] | None:
+    """Parse a Responses API SSE `data:` payload into a dict, or None
+    on parse failure / sentinel."""
+    if not data_str or data_str == "[DONE]":
+        return None
+    try:
+        return json.loads(data_str)
+    except json.JSONDecodeError:
+        return None
+
+
 # ---------------------------------------------------------------------------
-# Chat Completions
+# Chat Completions (`/azure/v1/chat/completions`)
 # ---------------------------------------------------------------------------
 
 async def forward_chat_completions(
@@ -97,18 +115,14 @@ async def forward_chat_completions(
     alias = body.get("model", "")
     entry = _resolve_azure(alias)
     model_type = entry.get("type", "llm")
+    deployment = entry["deployment"]
 
-    # Azure routes by deployment in the URL; the body.model field is ignored
-    # but we strip it to keep the payload tidy.
-    body.pop("model", None)
-
-    is_stream = body.get("stream", False)
+    is_stream = bool(body.get("stream", False))
+    responses_body = openai_chat_to_responses_request(body, model=deployment)
     if is_stream:
-        opts = body.get("stream_options") or {}
-        opts["include_usage"] = True
-        body["stream_options"] = opts
+        responses_body["stream"] = True
 
-    target_url = _build_url(entry, "chat/completions")
+    target_url = _build_responses_url(entry)
     headers = _build_headers(entry)
     client = get_azure_client()
 
@@ -116,88 +130,106 @@ async def forward_chat_completions(
 
     if is_stream:
         return await _stream_chat(
-            client, target_url, body, headers, user, alias, model_type, monitor_body, entry,
+            client, target_url, responses_body, headers,
+            user, alias, model_type, monitor_body, entry,
         )
     return await _non_stream_chat(
-        client, target_url, body, headers, user, alias, model_type, monitor_body, entry,
+        client, target_url, responses_body, headers,
+        user, alias, model_type, monitor_body, entry,
     )
 
 
 async def _non_stream_chat(
     client, url: str, body: dict, headers: dict, user: User,
-    model: str, model_type: str, monitor_body: dict, route: dict,
+    alias: str, model_type: str, monitor_body: dict, route: dict,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Azure downstream error: {}", exc)
-        log_monitor_error(user.id, monitor_body, str(exc), 502, model, "/azure/v1/chat/completions", model_type)
+        log_monitor_error(user.id, monitor_body, str(exc), 502, alias,
+                          "/azure/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        log_monitor_error(user.id, monitor_body, resp.text[:500], resp.status_code, model, "/azure/v1/chat/completions", model_type)
+        log_monitor_error(user.id, monitor_body, resp.text[:500], resp.status_code,
+                          alias, "/azure/v1/chat/completions", model_type)
         return _error_response(resp)
 
-    data = resp.json()
-    usage = data.get("usage", {})
+    raw = resp.json()
+    chat_data = responses_to_openai_chat_response(raw, alias)
+    usage = chat_data.get("usage", {})
     input_tk = usage.get("prompt_tokens", 0)
     output_tk = usage.get("completion_tokens", 0)
-    cached_tk = _cached_tokens(usage)
-    _log_usage(user, model, model_type, input_tk, output_tk, "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk)
+    cached_tk = _cached_tokens_from_responses(raw.get("usage") or {})
+    _log_usage(user, alias, model_type, input_tk, output_tk,
+               "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk)
     if is_monitored(user.id):
         cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
-        log_monitor(user.id, monitor_body, data, model, "/azure/v1/chat/completions", input_tk, output_tk, cost, model_type)
-    return JSONResponse(content=data)
+        log_monitor(user.id, monitor_body, chat_data, alias,
+                    "/azure/v1/chat/completions", input_tk, output_tk, cost, model_type)
+    return JSONResponse(content=chat_data)
 
 
 async def _stream_chat(
     client, url: str, body: dict, headers: dict, user: User,
-    model: str, model_type: str, monitor_body: dict, route: dict,
+    alias: str, model_type: str, monitor_body: dict, route: dict,
 ) -> StreamingResponse:
     req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
     _monitoring = is_monitored(user.id)
+    logger.info("Stream start | user={} model={} endpoint=/azure/v1/chat/completions",
+                user.username, alias)
 
     async def event_generator():
-        input_tokens = 0
-        output_tokens = 0
-        cached_tokens = 0
-        resp = None
+        translator = ResponsesToChatStreamTranslator(alias)
         chunks: list[dict] = []
         try:
-            resp = await client.send(req, stream=True)
-            async for line in resp.aiter_lines():
-                if not line:
-                    yield "\n"
-                    continue
-                yield f"{line}\n\n"
-                if line.startswith("data: ") and line != "data: [DONE]":
-                    try:
-                        chunk = json.loads(line[6:])
-                        if _monitoring:
-                            chunks.append(chunk)
-                        usage = chunk.get("usage")
-                        if usage:
-                            input_tokens = usage.get("prompt_tokens", input_tokens)
-                            output_tokens = usage.get("completion_tokens", output_tokens)
-                            cached_tokens = _cached_tokens(usage) or cached_tokens
-                    except (json.JSONDecodeError, KeyError):
-                        pass
-        except Exception as exc:
-            logger.error("Azure stream error: {}", exc)
-            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
-        finally:
-            if resp is not None:
-                try:
-                    await resp.aclose()
-                except Exception:
-                    pass
+            for chunk in translator.start():
+                if _monitoring:
+                    chunks.append(chunk)
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-        if input_tokens == 0 and output_tokens == 0:
-            logger.warning("Azure stream for model={} ended with 0 tokens", model)
-        _log_usage(user, model, model_type, input_tokens, output_tokens, "/azure/v1/chat/completions", route=route, cached_tokens=cached_tokens)
+            async for kind, data in _pump_anthropic_lines(client.send(req, stream=True)):
+                if kind == "ping":
+                    # vLLM-style ping isn't part of the chat completions SSE
+                    # contract; emit an SSE comment so proxies don't strip it.
+                    yield ": ping\n\n"
+                    continue
+                if kind == "err":
+                    raise data
+                if kind == "done":
+                    break
+                line = data
+                if not line or not line.startswith("data: "):
+                    continue
+                event = _parse_responses_sse_event(line[6:])
+                if event is None:
+                    continue
+                for chunk in translator.handle_event(event):
+                    if _monitoring:
+                        chunks.append(chunk)
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+            for chunk in translator.finish():
+                if _monitoring:
+                    chunks.append(chunk)
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as exc:
+            logger.error("Azure chat stream error: {}", exc)
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+
+        input_tk = translator.input_tokens
+        output_tk = translator.output_tokens
+        cached_tk = translator.cached_tokens
+        if input_tk == 0 and output_tk == 0:
+            logger.warning("Azure chat stream for model={} ended with 0 tokens", alias)
+        _log_usage(user, alias, model_type, input_tk, output_tk,
+                   "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk)
         if _monitoring:
-            cost = float(_calc_cost(route, model_type, input_tokens, output_tokens, cached_tokens))
-            log_monitor(user.id, monitor_body, chunks, model, "/azure/v1/chat/completions", input_tokens, output_tokens, cost, model_type)
+            cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
+            log_monitor(user.id, monitor_body, chunks, alias,
+                        "/azure/v1/chat/completions", input_tk, output_tk, cost, model_type)
 
     return StreamingResponse(
         event_generator(),
@@ -207,60 +239,13 @@ async def _stream_chat(
 
 
 # ---------------------------------------------------------------------------
-# Embeddings
-# ---------------------------------------------------------------------------
-
-async def forward_embeddings(
-    request: Request,
-    user: User,
-) -> JSONResponse:
-    body = await request.json()
-    alias = body.get("model", "")
-    entry = _resolve_azure(alias)
-    model_type = entry.get("type", "embedding")
-    body.pop("model", None)
-
-    target_url = _build_url(entry, "embeddings")
-    headers = _build_headers(entry)
-    client = get_azure_client()
-
-    monitor_body = {**body, "model": alias}
-
-    try:
-        resp = await client.post(target_url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
-    except Exception as exc:
-        logger.error("Azure downstream error: {}", exc)
-        log_monitor_error(user.id, monitor_body, str(exc), 502, alias, "/azure/v1/embeddings", model_type)
-        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
-
-    if resp.status_code != 200:
-        log_monitor_error(user.id, monitor_body, resp.text[:500], resp.status_code, alias, "/azure/v1/embeddings", model_type)
-        return _error_response(resp)
-
-    data = resp.json()
-    usage = data.get("usage", {})
-    prompt_tokens = usage.get("prompt_tokens", 0)
-    total_tokens = usage.get("total_tokens", 0)
-    completion_tokens = usage.get("completion_tokens", 0)
-    if prompt_tokens == 0 and total_tokens > 0:
-        prompt_tokens = total_tokens
-
-    _log_usage(user, alias, model_type, prompt_tokens, completion_tokens, "/azure/v1/embeddings", route=entry)
-    if is_monitored(user.id):
-        cost = float(_calc_cost(entry, model_type, prompt_tokens, completion_tokens))
-        log_monitor(user.id, monitor_body, data, alias, "/azure/v1/embeddings", prompt_tokens, completion_tokens, cost, model_type)
-    return JSONResponse(content=data)
-
-
-# ---------------------------------------------------------------------------
-# Anthropic Messages API (translates Anthropic format ↔ OpenAI)
+# Anthropic Messages API (`/azure/v1/messages`)
 # ---------------------------------------------------------------------------
 
 async def forward_messages(
     request: Request,
     user: User,
 ) -> StreamingResponse | JSONResponse:
-    """Anthropic /v1/messages → translate → Azure chat/completions → translate back."""
     try:
         anthropic_body = await request.json()
     except Exception:
@@ -269,21 +254,17 @@ async def forward_messages(
     alias = anthropic_body.get("model", "")
     entry = _resolve_azure(alias)
     model_type = entry.get("type", "llm")
+    deployment = entry["deployment"]
 
     openai_body = anthropic_to_openai_request(
         anthropic_body, is_reasoning=bool(entry.get("is_reasoning")),
     )
-    # Azure ignores body.model when URL targets a deployment; remove it for tidiness.
-    openai_body.pop("model", None)
     is_stream = bool(anthropic_body.get("stream", False))
-
+    responses_body = openai_chat_to_responses_request(openai_body, model=deployment)
     if is_stream:
-        opts = openai_body.get("stream_options") or {}
-        opts["include_usage"] = True
-        openai_body["stream_options"] = opts
-        openai_body["stream"] = True
+        responses_body["stream"] = True
 
-    target_url = _build_url(entry, "chat/completions")
+    target_url = _build_responses_url(entry)
     headers = _build_headers(entry)
     client = get_azure_client()
 
@@ -292,10 +273,12 @@ async def forward_messages(
 
     if is_stream:
         return await _stream_messages(
-            client, target_url, openai_body, headers, user, alias, model_type, monitor_body, entry,
+            client, target_url, responses_body, headers,
+            user, alias, model_type, monitor_body, entry,
         )
     return await _non_stream_messages(
-        client, target_url, openai_body, headers, user, alias, model_type, monitor_body, entry,
+        client, target_url, responses_body, headers,
+        user, alias, model_type, monitor_body, entry,
     )
 
 
@@ -307,22 +290,27 @@ async def _non_stream_messages(
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Azure messages downstream error: {}", exc)
-        log_monitor_error(user.id, monitor_body, str(exc), 502, alias, "/azure/v1/messages", model_type)
+        log_monitor_error(user.id, monitor_body, str(exc), 502, alias,
+                          "/azure/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        log_monitor_error(user.id, monitor_body, resp.text[:500], resp.status_code, alias, "/azure/v1/messages", model_type)
+        log_monitor_error(user.id, monitor_body, resp.text[:500], resp.status_code,
+                          alias, "/azure/v1/messages", model_type)
         return _error_response(resp)
 
-    openai_data = resp.json()
-    anthropic_data = openai_to_anthropic_response(openai_data, alias)
+    raw = resp.json()
+    chat_data = responses_to_openai_chat_response(raw, alias)
+    anthropic_data = openai_to_anthropic_response(chat_data, alias)
     input_tk = anthropic_data["usage"]["input_tokens"]
     output_tk = anthropic_data["usage"]["output_tokens"]
-    cached_tk = _cached_tokens(openai_data.get("usage", {}))
-    _log_usage(user, alias, model_type, input_tk, output_tk, "/azure/v1/messages", route=route, cached_tokens=cached_tk)
+    cached_tk = _cached_tokens_from_responses(raw.get("usage") or {})
+    _log_usage(user, alias, model_type, input_tk, output_tk,
+               "/azure/v1/messages", route=route, cached_tokens=cached_tk)
     if is_monitored(user.id):
         cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
-        log_monitor(user.id, monitor_body, anthropic_data, alias, "/azure/v1/messages", input_tk, output_tk, cost, model_type)
+        log_monitor(user.id, monitor_body, anthropic_data, alias,
+                    "/azure/v1/messages", input_tk, output_tk, cost, model_type)
     return JSONResponse(content=anthropic_data)
 
 
@@ -332,14 +320,29 @@ async def _stream_messages(
 ) -> StreamingResponse:
     req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
     _monitoring = is_monitored(user.id)
-    logger.info("Stream start | user={} model={} endpoint=/azure/v1/messages", user.username, alias)
+    logger.info("Stream start | user={} model={} endpoint=/azure/v1/messages",
+                user.username, alias)
 
     async def event_generator():
-        translator = AnthropicStreamTranslator(alias)
+        # Two-stage translator chain: Responses SSE -> synthetic OpenAI chat
+        # chunks -> Anthropic SSE events. Reuses the existing Anthropic
+        # translator so the public Anthropic surface stays unchanged.
+        responses_xlat = ResponsesToChatStreamTranslator(alias)
+        anthropic_xlat = AnthropicStreamTranslator(alias)
         chunks: list[dict] = []
-        cached_tk = 0
+
+        def _feed(chat_chunks) -> Iterator:
+            for ch in chat_chunks:
+                if _monitoring:
+                    chunks.append(ch)
+                yield from anthropic_xlat.handle_chunk(ch)
+
         try:
-            for event in translator.start():
+            for event in anthropic_xlat.start():
+                yield event
+            # Drain the start() chunk(s) through the Anthropic translator so
+            # the initial role delta primes its state machine.
+            for event in _feed(responses_xlat.start()):
                 yield event
 
             async for kind, data in _pump_anthropic_lines(client.send(req, stream=True)):
@@ -350,51 +353,48 @@ async def _stream_messages(
                     raise data
                 if kind == "done":
                     break
-                # kind == "line"
                 line = data
                 if not line or not line.startswith("data: "):
                     continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
+                event_data = _parse_responses_sse_event(line[6:])
+                if event_data is None:
                     continue
-                try:
-                    chunk = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-                if _monitoring:
-                    chunks.append(chunk)
-                chunk_usage = chunk.get("usage")
-                if chunk_usage:
-                    cached_tk = _cached_tokens(chunk_usage) or cached_tk
-                for event in translator.handle_chunk(chunk):
-                    yield event
+                resp_chunks = list(responses_xlat.handle_event(event_data))
+                if resp_chunks:
+                    for event in _feed(resp_chunks):
+                        yield event
 
-            # No finish_reason on a clean end → downstream dropped mid-stream.
-            # Report an error rather than a normal message_stop so the client
-            # doesn't silently accept a truncated answer.
-            if translator.stop_reason is None:
+            # Final chunk carries usage + finish_reason for the Anthropic
+            # translator to compute message_delta + message_stop.
+            for event in _feed(responses_xlat.finish()):
+                yield event
+
+            if anthropic_xlat.stop_reason is None:
                 logger.warning(
                     "Azure messages stream ended without finish_reason | model={} — truncated",
                     alias,
                 )
-                for event in translator.fail(
+                for event in anthropic_xlat.fail(
                     "Downstream stream ended prematurely; the response may be incomplete."
                 ):
                     yield event
             else:
-                for event in translator.finish():
+                for event in anthropic_xlat.finish():
                     yield event
         except Exception as exc:
             logger.error("Azure messages stream error: {}", exc)
             err_payload = json.dumps({"type": "error", "error": {"type": "api_error", "message": str(exc)}})
             yield f"event: error\ndata: {err_payload}\n\n"
 
-        input_tk = translator.input_tokens
-        output_tk = translator.output_tokens
-        _log_usage(user, alias, model_type, input_tk, output_tk, "/azure/v1/messages", route=route, cached_tokens=cached_tk)
+        input_tk = anthropic_xlat.input_tokens or responses_xlat.input_tokens
+        output_tk = anthropic_xlat.output_tokens or responses_xlat.output_tokens
+        cached_tk = responses_xlat.cached_tokens
+        _log_usage(user, alias, model_type, input_tk, output_tk,
+                   "/azure/v1/messages", route=route, cached_tokens=cached_tk)
         if _monitoring:
             cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
-            log_monitor(user.id, monitor_body, chunks, alias, "/azure/v1/messages", input_tk, output_tk, cost, model_type)
+            log_monitor(user.id, monitor_body, chunks, alias,
+                        "/azure/v1/messages", input_tk, output_tk, cost, model_type)
 
     return StreamingResponse(
         event_generator(),
@@ -409,9 +409,8 @@ async def forward_count_tokens(
 ) -> JSONResponse:
     """Anthropic /v1/messages/count_tokens for Azure deployments.
 
-    Azure OpenAI does not expose a tokenize endpoint, so we always return a
-    chars/4 estimate. Auth and daily-limit checks still apply but the call
-    is not billed.
+    Azure has no tokenize endpoint, so we return a chars/4 estimate.
+    Auth/daily-limit checks still apply; not billed.
     """
     try:
         anthropic_body = await request.json()
@@ -419,7 +418,7 @@ async def forward_count_tokens(
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
     alias = anthropic_body.get("model", "")
-    _resolve_azure(alias)  # validate alias exists; raises 400 if not
+    _resolve_azure(alias)
 
     openai_body = anthropic_to_openai_request(anthropic_body)
     approx = _approx_token_count(openai_body.get("messages", []))

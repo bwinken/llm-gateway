@@ -20,7 +20,6 @@ from app.models.schema import User
 from app.services.azure_proxy import (
     forward_chat_completions,
     forward_count_tokens,
-    forward_embeddings,
     forward_messages,
 )
 
@@ -62,14 +61,6 @@ async def azure_chat_completions(
     user: User = Depends(require_azure_access),
 ):
     return await forward_chat_completions(request, user)
-
-
-@router.post("/azure/v1/embeddings")
-async def azure_embeddings(
-    request: Request,
-    user: User = Depends(require_azure_access),
-):
-    return await forward_embeddings(request, user)
 
 
 @router.post("/azure/v1/messages")
