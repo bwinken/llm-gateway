@@ -333,6 +333,7 @@ Misconfiguration shows up in the log as `Dropping N orphan function_call(s)` WAR
 | **Roo Code "OpenAI Compatible"** | ⚠️ **avoid** | — | This mode mixes native `tool_calls` with inline `<environment_details>` text results in the next user message. Azure Responses API does not accept the mixed shape |
 | **Cursor / Continue.dev** | `base_url=http://your-gateway/azure/v1` | `/azure/v1/chat/completions` | Standard OpenAI shape |
 | **OpenAI Python SDK** | `OpenAI(base_url="http://your-gateway/azure/v1")` | `/azure/v1/chat/completions` | Same as above |
+| **OpenAI Python SDK 1.40+ Responses API** | `OpenAI(base_url="http://your-gateway/azure/v1").responses.create(...)` | `/azure/v1/responses` | Direct Responses pass-through; use when you need `previous_response_id`, `store: true`, or other Responses-only features. Sampling params are not stripped on this path — the client owns them. |
 
 #### Rule of thumb
 

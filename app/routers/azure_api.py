@@ -65,6 +65,7 @@ async def azure_chat_completions(
 
 
 @router.post("/azure/v1/responses")
+@router.post("/azure/responses")
 async def azure_responses(
     request: Request,
     user: User = Depends(require_azure_access),
@@ -75,6 +76,10 @@ async def azure_responses(
     Responses-specific features (previous_response_id, store, etc.).
     For OpenAI chat completions clients use ``/azure/v1/chat/completions``;
     for Anthropic clients use ``/azure/v1/messages``.
+
+    Both ``/azure/v1/responses`` and ``/azure/responses`` are accepted so
+    clients work regardless of whether their base URL already includes
+    the ``/v1`` prefix (mirrors the ``/azure/messages`` alias).
     """
     return await forward_responses(request, user)
 

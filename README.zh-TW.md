@@ -333,6 +333,7 @@ Gateway 對 Azure 的所有呼叫都轉成 **Responses API**（`/openai/v1/respo
 | **Roo Code「OpenAI Compatible」** | ⚠️ **避免使用** | — | 該模式會混搭 native `tool_calls` 跟 user message 裡的 inline `<environment_details>` 文字結果，Azure Responses API 不接受這種混搭 |
 | **Cursor / Continue.dev** | `base_url=http://your-gateway/azure/v1` | `/azure/v1/chat/completions` | 標準 OpenAI 格式 |
 | **OpenAI Python SDK** | `OpenAI(base_url="http://your-gateway/azure/v1")` | `/azure/v1/chat/completions` | 同上 |
+| **OpenAI Python SDK 1.40+ Responses API** | `OpenAI(base_url="http://your-gateway/azure/v1").responses.create(...)` | `/azure/v1/responses` | Responses 直接 pass-through;當你需要用到 `previous_response_id`、`store: true` 或其他 Responses 專屬功能時用。這條路徑**不會** strip sampling params,由 client 自己負責 |
 
 #### Rule of thumb
 

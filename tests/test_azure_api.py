@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
-from tests.conftest import auth_header
+import httpx
+
+from tests.conftest import FakeStreamResponse, auth_header
 
 
 class TestAzureModelsListing:
@@ -289,6 +291,135 @@ class TestAzureMessagesAnthropic:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+class TestAzureChatCompletionsStream:
+    def test_stream_basic_translates_responses_sse_to_chat_chunks(self, client):
+        sse_lines = [
+            'data: {"type":"response.output_text.delta","delta":"Hello"}',
+            'data: {"type":"response.output_text.delta","delta":"!"}',
+            'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}',
+        ]
+        fake_stream = FakeStreamResponse(sse_lines)
+        mock = client.__httpx_mock__
+        mock.build_request.return_value = httpx.Request(
+            "POST", "https://test.openai.azure.com/openai/v1/responses",
+        )
+        mock.send.return_value = fake_stream
+
+        resp = client.post(
+            "/azure/v1/chat/completions",
+            json={
+                "model": "azure-gpt-4",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers.get("content-type", "")
+        body = resp.text
+        # Content deltas should arrive as chat-completion chunks.
+        assert '"content": "Hello"' in body or '"content":"Hello"' in body
+        assert '"content": "!"' in body or '"content":"!"' in body
+        # Final chunk has finish_reason and usage.
+        assert '"finish_reason": "stop"' in body or '"finish_reason":"stop"' in body
+        assert "data: [DONE]" in body
+
+    def test_stream_pre_flight_surfaces_4xx_as_json_error(self, client):
+        err_body = (
+            b'{"error":{"message":"No tool output found for function call call_X",'
+            b'"type":"invalid_request_error","param":"input"}}'
+        )
+        fake_stream = FakeStreamResponse(
+            lines=[],
+            status_code=400,
+            body_bytes=err_body,
+        )
+        mock = client.__httpx_mock__
+        mock.build_request.return_value = httpx.Request(
+            "POST", "https://test.openai.azure.com/openai/v1/responses",
+        )
+        mock.send.return_value = fake_stream
+
+        resp = client.post(
+            "/azure/v1/chat/completions",
+            json={
+                "model": "azure-gpt-4",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+            headers=auth_header(),
+        )
+        # The pre-flight check converts the 4xx body to a JSON response
+        # (so clients don't see an empty-but-successful stream).
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "error" in body
+        assert "No tool output found" in body["error"]["message"]
+
+
+class TestAzureMessagesStream:
+    def test_messages_stream_emits_anthropic_events(self, client):
+        sse_lines = [
+            'data: {"type":"response.output_text.delta","delta":"Hi"}',
+            'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":3,"output_tokens":1}}}',
+        ]
+        fake_stream = FakeStreamResponse(sse_lines)
+        mock = client.__httpx_mock__
+        mock.build_request.return_value = httpx.Request(
+            "POST", "https://test.openai.azure.com/openai/v1/responses",
+        )
+        mock.send.return_value = fake_stream
+
+        resp = client.post(
+            "/azure/v1/messages",
+            json={
+                "model": "azure-gpt-4",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        # Anthropic SSE shape: message_start + content_block_* + message_stop
+        assert "event: message_start" in body
+        assert "event: content_block_delta" in body
+        assert "event: message_stop" in body
+
+
+class TestAzureResponsesStream:
+    """The /azure/v1/responses route streams raw Responses API SSE through,
+    only sniffing `response.completed` for billing."""
+
+    def test_responses_stream_passes_lines_through(self, client):
+        sse_lines = [
+            'event: response.output_text.delta',
+            'data: {"type":"response.output_text.delta","delta":"Hello"}',
+            '',
+            'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":4,"output_tokens":1}}}',
+        ]
+        fake_stream = FakeStreamResponse(sse_lines)
+        mock = client.__httpx_mock__
+        mock.build_request.return_value = httpx.Request(
+            "POST", "https://test.openai.azure.com/openai/v1/responses",
+        )
+        mock.send.return_value = fake_stream
+
+        resp = client.post(
+            "/azure/v1/responses",
+            json={"model": "azure-gpt-4", "input": "hi", "stream": True},
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        # SSE pass-through preserves the original event/data lines.
+        body = resp.text
+        assert 'event: response.output_text.delta' in body
+        assert '"response.output_text.delta"' in body
+        assert '"Hello"' in body
+        assert '"response.completed"' in body
+
 
 def _responses_payload(text: str, in_tk: int, out_tk: int, *, status: str = "completed") -> dict:
     """Build a minimal Azure Responses API non-stream payload."""
