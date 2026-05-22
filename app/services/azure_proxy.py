@@ -72,8 +72,17 @@ def _resolve_azure(alias: str) -> dict[str, Any]:
 
 
 def _build_responses_url(entry: dict[str, Any]) -> str:
-    """Azure Responses v1 surface: no deployment in URL, no api-version."""
+    """Azure Responses v1 surface: no deployment in URL, no api-version.
+
+    Defensively strips a trailing ``/openai`` from the configured endpoint
+    so operators can paste either the bare host
+    (``https://x.cognitiveservices.azure.com``) or the Roo Code-style base
+    URL (``https://x.cognitiveservices.azure.com/openai``) without
+    producing a doubled ``/openai/openai/...`` path.
+    """
     endpoint = entry["endpoint"].rstrip("/")
+    if endpoint.endswith("/openai"):
+        endpoint = endpoint[: -len("/openai")]
     return f"{endpoint}/openai/v1/responses"
 
 
@@ -90,6 +99,43 @@ def _cached_tokens_from_responses(usage: dict) -> int:
     """
     details = usage.get("input_tokens_details") or {}
     return details.get("cached_tokens", 0) or 0
+
+
+def _warn_if_empty_translation(
+    raw: dict[str, Any],
+    chat_data: dict[str, Any],
+    alias: str,
+    endpoint: str,
+) -> None:
+    """Emit a WARNING when the Responses->chat-completions translation
+    yielded an empty assistant message (no text, no tool calls). Clients
+    surface this as "no assistant message"; the log line lets operators
+    see what Azure actually returned so the adapter can be adjusted.
+
+    Suppressed when there's any text content, any tool calls, or any
+    reasoning content — those are valid non-empty outputs (Roo Code's
+    "no assistant message" message specifically means content == "").
+    """
+    msg = (chat_data.get("choices") or [{}])[0].get("message") or {}
+    if msg.get("content") or msg.get("tool_calls"):
+        return
+    output_types = [
+        it.get("type") for it in (raw.get("output") or []) if isinstance(it, dict)
+    ]
+    try:
+        snippet = json.dumps(raw, ensure_ascii=False)[:800]
+    except Exception:
+        snippet = repr(raw)[:800]
+    logger.warning(
+        "Empty assistant content from Azure | endpoint={} model={} "
+        "status={} output_types={} usage={} raw_head={}",
+        endpoint,
+        alias,
+        raw.get("status"),
+        output_types,
+        raw.get("usage"),
+        snippet,
+    )
 
 
 def _parse_responses_sse_event(data_str: str) -> dict[str, Any] | None:
@@ -158,6 +204,7 @@ async def _non_stream_chat(
 
     raw = resp.json()
     chat_data = responses_to_openai_chat_response(raw, alias)
+    _warn_if_empty_translation(raw, chat_data, alias, "/azure/v1/chat/completions")
     usage = chat_data.get("usage", {})
     input_tk = usage.get("prompt_tokens", 0)
     output_tk = usage.get("completion_tokens", 0)
@@ -224,6 +271,16 @@ async def _stream_chat(
         cached_tk = translator.cached_tokens
         if input_tk == 0 and output_tk == 0:
             logger.warning("Azure chat stream for model={} ended with 0 tokens", alias)
+        if (
+            translator.emitted_text_chars == 0
+            and not translator._tool_meta_sent  # noqa: SLF001
+        ):
+            logger.warning(
+                "Empty assistant content from Azure stream | endpoint=/azure/v1/chat/completions "
+                "model={} input_tokens={} output_tokens={} reasoning_chars={} finish={}",
+                alias, input_tk, output_tk,
+                translator.emitted_reasoning_chars, translator.finish_reason,
+            )
         _log_usage(user, alias, model_type, input_tk, output_tk,
                    "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk)
         if _monitoring:
@@ -301,6 +358,7 @@ async def _non_stream_messages(
 
     raw = resp.json()
     chat_data = responses_to_openai_chat_response(raw, alias)
+    _warn_if_empty_translation(raw, chat_data, alias, "/azure/v1/messages")
     anthropic_data = openai_to_anthropic_response(chat_data, alias)
     input_tk = anthropic_data["usage"]["input_tokens"]
     output_tk = anthropic_data["usage"]["output_tokens"]

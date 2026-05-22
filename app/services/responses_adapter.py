@@ -324,6 +324,8 @@ class ResponsesToChatStreamTranslator:
         self.cached_tokens = 0
         self.finish_reason: str | None = None
         self.saw_completed = False
+        self.emitted_text_chars = 0
+        self.emitted_reasoning_chars = 0
         self._tool_item_to_index: dict[str, int] = {}
         self._tool_meta_sent: set[str] = set()
         self._next_tool_index = 0
@@ -355,6 +357,7 @@ class ResponsesToChatStreamTranslator:
         if etype == "response.output_text.delta":
             delta = event.get("delta") or ""
             if delta:
+                self.emitted_text_chars += len(delta)
                 yield self._chunk(delta={"content": delta})
 
         elif etype in (
@@ -363,6 +366,7 @@ class ResponsesToChatStreamTranslator:
         ):
             delta = event.get("delta") or ""
             if delta:
+                self.emitted_reasoning_chars += len(delta)
                 yield self._chunk(delta={"reasoning_content": delta})
 
         elif etype == "response.output_item.added":
