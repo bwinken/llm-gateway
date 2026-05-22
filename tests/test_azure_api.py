@@ -37,6 +37,64 @@ class TestAzureModelsListing:
         resp = client.get("/azure/v1/models", headers=auth_header())
         assert resp.status_code == 403
 
+    def test_models_v1_and_non_v1_aliases_return_same_data(self, client):
+        """Clients whose base URL omits /v1 should also reach the listing."""
+        r1 = client.get("/azure/v1/models", headers=auth_header())
+        r2 = client.get("/azure/models", headers=auth_header())
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert r1.json() == r2.json()
+
+
+class TestAzureRouteAliases:
+    """Every POST route exposes both /azure/v1/<name> and /azure/<name>
+    so a client with base_url=http://gateway/azure (no /v1) reaches the
+    same handler as base_url=http://gateway/azure/v1."""
+
+    def test_chat_completions_alias(self, client):
+        client.__httpx_mock__.post = AsyncMock(
+            return_value=_fake_response(200, _responses_payload("ok", 1, 1)),
+        )
+        resp = client.post(
+            "/azure/chat/completions",
+            json={"model": "azure-gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "ok"
+
+    def test_responses_alias(self, client):
+        client.__httpx_mock__.post = AsyncMock(
+            return_value=_fake_response(200, {
+                "id": "resp_1", "status": "completed",
+                "output": [{"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "ok"}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }),
+        )
+        resp = client.post(
+            "/azure/responses",
+            json={"model": "azure-gpt-4", "input": "hi"},
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+
+    def test_messages_alias_still_works(self, client):
+        """Regression coverage: /azure/messages was the original alias and
+        must continue to route."""
+        client.__httpx_mock__.post = AsyncMock(
+            return_value=_fake_response(200, _responses_payload("ok", 1, 1)),
+        )
+        resp = client.post(
+            "/azure/messages",
+            json={
+                "model": "azure-gpt-4", "max_tokens": 8,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+
 
 class TestAzureChatCompletions:
     def test_chat_completion_basic(self, client):

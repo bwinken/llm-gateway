@@ -37,8 +37,14 @@ _TYPE_CAPABILITIES: dict[str, str] = {
 
 
 @router.get("/azure/v1/models")
+@router.get("/azure/models")
 async def list_azure_models(user: User = Depends(require_azure_access)):
-    """List configured Azure OpenAI deployments as OpenAI-shaped model entries."""
+    """List configured Azure OpenAI deployments as OpenAI-shaped model entries.
+
+    Both ``/azure/v1/models`` and ``/azure/models`` are accepted so clients
+    work regardless of whether their base URL already includes the ``/v1``
+    prefix.
+    """
     models = []
     for alias, entry in get_azure_models_snapshot().items():
         model_type = entry.get("type", "llm")
@@ -57,10 +63,17 @@ async def list_azure_models(user: User = Depends(require_azure_access)):
 
 
 @router.post("/azure/v1/chat/completions")
+@router.post("/azure/chat/completions")
 async def azure_chat_completions(
     request: Request,
     user: User = Depends(require_azure_access),
 ):
+    """OpenAI chat completions for Azure deployments.
+
+    Both ``/azure/v1/chat/completions`` and ``/azure/chat/completions`` are
+    accepted so clients work regardless of whether their base URL already
+    includes the ``/v1`` prefix.
+    """
     return await forward_chat_completions(request, user)
 
 
