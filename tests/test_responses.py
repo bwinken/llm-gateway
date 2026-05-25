@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 
 import httpx
+from sqlmodel import select
 
+from app.models.schema import UsageLog
 from tests.conftest import FakeStreamResponse, auth_header, make_httpx_response
 
 
@@ -197,3 +199,39 @@ class TestResponsesStream:
         body = resp.text
         assert "Hello!" in body
         assert "response.completed" in body
+
+    def test_stream_usage_logged(self, client, test_user, db_session):
+        """Responses API stream nests usage inside `response.completed.response.usage`
+        (not at the chunk top level like chat completions). Verify the
+        pass-through pump extracts it so /v1/responses requests are billed
+        instead of logged as 0/0 tokens — this is what Roo Code's "OpenAI"
+        provider hits.
+        """
+        sse_lines = [
+            'data: {"type":"response.created","response":{"id":"resp-u1","status":"in_progress"}}',
+            'data: {"type":"response.output_text.delta","delta":"Hi"}',
+            'data: {"type":"response.completed","response":{"id":"resp-u1","usage":{"input_tokens":42,"output_tokens":17,"input_tokens_details":{"cached_tokens":8}}}}',
+            "data: [DONE]",
+        ]
+        fake_stream = FakeStreamResponse(sse_lines)
+        mock = client.__httpx_mock__
+        mock.build_request.return_value = httpx.Request("POST", "http://mock-llm:8000/v1/responses")
+        mock.send.return_value = fake_stream
+
+        resp = client.post(
+            "/v1/responses",
+            json={"model": "test-llm", "input": "Hi", "stream": True},
+            headers=auth_header(),
+        )
+        # Drain the stream so the event_generator's finally-block runs
+        # (which is where _log_usage gets called).
+        _ = resp.text
+        assert resp.status_code == 200
+
+        rows = db_session.exec(
+            select(UsageLog).where(UsageLog.user_id == test_user.id)
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].input_tokens == 42
+        assert rows[0].output_tokens == 17
+        assert rows[0].endpoint == "/responses"

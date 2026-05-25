@@ -70,7 +70,7 @@ Six forwarding methods, all sharing `_resolve_model()` for health-aware routing:
 |---|---|---|
 | `forward_request` | `/v1/chat/completions` | Stream + non-stream, SSE parsing |
 | `forward_simple_request` | `/v1/embeddings`, `/v1/rerank`, `/v1/score` | Non-streaming, 120s timeout |
-| `forward_to_path` | `/v1/responses` | Raw pass-through, only mutates model field |
+| `forward_to_path` | `/v1/responses` | Raw pass-through, only mutates model field. Usage extraction handles both chat-completions shape (top-level `usage`) and Responses-API shape (`response.completed → response.usage` on the SSE stream, top-level `usage.input_tokens` on non-stream) so Roo Code's "OpenAI" provider — which posts to `/v1/responses` — gets billed instead of logged as 0/0 tokens. |
 | `forward_messages_request` | `/v1/messages` | Anthropic→OpenAI translation, OpenAI→Anthropic response, stream + non-stream |
 | `forward_count_tokens_request` | `/v1/messages/count_tokens` | Forwards to vLLM `/tokenize`, returns `{input_tokens}`; not billed |
 | `forward_tokenize_request` | `/v1/tokenize`, `/tokenize` | vLLM-native pass-through to downstream `/tokenize`; only mutates model field; not billed |
