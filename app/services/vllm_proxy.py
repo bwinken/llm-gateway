@@ -612,9 +612,11 @@ async def _passthrough_non_stream(
     usage = data.get("usage", {})
     input_tk = usage.get("input_tokens", usage.get("prompt_tokens", 0))
     output_tk = usage.get("output_tokens", usage.get("completion_tokens", 0))
-    _log_usage(user, model, model_type, input_tk, output_tk, path_suffix, route=route)
+    details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
+    cached_tk = details.get("cached_tokens", 0) if isinstance(details, dict) else 0
+    _log_usage(user, model, model_type, input_tk, output_tk, path_suffix, route=route, cached_tokens=cached_tk)
     if is_monitored(user.id):
-        cost = float(_calc_cost(route or {}, model_type, input_tk, output_tk))
+        cost = float(_calc_cost(route or {}, model_type, input_tk, output_tk, cached_tk))
         log_monitor(user.id, json.loads(raw_body), data, model, path_suffix, input_tk, output_tk, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
 
@@ -968,6 +970,7 @@ async def _passthrough_stream(
     async def event_generator():
         input_tokens = 0
         output_tokens = 0
+        cached_tokens = 0
         resp = None
         chunks: list[dict] = []
         try:
@@ -984,10 +987,23 @@ async def _passthrough_stream(
                         chunk = json.loads(line[6:])
                         if _monitoring:
                             chunks.append(chunk)
+                        # Chat completions shape: usage at top level on the
+                        # terminal chunk (when stream_options.include_usage=true).
                         usage = chunk.get("usage")
+                        # Responses API shape: usage is nested inside the
+                        # `response` object on the `response.completed` event
+                        # (and on `response.incomplete` / `response.failed`).
+                        # Roo Code's "OpenAI" provider hits /v1/responses
+                        # without enabling stream_options, so this is the only
+                        # path that ever reports tokens for it.
+                        if not usage and isinstance(chunk.get("response"), dict):
+                            usage = chunk["response"].get("usage")
                         if usage:
                             input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", input_tokens))
                             output_tokens = usage.get("output_tokens", usage.get("completion_tokens", output_tokens))
+                            details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
+                            if isinstance(details, dict):
+                                cached_tokens = details.get("cached_tokens", cached_tokens) or cached_tokens
                     except (json.JSONDecodeError, KeyError):
                         pass
         except Exception as exc:
@@ -1002,9 +1018,9 @@ async def _passthrough_stream(
 
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
-        _log_usage(user, model, model_type, input_tokens, output_tokens, path_suffix, route=route)
+        _log_usage(user, model, model_type, input_tokens, output_tokens, path_suffix, route=route, cached_tokens=cached_tokens)
         if _monitoring:
-            cost = float(_calc_cost(route or {}, model_type, input_tokens, output_tokens))
+            cost = float(_calc_cost(route or {}, model_type, input_tokens, output_tokens, cached_tokens))
             log_monitor(user.id, json.loads(raw_body), chunks, model, path_suffix, input_tokens, output_tokens, cost, model_type)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
