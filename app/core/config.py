@@ -245,6 +245,7 @@ def save_config(
     pricing: dict[str, dict[str, float]],
     fallback: dict[str, str],
     azure_models: dict[str, dict[str, Any]] | None = None,
+    azure_fallback: dict[str, str] | None = None,
 ) -> None:
     """Write config back to config.toml and reload globals."""
     raw = _load_toml()
@@ -315,6 +316,16 @@ def save_config(
         raw["azure_models"] = azure_section
     elif "azure_models" in raw and not raw.get("azure_models"):
         raw.pop("azure_models", None)
+
+    # Rebuild [azure_fallback] section. Passing `azure_fallback=None` leaves
+    # the existing TOML section untouched so callers that don't care (older
+    # admin payloads) don't accidentally wipe it.
+    if azure_fallback is not None:
+        cleaned = {k: v for k, v in azure_fallback.items() if v}
+        if cleaned:
+            raw["azure_fallback"] = cleaned
+        else:
+            raw.pop("azure_fallback", None)
 
     # Atomic write: write to temp file then rename to prevent corruption
     dir_path = _CONFIG_PATH.parent
