@@ -88,6 +88,8 @@ Parallel to the vLLM path; routed by `app/routers/azure_api.py` and shares the s
 | `forward_responses` | `/azure/v1/responses` | Pure pass-through for clients that already speak Responses API. Only mutates `body.model` (alias → deployment). Stream + non-stream. |
 | `forward_count_tokens` | `/azure/v1/messages/count_tokens`, `/azure/messages/count_tokens` | Returns chars/4 estimate (Azure has no tokenize endpoint); not billed |
 
+All four methods share `_resolve_azure(alias, allowed_types)` for type-aware fallback. Priority: exact match (right type) → `AZURE_FALLBACK_MAP[type]` from `[azure_fallback]` → first `AZURE_MODELS` entry of compatible type. Returns `X-Model-Fallback` response header when fallback occurs. **No health check** — Azure is a managed service, so fallback is reactive to "alias not configured / wrong type" only; runtime 429/5xx are surfaced as-is (per-request fallback during a stream isn't safe). `allowed_types` is always `["llm", "vlm"]` for these endpoints; embedding-typed Azure entries are intentionally unreachable via these surfaces.
+
 There is intentionally no `/azure/v1/embeddings` endpoint — Responses API doesn't cover embeddings. Configure embedding models on a vLLM backend instead.
 
 Azure-specific conventions:
@@ -137,11 +139,12 @@ Stateless translator between OpenAI chat completions shape (the gateway's intern
 
 ### Configuration
 
-- **`config.toml`**: Parsed at import time by `app/core/config.py` into `APP_CONFIG`, `MODEL_ROUTING`, `PRICING_MAP`, `FALLBACK_MAP`, and `AZURE_MODELS`. Downstream API keys are stored directly here as `api_key`. Sections:
+- **`config.toml`**: Parsed at import time by `app/core/config.py` into `APP_CONFIG`, `MODEL_ROUTING`, `PRICING_MAP`, `FALLBACK_MAP`, `AZURE_MODELS`, and `AZURE_FALLBACK_MAP`. Downstream API keys are stored directly here as `api_key`. Sections:
   - `[app]` — `default_daily_limit_usd` (default `10.0`) used when auto-provisioning new users.
   - `[models.<type>.<alias>]` — vLLM routing: `base_url`, `real_model`, `api_key`. Optional per-model overrides: `input_price_per_1m`, `output_price_per_1m`, `cached_input_price_per_1m`, plus metadata (`display_name`, `context_window`, `max_output_tokens`, `supports_tools`, `supports_vision`, `supports_prompt_caching`, `is_reasoning`) and internal flags (`hidden`). `is_reasoning` also gates Anthropic `reasoning_effort` translation — see Anthropic Messages API above. The pricing override keys (`input_price_per_1m`, `output_price_per_1m`, `cached_input_price_per_1m`) are collected in `_MODEL_PRICING_KEYS`.
   - `[pricing]` and `[pricing.<type>]` — default + per-type pricing (USD per 1M tokens).
-  - `[fallback]` — type → preferred fallback alias.
+  - `[fallback]` — type → preferred fallback alias for the vLLM path.
+  - `[azure_fallback]` — type → preferred fallback alias for the Azure path. Used by `_resolve_azure` when the requested alias is unknown or wrong-typed (typos, model renames, clients probing for names the gateway doesn't expose). No effect when the alias resolves directly. Reactive to mis-naming only — there is no proactive health probe of Azure deployments and no runtime-error fallback for 429/5xx mid-stream.
   - `[azure_models.<alias>]` — Azure OpenAI deployments: `type`, `endpoint`, `deployment`, `api_key`, `api_version` (default `2024-08-01-preview`). Same per-model pricing/metadata override fields are accepted.
 - **`.env`**: DATABASE_URL, AUTH_CENTER_APP_ID/PUBLIC_KEY_PATH, AUTH_BASE_URL (JWT issuer), `AZURE_HTTP_PROXY` (optional — routes `/azure/v1/*` downstream traffic through a corporate HTTP proxy; supports inline credentials `http://user:pass@host:port`; vLLM traffic is never proxied).
 - **`deploy/.env`**: Docker Compose settings: PG credentials, OIDC issuer, oauth2-proxy client.

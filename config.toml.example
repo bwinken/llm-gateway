@@ -134,6 +134,23 @@ api_key = "your-api-key"
 
 
 # ==========================================
+# Azure fallback (optional)
+# ==========================================
+# When a client posts to /azure/v1/* with an alias that isn't in
+# [azure_models.*] (typo, model rename, client probing for a name we don't
+# offer), the gateway falls back to the alias listed here for the matching
+# type instead of returning 400. If no [azure_fallback] entry covers the
+# requested type, it auto-picks the first compatible [azure_models.*].
+# Responses include `X-Model-Fallback: <reason>` so clients can detect it.
+#
+# There is intentionally no runtime error-driven fallback (429/5xx) — Azure
+# is a managed service and per-request fallback during a stream isn't safe.
+[azure_fallback]
+# llm = "gpt-4o"
+# vlm = "gpt-4o"
+
+
+# ==========================================
 # Azure OpenAI Models (served at /azure/v1/*)
 # ==========================================
 # The gateway sends every Azure LLM/VLM call to the v1 Responses API
@@ -144,7 +161,8 @@ api_key = "your-api-key"
 #    body.model to this on each request.
 #  - `api_version` is accepted for backward compatibility but currently
 #    unused; the v1 Responses surface does not take an api-version query.
-#  - Routed by deployment name (no health-check / fallback). Same
+#  - Routed by deployment name (no health-check). Type-aware fallback for
+#    unknown aliases is configured via [azure_fallback] above. Same
 #    metadata and per-model pricing override fields as [models.*] are
 #    accepted.
 #  - Responses API does not cover embeddings; `/azure/v1/embeddings` is
