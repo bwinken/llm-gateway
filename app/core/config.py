@@ -84,8 +84,9 @@ def _build_config(raw: dict[str, Any]) -> tuple[
     dict[str, dict[str, float]],
     dict[str, str],
     dict[str, dict[str, Any]],
+    dict[str, str],
 ]:
-    """Return (APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP, AZURE_MODELS)."""
+    """Return (APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP, AZURE_MODELS, AZURE_FALLBACK_MAP)."""
 
     # --- app ---
     app_config: dict[str, Any] = raw.get("app", {})
@@ -162,11 +163,21 @@ def _build_config(raw: dict[str, Any]) -> tuple[
                 entry[price_key] = float(cfg[price_key])
         azure_models[alias] = entry
 
-    return app_config, model_routing, pricing_map, fallback_map, azure_models
+    # --- azure_fallback (type -> preferred Azure alias) ---
+    # Mirrors [fallback] for vLLM. Used by app.services.azure_proxy._resolve_azure
+    # when a client sends an unknown alias or wrong-type alias to /azure/v1/*.
+    # There is intentionally no health-check / runtime-error fallback for Azure
+    # (managed service); this map only handles the "wrong alias" case.
+    azure_fallback_map: dict[str, str] = {}
+    for type_key, alias in raw.get("azure_fallback", {}).items():
+        if isinstance(alias, str):
+            azure_fallback_map[type_key] = alias
+
+    return app_config, model_routing, pricing_map, fallback_map, azure_models, azure_fallback_map
 
 
 _raw = _load_toml()
-APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP, AZURE_MODELS = _build_config(_raw)
+APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP, AZURE_MODELS, AZURE_FALLBACK_MAP = _build_config(_raw)
 
 _config_lock = threading.Lock()
 _config_mtime: float = _CONFIG_PATH.stat().st_mtime
@@ -201,13 +212,14 @@ def reload_config() -> None:
         _config_mtime = _CONFIG_PATH.stat().st_mtime
     except OSError:
         pass
-    _, new_routing, new_pricing, new_fallback, new_azure = _build_config(raw)
+    _, new_routing, new_pricing, new_fallback, new_azure, new_azure_fallback = _build_config(raw)
 
     # Pre-compute stale keys outside the lock
     stale_routing = set(MODEL_ROUTING) - set(new_routing)
     stale_pricing = set(PRICING_MAP) - set(new_pricing)
     stale_fallback = set(FALLBACK_MAP) - set(new_fallback)
     stale_azure = set(AZURE_MODELS) - set(new_azure)
+    stale_azure_fallback = set(AZURE_FALLBACK_MAP) - set(new_azure_fallback)
 
     with _config_lock:
         # Swap all dicts as close together as possible
@@ -215,6 +227,7 @@ def reload_config() -> None:
         PRICING_MAP.update(new_pricing)
         FALLBACK_MAP.update(new_fallback)
         AZURE_MODELS.update(new_azure)
+        AZURE_FALLBACK_MAP.update(new_azure_fallback)
         for k in stale_routing:
             MODEL_ROUTING.pop(k, None)
         for k in stale_pricing:
@@ -223,6 +236,8 @@ def reload_config() -> None:
             FALLBACK_MAP.pop(k, None)
         for k in stale_azure:
             AZURE_MODELS.pop(k, None)
+        for k in stale_azure_fallback:
+            AZURE_FALLBACK_MAP.pop(k, None)
 
 
 def save_config(
@@ -230,6 +245,7 @@ def save_config(
     pricing: dict[str, dict[str, float]],
     fallback: dict[str, str],
     azure_models: dict[str, dict[str, Any]] | None = None,
+    azure_fallback: dict[str, str] | None = None,
 ) -> None:
     """Write config back to config.toml and reload globals."""
     raw = _load_toml()
@@ -301,6 +317,16 @@ def save_config(
     elif "azure_models" in raw and not raw.get("azure_models"):
         raw.pop("azure_models", None)
 
+    # Rebuild [azure_fallback] section. Passing `azure_fallback=None` leaves
+    # the existing TOML section untouched so callers that don't care (older
+    # admin payloads) don't accidentally wipe it.
+    if azure_fallback is not None:
+        cleaned = {k: v for k, v in azure_fallback.items() if v}
+        if cleaned:
+            raw["azure_fallback"] = cleaned
+        else:
+            raw.pop("azure_fallback", None)
+
     # Atomic write: write to temp file then rename to prevent corruption
     dir_path = _CONFIG_PATH.parent
     fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix=".toml.tmp")
@@ -326,6 +352,7 @@ def get_config_data() -> dict[str, Any]:
         "pricing": dict(PRICING_MAP),
         "fallback": dict(FALLBACK_MAP),
         "azure_models": dict(AZURE_MODELS),
+        "azure_fallback": dict(AZURE_FALLBACK_MAP),
     }
 
 

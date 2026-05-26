@@ -133,6 +133,70 @@ class TestAdminConfigMetadataValidation:
         assert "hidden" in resp.json()["detail"]
 
 
+class TestAdminAzureFallbackValidation:
+    """PUT /admin/api/config validates the new azure_fallback section.
+
+    Each entry must (a) be a string, (b) point to an existing alias in
+    azure_models, and (c) match that alias's type. The handler catches
+    these client-side so a typo doesn't silently end up in config.toml as
+    an unreachable fallback.
+
+    save_config is patched out — these tests only exercise the validator,
+    not the disk write. (A successful save would otherwise mutate the
+    shared TEST_AZURE_MODELS via reload_config and break test_azure_api.py.)
+    """
+
+    BASE_BODY = {
+        "models": {},
+        "pricing": {"_default": {"input_price_per_1m": 0.1, "output_price_per_1m": 0.1}},
+        "fallback": {},
+        "azure_models": {
+            "az-llm": {
+                "type": "llm",
+                "endpoint": "https://x.openai.azure.com",
+                "deployment": "d",
+                "api_key": "k",
+                "api_version": "2024-08-01-preview",
+            },
+            "az-vlm": {
+                "type": "vlm",
+                "endpoint": "https://x.openai.azure.com",
+                "deployment": "d2",
+                "api_key": "k",
+                "api_version": "2024-08-01-preview",
+            },
+        },
+    }
+
+    def _put(self, client, admin_user, azure_fallback):
+        body = {**self.BASE_BODY, "azure_fallback": azure_fallback}
+        with patch("app.routers.admin.save_config"):
+            return client.put(
+                "/admin/api/config",
+                json=body,
+                headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
+            )
+
+    def test_accepts_valid_fallback(self, client, admin_user):
+        resp = self._put(client, admin_user, {"llm": "az-llm", "vlm": "az-vlm"})
+        assert resp.status_code == 200
+
+    def test_rejects_unknown_alias(self, client, admin_user):
+        resp = self._put(client, admin_user, {"llm": "does-not-exist"})
+        assert resp.status_code == 400
+        assert "unknown alias" in resp.json()["detail"]
+
+    def test_rejects_type_mismatch(self, client, admin_user):
+        # az-vlm is type=vlm — pointing the llm fallback at it should 400.
+        resp = self._put(client, admin_user, {"llm": "az-vlm"})
+        assert resp.status_code == 400
+        assert "type" in resp.json()["detail"]
+
+    def test_rejects_non_string_value(self, client, admin_user):
+        resp = self._put(client, admin_user, {"llm": 42})
+        assert resp.status_code == 400
+
+
 class TestHiddenModels:
     """Hidden models are only hidden from web pages, NOT from /v1/models API."""
 

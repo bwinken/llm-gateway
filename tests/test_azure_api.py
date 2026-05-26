@@ -187,13 +187,29 @@ class TestAzureChatCompletions:
         roles = [item.get("role") for item in captured["json"].get("input", []) if "role" in item]
         assert "system" not in roles
 
-    def test_unknown_alias_returns_400(self, client):
+    def test_unknown_alias_falls_back_to_compatible(self, client):
+        """An unrecognised alias falls back to the first LLM-type Azure
+        entry rather than 400ing — covers the common 'client sent a
+        slightly-wrong model name' case."""
+        captured: dict = {}
+
+        async def fake_post(url, **kwargs):
+            captured["json"] = kwargs.get("json", {})
+            return _fake_response(200, _responses_payload("ok", 1, 1))
+
+        client.__httpx_mock__.post = fake_post
+
         resp = client.post(
             "/azure/v1/chat/completions",
-            json={"model": "not-configured", "messages": []},
+            json={"model": "not-configured", "messages": [{"role": "user", "content": "hi"}]},
             headers=auth_header(),
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 200
+        # Header surfaces the substitution
+        assert "X-Model-Fallback" in resp.headers
+        assert "not-configured" in resp.headers["X-Model-Fallback"]
+        # Body forwarded to Azure used the fallback's deployment name
+        assert captured["json"]["model"] == "gpt-4-deploy"
 
     def test_system_only_message_injects_probe_placeholder(self, client):
         """Roo Code's connection-validate probes send only a system
@@ -288,13 +304,30 @@ class TestAzureResponsesPassthrough:
         assert captured["json"]["temperature"] == 0.7
         assert captured["json"]["previous_response_id"] == "resp_prev"
 
-    def test_passthrough_unknown_alias_returns_400(self, client):
+    def test_passthrough_unknown_alias_falls_back(self, client):
+        """Same fallback behavior on the pass-through /azure/v1/responses
+        path — wrong alias resolves to a compatible LLM deployment."""
+        captured: dict = {}
+
+        async def fake_post(url, **kwargs):
+            captured["json"] = kwargs.get("json", {})
+            return _fake_response(200, {
+                "id": "resp_1", "status": "completed",
+                "output": [{"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "ok"}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            })
+
+        client.__httpx_mock__.post = fake_post
+
         resp = client.post(
             "/azure/v1/responses",
             json={"model": "not-configured", "input": "hi"},
             headers=auth_header(),
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 200
+        assert "X-Model-Fallback" in resp.headers
+        assert captured["json"]["model"] == "gpt-4-deploy"
 
 
 class TestAzureEmbeddingsRouteRemoved:
@@ -477,6 +510,121 @@ class TestAzureResponsesStream:
         assert '"response.output_text.delta"' in body
         assert '"Hello"' in body
         assert '"response.completed"' in body
+
+
+class TestAzureFallback:
+    """Type-aware fallback when the requested alias is missing or wrong type.
+
+    Three priority tiers in app.services.azure_proxy._resolve_azure:
+      1. Exact alias match (right type) → no fallback header
+      2. [azure_fallback] type → alias lookup
+      3. First AZURE_MODELS entry of compatible type
+    """
+
+    def test_exact_match_no_fallback_header(self, client):
+        """The common case: alias matches, no header set."""
+        client.__httpx_mock__.post = AsyncMock(
+            return_value=_fake_response(200, _responses_payload("ok", 1, 1)),
+        )
+        resp = client.post(
+            "/azure/v1/chat/completions",
+            json={"model": "azure-gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert "X-Model-Fallback" not in resp.headers
+
+    def test_configured_fallback_wins_over_first_alive(self, client):
+        """[azure_fallback].llm = 'azure-gpt-4' is preferred over walking
+        AZURE_MODELS in dict order. Adding a second LLM model lets us
+        prove the preference, not just the first-in-dict happenstance."""
+        from tests.conftest import TEST_AZURE_FALLBACK_MAP, TEST_AZURE_MODELS
+
+        # Add a second llm-type Azure model that comes BEFORE the
+        # configured fallback in iteration order, so the only way the
+        # fallback target wins is via AZURE_FALLBACK_MAP.
+        extra = {
+            "first-llm": {
+                "type": "llm",
+                "endpoint": "https://test.openai.azure.com",
+                "deployment": "first-deploy",
+                "api_key": "k",
+                "api_version": "2024-08-01-preview",
+            },
+        }
+        # Insert before existing keys
+        original_models = dict(TEST_AZURE_MODELS)
+        TEST_AZURE_MODELS.clear()
+        TEST_AZURE_MODELS.update(extra)
+        TEST_AZURE_MODELS.update(original_models)
+        TEST_AZURE_FALLBACK_MAP["llm"] = "azure-gpt-4"
+        try:
+            captured: dict = {}
+
+            async def fake_post(url, **kwargs):
+                captured["json"] = kwargs.get("json", {})
+                return _fake_response(200, _responses_payload("ok", 1, 1))
+
+            client.__httpx_mock__.post = fake_post
+
+            resp = client.post(
+                "/azure/v1/chat/completions",
+                json={"model": "wrong-name", "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+            assert resp.status_code == 200
+            assert "X-Model-Fallback" in resp.headers
+            # Configured fallback won, not the first-by-iteration entry
+            assert captured["json"]["model"] == "gpt-4-deploy"
+        finally:
+            TEST_AZURE_MODELS.clear()
+            TEST_AZURE_MODELS.update(original_models)
+            TEST_AZURE_FALLBACK_MAP.clear()
+
+    def test_no_compatible_type_returns_400(self, client):
+        """When AZURE_MODELS contains only embedding-type entries (no LLM
+        anywhere), a chat-completions call has nothing to fall back to and
+        must 400 rather than route to an embedding deployment."""
+        from tests.conftest import TEST_AZURE_MODELS
+
+        original = dict(TEST_AZURE_MODELS)
+        TEST_AZURE_MODELS.clear()
+        TEST_AZURE_MODELS["only-embedding"] = {
+            "type": "embedding",
+            "endpoint": "https://test.openai.azure.com",
+            "deployment": "embed-deploy",
+            "api_key": "k",
+            "api_version": "2024-08-01-preview",
+        }
+        try:
+            resp = client.post(
+                "/azure/v1/chat/completions",
+                json={"model": "anything", "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+            assert resp.status_code == 400
+        finally:
+            TEST_AZURE_MODELS.clear()
+            TEST_AZURE_MODELS.update(original)
+
+    def test_anthropic_messages_falls_back(self, client):
+        """The Anthropic /azure/v1/messages path uses the same resolver,
+        so the same fallback rules apply (and the header survives the
+        Anthropic translation)."""
+        client.__httpx_mock__.post = AsyncMock(
+            return_value=_fake_response(200, _responses_payload("hi", 1, 1)),
+        )
+        resp = client.post(
+            "/azure/v1/messages",
+            json={
+                "model": "claude-opus-typoed",
+                "max_tokens": 32,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert "X-Model-Fallback" in resp.headers
 
 
 def _responses_payload(text: str, in_tk: int, out_tk: int, *, status: str = "completed") -> dict:

@@ -551,11 +551,14 @@ async def save_config_api(
     pricing = body.get("pricing")
     fallback = body.get("fallback")
     azure_models = body.get("azure_models")
+    azure_fallback = body.get("azure_fallback")
 
     if not isinstance(models, dict) or not isinstance(pricing, dict):
         raise HTTPException(status_code=400, detail="Invalid config format.")
     if azure_models is not None and not isinstance(azure_models, dict):
         raise HTTPException(status_code=400, detail="Invalid azure_models format.")
+    if azure_fallback is not None and not isinstance(azure_fallback, dict):
+        raise HTTPException(status_code=400, detail="Invalid azure_fallback format.")
 
     # Validate model entries have required fields + sanity-check metadata
     _META_TYPES: dict[str, type | tuple[type, ...]] = {
@@ -625,6 +628,29 @@ async def save_config_api(
     # Validate fallback values are strings
     if fallback and not all(isinstance(v, str) for v in fallback.values()):
         raise HTTPException(status_code=400, detail="Fallback values must be strings.")
+    if azure_fallback and not all(isinstance(v, str) for v in azure_fallback.values()):
+        raise HTTPException(status_code=400, detail="Azure fallback values must be strings.")
+    # Each azure_fallback alias must point to an existing Azure deployment
+    # of the matching type. Catching the typo here is friendlier than letting
+    # _resolve_azure silently ignore the entry at runtime.
+    if azure_fallback and azure_models is not None:
+        for type_key, alias in azure_fallback.items():
+            if not alias:
+                continue
+            if alias not in azure_models:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Azure fallback for type '{type_key}' references unknown alias '{alias}'.",
+                )
+            entry_type = azure_models[alias].get("type", "llm")
+            if entry_type != type_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Azure fallback for type '{type_key}' points to '{alias}' "
+                        f"which has type '{entry_type}'."
+                    ),
+                )
 
     # Validate Azure model entries
     if azure_models:
@@ -682,7 +708,7 @@ async def save_config_api(
                         detail=f"Azure model '{alias}' field '{key}' must be non-negative.",
                     )
 
-    save_config(models, pricing, fallback or {}, azure_models)
+    save_config(models, pricing, fallback or {}, azure_models, azure_fallback)
     return JSONResponse({"ok": True})
 
 

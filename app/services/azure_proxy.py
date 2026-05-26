@@ -29,7 +29,7 @@ from typing import Any, Iterator
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.core.config import AZURE_MODELS, _check_auto_reload
+from app.core.config import AZURE_FALLBACK_MAP, AZURE_MODELS, _check_auto_reload
 from app.core.logger import logger
 from app.core.server_state import get_azure_client
 from app.models.schema import User
@@ -55,20 +55,89 @@ from app.services.vllm_proxy import (
 )
 
 
-def _resolve_azure(alias: str) -> dict[str, Any]:
+_AZURE_DEFAULT_ALLOWED_TYPES: tuple[str, ...] = ("llm", "vlm")
+
+
+def _is_usable_entry(entry: dict[str, Any]) -> bool:
+    return bool(entry.get("endpoint")) and bool(entry.get("deployment"))
+
+
+def _resolve_azure(
+    alias: str,
+    allowed_types: list[str] | tuple[str, ...] | None = None,
+) -> tuple[str, dict[str, Any], str | None]:
+    """Resolve an Azure alias with type-aware fallback.
+
+    Priority (mirrors vllm_proxy._resolve_model minus the health check —
+    Azure deployments are managed, so liveness is reactive at request time
+    rather than proactively probed):
+      1. Exact alias match whose type is in ``allowed_types`` → use as-is.
+      2. ``AZURE_FALLBACK_MAP[type]`` for some type in ``allowed_types``.
+      3. First entry in ``AZURE_MODELS`` whose type is in ``allowed_types``.
+
+    Returns ``(resolved_alias, entry, fallback_reason)``. ``fallback_reason``
+    is ``None`` when the requested alias was used directly; otherwise it's
+    a human-readable string surfaced via the ``X-Model-Fallback`` response
+    header (same convention as the vLLM path).
+
+    Raises ``HTTPException(400)`` when nothing is usable.
+    """
     _check_auto_reload()
+    if allowed_types is None:
+        allowed_types = _AZURE_DEFAULT_ALLOWED_TYPES
+    allowed = tuple(allowed_types)
+
     entry = AZURE_MODELS.get(alias)
-    if not entry:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Azure model '{alias}' not configured.",
+    if entry and entry.get("type", "llm") in allowed:
+        if not _is_usable_entry(entry):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Azure model '{alias}' missing endpoint or deployment.",
+            )
+        return alias, entry, None
+
+    if entry is None:
+        reason = f"Azure model '{alias}' not configured"
+    else:
+        reason = (
+            f"Azure model '{alias}' has type '{entry.get('type')}' "
+            f"but endpoint requires one of {list(allowed)}"
         )
-    if not entry.get("endpoint") or not entry.get("deployment"):
-        raise HTTPException(
-            status_code=500,
-            detail=f"Azure model '{alias}' missing endpoint or deployment.",
-        )
-    return entry
+
+    # Configured fallback first
+    for at in allowed:
+        fb_alias = AZURE_FALLBACK_MAP.get(at)
+        if (
+            fb_alias and fb_alias != alias and fb_alias in AZURE_MODELS
+            and AZURE_MODELS[fb_alias].get("type", "llm") in allowed
+            and _is_usable_entry(AZURE_MODELS[fb_alias])
+        ):
+            logger.warning(
+                "{} — falling back to configured Azure fallback '{}'",
+                reason, fb_alias,
+            )
+            return fb_alias, AZURE_MODELS[fb_alias], reason
+
+    # Auto fallback: first compatible Azure entry
+    for fb_alias, fb_entry in AZURE_MODELS.items():
+        if (
+            fb_alias != alias
+            and fb_entry.get("type", "llm") in allowed
+            and _is_usable_entry(fb_entry)
+        ):
+            logger.warning("{} — falling back to Azure '{}'", reason, fb_alias)
+            return fb_alias, fb_entry, reason
+
+    raise HTTPException(
+        status_code=400,
+        detail=f"No Azure model available for types {list(allowed)}.",
+    )
+
+
+def _fallback_headers(fallback_reason: str | None) -> dict[str, str]:
+    if fallback_reason:
+        return {"X-Model-Fallback": fallback_reason}
+    return {}
 
 
 def _build_responses_url(entry: dict[str, Any]) -> str:
@@ -277,8 +346,10 @@ async def forward_chat_completions(
     user: User,
 ) -> StreamingResponse | JSONResponse:
     body = await request.json()
-    alias = body.get("model", "")
-    entry = _resolve_azure(alias)
+    requested_alias = body.get("model", "")
+    resolved_alias, entry, fallback_reason = _resolve_azure(
+        requested_alias, allowed_types=["llm", "vlm"],
+    )
     model_type = entry.get("type", "llm")
     deployment = entry["deployment"]
 
@@ -287,29 +358,34 @@ async def forward_chat_completions(
     if is_stream:
         responses_body["stream"] = True
 
-    _ensure_input(responses_body, body, alias, "/azure/v1/chat/completions")
+    _ensure_input(responses_body, body, resolved_alias, "/azure/v1/chat/completions")
 
     target_url = _build_responses_url(entry)
     headers = _build_headers(entry)
     client = get_azure_client()
 
-    monitor_body = {**body, "model": alias}
+    # Bill the resolved alias (what we actually used) but show the original
+    # in monitor logs so operators see what the client asked for.
+    monitor_body = {**body, "model": resolved_alias}
+    extra_headers = _fallback_headers(fallback_reason)
 
     if is_stream:
         return await _stream_chat(
             client, target_url, responses_body, headers,
-            user, alias, model_type, monitor_body, entry, body,
+            user, resolved_alias, model_type, monitor_body, entry, body,
+            extra_headers,
         )
     return await _non_stream_chat(
         client, target_url, responses_body, headers,
-        user, alias, model_type, monitor_body, entry, body,
+        user, resolved_alias, model_type, monitor_body, entry, body,
+        extra_headers,
     )
 
 
 async def _non_stream_chat(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
-    incoming_body: dict,
+    incoming_body: dict, extra_headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
@@ -339,13 +415,13 @@ async def _non_stream_chat(
         cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
         log_monitor(user.id, monitor_body, chat_data, alias,
                     "/azure/v1/chat/completions", input_tk, output_tk, cost, model_type)
-    return JSONResponse(content=chat_data)
+    return JSONResponse(content=chat_data, headers=extra_headers or None)
 
 
 async def _stream_chat(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
-    incoming_body: dict,
+    incoming_body: dict, extra_headers: dict[str, str] | None = None,
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight: open the stream and check status BEFORE handing it to the
     # SSE pump. Without this an Azure 4xx is returned as a JSON error body
@@ -462,7 +538,11 @@ async def _stream_chat(
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            **(extra_headers or {}),
+        },
     )
 
 
@@ -479,8 +559,10 @@ async def forward_messages(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
-    alias = anthropic_body.get("model", "")
-    entry = _resolve_azure(alias)
+    requested_alias = anthropic_body.get("model", "")
+    resolved_alias, entry, fallback_reason = _resolve_azure(
+        requested_alias, allowed_types=["llm", "vlm"],
+    )
     model_type = entry.get("type", "llm")
     deployment = entry["deployment"]
 
@@ -492,30 +574,33 @@ async def forward_messages(
     if is_stream:
         responses_body["stream"] = True
 
-    _ensure_input(responses_body, anthropic_body, alias, "/azure/v1/messages")
+    _ensure_input(responses_body, anthropic_body, resolved_alias, "/azure/v1/messages")
 
     target_url = _build_responses_url(entry)
     headers = _build_headers(entry)
     client = get_azure_client()
 
     monitor_body = dict(anthropic_body)
-    monitor_body["model"] = alias
+    monitor_body["model"] = resolved_alias
+    extra_headers = _fallback_headers(fallback_reason)
 
     if is_stream:
         return await _stream_messages(
             client, target_url, responses_body, headers,
-            user, alias, model_type, monitor_body, entry, anthropic_body,
+            user, resolved_alias, model_type, monitor_body, entry, anthropic_body,
+            extra_headers,
         )
     return await _non_stream_messages(
         client, target_url, responses_body, headers,
-        user, alias, model_type, monitor_body, entry, anthropic_body,
+        user, resolved_alias, model_type, monitor_body, entry, anthropic_body,
+        extra_headers,
     )
 
 
 async def _non_stream_messages(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
-    incoming_body: dict,
+    incoming_body: dict, extra_headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
@@ -545,13 +630,13 @@ async def _non_stream_messages(
         cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
         log_monitor(user.id, monitor_body, anthropic_data, alias,
                     "/azure/v1/messages", input_tk, output_tk, cost, model_type)
-    return JSONResponse(content=anthropic_data)
+    return JSONResponse(content=anthropic_data, headers=extra_headers or None)
 
 
 async def _stream_messages(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
-    incoming_body: dict,
+    incoming_body: dict, extra_headers: dict[str, str] | None = None,
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight to surface 4xx before opening the SSE channel — same
     # rationale as _stream_chat.
@@ -690,7 +775,11 @@ async def _stream_messages(
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            **(extra_headers or {}),
+        },
     )
 
 
@@ -709,11 +798,14 @@ async def forward_count_tokens(
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
     alias = anthropic_body.get("model", "")
-    _resolve_azure(alias)
+    _, _entry, fallback_reason = _resolve_azure(alias, allowed_types=["llm", "vlm"])
 
     openai_body = anthropic_to_openai_request(anthropic_body)
     approx = _approx_token_count(openai_body.get("messages", []))
-    return JSONResponse(content={"input_tokens": int(approx)})
+    return JSONResponse(
+        content={"input_tokens": int(approx)},
+        headers=_fallback_headers(fallback_reason) or None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -749,8 +841,10 @@ async def forward_responses(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
-    alias = body.get("model", "")
-    entry = _resolve_azure(alias)
+    requested_alias = body.get("model", "")
+    resolved_alias, entry, fallback_reason = _resolve_azure(
+        requested_alias, allowed_types=["llm", "vlm"],
+    )
     model_type = entry.get("type", "llm")
     deployment = entry["deployment"]
 
@@ -765,22 +859,26 @@ async def forward_responses(
     headers = _build_headers(entry)
     client = get_azure_client()
 
-    monitor_body = {**body, "model": alias}
+    monitor_body = {**body, "model": resolved_alias}
+    extra_headers = _fallback_headers(fallback_reason)
 
     if is_stream:
         return await _stream_responses(
             client, target_url, body, headers,
-            user, alias, model_type, monitor_body, entry,
+            user, resolved_alias, model_type, monitor_body, entry,
+            extra_headers,
         )
     return await _non_stream_responses(
         client, target_url, body, headers,
-        user, alias, model_type, monitor_body, entry,
+        user, resolved_alias, model_type, monitor_body, entry,
+        extra_headers,
     )
 
 
 async def _non_stream_responses(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
+    extra_headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
@@ -808,12 +906,13 @@ async def _non_stream_responses(
         cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
         log_monitor(user.id, monitor_body, data, alias,
                     "/azure/v1/responses", input_tk, output_tk, cost, model_type)
-    return JSONResponse(content=data)
+    return JSONResponse(content=data, headers=extra_headers or None)
 
 
 async def _stream_responses(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
+    extra_headers: dict[str, str] | None = None,
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight to surface 4xx before opening the SSE channel — same
     # rationale as _stream_chat / _stream_messages.
@@ -908,5 +1007,9 @@ async def _stream_responses(
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            **(extra_headers or {}),
+        },
     )

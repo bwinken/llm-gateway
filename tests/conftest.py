@@ -205,6 +205,8 @@ TEST_PRICING_MAP: dict[str, dict[str, float]] = {
 TEST_FALLBACK_MAP: dict[str, str] = {}
 
 # Azure OpenAI test models — separate map, parallel to MODEL_ROUTING.
+TEST_AZURE_FALLBACK_MAP: dict[str, str] = {}
+
 TEST_AZURE_MODELS: dict[str, dict[str, Any]] = {
     "azure-gpt-4": {
         "type": "llm",
@@ -242,6 +244,7 @@ def _build_test_app() -> FastAPI:
         patch("app.core.config.PRICING_MAP", TEST_PRICING_MAP),
         patch("app.core.config.FALLBACK_MAP", TEST_FALLBACK_MAP),
         patch("app.core.config.AZURE_MODELS", TEST_AZURE_MODELS),
+        patch("app.core.config.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),
     ):
         from app.routers import admin, azure_api, vllm_api, web_ui
 
@@ -278,8 +281,10 @@ def _patch_all():
         patch("app.services.vllm_proxy.engine", _test_engine),
         patch("app.services.vllm_proxy.is_alive", return_value=True),
         patch("app.services.azure_proxy.AZURE_MODELS", TEST_AZURE_MODELS),
+        patch("app.services.azure_proxy.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),
         patch("app.services.azure_proxy.get_azure_client", return_value=_mock_httpx_client),
         patch("app.core.config.AZURE_MODELS", TEST_AZURE_MODELS),
+        patch("app.core.config.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),
         patch("app.core.config.get_model_routing_snapshot", return_value=TEST_MODEL_ROUTING),
         patch("app.core.config.get_azure_models_snapshot", return_value=TEST_AZURE_MODELS),
         patch("app.core.server_state.get_client", return_value=_mock_httpx_client),

@@ -61,7 +61,7 @@
 </div>
 
 <script>
-let config = { models: {}, pricing: {}, fallback: {}, azure_models: {} };
+let config = { models: {}, pricing: {}, fallback: {}, azure_models: {}, azure_fallback: {} };
 const MODEL_TYPES = ['llm', 'vlm', 'embedding', 'vision_embedding', 'reranker', 'vision_reranker'];
 const AZURE_DEFAULT_API_VERSION = '2024-08-01-preview';
 let activeTab = '';
@@ -73,6 +73,7 @@ async function loadConfig() {
         const resp = await fetch('/admin/api/config');
         config = await resp.json();
         if (!config.azure_models) config.azure_models = {};
+        if (!config.azure_fallback) config.azure_fallback = {};
         render();
         document.getElementById('loading').classList.add('hidden');
         document.getElementById('mainContent').classList.remove('hidden');
@@ -369,6 +370,11 @@ function updateField(el) {
 }
 function updatePricing(el) { const t=el.dataset.ptype, f=el.dataset.pfield; if(!config.pricing[t])config.pricing[t]={}; config.pricing[t][f]=parseFloat(el.value)||0; }
 function setFallback(type, alias) { config.fallback[type] = alias; }
+function setAzureFallback(type, alias) {
+    if (!config.azure_fallback) config.azure_fallback = {};
+    if (alias) config.azure_fallback[type] = alias;
+    else delete config.azure_fallback[type];
+}
 
 // ── Azure OpenAI models ──
 function renderAzure() {
@@ -379,6 +385,7 @@ function renderAzure() {
         return;
     }
     body.innerHTML = `
+        ${renderAzureFallback(entries)}
         <div class="overflow-x-auto">
             <table class="gw-table">
                 <thead><tr>
@@ -393,6 +400,42 @@ function renderAzure() {
                 </tr></thead>
                 <tbody>${entries.map(([alias, info]) => renderAzureRow(alias, info)).join('')}</tbody>
             </table>
+        </div>`;
+}
+
+// Per-type fallback dropdowns above the Azure table. Only types that
+// actually have at least one Azure deployment get a row — picking a
+// fallback for a type that has no candidates would just be confusing.
+// /azure/v1/* only routes llm + vlm, so we don't surface other types
+// (embedding etc.) here even if someone configures one.
+function renderAzureFallback(entries) {
+    const AZURE_FB_TYPES = ['llm', 'vlm'];
+    const byType = {};
+    for (const [alias, info] of entries) {
+        const t = info.type || 'llm';
+        if (!AZURE_FB_TYPES.includes(t)) continue;
+        (byType[t] = byType[t] || []).push(alias);
+    }
+    const types = AZURE_FB_TYPES.filter(t => byType[t]);
+    if (!types.length) return '';
+    const rows = types.map(t => {
+        const current = (config.azure_fallback || {})[t] || '';
+        const opts = byType[t].map(a =>
+            `<option value="${escAttr(a)}" ${a === current ? 'selected' : ''}>${escHtml(a)}</option>`
+        ).join('');
+        return `
+            <div class="flex items-center gap-2">
+                <span class="text-[11px] font-semibold text-t4 uppercase font-mono">${t}</span>
+                <select onchange="setAzureFallback('${t}', this.value)" class="gw-input text-sm py-1 px-2">
+                    <option value="">Auto (first compatible)</option>
+                    ${opts}
+                </select>
+            </div>`;
+    }).join('');
+    return `
+        <div class="px-5 py-3 flex items-center gap-4 flex-wrap" style="border-bottom:1px solid rgba(255,255,255,0.04); background:rgba(255,255,255,0.015)">
+            <span class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Used when a client sends an unknown or wrong-type Azure alias. 'Auto' picks the first compatible deployment.">Fallback:</span>
+            ${rows}
         </div>`;
 }
 
@@ -537,6 +580,12 @@ function addAzureModel() {
 function deleteAzureModel(alias) {
     if (!confirm(`Delete Azure model "${alias}"? Takes effect after saving.`)) return;
     delete config.azure_models[alias];
+    // Drop any fallback pointing to the deleted alias so the saved config
+    // doesn't fail server-side validation (which requires the target to
+    // exist). Mirror of deleteModel() below.
+    for (const [type, fb] of Object.entries(config.azure_fallback || {})) {
+        if (fb === alias) delete config.azure_fallback[type];
+    }
     render();
 }
 
