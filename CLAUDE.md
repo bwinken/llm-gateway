@@ -40,15 +40,28 @@ OpenAI-compatible reverse proxy gateway for vLLM clusters. Routes API requests t
 
 ```
 Client (Bearer API key) → FastAPI → deps.py (auth + daily limit check)
-                                   → vllm_api.py  (/v1/*)     → vllm_proxy.py  (_resolve_model → health-aware fallback)
-                                     azure_api.py (/azure/v1/*) → azure_proxy.py (Azure OpenAI deployment)
+                                   → vllm_api.py  (/v1/*)     → alias in AZURE_MODELS + can_use_azure ? azure_proxy.py : vllm_proxy.py
+                                     azure_api.py (/azure/v1/*) → azure_proxy.py (Azure-only surface, require_azure_access)
                                    → httpx.AsyncClient → downstream (vLLM or Azure OpenAI)
                                    → _log_usage() → DB
 ```
 
 The codebase has two parallel backends sharing the same auth, billing, monitoring, and pricing layers:
-- **vLLM path** — `vllm_api.py` + `vllm_proxy.py` serve `/v1/*`
-- **Azure OpenAI path** — `azure_api.py` + `azure_proxy.py` serve `/azure/v1/*` (and `/azure/messages*`)
+- **vLLM path** — `vllm_api.py` + `vllm_proxy.py` serve `/v1/*`. Chat / messages / count_tokens additionally dispatch to Azure when the requested `model` alias is configured under `[azure_models.*]` AND the caller has `can_use_azure` (or is admin), so a single base URL exposes both backends to clients like Claude Code's model picker.
+- **Azure OpenAI path** — `azure_api.py` + `azure_proxy.py` serve `/azure/v1/*` (and `/azure/messages*`). Azure-only surface; gated by `require_azure_access`.
+
+### Unified `/v1/*` Dispatch
+
+Two base URLs, two default-fallback domains. Each call's fallback target is determined by where it came in, not by what permissions the caller happens to lack:
+
+| Base URL | What `GET /v1/models` returns | Unknown-alias fallback |
+|---|---|---|
+| `/v1/*` | vLLM models always; Azure models merged in when `can_use_azure` (admin bypasses). Hidden-flag is NOT filtered here. | vLLM `_resolve_model` → `FALLBACK_MAP[type]` → any alive same-type server |
+| `/azure/v1/*` | Only Azure models (`require_azure_access` 403s callers without permission). | Azure `_resolve_azure` → `AZURE_FALLBACK_MAP[type]` → first compatible `AZURE_MODELS` entry |
+
+Implementation lives in `vllm_api.py:_peek_model_alias` + `_route_to_azure`. `_peek_model_alias` reads `body["model"]` from the cached request body so the downstream `forward_*` call can still re-parse it. `_route_to_azure` returns True only when the alias is in `AZURE_MODELS` AND the caller has Azure access; otherwise the request stays on the vLLM path. The deliberate consequence is that an Azure-only alias requested by a user without `can_use_azure` silently falls back through `_resolve_model` to the vLLM default — matching the gateway's longstanding "be liberal with unknown aliases" stance. Azure existence is hidden via the per-user `/v1/models` filter, not via a 404 on dispatch.
+
+`AZURE_MODELS` and `MODEL_ROUTING` must not share alias names; `_build_config` in `app/core/config.py` raises `ValueError` at startup if they do. With unique aliases the dispatch is deterministic and the conflict-resolution rule never has to be guessed.
 
 ### Dual Auth System
 
@@ -97,7 +110,7 @@ Azure-specific conventions:
 - Auth header is `api-key: <key>` (not `Authorization: Bearer`). AAD tokens not supported.
 - Body's `model` field is **set to the Azure deployment name** before forwarding (the v1 surface routes by `model` in the body, not the URL).
 - Responses-shape downstream payloads are translated back to OpenAI chat completions shape (or further to Anthropic, depending on the entry endpoint) before returning to the client.
-- Azure models are NOT shown on `/v1/models` or the user-facing dashboard. They appear only on `/azure/v1/models` (and the admin model config UI).
+- Azure models are merged into `/v1/models` for users with `can_use_azure` (admins bypass), so a single OpenAI/Anthropic client base URL surfaces both vLLM and Azure aliases in the picker; without permission Azure entries are omitted. The dedicated `/azure/v1/models` always lists Azure aliases (still behind `require_azure_access`) for clients that want the Azure-only surface. The dashboard skips Azure entries by default and gates the Azure card on `can_use_azure`.
 - **Sampling-knob stripping**: `temperature`, `top_p`, `presence_penalty`, `frequency_penalty` are dropped unconditionally on the chat-completions and messages paths because Azure deployments vary in which they accept (gpt-5.4 OK with temperature, gpt-5.4-pro 400s). Each deployment uses its own configured defaults. `reasoning_effort` survives. The pure pass-through `/azure/v1/responses` path does *not* strip — the client owns those params.
 - **Empty-input probe placeholder**: when translation collapses to empty `input` (typical Roo Code "validate connection" probe that sends only a system message), a minimal `{"role": "user", "content": [{"type": "input_text", "text": "."}]}` is injected so Azure returns 200 instead of 400. Logged via `Empty Responses input after translation — injecting probe placeholder`.
 - **Orphan function_call drop**: after translating the message history, any `function_call` item whose `call_id` has no matching `function_call_output` is dropped (`Dropping N orphan function_call(s)` WARNING). Safety net for clients (Roo Code in "OpenAI Compatible" mode) that mix native `tool_calls` with inline XML tool results — Azure Responses strictly validates pairing.
@@ -146,6 +159,7 @@ Stateless translator between OpenAI chat completions shape (the gateway's intern
   - `[fallback]` — type → preferred fallback alias for the vLLM path.
   - `[azure_fallback]` — type → preferred fallback alias for the Azure path. Used by `_resolve_azure` when the requested alias is unknown or wrong-typed (typos, model renames, clients probing for names the gateway doesn't expose). No effect when the alias resolves directly. Reactive to mis-naming only — there is no proactive health probe of Azure deployments and no runtime-error fallback for 429/5xx mid-stream.
   - `[azure_models.<alias>]` — Azure OpenAI deployments: `type`, `endpoint`, `deployment`, `api_key`, `api_version` (default `2024-08-01-preview`). Same per-model pricing/metadata override fields are accepted.
+  - **Alias uniqueness across maps**: `_build_config` raises `ValueError` at startup if any name appears in both `[models.<type>.<alias>]` and `[azure_models.<alias>]`. Required because `/v1/*` dispatches by alias lookup — a collision would make the routing non-deterministic.
 - **`.env`**: DATABASE_URL, AUTH_CENTER_APP_ID/PUBLIC_KEY_PATH, AUTH_BASE_URL (JWT issuer), `AZURE_HTTP_PROXY` (optional — routes `/azure/v1/*` downstream traffic through a corporate HTTP proxy; supports inline credentials `http://user:pass@host:port`; vLLM traffic is never proxied).
 - **`deploy/.env`**: Docker Compose settings: PG credentials, OIDC issuer, oauth2-proxy client.
 
@@ -170,12 +184,14 @@ Stateless translator between OpenAI chat completions shape (the gateway's intern
 Tests use in-memory SQLite with `StaticPool` (all connections share one DB). Key setup in `tests/conftest.py`:
 
 - `os.environ["DATABASE_URL"] = "sqlite://"` set before any app imports (avoids psycopg2 requirement)
-- `_patch_all` autouse fixture patches: `MODEL_ROUTING`, `PRICING_MAP`, `get_client`, `engine`, `is_alive`
+- `_patch_all` autouse fixture patches: `MODEL_ROUTING`, `PRICING_MAP`, `AZURE_MODELS`, `AZURE_FALLBACK_MAP`, `get_client`, `get_azure_client`, `engine`, `is_alive`, JWT decoder
 - `client` fixture builds a test app with noop lifespan (no health checks, no real DB init)
 - `FakeStreamResponse` simulates SSE streaming for stream tests
 - Mock httpx client accessible via `client.__httpx_mock__`
 
 When adding new tests, always use the existing `client` fixture and `auth_header()` helper (for `/v1/*` API key auth) or `web_auth_header()` helper (for JWT web/admin auth). Set mock responses on `client.__httpx_mock__.post` (non-stream) or `client.__httpx_mock__.send` (stream).
+
+**Avoid letting tests trigger a real `save_config()`** — it writes to the project's `config.toml` AND calls `reload_config()`, which mutates the patched `MODEL_ROUTING` / `AZURE_MODELS` dicts in place via `.update()` / `.pop()`. Because the autouse fixture patches with the canonical `TEST_*` dicts (not copies), one polluting test silently empties the fixture for every test that runs after it. Admin tests that POST/PUT to `/admin/api/config` happy-path should wrap the call in `with patch("app.routers.admin.save_config"):` so only the validator runs — see `tests/test_models_endpoint.py::TestAdminConfigMetadataValidation` for the pattern. (`TestAzureFallback::test_*` in `test_azure_api.py` deliberately mutates `TEST_AZURE_MODELS` in place to set up its scenarios — that pattern only works because the autouse patch points at the same dict, so keep that contract intact when touching `conftest.py`.)
 
 ## Database
 

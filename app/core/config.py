@@ -173,6 +173,20 @@ def _build_config(raw: dict[str, Any]) -> tuple[
         if isinstance(alias, str):
             azure_fallback_map[type_key] = alias
 
+    # Unified `/v1/*` dispatch (vllm_api) routes a request by looking up the
+    # `model` alias in MODEL_ROUTING first, then AZURE_MODELS. A name that
+    # lives in both maps is ambiguous — refuse to start instead of silently
+    # picking one and surprising the operator. Operators who really need
+    # two backends behind the same alias should pick one and rename the
+    # other (or split clients to the dedicated `/azure/v1/*` endpoints).
+    collisions = sorted(set(model_routing) & set(azure_models))
+    if collisions:
+        raise ValueError(
+            "config.toml: alias(es) declared in both [models.*] and "
+            f"[azure_models.*]: {collisions}. Aliases must be unique across "
+            "vLLM and Azure so unified `/v1/*` routing is deterministic."
+        )
+
     return app_config, model_routing, pricing_map, fallback_map, azure_models, azure_fallback_map
 
 

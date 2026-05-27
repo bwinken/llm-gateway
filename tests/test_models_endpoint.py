@@ -34,7 +34,10 @@ class TestListModels:
         for m in data["data"]:
             assert "id" in m
             assert m["object"] == "model"
-            assert m["owned_by"] == "llm-gateway"
+            # Azure entries get owned_by="azure-openai" since the unified
+            # `/v1/models` merges Azure aliases for users with can_use_azure
+            # (test_user has it True by default).
+            assert m["owned_by"] in ("llm-gateway", "azure-openai")
             assert "type" in m
             assert "capability" in m
 
@@ -94,11 +97,16 @@ class TestAdminConfigMetadataValidation:
             "pricing": {"_default": {"input_price_per_1m": 0.1, "output_price_per_1m": 0.1}},
             "fallback": {},
         }
-        return client.put(
-            "/admin/api/config",
-            json=body,
-            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
-        )
+        # Patch save_config so a happy-path 200 doesn't actually write the
+        # project's config.toml and (via reload_config) pop our test-fixture
+        # AZURE_MODELS entries — that pollution silently breaks any later
+        # test that relies on the Azure fixture being intact.
+        with patch("app.routers.admin.save_config"):
+            return client.put(
+                "/admin/api/config",
+                json=body,
+                headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
+            )
 
     def test_rejects_context_window_as_bool(self, client, admin_user):
         # True would otherwise slip through because bool is a subclass of
