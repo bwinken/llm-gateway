@@ -820,11 +820,11 @@ async def azure_forward_count_tokens(
 # features (previous_response_id, store, reasoning items in input, etc.)
 # that don't survive the chat completions translation.
 #
-# No relationship to vllm_proxy.forward_to_path — that one is for vLLM's
-# internal LAN downstream and carries vLLM-specific concerns (real_model
-# alias swap, fallback headers, alive checks). The Azure path needs none
-# of those, so the code is duplicated rather than abstracted into a
-# generic helper.
+# No relationship to vllm_proxy.vllm_forward_responses — that one is for
+# vLLM's internal LAN downstream and carries vLLM-specific concerns
+# (real_model alias swap, fallback headers, alive checks). The Azure path
+# needs none of those, so the code is duplicated rather than abstracted
+# into a generic helper.
 
 
 async def azure_forward_responses(

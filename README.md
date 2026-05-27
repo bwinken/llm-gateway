@@ -31,9 +31,9 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 
 ## Features
 
-- **OpenAI-compatible API** — `/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/score`, `/v1/responses`, `/v1/tokenize`, `/v1/models` (LLM/VLM only)
-- **Anthropic Messages API** — `/v1/messages` and `/v1/messages/count_tokens`, drop-in compatible with the Anthropic Python SDK and Claude Code (works against any vLLM LLM/VLM downstream). Streams `reasoning_content` from `--enable-reasoning` / DeepSeek / Qwen3-thinking as Anthropic `thinking` content blocks, emits SSE `ping` keepalives every 10 s of downstream silence so clients survive long reasoning prefill, and surfaces a mid-stream downstream disconnect as a retryable `overloaded_error` rather than a falsely-complete turn
-- **Azure OpenAI backend** — Same client, same API key, same billing — point to `/azure/v1/*` to hit configured Azure deployments (chat completions, embeddings, Anthropic Messages all supported)
+- **Unified `/v1/*` surface** — One base URL exposes both backends. `/v1/chat/completions`, `/v1/messages`, `/v1/messages/count_tokens` dispatch by `model` alias: vLLM by default, Azure when the alias is configured under `[azure_models.*]` AND the caller has `can_use_azure`. `/v1/models` merges Azure aliases in for those callers so Claude Code's model picker shows both backends. Every route is also exposed without the `/v1` prefix (`/chat/completions`, `/messages`, ...) for clients whose base URL omits it
+- **Anthropic Messages API** — `/v1/messages` and `/v1/messages/count_tokens`, drop-in compatible with the Anthropic Python SDK and Claude Code (works against any vLLM LLM/VLM downstream, and any Azure deployment when the caller has Azure access). Streams `reasoning_content` from `--enable-reasoning` / DeepSeek / Qwen3-thinking as Anthropic `thinking` content blocks, emits SSE `ping` keepalives every 10 s of downstream silence so clients survive long reasoning prefill, and surfaces a mid-stream downstream disconnect as a retryable `overloaded_error` rather than a falsely-complete turn
+- **Azure OpenAI backend** — Same client, same API key, same billing. Reachable via the unified `/v1/*` surface above (per-user, gated by `can_use_azure`), or via a dedicated Azure-only surface at `/azure/v1/*` (chat completions, responses, Anthropic Messages, count_tokens — no embeddings; that's vLLM-only by design)
 - **Multi-model routing** — LLM, VLM, Embedding, Vision Embedding, Reranker, Vision Reranker
 - **SSE streaming** — Full Server-Sent Events support for chat completions and responses
 - **Smart fallback** — Configurable per-type fallback model, health-check-aware; `X-Model-Fallback` response header (vLLM path)
@@ -233,7 +233,7 @@ curl http://your-gateway/v1/rerank \
 
 ### Anthropic Messages API
 
-`/v1/messages` accepts Anthropic-format requests for any LLM/VLM model and translates them on the fly to OpenAI format for the downstream vLLM server. Supports streaming, tool use, and vision.
+`/v1/messages` accepts Anthropic-format requests and translates them on the fly to whichever backend the requested `model` maps to: vLLM by default (translated to OpenAI chat completions for any LLM/VLM downstream), or Azure OpenAI when the alias is configured under `[azure_models.*]` AND the caller has `can_use_azure` (translated to Azure Responses API). Supports streaming, tool use, and vision regardless of backend.
 
 ```python
 from anthropic import Anthropic
@@ -269,23 +269,40 @@ curl http://your-gateway/v1/models \
 
 ### Azure OpenAI
 
-Azure-backed deployments configured under `[azure_models.*]` are served from `/azure/v1/*` with the same gateway API key. Azure aliases are intentionally not listed under `/v1/models`.
+Azure-backed deployments configured under `[azure_models.*]` are reachable two ways with the same gateway API key:
+
+1. **Through the unified `/v1/*` surface** (recommended for users with `can_use_azure`) — pick the Azure alias by name from `/v1/models` and the gateway dispatches to Azure automatically. One base URL, both backends.
+2. **Through the dedicated `/azure/v1/*` surface** — for clients that should only ever see Azure deployments (e.g. an OpenAI-shaped client whose `base_url` you want pinned to Azure).
+
+Azure aliases appear on `/v1/models` only for users with `can_use_azure` (admins bypass) — that's how a single Claude Code base URL surfaces both backends without leaking Azure deployments to users who don't have access.
 
 ```python
+# Option 1: unified base URL (sees both vLLM and Azure aliases when can_use_azure)
 client = OpenAI(
-    base_url="http://your-gateway/azure/v1",
-    api_key="sk-your-api-key",   # gateway key, not the Azure key
+    base_url="http://your-gateway/v1",
+    api_key="sk-your-api-key",
 )
-
 resp = client.chat.completions.create(
     model="gpt-4o-mini-azure",   # alias from [azure_models.<alias>]
     messages=[{"role": "user", "content": "Hello!"}],
 )
+
+# Option 2: Azure-only base URL
+client = OpenAI(
+    base_url="http://your-gateway/azure/v1",
+    api_key="sk-your-api-key",
+)
 ```
 
-Anthropic SDK / Claude Code can target Azure too via `/azure/messages`:
+Anthropic SDK / Claude Code can do the same — either point at the unified surface and pick an Azure alias, or pin to `/azure`:
 
 ```bash
+# Unified — model picker shows vLLM + Azure aliases (when can_use_azure)
+ANTHROPIC_BASE_URL=http://your-gateway \
+ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
+claude
+
+# Azure-only
 ANTHROPIC_BASE_URL=http://your-gateway/azure \
 ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude

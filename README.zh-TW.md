@@ -31,9 +31,9 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 
 ## 功能特色
 
-- **OpenAI 相容 API** — `/v1/chat/completions`、`/v1/embeddings`、`/v1/rerank`、`/v1/score`、`/v1/responses`、`/v1/tokenize`、`/v1/models`（僅列出 LLM/VLM）
-- **Anthropic Messages API** — `/v1/messages` 與 `/v1/messages/count_tokens`，可直接搭配 Anthropic Python SDK 與 Claude Code（後端可接任何 vLLM LLM/VLM）。下游 `reasoning_content`（vLLM `--enable-reasoning`、DeepSeek、Qwen3-thinking）會轉成 Anthropic `thinking` content block;下游靜默時每 10 秒送一次 SSE `ping`,避免 Claude Code 在 reasoning prefill 太長時把連線視為斷線;串流中途下游斷線時會回傳可重試的 `overloaded_error`,而非謊稱該輪已完成
-- **Azure OpenAI 後端** — 同一支客戶端、同一把 API key、同一套計費,把 base URL 指到 `/azure/v1/*` 即可呼叫設定的 Azure 部署(支援 chat completions、embeddings、Anthropic Messages)
+- **統一 `/v1/*` 介面** — 同一個 base URL 同時暴露兩個後端。`/v1/chat/completions`、`/v1/messages`、`/v1/messages/count_tokens` 依 `model` alias 分派:預設走 vLLM,當 alias 配置在 `[azure_models.*]` 且 caller 有 `can_use_azure` 時轉向 Azure。`/v1/models` 對有權限的使用者會把 Azure alias 一併列出,讓 Claude Code 之類的 model picker 同時看到兩個後端。所有路由都另外註冊不含 `/v1` 前綴的別名(`/chat/completions`、`/messages`、…)
+- **Anthropic Messages API** — `/v1/messages` 與 `/v1/messages/count_tokens`,可直接搭配 Anthropic Python SDK 與 Claude Code(後端可接任何 vLLM LLM/VLM;有 Azure 權限時也涵蓋 Azure 部署)。下游 `reasoning_content`(vLLM `--enable-reasoning`、DeepSeek、Qwen3-thinking)會轉成 Anthropic `thinking` content block;下游靜默時每 10 秒送一次 SSE `ping`,避免 Claude Code 在 reasoning prefill 太長時把連線視為斷線;串流中途下游斷線時會回傳可重試的 `overloaded_error`,而非謊稱該輪已完成
+- **Azure OpenAI 後端** — 同一支客戶端、同一把 API key、同一套計費。可透過上面的統一 `/v1/*`(需 `can_use_azure`)或專屬的 `/azure/v1/*` 介面存取(chat completions、responses、Anthropic Messages、count_tokens;刻意不提供 embeddings,那是 vLLM 專責)
 - **多模型路由** — LLM、VLM、Embedding、Vision Embedding、Reranker、Vision Reranker
 - **SSE 串流** — 完整支援 Server-Sent Events（chat completions 和 responses）
 - **智慧容錯** — 可設定各類型的備援模型，依健康檢查自動切換；回應標頭 `X-Model-Fallback`(僅 vLLM 路徑)
@@ -233,7 +233,7 @@ curl http://your-gateway/v1/rerank \
 
 ### Anthropic Messages API
 
-`/v1/messages` 接收 Anthropic 格式的請求，會即時轉譯成 OpenAI 格式送往下游 vLLM 伺服器，可搭配任何 LLM/VLM 模型。支援串流、tool use、與圖片輸入。
+`/v1/messages` 接收 Anthropic 格式的請求,根據 `model` 分派到對應後端:預設轉譯成 OpenAI 格式送往下游 vLLM(任何 LLM/VLM 模型);若 alias 配置在 `[azure_models.*]` 且 caller 有 `can_use_azure`,則改走 Azure Responses API。串流、tool use、圖片輸入兩個後端都支援。
 
 ```python
 from anthropic import Anthropic
@@ -269,23 +269,40 @@ curl http://your-gateway/v1/models \
 
 ### Azure OpenAI
 
-設定在 `[azure_models.*]` 的 Azure 部署會透過 `/azure/v1/*` 對外服務,使用同一把 gateway API key。Azure 別名刻意不會出現在 `/v1/models`。
+設定在 `[azure_models.*]` 的 Azure 部署可以兩種方式存取,都用同一把 gateway API key:
+
+1. **透過統一 `/v1/*` 介面**(有 `can_use_azure` 的使用者推薦) — 從 `/v1/models` 看到 Azure alias 就直接用,gateway 自動分派到 Azure。同一個 base URL 涵蓋兩個後端。
+2. **透過專屬 `/azure/v1/*` 介面** — 適用於「該 client 永遠只該看到 Azure」的情境(例如要把某個 OpenAI 形 client 的 `base_url` 鎖在 Azure)。
+
+Azure alias 只會在 `can_use_azure` 為 True 的使用者(admin 自動 bypass)看 `/v1/models` 時併入清單 — 這就是怎麼讓同一個 Claude Code base URL 同時暴露兩個後端,又不會把 Azure 部署洩漏給沒權限的使用者。
 
 ```python
+# 方案 1:統一 base URL(有 can_use_azure 時看得到 vLLM + Azure 兩邊 alias)
 client = OpenAI(
-    base_url="http://your-gateway/azure/v1",
-    api_key="sk-your-api-key",   # gateway 的 key,不是 Azure 的 key
+    base_url="http://your-gateway/v1",
+    api_key="sk-your-api-key",
 )
-
 resp = client.chat.completions.create(
     model="gpt-4o-mini-azure",   # 即 [azure_models.<alias>] 的 alias
     messages=[{"role": "user", "content": "Hello!"}],
 )
+
+# 方案 2:Azure-only base URL
+client = OpenAI(
+    base_url="http://your-gateway/azure/v1",
+    api_key="sk-your-api-key",
+)
 ```
 
-Anthropic SDK / Claude Code 也可以指向 Azure(走 `/azure/messages`):
+Anthropic SDK / Claude Code 同樣有兩種選擇 — 指向統一介面挑 Azure alias,或鎖在 `/azure`:
 
 ```bash
+# 統一 — model picker 顯示 vLLM + Azure(有 can_use_azure)
+ANTHROPIC_BASE_URL=http://your-gateway \
+ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
+claude
+
+# Azure-only
 ANTHROPIC_BASE_URL=http://your-gateway/azure \
 ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
