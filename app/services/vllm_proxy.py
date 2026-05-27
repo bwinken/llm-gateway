@@ -1,10 +1,18 @@
 """
-Core proxy logic:
-  1. forward_request        - Standard Chat Completion (streaming + non-streaming)
-  2. forward_simple_request - Embeddings & Rerankers (non-streaming)
-  3. forward_to_path        - Pure pass-through for custom APIs (e.g. /responses)
-  4. Type-safe smart fallback
-  5. Usage logging
+vLLM downstream proxy.
+
+Public forward functions all carry the ``vllm_`` prefix so they're
+unambiguous at call sites that also import from ``azure_proxy``:
+
+  - vllm_forward_chat_completions  — OpenAI chat completions (stream + non-stream)
+  - vllm_forward_simple_request    — embeddings / rerank / score (non-stream)
+  - vllm_forward_responses         — OpenAI Responses API pass-through
+  - vllm_forward_messages          — Anthropic Messages translation
+  - vllm_forward_count_tokens      — Anthropic count_tokens (forwards to /tokenize)
+  - vllm_forward_tokenize          — vLLM-native /tokenize pass-through
+
+All six share ``_resolve_model`` for health-aware type-checked fallback;
+billing goes through ``_log_usage`` (decoupled from any specific route map).
 """
 
 from __future__ import annotations
@@ -336,7 +344,7 @@ def _log_usage(
 
 
 # ---------------------------------------------------------------------------
-# 1. forward_request - Standard Chat Completion (stream + non-stream)
+# 1. vllm_forward_chat_completions - Standard Chat Completion (stream + non-stream)
 # ---------------------------------------------------------------------------
 
 def _fallback_headers(fallback_reason: str | None) -> dict[str, str]:
@@ -357,7 +365,7 @@ def _tokenize_url(base_url: str) -> str:
     return f"{root}/tokenize"
 
 
-async def forward_request(
+async def vllm_forward_chat_completions(
     request: Request,
     user: User,
     allowed_types: list[str],
@@ -489,10 +497,10 @@ async def _stream_chat(
 
 
 # ---------------------------------------------------------------------------
-# 2. forward_simple_request - Embeddings & Rerankers (non-streaming)
+# 2. vllm_forward_simple_request - Embeddings & Rerankers (non-streaming)
 # ---------------------------------------------------------------------------
 
-async def forward_simple_request(
+async def vllm_forward_simple_request(
     request: Request,
     user: User,
     allowed_types: list[str],
@@ -544,10 +552,10 @@ async def forward_simple_request(
 
 
 # ---------------------------------------------------------------------------
-# 3. forward_to_path - Pure pass-through (e.g. /responses)
+# 3. vllm_forward_responses - Pure pass-through (e.g. /responses)
 # ---------------------------------------------------------------------------
 
-async def forward_to_path(
+async def vllm_forward_responses(
     request: Request,
     user: User,
     allowed_types: list[str],
@@ -622,10 +630,10 @@ async def _passthrough_non_stream(
 
 
 # ---------------------------------------------------------------------------
-# 4. forward_messages_request - Anthropic /v1/messages compatibility
+# 4. vllm_forward_messages - Anthropic /v1/messages compatibility
 # ---------------------------------------------------------------------------
 
-async def forward_messages_request(
+async def vllm_forward_messages(
     request: Request,
     user: User,
     allowed_types: list[str],
@@ -792,10 +800,10 @@ async def _stream_messages(
 
 
 # ---------------------------------------------------------------------------
-# 5. forward_count_tokens_request - Anthropic /v1/messages/count_tokens
+# 5. vllm_forward_count_tokens - Anthropic /v1/messages/count_tokens
 # ---------------------------------------------------------------------------
 
-async def forward_count_tokens_request(
+async def vllm_forward_count_tokens(
     request: Request,
     user: User,
     allowed_types: list[str],
@@ -883,10 +891,10 @@ async def forward_count_tokens_request(
 
 
 # ---------------------------------------------------------------------------
-# 6. forward_tokenize_request - vLLM-native /tokenize pass-through
+# 6. vllm_forward_tokenize - vLLM-native /tokenize pass-through
 # ---------------------------------------------------------------------------
 
-async def forward_tokenize_request(
+async def vllm_forward_tokenize(
     request: Request,
     user: User,
     allowed_types: list[str],

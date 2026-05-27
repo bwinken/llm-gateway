@@ -20,7 +20,7 @@ that work:
 |---|---|
 | In-memory SQLite + `StaticPool` | All connections share one DB, tables reset per test via the `db_session` fixture |
 | `_patch_all` autouse fixture | Patches `MODEL_ROUTING`, `PRICING_MAP`, `FALLBACK_MAP`, `AZURE_MODELS`, the global `httpx` client, `is_alive`, and `_decode_jwt` for every test |
-| `_build_test_app` | Spins up a `FastAPI` instance with a no-op lifespan (skips DB init, health checks, real httpx client) and mounts `web_ui`, `vllm_api`, `azure_api`, `admin` |
+| `_build_test_app` | Spins up a `FastAPI` instance with a no-op lifespan (skips DB init, health checks, real httpx client) and mounts `web_ui`, `v1_api`, `azure_api`, `admin` |
 
 ### What runs real vs. what's swapped
 

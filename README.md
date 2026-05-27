@@ -443,8 +443,8 @@ llm-gateway/
 │   ├── models/
 │   │   └── schema.py           # User + UsageLog + AppOwner tables
 │   ├── routers/
-│   │   ├── vllm_api.py         # /v1/* API endpoints (vLLM backend)
-│   │   ├── azure_api.py        # /azure/v1/* API endpoints (Azure OpenAI backend)
+│   │   ├── v1_api.py           # /v1/* unified public API (vLLM default + Azure dispatch)
+│   │   ├── azure_api.py        # /azure/v1/* Azure-only API
 │   │   ├── web_ui.py           # Dashboard (Jinja2)
 │   │   └── admin.py            # Admin panel + API
 │   ├── services/

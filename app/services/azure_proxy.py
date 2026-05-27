@@ -341,7 +341,7 @@ def _parse_responses_sse_event(data_str: str) -> dict[str, Any] | None:
 # Chat Completions (`/azure/v1/chat/completions`)
 # ---------------------------------------------------------------------------
 
-async def forward_chat_completions(
+async def azure_forward_chat_completions(
     request: Request,
     user: User,
 ) -> StreamingResponse | JSONResponse:
@@ -550,7 +550,7 @@ async def _stream_chat(
 # Anthropic Messages API (`/azure/v1/messages`)
 # ---------------------------------------------------------------------------
 
-async def forward_messages(
+async def azure_forward_messages(
     request: Request,
     user: User,
 ) -> StreamingResponse | JSONResponse:
@@ -783,7 +783,7 @@ async def _stream_messages(
     )
 
 
-async def forward_count_tokens(
+async def azure_forward_count_tokens(
     request: Request,
     user: User,
 ) -> JSONResponse:
@@ -827,7 +827,7 @@ async def forward_count_tokens(
 # generic helper.
 
 
-async def forward_responses(
+async def azure_forward_responses(
     request: Request,
     user: User,
 ) -> StreamingResponse | JSONResponse:

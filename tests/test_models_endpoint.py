@@ -218,7 +218,7 @@ class TestHiddenModels:
         """Hidden models should still appear in /v1/models — the hidden flag
         only affects user-facing web pages (welcome, dashboard)."""
         routing = self._routing_with_hidden()
-        with patch("app.routers.vllm_api.get_model_routing_snapshot", return_value=routing):
+        with patch("app.routers.v1_api.get_model_routing_snapshot", return_value=routing):
             resp = client.get("/v1/models", headers=auth_header())
         assert resp.status_code == 200
         ids = [m["id"] for m in resp.json()["data"]]

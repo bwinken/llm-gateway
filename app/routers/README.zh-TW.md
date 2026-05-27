@@ -2,26 +2,27 @@
 
 [English](README.md)
 
-定義 FastAPI 路由，分為四個模組：vLLM API 端點、Azure OpenAI API 端點、Web UI 頁面、Admin 管理。
+定義 FastAPI 路由，分為四個模組：統一 `/v1/*` 公開 API、Azure-only `/azure/v1/*` API、Web UI 頁面、Admin 管理。
 
 ## 模組總覽
 
 ```mermaid
 graph LR
-    Client["Client App<br/>(SDK / curl)"] -->|Bearer API key| vllm_api
+    Client["Client App<br/>(SDK / curl)"] -->|Bearer API key| v1_api
     Client -->|Bearer API key| azure_api
     Browser["Browser"] -->|JWT via oauth2-proxy| web_ui
     Browser -->|JWT via oauth2-proxy| admin
 
     subgraph routers
-        vllm_api["vllm_api.py<br/>/v1/*"]
-        azure_api["azure_api.py<br/>/azure/v1/*"]
+        v1_api["v1_api.py<br/>/v1/*<br/>(unified: vLLM default + Azure dispatch)"]
+        azure_api["azure_api.py<br/>/azure/v1/*<br/>(Azure-only)"]
         web_ui["web_ui.py<br/>/dashboard"]
         admin["admin.py<br/>/admin"]
     end
 
-    vllm_api --> vllm_proxy["services/vllm_proxy.py"]
-    azure_api --> azure_proxy["services/azure_proxy.py"]
+    v1_api -->|預設| vllm_proxy["services/vllm_proxy.py"]
+    v1_api -->|alias ∈ AZURE_MODELS + can_use_azure| azure_proxy["services/azure_proxy.py"]
+    azure_api --> azure_proxy
     web_ui --> stats["services/stats.py"]
     admin --> stats
     admin --> config["core/config.py"]
@@ -29,34 +30,48 @@ graph LR
 
 ---
 
-## `vllm_api.py` — OpenAI 相容 API（vLLM 後端）
+## `v1_api.py` — 統一 `/v1/*` API（OpenAI 與 Anthropic 相容）
 
 **認證**：`deps.get_current_user`（API key + daily limit 檢查）
+
+`v1_api.py` 是主要的公開入口。預設走 vLLM 後端；當請求的 `model` alias 在 `[azure_models.*]` 且 caller 具有 `can_use_azure`（或是 admin）時，chat / messages / count_tokens 會 dispatch 到 Azure。同一個 base URL 就能讓 Claude Code 之類的 model picker 同時看到兩個後端。所有路由都額外註冊不含 `/v1` 前綴的別名，避開 Roo Code / Cline / Cursor / Anthropic SDK 因 base URL 沒寫 `/v1` 而 404 的情況。
 
 ### 端點
 
 | 方法 | 路徑 | 說明 | Proxy 方式 | 允許類型 |
 |---|---|---|---|---|
-| `GET` | `/v1/models` | 列出可用模型(僅 LLM/VLM,Azure 別名不會列出) | 直接回傳 | `llm`, `vlm` |
-| `POST` | `/v1/chat/completions` | Chat 對話生成 | `forward_request` | `llm`, `vlm` |
-| `POST` | `/v1/responses` | Responses API | `forward_to_path` | `llm`, `vlm` |
-| `POST` | `/v1/embeddings` | 文字向量嵌入 | `forward_simple_request` | `embedding`, `vision_embedding` |
-| `POST` | `/v1/rerank` | 文件重排序 | `forward_simple_request` | `reranker`, `vision_reranker` |
-| `POST` | `/v1/score` | 相關性評分 | `forward_simple_request` | `reranker`, `vision_reranker` |
-| `POST` | `/v1/messages`、`/messages` | Anthropic Messages(轉譯為 OpenAI;`reasoning_content` 串流成 `thinking` block;下游靜默時每 10 秒送 SSE `ping`) | `forward_messages_request` | `llm`, `vlm` |
-| `POST` | `/v1/messages/count_tokens` | Anthropic token 計數(轉送至 vLLM `/tokenize`,失敗時 fallback 為 chars/4) | `forward_count_tokens_request` | `llm`, `vlm` |
-| `POST` | `/v1/tokenize`、`/tokenize` | vLLM 原生 pass-through tokenize | `forward_tokenize_request` | `llm`, `vlm` |
+| `GET` | `/v1/models`、`/models` | 列出模型(僅 LLM/VLM)。有 `can_use_azure` 的使用者(admin 自動 bypass)會多看到 Azure 別名 | 直接回傳 | `llm`, `vlm` |
+| `POST` | `/v1/chat/completions`、`/chat/completions` | Chat 對話生成 | `vllm_forward_chat_completions`(vLLM) / `azure_forward_chat_completions`(Azure) | `llm`, `vlm` |
+| `POST` | `/v1/responses`、`/responses` | Responses API | `vllm_forward_responses` | `llm`, `vlm` |
+| `POST` | `/v1/embeddings`、`/embeddings` | 文字向量嵌入 | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
+| `POST` | `/v1/rerank`、`/rerank` | 文件重排序 | `vllm_forward_simple_request` | `reranker`, `vision_reranker` |
+| `POST` | `/v1/score`、`/score` | 相關性評分 | `vllm_forward_simple_request` | `reranker`, `vision_reranker` |
+| `POST` | `/v1/messages`、`/messages` | Anthropic Messages(轉譯為 OpenAI;`reasoning_content` 串流成 `thinking` block;下游靜默時每 10 秒送 SSE `ping`) | `vllm_forward_messages`(vLLM) / `azure_forward_messages`(Azure) | `llm`, `vlm` |
+| `POST` | `/v1/messages/count_tokens`、`/messages/count_tokens` | Anthropic token 計數(vLLM 走 `/tokenize`,失敗時 fallback chars/4;Azure 路徑用 chars/4 估算) | `vllm_forward_count_tokens`(vLLM) / `azure_forward_count_tokens`(Azure) | `llm`, `vlm` |
+| `POST` | `/v1/tokenize`、`/tokenize` | vLLM 原生 pass-through tokenize(無 Azure 路徑 — Azure 沒有 tokenize 端點) | `vllm_forward_tokenize` | `llm`, `vlm` |
+
+### 分派邏輯
+
+helper `_peek_model_alias` + `_route_to_azure` 決定路由：
+
+```
+alias 在 AZURE_MODELS 且 (can_use_azure 或 is_admin) → Azure 路徑
+alias 在 AZURE_MODELS 但無權限                       → vLLM 路徑(透過 _resolve_model 靜默 fallback)
+alias 不在 AZURE_MODELS                              → vLLM 路徑
+```
+
+「沒權限的 user 打 Azure alias → fallback 到 vLLM」這個分支沿用 gateway 一向「對未知 alias 寬容」的設計。Azure 模型的存在感是透過 per-user `/v1/models` 過濾隱藏，而不是用 404 在請求時擋。`AZURE_MODELS` 跟 `MODEL_ROUTING` 不能有同名 alias — `_build_config` 啟動時會 `ValueError`。
 
 ### Proxy 方式
 
 | 方式 | 串流 | 用途 | 特色 |
 |---|---|---|---|
-| `forward_request` | stream + non-stream | Chat Completions | SSE 解析、自動注入 `stream_options.include_usage` |
-| `forward_simple_request` | non-stream only | Embeddings, Rerank, Score | 120s timeout，處理 reranker 的 total_tokens 回報 |
-| `forward_to_path` | stream + non-stream | Responses API | Raw pass-through，僅替換 model 欄位 |
-| `forward_messages_request` | stream + non-stream | Anthropic Messages | Anthropic→OpenAI 請求、OpenAI→Anthropic 回應(使用 `services/anthropic_adapter.py`) |
-| `forward_count_tokens_request` | non-stream | `count_tokens` | 轉送至 vLLM `/tokenize`,失敗時 fallback 為 chars/4;不計費 |
-| `forward_tokenize_request` | non-stream | `/tokenize` | vLLM 原生 pass-through;不計費 |
+| `vllm_forward_chat_completions` | stream + non-stream | Chat Completions | SSE 解析、自動注入 `stream_options.include_usage` |
+| `vllm_forward_simple_request` | non-stream only | Embeddings, Rerank, Score | 120s timeout，處理 reranker 的 total_tokens 回報 |
+| `vllm_forward_responses` | stream + non-stream | Responses API | Raw pass-through，僅替換 model 欄位 |
+| `vllm_forward_messages` | stream + non-stream | Anthropic Messages | Anthropic→OpenAI 請求、OpenAI→Anthropic 回應(使用 `services/anthropic_adapter.py`) |
+| `vllm_forward_count_tokens` | non-stream | `count_tokens` | 轉送至 vLLM `/tokenize`,失敗時 fallback 為 chars/4;不計費 |
+| `vllm_forward_tokenize` | non-stream | `/tokenize` | vLLM 原生 pass-through;不計費 |
 
 ### 共通行為
 
@@ -84,10 +99,12 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | 方法 | 路徑 | 說明 | Proxy 方式 |
 |---|---|---|---|
 | `GET` | `/azure/v1/models` | 列出已設定的 Azure 部署(刻意不出現在 `/v1/models`) | 直接回傳 |
-| `POST` | `/azure/v1/chat/completions` | 透過 Azure 部署做 chat completion | `forward_chat_completions` |
-| `POST` | `/azure/v1/embeddings` | 透過 Azure 部署做 embeddings | `forward_embeddings` |
-| `POST` | `/azure/v1/messages`、`/azure/messages` | Anthropic Messages → Azure(共用 `anthropic_adapter`;與 vLLM 路徑同樣支援 `thinking` block 轉譯與每 10 秒的 SSE `ping` 心跳) | `forward_messages` |
-| `POST` | `/azure/v1/messages/count_tokens`、`/azure/messages/count_tokens` | Token 計數(chars/4 估算;Azure 沒有 tokenize 端點) | `forward_count_tokens` |
+| `POST` | `/azure/v1/chat/completions`、`/azure/chat/completions` | 透過 Azure 部署做 chat completion | `azure_forward_chat_completions` |
+| `POST` | `/azure/v1/responses`、`/azure/responses` | 直接 pass-through 到 Azure Responses API(僅替換 `body.model`) | `azure_forward_responses` |
+| `POST` | `/azure/v1/messages`、`/azure/messages` | Anthropic Messages → Azure(共用 `anthropic_adapter`;與 vLLM 路徑同樣支援 `thinking` block 轉譯與每 10 秒的 SSE `ping` 心跳) | `azure_forward_messages` |
+| `POST` | `/azure/v1/messages/count_tokens`、`/azure/messages/count_tokens` | Token 計數(chars/4 估算;Azure 沒有 tokenize 端點) | `azure_forward_count_tokens` |
+
+刻意**沒有** `/azure/v1/embeddings` — Responses API 不涵蓋 embeddings,embedding 模型請設定在 vLLM 後端。
 
 ### Azure 特定行為
 

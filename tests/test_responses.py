@@ -22,7 +22,7 @@ def _make_post_coro(response):
 
 
 def _make_content_post_coro(response):
-    """For forward_to_path which uses client.post(url, content=..., ...)."""
+    """For vllm_forward_responses which uses client.post(url, content=..., ...)."""
     async def _post(*args, **kwargs):
         return response
     return _post

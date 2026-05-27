@@ -2,26 +2,27 @@
 
 [中文版](README.zh-TW.md)
 
-Defines FastAPI routes, split into four modules: vLLM API endpoints, Azure OpenAI API endpoints, Web UI pages, and Admin management.
+Defines FastAPI routes, split into four modules: the unified `/v1/*` public API, the Azure-only `/azure/v1/*` API, Web UI pages, and Admin management.
 
 ## Module Overview
 
 ```mermaid
 graph LR
-    Client["Client App<br/>(SDK / curl)"] -->|Bearer API key| vllm_api
+    Client["Client App<br/>(SDK / curl)"] -->|Bearer API key| v1_api
     Client -->|Bearer API key| azure_api
     Browser["Browser"] -->|JWT via oauth2-proxy| web_ui
     Browser -->|JWT via oauth2-proxy| admin
 
     subgraph routers
-        vllm_api["vllm_api.py<br/>/v1/*"]
-        azure_api["azure_api.py<br/>/azure/v1/*"]
+        v1_api["v1_api.py<br/>/v1/*<br/>(unified: vLLM default + Azure dispatch)"]
+        azure_api["azure_api.py<br/>/azure/v1/*<br/>(Azure-only)"]
         web_ui["web_ui.py<br/>/dashboard"]
         admin["admin.py<br/>/admin"]
     end
 
-    vllm_api --> vllm_proxy["services/vllm_proxy.py"]
-    azure_api --> azure_proxy["services/azure_proxy.py"]
+    v1_api -->|default| vllm_proxy["services/vllm_proxy.py"]
+    v1_api -->|alias ∈ AZURE_MODELS + can_use_azure| azure_proxy["services/azure_proxy.py"]
+    azure_api --> azure_proxy
     web_ui --> stats["services/stats.py"]
     admin --> stats
     admin --> config["core/config.py"]
@@ -30,34 +31,48 @@ graph LR
 
 ---
 
-## `vllm_api.py` — OpenAI-Compatible API (vLLM backend)
+## `v1_api.py` — Unified `/v1/*` API (OpenAI- and Anthropic-compatible)
 
 **Auth**: `deps.get_current_user` (API key + daily limit check)
 
+`v1_api.py` is the main public entry. It serves the vLLM backend by default, and dispatches chat / messages / count_tokens to Azure when the requested `model` alias is configured under `[azure_models.*]` AND the caller has `can_use_azure` (or is admin). One base URL surfaces both backends to clients like Claude Code's model picker. Routes are also exposed without the `/v1` prefix to accommodate clients (Roo Code, Cline, Cursor, Anthropic SDK) whose base URL omits it.
+
 ### Endpoints
 
-| Method | Path | Description | Proxy Method | Allowed Types |
+| Method | Path(s) | Description | Proxy Method | Allowed Types |
 |---|---|---|---|---|
-| `GET` | `/v1/models` | List available models (LLM/VLM only; Azure aliases excluded) | Direct response | `llm`, `vlm` |
-| `POST` | `/v1/chat/completions` | Chat completion generation | `forward_request` | `llm`, `vlm` |
-| `POST` | `/v1/responses` | Responses API | `forward_to_path` | `llm`, `vlm` |
-| `POST` | `/v1/embeddings` | Text embeddings | `forward_simple_request` | `embedding`, `vision_embedding` |
-| `POST` | `/v1/rerank` | Document reranking | `forward_simple_request` | `reranker`, `vision_reranker` |
-| `POST` | `/v1/score` | Relevance scoring | `forward_simple_request` | `reranker`, `vision_reranker` |
-| `POST` | `/v1/messages`, `/messages` | Anthropic Messages (translates to OpenAI; streams `reasoning_content` as `thinking` blocks; emits SSE `ping` every 10 s of downstream silence) | `forward_messages_request` | `llm`, `vlm` |
-| `POST` | `/v1/messages/count_tokens` | Anthropic token counting (forwards to vLLM `/tokenize`, falls back to chars/4) | `forward_count_tokens_request` | `llm`, `vlm` |
-| `POST` | `/v1/tokenize`, `/tokenize` | vLLM-native pass-through tokenize | `forward_tokenize_request` | `llm`, `vlm` |
+| `GET` | `/v1/models`, `/models` | List models (LLM/VLM only). Azure aliases merged in for users with `can_use_azure` (admins bypass) | Direct response | `llm`, `vlm` |
+| `POST` | `/v1/chat/completions`, `/chat/completions` | Chat completion generation | `vllm_forward_chat_completions` (vLLM) / `azure_forward_chat_completions` (Azure) | `llm`, `vlm` |
+| `POST` | `/v1/responses`, `/responses` | Responses API | `vllm_forward_responses` | `llm`, `vlm` |
+| `POST` | `/v1/embeddings`, `/embeddings` | Text embeddings | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
+| `POST` | `/v1/rerank`, `/rerank` | Document reranking | `vllm_forward_simple_request` | `reranker`, `vision_reranker` |
+| `POST` | `/v1/score`, `/score` | Relevance scoring | `vllm_forward_simple_request` | `reranker`, `vision_reranker` |
+| `POST` | `/v1/messages`, `/messages` | Anthropic Messages (translates to OpenAI; streams `reasoning_content` as `thinking` blocks; emits SSE `ping` every 10 s of downstream silence) | `vllm_forward_messages` (vLLM) / `azure_forward_messages` (Azure) | `llm`, `vlm` |
+| `POST` | `/v1/messages/count_tokens`, `/messages/count_tokens` | Anthropic token counting (forwards to vLLM `/tokenize`, falls back to chars/4; Azure path uses chars/4 estimate) | `vllm_forward_count_tokens` (vLLM) / `azure_forward_count_tokens` (Azure) | `llm`, `vlm` |
+| `POST` | `/v1/tokenize`, `/tokenize` | vLLM-native pass-through tokenize (no Azure path — Azure has no tokenize endpoint) | `vllm_forward_tokenize` | `llm`, `vlm` |
+
+### Dispatch logic
+
+Helpers `_peek_model_alias` + `_route_to_azure` determine routing:
+
+```
+alias in AZURE_MODELS AND (can_use_azure or is_admin) → Azure path
+alias in AZURE_MODELS AND no permission              → vLLM path (silent fallback via _resolve_model)
+alias not in AZURE_MODELS                            → vLLM path
+```
+
+The "Azure alias from non-Azure user → vLLM fallback" branch matches the gateway's longstanding liberal alias handling. Azure existence is hidden via the per-user `/v1/models` filter rather than a 404 at request time. `AZURE_MODELS` and `MODEL_ROUTING` must not share alias names — `_build_config` raises `ValueError` at startup if they do.
 
 ### Proxy Methods
 
 | Method | Streaming | Use Case | Features |
 |---|---|---|---|
-| `forward_request` | stream + non-stream | Chat Completions | SSE parsing, auto-injects `stream_options.include_usage` |
-| `forward_simple_request` | non-stream only | Embeddings, Rerank, Score | 120s timeout, handles reranker total_tokens reporting |
-| `forward_to_path` | stream + non-stream | Responses API | Raw pass-through, only replaces model field |
-| `forward_messages_request` | stream + non-stream | Anthropic Messages | Anthropic→OpenAI request, OpenAI→Anthropic response (uses `services/anthropic_adapter.py`) |
-| `forward_count_tokens_request` | non-stream | `count_tokens` | Forwards to vLLM `/tokenize`; falls back to chars/4 if downstream tokenizer unavailable; not billed |
-| `forward_tokenize_request` | non-stream | `/tokenize` | vLLM-native pass-through; not billed |
+| `vllm_forward_chat_completions` | stream + non-stream | Chat Completions | SSE parsing, auto-injects `stream_options.include_usage` |
+| `vllm_forward_simple_request` | non-stream only | Embeddings, Rerank, Score | 120s timeout, handles reranker total_tokens reporting |
+| `vllm_forward_responses` | stream + non-stream | Responses API | Raw pass-through, only replaces model field |
+| `vllm_forward_messages` | stream + non-stream | Anthropic Messages | Anthropic→OpenAI request, OpenAI→Anthropic response (uses `services/anthropic_adapter.py`) |
+| `vllm_forward_count_tokens` | non-stream | `count_tokens` | Forwards to vLLM `/tokenize`; falls back to chars/4 if downstream tokenizer unavailable; not billed |
+| `vllm_forward_tokenize` | non-stream | `/tokenize` | vLLM-native pass-through; not billed |
 
 ### Common Behavior
 
@@ -84,11 +99,13 @@ Same client API key, same usage logging, same monitoring as the `/v1/*` path. On
 
 | Method | Path | Description | Proxy Method |
 |---|---|---|---|
-| `GET` | `/azure/v1/models` | List configured Azure deployments (not on `/v1/models`) | Direct response |
-| `POST` | `/azure/v1/chat/completions` | Chat completion via Azure deployment | `forward_chat_completions` |
-| `POST` | `/azure/v1/embeddings` | Embeddings via Azure deployment | `forward_embeddings` |
-| `POST` | `/azure/v1/messages`, `/azure/messages` | Anthropic Messages → Azure (shared `anthropic_adapter`; same `thinking`-block translation and 10 s SSE `ping` heartbeat as the vLLM path) | `forward_messages` |
-| `POST` | `/azure/v1/messages/count_tokens`, `/azure/messages/count_tokens` | Token counting (chars/4 estimate; Azure has no tokenize endpoint) | `forward_count_tokens` |
+| `GET` | `/azure/v1/models`, `/azure/models` | List configured Azure deployments (always Azure-only, regardless of `/v1/models` filter) | Direct response |
+| `POST` | `/azure/v1/chat/completions`, `/azure/chat/completions` | Chat completion via Azure deployment | `azure_forward_chat_completions` |
+| `POST` | `/azure/v1/responses`, `/azure/responses` | Pure pass-through to Azure's Responses API (only mutates `body.model`) | `azure_forward_responses` |
+| `POST` | `/azure/v1/messages`, `/azure/messages` | Anthropic Messages → Azure (shared `anthropic_adapter`; same `thinking`-block translation and 10 s SSE `ping` heartbeat as the vLLM path) | `azure_forward_messages` |
+| `POST` | `/azure/v1/messages/count_tokens`, `/azure/messages/count_tokens` | Token counting (chars/4 estimate; Azure has no tokenize endpoint) | `azure_forward_count_tokens` |
+
+There is intentionally **no** `/azure/v1/embeddings` — the Responses API doesn't cover embeddings; configure embedding models on a vLLM backend instead.
 
 ### Azure-specific behavior
 
@@ -167,8 +184,8 @@ Same client API key, same usage logging, same monitoring as the `/v1/*` path. On
 ```mermaid
 graph TD
     subgraph "API Key Auth (deps.py)"
-        V1["/v1/models<br/>/v1/chat/completions<br/>/v1/embeddings<br/>/v1/rerank • /v1/score<br/>/v1/responses<br/>/v1/messages • /v1/messages/count_tokens<br/>/v1/tokenize"]
-        Azure["/azure/v1/models<br/>/azure/v1/chat/completions<br/>/azure/v1/embeddings<br/>/azure/v1/messages • /azure/messages<br/>/azure/v1/messages/count_tokens"]
+        V1["/v1/* (+ no-/v1 aliases)<br/>models • chat/completions • embeddings<br/>rerank • score • responses<br/>messages • messages/count_tokens • tokenize<br/>(vLLM default + Azure dispatch on can_use_azure)"]
+        Azure["/azure/v1/* (+ /azure/* aliases)<br/>models • chat/completions • responses<br/>messages • messages/count_tokens<br/>(Azure-only, require_azure_access)"]
     end
 
     subgraph "JWT Auth (auth.py via oauth2-proxy)"

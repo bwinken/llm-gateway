@@ -6,8 +6,9 @@ main `/v1/*` endpoints; usage logging, daily limits, monitoring, and pricing
 are all shared. Only the downstream URL/header conventions differ — handled
 by `app/services/azure_proxy.py`.
 
-This module is intentionally separate from `vllm_api.py` so the Azure-specific
-routing logic does not leak into the main OpenAI/vLLM code path.
+This module is intentionally separate from `v1_api.py` (the unified `/v1/*`
+surface) so the Azure-specific routing logic stays scoped to clients that
+explicitly opted into the `/azure` prefix.
 """
 
 from __future__ import annotations
@@ -18,10 +19,10 @@ from app.core.config import _MODEL_METADATA_KEYS, get_azure_models_snapshot
 from app.core.deps import require_azure_access
 from app.models.schema import User
 from app.services.azure_proxy import (
-    forward_chat_completions,
-    forward_count_tokens,
-    forward_messages,
-    forward_responses,
+    azure_forward_chat_completions,
+    azure_forward_count_tokens,
+    azure_forward_messages,
+    azure_forward_responses,
 )
 
 router = APIRouter()
@@ -74,7 +75,7 @@ async def azure_chat_completions(
     accepted so clients work regardless of whether their base URL already
     includes the ``/v1`` prefix.
     """
-    return await forward_chat_completions(request, user)
+    return await azure_forward_chat_completions(request, user)
 
 
 @router.post("/azure/v1/responses")
@@ -94,7 +95,7 @@ async def azure_responses(
     clients work regardless of whether their base URL already includes
     the ``/v1`` prefix (mirrors the ``/azure/messages`` alias).
     """
-    return await forward_responses(request, user)
+    return await azure_forward_responses(request, user)
 
 
 @router.post("/azure/v1/messages")
@@ -109,7 +110,7 @@ async def azure_messages(
     Anthropic SDK / Claude Code clients work regardless of whether their
     ``ANTHROPIC_BASE_URL`` already includes the ``/v1`` prefix.
     """
-    return await forward_messages(request, user)
+    return await azure_forward_messages(request, user)
 
 
 @router.post("/azure/v1/messages/count_tokens")
@@ -120,4 +121,4 @@ async def azure_count_tokens(
 ):
     """Token counting for Azure deployments — returns a chars/4 estimate
     (Azure OpenAI does not expose a tokenize endpoint)."""
-    return await forward_count_tokens(request, user)
+    return await azure_forward_count_tokens(request, user)

@@ -14,7 +14,7 @@ graph TD
     database --> deps["deps.py<br/>API Key Auth"]
     auth --> |Security: get_web_user| WebUI["routers/web_ui.py"]
     auth --> |Security: get_web_user| Admin["routers/admin.py<br/>(Web UI + REST API)"]
-    deps --> |get_current_user| LLM_API["routers/vllm_api.py"]
+    deps --> |get_current_user| LLM_API["routers/v1_api.py"]
     deps --> |get_current_user| AzureAPI["routers/azure_api.py"]
     server_state --> VllmProxy["services/vllm_proxy.py"]
     server_state --> AzureProxy["services/azure_proxy.py"]

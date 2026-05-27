@@ -3,7 +3,7 @@ FastAPI application entry point.
 
 Lifespan: DB init, global httpx client, background health checks.
 Middleware: CORS.
-Router mounting: web_ui, vllm_api, azure_api, admin.
+Router mounting: web_ui, v1_api, azure_api, admin.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from app.core.config import APP_TITLE
 from app.core.database import init_db
 from app.core.logger import logger
 from app.core.server_state import close_client, init_client
-from app.routers import admin, azure_api, vllm_api, web_ui
+from app.routers import admin, azure_api, v1_api, web_ui
 from app.services.health import health_check_loop
 
 _templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
@@ -99,6 +99,6 @@ async def account_disabled_handler(request: Request, exc: AccountDisabledError):
 
 # --- Routers ---
 app.include_router(web_ui.router)
-app.include_router(vllm_api.router)
+app.include_router(v1_api.router)
 app.include_router(azure_api.router)
 app.include_router(admin.router)

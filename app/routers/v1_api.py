@@ -1,11 +1,12 @@
 """
-OpenAI-compatible API endpoints for the vLLM downstream backend.
+Unified ``/v1/*`` public API surface.
 
-Mounted at ``/v1/*``. Chat / messages / count_tokens additionally dispatch
-to Azure OpenAI when the requested ``model`` alias is configured under
-``[azure_models.*]`` AND the caller has ``can_use_azure`` (or is admin),
-so one base URL lets clients like Claude Code's model picker see both
-backends side-by-side.
+Routes the OpenAI-compatible and Anthropic-compatible endpoints. Defaults
+to the vLLM backend (via ``vllm_proxy``); chat / messages / count_tokens
+additionally dispatch to Azure OpenAI (via ``azure_proxy``) when the
+requested ``model`` alias is configured under ``[azure_models.*]`` AND
+the caller has ``can_use_azure`` (or is admin). One base URL lets clients
+like Claude Code's model picker see both backends side-by-side.
 
 Design: each base URL has its own default fallback. ``/v1/*`` serves
 vLLM-first (Azure is additive when the caller is authorized); aliases the
@@ -38,17 +39,17 @@ from app.core.deps import get_current_user
 from app.core.logger import logger
 from app.models.schema import User
 from app.services.azure_proxy import (
-    forward_chat_completions as azure_forward_chat_completions,
-    forward_count_tokens as azure_forward_count_tokens,
-    forward_messages as azure_forward_messages,
+    azure_forward_chat_completions,
+    azure_forward_count_tokens,
+    azure_forward_messages,
 )
 from app.services.vllm_proxy import (
-    forward_count_tokens_request,
-    forward_messages_request,
-    forward_request,
-    forward_simple_request,
-    forward_to_path,
-    forward_tokenize_request,
+    vllm_forward_chat_completions,
+    vllm_forward_count_tokens,
+    vllm_forward_messages,
+    vllm_forward_responses,
+    vllm_forward_simple_request,
+    vllm_forward_tokenize,
 )
 
 router = APIRouter()
@@ -176,13 +177,13 @@ async def chat_completions(request: Request, user: User = Depends(get_current_us
     alias = await _peek_model_alias(request)
     if alias and _route_to_azure(alias, user):
         return await azure_forward_chat_completions(request, user)
-    return await forward_request(request, user, allowed_types=["llm", "vlm"])
+    return await vllm_forward_chat_completions(request, user, allowed_types=["llm", "vlm"])
 
 
 @router.post("/v1/responses")
 @router.post("/responses")
 async def responses(request: Request, user: User = Depends(get_current_user)):
-    return await forward_to_path(
+    return await vllm_forward_responses(
         request, user, allowed_types=["llm", "vlm"], path_suffix="/responses"
     )
 
@@ -207,7 +208,7 @@ async def messages(request: Request, user: User = Depends(get_current_user)):
     alias = await _peek_model_alias(request)
     if alias and _route_to_azure(alias, user):
         return await azure_forward_messages(request, user)
-    return await forward_messages_request(request, user, allowed_types=["llm", "vlm"])
+    return await vllm_forward_messages(request, user, allowed_types=["llm", "vlm"])
 
 
 @router.post("/v1/messages/count_tokens")
@@ -232,7 +233,7 @@ async def messages_count_tokens(
     alias = await _peek_model_alias(request)
     if alias and _route_to_azure(alias, user):
         return await azure_forward_count_tokens(request, user)
-    return await forward_count_tokens_request(
+    return await vllm_forward_count_tokens(
         request, user, allowed_types=["llm", "vlm"]
     )
 
@@ -246,7 +247,7 @@ async def tokenize(request: Request, user: User = Depends(get_current_user)):
     the OpenAI API spec. The gateway accepts both paths for client convenience
     and forwards to the downstream ``/tokenize`` endpoint. Not billed.
     """
-    return await forward_tokenize_request(
+    return await vllm_forward_tokenize(
         request, user, allowed_types=["llm", "vlm"]
     )
 
@@ -254,7 +255,7 @@ async def tokenize(request: Request, user: User = Depends(get_current_user)):
 @router.post("/v1/embeddings")
 @router.post("/embeddings")
 async def embeddings(request: Request, user: User = Depends(get_current_user)):
-    return await forward_simple_request(
+    return await vllm_forward_simple_request(
         request,
         user,
         allowed_types=["embedding", "vision_embedding"],
@@ -268,7 +269,7 @@ async def embeddings(request: Request, user: User = Depends(get_current_user)):
 @router.post("/rerank")
 @router.post("/score")
 async def rerank(request: Request, user: User = Depends(get_current_user)):
-    return await forward_simple_request(
+    return await vllm_forward_simple_request(
         request,
         user,
         allowed_types=["reranker", "vision_reranker"],
