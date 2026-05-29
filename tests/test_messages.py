@@ -83,6 +83,49 @@ class TestRequestTranslation:
         out = anthropic_to_openai_request(body)
         assert out["messages"][0]["content"] == "You are helpful"
 
+    def test_inline_system_message_hoisted_to_front(self):
+        """A `role: "system"` entry inside `messages` (newer Claude Code injects
+        mid-conversation system reminders this way) must be hoisted into the
+        single leading system message — never emitted at a non-zero index.
+        Strict downstream chat templates (Qwen3.x) raise
+        "System message must be at the beginning" otherwise.
+        """
+        body = {
+            "model": "x",
+            "system": "You are Claude Code.",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+                {"role": "system", "content": "<system-reminder>stay on task</system-reminder>"},
+                {"role": "user", "content": "continue"},
+            ],
+        }
+        out = anthropic_to_openai_request(body)
+        system_indices = [
+            i for i, m in enumerate(out["messages"]) if m["role"] == "system"
+        ]
+        # Exactly one system message, and it is first.
+        assert system_indices == [0]
+        # Both the top-level system and the inline reminder are preserved.
+        assert "You are Claude Code." in out["messages"][0]["content"]
+        assert "stay on task" in out["messages"][0]["content"]
+        # The remaining (non-system) turns keep their order.
+        assert [m["role"] for m in out["messages"][1:]] == ["user", "assistant", "user"]
+
+    def test_developer_message_hoisted_to_front(self):
+        """`role: "developer"` messages are hoisted into the leading system
+        block too (same downstream ordering constraint)."""
+        body = {
+            "model": "x",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "developer", "content": "be concise"},
+            ],
+        }
+        out = anthropic_to_openai_request(body)
+        assert out["messages"][0] == {"role": "system", "content": "be concise"}
+        assert [m["role"] for m in out["messages"]] == ["system", "user"]
+
     def test_image_block_base64(self):
         body = {
             "model": "x",
