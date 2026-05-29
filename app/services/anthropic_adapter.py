@@ -138,16 +138,34 @@ def anthropic_to_openai_request(
     """
     openai_messages: list[dict[str, Any]] = []
 
+    # System content is collected here and emitted as a SINGLE message at the
+    # very front (index 0). Anthropic clients carry system text in the top-level
+    # "system" field, but newer Claude Code also injects mid-conversation
+    # "system" reminders as `role: "system"` entries inside `messages`. If those
+    # were emitted inline they would land at a non-zero index, and strict
+    # downstream chat templates (e.g. Qwen3.x) raise
+    # "System message must be at the beginning". Hoisting every piece of system
+    # text into one leading message keeps the gateway's output valid for them.
+    system_parts: list[str] = []
+
     # System prompt — Anthropic uses a top-level "system" field (string or list)
     system = body.get("system")
     if system:
-        openai_messages.append(
-            {"role": "system", "content": _content_to_openai_text(system)}
-        )
+        text = _content_to_openai_text(system)
+        if text:
+            system_parts.append(text)
 
     for msg in body.get("messages", []):
         role = msg.get("role", "user")
         content = msg.get("content", "")
+
+        # Hoist any system / developer role message into the leading system
+        # block rather than emitting it inline (see system_parts comment above).
+        if role in ("system", "developer"):
+            text = _content_to_openai_text(content)
+            if text:
+                system_parts.append(text)
+            continue
 
         # Simple string content -> direct mapping
         if isinstance(content, str):
@@ -231,6 +249,12 @@ def anthropic_to_openai_request(
                     and not thinking_parts and tool_results):
                 continue
             openai_messages.append(msg_out)
+
+    # Emit the consolidated system content as the single leading message.
+    if system_parts:
+        openai_messages.insert(
+            0, {"role": "system", "content": "\n\n".join(system_parts)}
+        )
 
     openai_body: dict[str, Any] = {
         "model": body.get("model", ""),
