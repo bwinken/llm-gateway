@@ -316,6 +316,83 @@ def anthropic_to_openai_request(
 
 
 # ---------------------------------------------------------------------------
+# Empty / near-empty turn diagnostics
+# ---------------------------------------------------------------------------
+
+def summarize_request_shape(body: dict[str, Any]) -> str:
+    """Compact, log-friendly summary of an Anthropic request's message history.
+
+    Surfaces the signals that distinguish the leading hypotheses for a
+    silent empty turn (out<=1):
+      - ``asst_thinking`` — assistant turns carrying a ``thinking`` block
+        (how much reasoning history is being fed back, e.g. under
+        ``preserve_thinking``)
+      - ``asst_empty``    — assistant turns with NO visible text and NO
+        tool_use (the degenerate "said nothing" turns that, once present,
+        can re-demonstrate an empty answer to the model on the next turn)
+    """
+    messages = body.get("messages") or []
+    n_assistant = 0
+    n_thinking = 0
+    n_empty = 0
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        n_assistant += 1
+        content = msg.get("content", "")
+        has_text = False
+        has_tool = False
+        has_thinking = False
+        if isinstance(content, str):
+            has_text = bool(content.strip())
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text" and block.get("text", "").strip():
+                    has_text = True
+                elif btype == "tool_use":
+                    has_tool = True
+                elif btype == "thinking" and block.get("thinking", "").strip():
+                    has_thinking = True
+        if has_thinking:
+            n_thinking += 1
+        if not has_text and not has_tool:
+            n_empty += 1
+    return (
+        f"msgs={len(messages)} asst={n_assistant} "
+        f"asst_thinking={n_thinking} asst_empty={n_empty}"
+    )
+
+
+def empty_turn_warning(
+    model_alias: str,
+    input_tokens: int,
+    output_tokens: int,
+    stop_reason: str | None,
+    text_chars: int,
+    thinking_chars: int,
+    req_shape: str,
+) -> str | None:
+    """Build a diagnostic line for a clean-finish but empty turn, or None.
+
+    Returns a message only when ``output_tokens <= 1`` — the "silent stop"
+    Claude Code shows. ``text_chars`` / ``thinking_chars`` distinguish a
+    truly-empty turn (both 0 → model emitted only EOS) from a thinking-only
+    one; ``req_shape`` (see ``summarize_request_shape``) shows whether the
+    request history was carrying empty / thinking assistant turns.
+    """
+    if output_tokens > 1:
+        return None
+    return (
+        f"Empty/near-empty turn | model={model_alias} "
+        f"in={input_tokens} out={output_tokens} stop={stop_reason} "
+        f"text_chars={text_chars} thinking_chars={thinking_chars} {req_shape}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Response: OpenAI -> Anthropic (non-streaming)
 # ---------------------------------------------------------------------------
 
@@ -410,6 +487,10 @@ class AnthropicStreamTranslator:
         self.input_tokens = 0
         self.output_tokens = 0
         self.stop_reason: str | None = None
+        # Visible-output accounting — lets the empty-turn diagnostic tell a
+        # truly-empty turn (model emitted only EOS) from a thinking-only one.
+        self.text_chars = 0
+        self.thinking_chars = 0
         # Active content block tracking
         self._current_block_index: int = -1
         self._current_block_type: str | None = None  # "thinking" | "text" | "tool_use"
@@ -475,6 +556,7 @@ class AnthropicStreamTranslator:
         # content block so Claude Code renders it in its "Thought" panel.
         reasoning = delta.get("reasoning_content") or delta.get("reasoning")
         if isinstance(reasoning, str) and reasoning:
+            self.thinking_chars += len(reasoning)
             yield from self._ensure_thinking_block()
             yield self._sse(
                 "content_block_delta",
@@ -488,6 +570,7 @@ class AnthropicStreamTranslator:
         # Text delta
         text = delta.get("content")
         if isinstance(text, str) and text:
+            self.text_chars += len(text)
             yield from self._ensure_text_block()
             yield self._sse(
                 "content_block_delta",

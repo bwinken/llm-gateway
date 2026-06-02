@@ -14,7 +14,9 @@ import httpx
 from app.services.anthropic_adapter import (
     AnthropicStreamTranslator,
     anthropic_to_openai_request,
+    empty_turn_warning,
     openai_to_anthropic_response,
+    summarize_request_shape,
 )
 from tests.conftest import FakeStreamResponse, auth_header, make_httpx_response
 
@@ -1000,3 +1002,144 @@ class TestMessagesEndpointStream:
         # Without input_tokens, the client's context indicator resets to 0.
         assert '"input_tokens": 4' in body
         assert '"output_tokens": 2' in body
+
+    def test_stream_out1_logs_empty_turn_warning(self, client, test_user):
+        """A clean finish (finish_reason=stop) that produced only 1 output
+        token and no visible content logs the empty-turn diagnostic."""
+        from loguru import logger
+
+        sse_lines = [
+            'data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}',
+            'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1200,"completion_tokens":1}}',
+            "data: [DONE]",
+        ]
+        fake = FakeStreamResponse(sse_lines)
+        mock = client.__httpx_mock__
+        mock.build_request.return_value = httpx.Request("POST", "http://mock-llm:8000/v1/chat/completions")
+        mock.send.return_value = fake
+
+        captured: list[str] = []
+        sink_id = logger.add(captured.append, level="WARNING")
+        try:
+            resp = client.post(
+                "/v1/messages",
+                json={
+                    "model": "test-llm",
+                    "max_tokens": 100,
+                    "stream": True,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                headers=auth_header(),
+            )
+            assert resp.status_code == 200
+            _ = resp.text  # drain the stream so the generator finishes + logs
+        finally:
+            logger.remove(sink_id)
+
+        warnings = "".join(captured)
+        assert "Empty/near-empty turn" in warnings
+        assert "out=1" in warnings
+        assert "text_chars=0" in warnings
+
+
+# ---------------------------------------------------------------------------
+# Empty / near-empty turn diagnostics
+#
+# A clean finish (finish_reason present) with output_tokens <= 1 is the
+# "silent stop" Claude Code shows: a successful-but-empty turn. We instrument
+# it so the frequency and request shape are visible in the logs without
+# enabling full per-user monitoring.
+# ---------------------------------------------------------------------------
+
+class TestEmptyTurnDiagnostics:
+
+    def test_translator_tracks_text_and_thinking_chars(self):
+        """The translator counts visible text vs reasoning chars so the
+        diagnostic can tell a truly-empty turn from a thinking-only one."""
+        t = AnthropicStreamTranslator("qwen3-thinking")
+        list(t.start())
+        list(t.handle_chunk({
+            "choices": [{"index": 0, "delta": {"reasoning_content": "abc"}, "finish_reason": None}]
+        }))
+        list(t.handle_chunk({
+            "choices": [{"index": 0, "delta": {"content": "hello"}, "finish_reason": None}]
+        }))
+        assert t.thinking_chars == 3
+        assert t.text_chars == 5
+
+    def test_translator_chars_zero_when_only_eos(self):
+        """A turn that produced no visible content keeps both counters at 0."""
+        t = AnthropicStreamTranslator("qwen3-thinking")
+        list(t.start())
+        list(t.handle_chunk({
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1200, "completion_tokens": 1},
+        }))
+        assert t.text_chars == 0
+        assert t.thinking_chars == 0
+
+    def test_empty_turn_warning_fires_on_single_token(self):
+        msg = empty_turn_warning(
+            "qwen3.6-27b", input_tokens=1200, output_tokens=1,
+            stop_reason="end_turn", text_chars=0, thinking_chars=0,
+            req_shape="msgs=40 asst=20 asst_thinking=18 asst_empty=2",
+        )
+        assert msg is not None
+        assert "qwen3.6-27b" in msg
+        assert "out=1" in msg
+        assert "asst_empty=2" in msg
+
+    def test_empty_turn_warning_fires_on_zero_tokens(self):
+        msg = empty_turn_warning(
+            "qwen3.6-27b", input_tokens=900, output_tokens=0,
+            stop_reason="end_turn", text_chars=0, thinking_chars=0,
+            req_shape="msgs=10 asst=4 asst_thinking=4 asst_empty=0",
+        )
+        assert msg is not None
+        assert "out=0" in msg
+
+    def test_empty_turn_warning_silent_on_normal_turn(self):
+        """A turn with real output (>1 token) must not warn."""
+        assert empty_turn_warning(
+            "qwen3.6-27b", input_tokens=1200, output_tokens=57,
+            stop_reason="end_turn", text_chars=210, thinking_chars=40,
+            req_shape="msgs=40 asst=20 asst_thinking=18 asst_empty=0",
+        ) is None
+
+    def test_summarize_request_shape_counts_thinking_and_empty_assistant(self):
+        body = {
+            "messages": [
+                {"role": "user", "content": "hi"},
+                # thinking + text → has visible text, not empty; has thinking
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "hmm"},
+                    {"type": "text", "text": "hello"},
+                ]},
+                # thinking only → no text, no tool → EMPTY (the degenerate kind)
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "hmm2"},
+                ]},
+                # tool_use only → no text but has a tool call → NOT empty
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
+                ]},
+            ]
+        }
+        s = summarize_request_shape(body)
+        assert "msgs=4" in s
+        assert "asst=3" in s
+        assert "asst_thinking=2" in s
+        assert "asst_empty=1" in s
+
+    def test_summarize_request_shape_plain_string_assistant(self):
+        """A normal assistant string answer is neither empty nor thinking."""
+        body = {
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello there"},
+            ]
+        }
+        s = summarize_request_shape(body)
+        assert "asst=1" in s
+        assert "asst_thinking=0" in s
+        assert "asst_empty=0" in s

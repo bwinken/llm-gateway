@@ -35,7 +35,9 @@ from app.models.schema import UsageLog, User
 from app.services.anthropic_adapter import (
     AnthropicStreamTranslator,
     anthropic_to_openai_request,
+    empty_turn_warning,
     openai_to_anthropic_response,
+    summarize_request_shape,
 )
 from app.services.monitor import is_monitored, log_monitor, log_monitor_error
 
@@ -674,14 +676,21 @@ async def vllm_forward_messages(
     monitor_body = dict(anthropic_body)
     monitor_body["model"] = resolved_alias
 
+    # Compact request-shape summary for the empty-turn diagnostic (see
+    # _stream_messages / _non_stream_messages). Computed from the original
+    # Anthropic body so thinking blocks are still visible.
+    req_shape = summarize_request_shape(anthropic_body)
+
     if is_stream:
         return await _stream_messages(
             client, target_url, openai_body, downstream_headers,
             user, resolved_alias, model_type, extra_headers, monitor_body, route,
+            req_shape,
         )
     return await _non_stream_messages(
         client, target_url, openai_body, downstream_headers,
         user, resolved_alias, model_type, extra_headers, monitor_body, route,
+        req_shape,
     )
 
 
@@ -691,6 +700,7 @@ async def _non_stream_messages(
     extra_headers: dict[str, str] | None = None,
     monitor_body: dict | None = None,
     route: dict[str, Any] | None = None,
+    req_shape: str = "",
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
@@ -708,6 +718,23 @@ async def _non_stream_messages(
 
     input_tk = anthropic_data["usage"]["input_tokens"]
     output_tk = anthropic_data["usage"]["output_tokens"]
+
+    # Empty / near-empty turn diagnostic (silent stop in Claude Code).
+    text_chars = sum(
+        len(b.get("text", "")) for b in anthropic_data.get("content", [])
+        if isinstance(b, dict) and b.get("type") == "text"
+    )
+    thinking_chars = sum(
+        len(b.get("thinking", "")) for b in anthropic_data.get("content", [])
+        if isinstance(b, dict) and b.get("type") == "thinking"
+    )
+    diag = empty_turn_warning(
+        model_alias, input_tk, output_tk, anthropic_data.get("stop_reason"),
+        text_chars, thinking_chars, req_shape,
+    )
+    if diag:
+        logger.warning(diag)
+
     _log_usage(user, model_alias, model_type, input_tk, output_tk, "/v1/messages", route=route)
     if is_monitored(user.id):
         cost = float(_calc_cost(route or {}, model_type, input_tk, output_tk))
@@ -722,6 +749,7 @@ async def _stream_messages(
     extra_headers: dict[str, str] | None = None,
     monitor_body: dict | None = None,
     route: dict[str, Any] | None = None,
+    req_shape: str = "",
 ) -> StreamingResponse:
     req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     _monitoring = is_monitored(user.id)
@@ -782,8 +810,16 @@ async def _stream_messages(
 
         input_tokens = translator.input_tokens
         output_tokens = translator.output_tokens
-        if input_tokens == 0 and output_tokens == 0:
-            logger.warning("Anthropic stream for model={} ended with 0 tokens", model_alias)
+        # Empty / near-empty turn diagnostic: a clean finish with out<=1 is
+        # the "silent stop" Claude Code shows. text/thinking chars tell a
+        # truly-empty turn from a thinking-only one; req_shape shows whether
+        # the request history was carrying empty / thinking assistant turns.
+        diag = empty_turn_warning(
+            model_alias, input_tokens, output_tokens, translator.stop_reason,
+            translator.text_chars, translator.thinking_chars, req_shape,
+        )
+        if diag:
+            logger.warning(diag)
         _log_usage(user, model_alias, model_type, input_tokens, output_tokens, "/v1/messages", route=route)
         if _monitoring:
             cost = float(_calc_cost(route or {}, model_type, input_tokens, output_tokens))
