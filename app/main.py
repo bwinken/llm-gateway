@@ -35,6 +35,10 @@ async def lifespan(app: FastAPI):
     init_db()
     await init_client()
 
+    # Initialise Langfuse observability (no-op when LANGFUSE_* unset).
+    from app.services.observability import get_langfuse
+    get_langfuse()
+
     # Launch background health checker
     health_task = asyncio.create_task(health_check_loop(interval=30))
     logger.info("{} ready.", APP_TITLE)
@@ -48,6 +52,8 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     await close_client()
+    from app.services.observability import flush_langfuse
+    flush_langfuse()
     logger.info("{} shut down.", APP_TITLE)
 
 

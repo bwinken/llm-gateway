@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from app.services.vllm_proxy import _calc_cost
+from app.services.vllm_proxy import _calc_cost, _calc_cost_breakdown
 
 
 class TestCalcCostBasics:
@@ -69,3 +69,30 @@ class TestCachedTokenPricing:
         route = {"input_price_per_1m": 0.5, "output_price_per_1m": 1.5}
         cost = _calc_cost(route, "llm", 1_000_000, 0)
         assert cost == Decimal("0.50")
+
+
+class TestCostBreakdown:
+    """_calc_cost_breakdown feeds Langfuse costDetails; total must match _calc_cost."""
+
+    def test_breakdown_components_sum_to_total(self):
+        route = {
+            "input_price_per_1m": 10.0,
+            "output_price_per_1m": 30.0,
+            "cached_input_price_per_1m": 2.5,
+        }
+        bd = _calc_cost_breakdown(route, "llm", 10_000, 1_000, cached_tokens=8_000)
+        # uncached 2_000*10 + cached 8_000*2.5 = 20_000 + 20_000 = 40_000 input
+        assert bd["input"] == Decimal("40000") / 1_000_000
+        assert bd["cache_read_input_tokens"] == Decimal("20000") / 1_000_000
+        assert bd["output"] == Decimal("30000") / 1_000_000
+        assert bd["total"] == Decimal("70000") / 1_000_000
+        # and total equals the scalar _calc_cost
+        assert bd["total"] == _calc_cost(route, "llm", 10_000, 1_000, cached_tokens=8_000)
+
+    def test_breakdown_no_cache(self):
+        route = {"input_price_per_1m": 2.0, "output_price_per_1m": 6.0}
+        bd = _calc_cost_breakdown(route, "llm", 1000, 500)
+        assert bd["input"] == Decimal("2000") / 1_000_000
+        assert bd["output"] == Decimal("3000") / 1_000_000
+        assert bd["cache_read_input_tokens"] == Decimal("0")
+        assert bd["total"] == _calc_cost(route, "llm", 1000, 500)

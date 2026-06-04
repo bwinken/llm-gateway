@@ -410,7 +410,7 @@ async def _non_stream_chat(
     output_tk = usage.get("completion_tokens", 0)
     cached_tk = _cached_tokens_from_responses(raw.get("usage") or {})
     _log_usage(user, alias, model_type, input_tk, output_tk,
-               "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk)
+               "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk, backend="azure")
     if is_monitored(user.id):
         cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
         log_monitor(user.id, monitor_body, chat_data, alias,
@@ -529,7 +529,7 @@ async def _stream_chat(
                 _summarize_input_items(body.get("input")),
             )
         _log_usage(user, alias, model_type, input_tk, output_tk,
-                   "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk)
+                   "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk, backend="azure")
         if _monitoring:
             cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
             log_monitor(user.id, monitor_body, chunks, alias,
@@ -625,7 +625,7 @@ async def _non_stream_messages(
     output_tk = anthropic_data["usage"]["output_tokens"]
     cached_tk = _cached_tokens_from_responses(raw.get("usage") or {})
     _log_usage(user, alias, model_type, input_tk, output_tk,
-               "/azure/v1/messages", route=route, cached_tokens=cached_tk)
+               "/azure/v1/messages", route=route, cached_tokens=cached_tk, backend="azure")
     if is_monitored(user.id):
         cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
         log_monitor(user.id, monitor_body, anthropic_data, alias,
@@ -766,7 +766,7 @@ async def _stream_messages(
                 _summarize_input_items(body.get("input")),
             )
         _log_usage(user, alias, model_type, input_tk, output_tk,
-                   "/azure/v1/messages", route=route, cached_tokens=cached_tk)
+                   "/azure/v1/messages", route=route, cached_tokens=cached_tk, backend="azure")
         if _monitoring:
             cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
             log_monitor(user.id, monitor_body, chunks, alias,
@@ -901,7 +901,7 @@ async def _non_stream_responses(
     output_tk = usage.get("output_tokens", 0) or 0
     cached_tk = _cached_tokens_from_responses(usage)
     _log_usage(user, alias, model_type, input_tk, output_tk,
-               "/azure/v1/responses", route=route, cached_tokens=cached_tk)
+               "/azure/v1/responses", route=route, cached_tokens=cached_tk, backend="azure")
     if is_monitored(user.id):
         cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
         log_monitor(user.id, monitor_body, data, alias,
@@ -998,7 +998,7 @@ async def _stream_responses(
         if input_tk == 0 and output_tk == 0:
             logger.warning("Azure responses stream for model={} ended with 0 tokens", alias)
         _log_usage(user, alias, model_type, input_tk, output_tk,
-                   "/azure/v1/responses", route=route, cached_tokens=cached_tk)
+                   "/azure/v1/responses", route=route, cached_tokens=cached_tk, backend="azure")
         if _monitoring:
             cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
             log_monitor(user.id, monitor_body, recorded_events, alias,

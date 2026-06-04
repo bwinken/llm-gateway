@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 
-from fastapi import Depends, Header, HTTPException, Security, status
+from fastapi import Depends, Header, HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session, func, select
 
@@ -88,10 +88,22 @@ def _check_daily_limit(session: Session, user: User) -> None:
 
 
 def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
     session: Session = Depends(get_session),
 ) -> User:
+    # Stash request-level headers for the observability hook (read at the
+    # _log_usage seam). Best-effort: never let it affect auth.
+    try:
+        from app.services.observability import set_request_meta
+        set_request_meta(
+            user_agent=request.headers.get("user-agent"),
+            x_app=request.headers.get("x-app"),
+            session_id=request.headers.get("x-session-id"),
+        )
+    except Exception:
+        pass
     # Support both `Authorization: Bearer <key>` (OpenAI-style) and
     # `x-api-key: <key>` (Anthropic-style) for client compatibility.
     #

@@ -40,6 +40,12 @@ from app.services.anthropic_adapter import (
     summarize_request_shape,
 )
 from app.services.monitor import is_monitored, log_monitor, log_monitor_error
+from app.services.observability import (
+    GenerationRecord,
+    get_langfuse,
+    get_request_meta,
+    record_generation,
+)
 
 
 # Streaming reads can stall arbitrarily long between chunks (long prefill,
@@ -212,25 +218,21 @@ def _error_response(resp) -> JSONResponse:
     return JSONResponse(content=content, status_code=resp.status_code)
 
 
-def _calc_cost(
+def _calc_cost_breakdown(
     route: dict[str, Any],
     model_type: str,
     input_tokens: int,
     output_tokens: int,
     cached_tokens: int = 0,
-) -> Decimal:
-    """Cost lookup priority: per-model override on `route` → per-type → default.
+) -> dict[str, Decimal]:
+    """Return the per-component cost: ``{input, output, cache_read_input_tokens, total}``.
 
-    The caller passes the route dict it already resolved (a MODEL_ROUTING entry
-    for vLLM, an AZURE_MODELS entry for Azure, ...). This function stays
-    agnostic to which downstream backend produced the route.
-
-    `cached_tokens` (a subset of `input_tokens` that hit a prompt cache) is
-    billed at `cached_input_price_per_1m` when that price is configured —
-    used by the Azure path, where Microsoft really does bill cached prompt
-    tokens at a discount. When no cached price is set, or `cached_tokens` is
-    0, all input tokens are charged at the full input price (the vLLM path
-    never passes `cached_tokens`, so its behaviour is unchanged).
+    Same pricing logic / priority as ``_calc_cost`` (per-model override on
+    `route` → per-type → default), but split out so callers (Langfuse
+    ``costDetails``) can report the breakdown. ``input`` is the *full* billable
+    input cost (uncached portion at full rate + cached portion at the
+    discounted rate); ``cache_read_input_tokens`` is the cached portion's cost
+    on its own, for visibility. ``total`` matches ``_calc_cost`` exactly.
     """
     cached_price = None
     if route and "input_price_per_1m" in route and "output_price_per_1m" in route:
@@ -250,10 +252,40 @@ def _calc_cost(
     cached = max(0, min(cached_tokens, input_tokens))
     if cached and cached_price is not None:
         uncached = input_tokens - cached
-        billable_input = uncached * inp_price + cached * cached_price
+        cached_cost = cached * cached_price / 1_000_000
+        input_cost = (uncached * inp_price + cached * cached_price) / 1_000_000
     else:
-        billable_input = input_tokens * inp_price
-    return (billable_input + output_tokens * out_price) / 1_000_000
+        cached_cost = Decimal("0")
+        input_cost = input_tokens * inp_price / 1_000_000
+    output_cost = output_tokens * out_price / 1_000_000
+    return {
+        "input": input_cost,
+        "output": output_cost,
+        "cache_read_input_tokens": cached_cost,
+        "total": input_cost + output_cost,
+    }
+
+
+def _calc_cost(
+    route: dict[str, Any],
+    model_type: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int = 0,
+) -> Decimal:
+    """Total request cost. Lookup priority: per-model override on `route` →
+    per-type → default. Thin wrapper over ``_calc_cost_breakdown`` (kept for the
+    existing callers and its established behaviour).
+
+    `cached_tokens` (a subset of `input_tokens` that hit a prompt cache) is
+    billed at `cached_input_price_per_1m` when that price is configured —
+    used by the Azure path. When no cached price is set, or `cached_tokens` is
+    0, all input tokens are charged at the full input price (the vLLM path
+    never passes `cached_tokens`, so its behaviour is unchanged).
+    """
+    return _calc_cost_breakdown(
+        route, model_type, input_tokens, output_tokens, cached_tokens
+    )["total"]
 
 
 def _log_usage_sync(
@@ -305,6 +337,50 @@ def _log_usage_sync(
         logger.error("Failed to log usage for user={}: {}", username, exc)
 
 
+def _emit_observation(
+    user: User,
+    model: str,
+    model_type: str,
+    input_tokens: int,
+    output_tokens: int,
+    endpoint: str,
+    route: dict[str, Any],
+    cached_tokens: int,
+    backend: str,
+    breakdown: dict[str, Decimal],
+) -> None:
+    """Build a GenerationRecord and hand it to Langfuse. No-op when unconfigured."""
+    # Short-circuit before building anything when Langfuse is off (cached after
+    # the first call) — keeps the unconfigured request path overhead at zero.
+    if get_langfuse() is None:
+        return
+    meta = get_request_meta()
+    usage_details = {"input": input_tokens, "output": output_tokens}
+    if cached_tokens:
+        usage_details["cache_read_input_tokens"] = cached_tokens
+    cost_details = {k: float(v) for k, v in breakdown.items()}
+    # empty-turn signal only meaningful for chat-like models (embeddings emit 0
+    # output tokens legitimately).
+    empty_turn = model_type in ("llm", "vlm") and output_tokens <= 1
+    record_generation(GenerationRecord(
+        username=user.username,
+        user_id=str(user.id),
+        endpoint=endpoint,
+        backend=backend,
+        model_alias=model,
+        real_model=route.get("real_model") or route.get("deployment") or model,
+        model_type=model_type,
+        usage=usage_details,
+        cost=cost_details,
+        output_tokens=output_tokens,
+        empty_turn=empty_turn,
+        user_agent=meta.get("user_agent"),
+        x_app=meta.get("x_app"),
+        session_id=meta.get("session_id"),
+        display_name=getattr(user, "display_name", None),
+    ))
+
+
 def _log_usage(
     user: User,
     model: str,
@@ -314,6 +390,7 @@ def _log_usage(
     endpoint: str,
     route: dict[str, Any] | None = None,
     cached_tokens: int = 0,
+    backend: str = "vllm",
 ) -> None:
     """Fire-and-forget usage logging in a background thread.
 
@@ -323,12 +400,27 @@ def _log_usage(
 
     `cached_tokens` lets the Azure path bill prompt-cache hits at the
     discounted `cached_input_price_per_1m`; vLLM callers omit it.
+
+    `backend` ("vllm" | "azure") tags the Langfuse generation. Emitting the
+    Langfuse generation happens here so every billable path is covered from one
+    seam; it is a no-op when Langfuse is unconfigured.
     """
     import asyncio
 
     if route is None:
         route = MODEL_ROUTING.get(model, {})
-    cost = _calc_cost(route, model_type, input_tokens, output_tokens, cached_tokens)
+    breakdown = _calc_cost_breakdown(route, model_type, input_tokens, output_tokens, cached_tokens)
+    cost = breakdown["total"]
+
+    # Observability (no-op when Langfuse unconfigured; never raises).
+    try:
+        _emit_observation(
+            user, model, model_type, input_tokens, output_tokens,
+            endpoint, route, cached_tokens, backend, breakdown,
+        )
+    except Exception as exc:  # defensive — must never break logging/billing
+        logger.warning("observability hook failed: {}", exc)
+
     try:
         loop = asyncio.get_running_loop()
         loop.run_in_executor(
