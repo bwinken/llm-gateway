@@ -43,7 +43,7 @@ Client (Bearer API key) → FastAPI → deps.py (auth + daily limit check)
                                    → v1_api.py    (/v1/*)     → alias in AZURE_MODELS + can_use_azure ? azure_proxy.py : vllm_proxy.py
                                      azure_api.py (/azure/v1/*) → azure_proxy.py (Azure-only surface, require_azure_access)
                                    → httpx.AsyncClient → downstream (vLLM or Azure OpenAI)
-                                   → _log_usage() → DB
+                                   → _log_usage() → DB  + observability.record_generation() (Langfuse, no-op unless configured)
 ```
 
 The codebase has two parallel backends sharing the same auth, billing, monitoring, and pricing layers:
@@ -161,7 +161,7 @@ Stateless translator between OpenAI chat completions shape (the gateway's intern
   - `[azure_fallback]` — type → preferred fallback alias for the Azure path. Used by `_resolve_azure` when the requested alias is unknown or wrong-typed (typos, model renames, clients probing for names the gateway doesn't expose). No effect when the alias resolves directly. Reactive to mis-naming only — there is no proactive health probe of Azure deployments and no runtime-error fallback for 429/5xx mid-stream.
   - `[azure_models.<alias>]` — Azure OpenAI deployments: `type`, `endpoint`, `deployment`, `api_key`, `api_version` (default `2024-08-01-preview`). Same per-model pricing/metadata override fields are accepted.
   - **Alias uniqueness across maps**: `_build_config` raises `ValueError` at startup if any name appears in both `[models.<type>.<alias>]` and `[azure_models.<alias>]`. Required because `/v1/*` dispatches by alias lookup — a collision would make the routing non-deterministic.
-- **`.env`**: DATABASE_URL, AUTH_CENTER_APP_ID/PUBLIC_KEY_PATH, AUTH_BASE_URL (JWT issuer), `AZURE_HTTP_PROXY` (optional — routes `/azure/v1/*` downstream traffic through a corporate HTTP proxy; supports inline credentials `http://user:pass@host:port`; vLLM traffic is never proxied).
+- **`.env`**: DATABASE_URL, AUTH_CENTER_APP_ID/PUBLIC_KEY_PATH, AUTH_BASE_URL (JWT issuer), `AZURE_HTTP_PROXY` (optional — routes `/azure/v1/*` downstream traffic through a corporate HTTP proxy; supports inline credentials `http://user:pass@host:port`; vLLM traffic is never proxied), `LANGFUSE_HOST` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` (optional — enable Langfuse observability only when all three are set; see Observability below), `LANGFUSE_CAPTURE_IO` (optional bool — also send prompt/response content; default off).
 - **`deploy/.env`**: Docker Compose settings: PG credentials, OIDC issuer, oauth2-proxy client.
 
 ### Key Patterns
@@ -169,6 +169,7 @@ Stateless translator between OpenAI chat completions shape (the gateway's intern
 - vLLM downstream HTTP calls use a single shared `httpx.AsyncClient` (initialized in lifespan, accessed via `server_state.get_client()`); Azure downstream calls use `server_state.get_azure_client()`, which returns a separate proxied client when `AZURE_HTTP_PROXY` is set or falls back to the shared client otherwise
 - Background health check loop (`app/services/health.py`) pings all unique `base_url`s every 30s, updates `server_state._health_cache`, prunes stale entries (vLLM only; Azure deployments are not health-checked). For each alive vLLM server it additionally scrapes the Prometheus `/metrics` endpoint (`_metrics_url()` strips a trailing `/v1` off the base_url and appends `/metrics`), parses `vllm:num_requests_running` / `vllm:num_requests_waiting` (summed across `model_name` labels via `_parse_vllm_metrics`), and stores the running/waiting snapshot in `server_state._metrics_cache` (`set_metrics()` / `get_metrics()`; `prune_cache()` drops stale entries). Any scrape failure (endpoint disabled/404, non-vLLM server, parse miss, timeout) is swallowed — the entry is cleared and the scrape never affects the liveness result. The dashboard's System Status section surfaces this as `running N · waiting M` under each server's ONLINE indicator (amber when `waiting > 0`, red overload warning at `waiting >= 10`); all dashboard requests read the in-memory cache, so `/metrics` is hit once per server per 30s cycle regardless of viewer count
 - Usage is logged per-request to `usage_logs` table; cost lookup follows per-model override → per-type → `_default`
+- `_log_usage` (in `vllm_proxy.py`, shared by both backends) is the single seam for per-request side effects: it writes `usage_logs` AND calls `_emit_observation` → `observability.record_generation` (Langfuse). Adding a `backend` kwarg ("vllm"/"azure") + optional `output_payload` is all a caller needs to participate; embeddings/rerank/score deliberately pass no I/O. Because every billable forward path already funnels through `_log_usage`, observability is covered without per-endpoint wiring
 - Model alias (user-facing name) is swapped to `real_model` (vLLM) or routed to its `deployment` (Azure) before forwarding downstream
 - New users are auto-provisioned with `daily_limit_usd = APP_CONFIG.default_daily_limit_usd` (admins can change the floor at runtime via `POST /admin/default-limit`, which also bulk-bumps any user with `0 < daily_limit_usd < new_floor`; users at `0` (unlimited) are never modified)
 
@@ -179,6 +180,15 @@ Stateless translator between OpenAI chat completions shape (the gateway's intern
 - Only monitors `llm`, `embedding`, and `reranker` model types (vision variants excluded)
 - File writes happen in a background thread via `asyncio.run_in_executor` (fire-and-forget, non-blocking)
 - `GET /admin/monitor` returns currently monitored users with per-type file sizes and total disk usage; warns at 100 MB per user
+
+### Observability (`app/services/observability.py`)
+
+Langfuse integration, decoupled from `monitor.py` and intended to eventually replace it. Emits one Langfuse **generation** per billable request from the `_log_usage` seam. Env-gated: a true no-op (langfuse imported lazily, `get_langfuse()` returns `None`) unless `LANGFUSE_HOST` + `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` are all set. Built on the Langfuse Python SDK v4 (OTel-based: `propagate_attributes` for trace-level userId/session/tags + `start_observation(as_type="generation")` + `.score()`).
+
+- **Never breaks the request**: `record_generation` and the `_emit_observation` call site both swallow all exceptions; SDK calls only enqueue to a background exporter (non-blocking).
+- **Field routing** (see `docs/langfuse-observability.md`): `userId`=`user.username` (immutable `user.id` in metadata as anchor), `model`=alias, generation `name`=endpoint, `usageDetails`/`costDetails` from the gateway's own `_calc_cost` breakdown (Langfuse never re-prices), `tags`=`backend:`/`type:`, and **categorical/numeric Scores** for `client` (derived by `classify_client(user_agent, endpoint, x_app)` → claude-code / roo-code / openai-compatible / …), `empty_turn`, `fallback_used`, `output_tokens`. Statisticable dimensions go to `name`/`model`/Scores (not metadata, which Langfuse can't group-by).
+- **Request headers** (`User-Agent`, `x-app`, `x-session-id`) are stashed by `deps.get_current_user` into a contextvar (`set_request_meta`) and read at the `_log_usage` seam — avoids threading them through every proxy function.
+- **Phase 2 I/O capture** (`LANGFUSE_CAPTURE_IO`, default off): when on, forward_* functions `set_io_input(messages)` (OpenAI chat shape so Langfuse renders a conversation) and stream/non-stream helpers attach the assistant output; `_emit_observation` only populates `input_payload`/`output_payload` when `capture_io_enabled()`. Covers chat/messages/responses on vLLM + Azure; embeddings/rerank/score are metrics-only by design (vector output is noise; input is bulk PII). Enabling in production is a governance decision (individual-level content monitoring), not just a flag.
 
 ## Testing
 
