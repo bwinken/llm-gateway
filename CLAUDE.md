@@ -92,7 +92,7 @@ Six forwarding methods, all sharing `_resolve_model()` for health-aware routing:
 
 ### Azure OpenAI Proxy Layer (`app/services/azure_proxy.py`)
 
-Parallel to the vLLM path; routed by `app/routers/azure_api.py` and shares the same auth, daily-limit, monitoring, pricing, and `_log_usage` machinery. **All Azure LLM/VLM calls go to the Responses API** (`/openai/v1/responses`); the chat-completions and Anthropic surfaces are translated internally via `responses_adapter`. This avoids per-model API surface decisions — gpt-5 / o-series pro variants only accept Responses, gpt-4o accepts both, so collapsing to Responses gives one code path.
+Parallel to the vLLM path; routed by `app/routers/azure_api.py` and shares the same auth, daily-limit, observability, pricing, and `_log_usage` machinery. **All Azure LLM/VLM calls go to the Responses API** (`/openai/v1/responses`); the chat-completions and Anthropic surfaces are translated internally via `responses_adapter`. This avoids per-model API surface decisions — gpt-5 / o-series pro variants only accept Responses, gpt-4o accepts both, so collapsing to Responses gives one code path.
 
 | Method | Used by | Behavior |
 |---|---|---|
@@ -173,20 +173,12 @@ Stateless translator between OpenAI chat completions shape (the gateway's intern
 - Model alias (user-facing name) is swapped to `real_model` (vLLM) or routed to its `deployment` (Azure) before forwarding downstream
 - New users are auto-provisioned with `daily_limit_usd = APP_CONFIG.default_daily_limit_usd` (admins can change the floor at runtime via `POST /admin/default-limit`, which also bulk-bumps any user with `0 < daily_limit_usd < new_floor`; users at `0` (unlimited) are never modified)
 
-### Per-User Monitoring (`app/services/monitor.py`)
-
-- Admins can toggle monitoring on individual users via `POST /admin/users/{id}/monitor`; state is in-memory (cleared on restart)
-- When monitoring is active, full request/response payloads are logged as JSONL files under `monitor/{username}/{date}_{type}.jsonl` (e.g. `20260402_chat.jsonl`)
-- Only monitors `llm`, `embedding`, and `reranker` model types (vision variants excluded)
-- File writes happen in a background thread via `asyncio.run_in_executor` (fire-and-forget, non-blocking)
-- `GET /admin/monitor` returns currently monitored users with per-type file sizes and total disk usage; warns at 100 MB per user
-
 ### Observability (`app/services/observability.py`)
 
-Langfuse integration, decoupled from `monitor.py` and intended to eventually replace it. Emits one Langfuse **generation** per billable request from the `_log_usage` seam. Env-gated: a true no-op (langfuse imported lazily, `get_langfuse()` returns `None`) unless `LANGFUSE_HOST` + `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` are all set. Built on the Langfuse Python SDK v4 (OTel-based: `propagate_attributes` for trace-level userId/session/tags + `start_observation(as_type="generation")` + `.score()`).
+Langfuse integration — this **replaced** the former per-user monitoring (`app/services/monitor.py`, the admin-toggled JSONL capture under `monitor/`, and the `/admin/monitor*` endpoints), which were removed. Emits one Langfuse **generation** per billable request from the `_log_usage` seam. Env-gated: a true no-op (langfuse imported lazily, `get_langfuse()` returns `None`) unless `LANGFUSE_HOST` + `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` are all set. Built on the Langfuse Python SDK v4 (OTel-based: `propagate_attributes` for trace-level userId/session/tags + `start_observation(as_type="generation")` + `.score()`).
 
 - **Never breaks the request**: `record_generation` and the `_emit_observation` call site both swallow all exceptions; SDK calls only enqueue to a background exporter (non-blocking).
-- **Failed requests are recorded too**: `_log_error` (the wrapper that replaced direct `log_monitor_error(user.id, …)` calls at every error site) fires the monitor error log AND a Langfuse generation with `level=ERROR` + `statusMessage` + a `request_error` categorical score — without writing `usage_logs` (failed calls aren't billable). One wrapper covers all ~20 error sites; dropping the monitor sink later is a one-line change.
+- **Failed requests are recorded too**: `_log_error` (called at every downstream error site — connection failure / non-200, in place of the former inline `log_monitor_error`) emits a Langfuse generation with `level=ERROR` + `statusMessage` + a `request_error` categorical score, without writing `usage_logs` (failed calls aren't billable).
 - **Request-header capture** lives in `observability.RequestMetaMiddleware` (pure ASGI), NOT a sync dependency — a contextvar written in a sync FastAPI dependency runs in a threadpool copy and is lost by the time `_log_usage` reads it.
 - **Field routing** (see `docs/langfuse-observability.md`): `userId`=`user.username` (immutable `user.id` in metadata as anchor), `model`=alias, generation `name`=endpoint, `usageDetails`/`costDetails` from the gateway's own `_calc_cost` breakdown (Langfuse never re-prices), `tags`=`backend:`/`type:`, and **categorical/numeric Scores** for `client` (derived by `classify_client(user_agent, endpoint, x_app)` → claude-code / roo-code / openai-compatible / …), `empty_turn`, `fallback_used`, `output_tokens`. Statisticable dimensions go to `name`/`model`/Scores (not metadata, which Langfuse can't group-by).
 - **Request headers** (`User-Agent`, `x-app`, `x-session-id`) are stashed by `deps.get_current_user` into a contextvar (`set_request_meta`) and read at the `_log_usage` seam — avoids threading them through every proxy function.

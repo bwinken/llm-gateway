@@ -39,7 +39,6 @@ from app.services.anthropic_adapter import (
     openai_to_anthropic_response,
     summarize_request_shape,
 )
-from app.services.monitor import is_monitored, log_monitor, log_monitor_error
 from app.services.observability import (
     GenerationRecord,
     capture_io_enabled,
@@ -401,15 +400,13 @@ def _log_error(
     endpoint: str,
     model_type: str,
 ) -> None:
-    """Record a FAILED request: the existing monitor error log + a Langfuse
-    error generation (level=ERROR + statusMessage + request_error score).
+    """Record a FAILED request as a Langfuse generation (level=ERROR +
+    statusMessage + request_error score).
 
     Does NOT write `usage_logs` — a failed call is not billable. No-op for
-    Langfuse when unconfigured; never raises. Replaces direct
-    `_log_error(user, ...)` calls so both sinks fire from one place
-    (and so the monitor sink can be dropped later without touching call sites).
+    Langfuse when unconfigured; never raises. Called at every downstream
+    error site (connection failure / non-200) in place of inline logging.
     """
-    log_monitor_error(user_id=user.id, request_body=body, error=error, status_code=status_code, model=model, endpoint=endpoint, model_type=model_type)
     try:
         if get_langfuse() is None:
             return
@@ -589,9 +586,6 @@ async def _non_stream_chat(
     output_tk = usage.get("completion_tokens", 0)
     obs_output = (data.get("choices") or [{}])[0].get("message") if capture_io_enabled() else None
     _log_usage(user, model, model_type, input_tk, output_tk, "/v1/chat/completions", route=route, output_payload=obs_output)
-    if is_monitored(user.id):
-        cost = float(_calc_cost(route or {}, model_type, input_tk, output_tk))
-        log_monitor(user.id, monitor_body or body, data, model, "/v1/chat/completions", input_tk, output_tk, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
 
 
@@ -601,14 +595,12 @@ async def _stream_chat(
     route: dict[str, Any] | None = None,
 ) -> StreamingResponse:
     req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
-    _monitoring = is_monitored(user.id)
     _capture_io = capture_io_enabled()
 
     async def event_generator():
         input_tokens = 0
         output_tokens = 0
         resp = None
-        chunks: list[dict] = [] if _monitoring else []
         output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
         try:
             resp = await client.send(req, stream=True)
@@ -623,8 +615,6 @@ async def _stream_chat(
                 if line.startswith("data: ") and line != "data: [DONE]":
                     try:
                         chunk = json.loads(line[6:])
-                        if _monitoring:
-                            chunks.append(chunk)
                         if _capture_io:
                             _c = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content")
                             if isinstance(_c, str) and _c:
@@ -649,9 +639,6 @@ async def _stream_chat(
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
         obs_output = "".join(output_parts) if _capture_io and output_parts else None
         _log_usage(user, model, model_type, input_tokens, output_tokens, "/v1/chat/completions", route=route, output_payload=obs_output)
-        if _monitoring:
-            cost = float(_calc_cost(route or {}, model_type, input_tokens, output_tokens))
-            log_monitor(user.id, monitor_body or body, chunks, model, "/v1/chat/completions", input_tokens, output_tokens, cost, model_type)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
     if extra_headers:
@@ -710,11 +697,6 @@ async def vllm_forward_simple_request(
         prompt_tokens = total_tokens
 
     _log_usage(user, resolved_alias, model_type, prompt_tokens, completion_tokens, endpoint_label)
-    if is_monitored(user.id):
-        monitor_body = body.copy()
-        monitor_body["model"] = resolved_alias
-        cost = float(_calc_cost(route, model_type, prompt_tokens, completion_tokens))
-        log_monitor(user.id, monitor_body, data, resolved_alias, endpoint_label, prompt_tokens, completion_tokens, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
 
 
@@ -795,9 +777,6 @@ async def _passthrough_non_stream(
     cached_tk = details.get("cached_tokens", 0) if isinstance(details, dict) else 0
     obs_output = data.get("output") or data if capture_io_enabled() else None
     _log_usage(user, model, model_type, input_tk, output_tk, path_suffix, route=route, cached_tokens=cached_tk, output_payload=obs_output)
-    if is_monitored(user.id):
-        cost = float(_calc_cost(route or {}, model_type, input_tk, output_tk, cached_tk))
-        log_monitor(user.id, json.loads(raw_body), data, model, path_suffix, input_tk, output_tk, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers)
 
 
@@ -914,9 +893,6 @@ async def _non_stream_messages(
         logger.warning(diag)
 
     _log_usage(user, model_alias, model_type, input_tk, output_tk, "/v1/messages", route=route, output_payload=obs_output)
-    if is_monitored(user.id):
-        cost = float(_calc_cost(route or {}, model_type, input_tk, output_tk))
-        log_monitor(user.id, monitor_body or body, anthropic_data, model_alias, "/v1/messages", input_tk, output_tk, cost, model_type)
 
     return JSONResponse(content=anthropic_data, headers=extra_headers)
 
@@ -930,14 +906,12 @@ async def _stream_messages(
     req_shape: str = "",
 ) -> StreamingResponse:
     req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
-    _monitoring = is_monitored(user.id)
     _capture_io = capture_io_enabled()
 
     logger.info("Stream start | user={} model={} endpoint=/v1/messages", user.username, model_alias)
 
     async def event_generator():
         translator = AnthropicStreamTranslator(model_alias)
-        chunks: list[dict] = []
         output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
         try:
             for event in translator.start():
@@ -962,8 +936,6 @@ async def _stream_messages(
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
-                if _monitoring:
-                    chunks.append(chunk)
                 if _capture_io:
                     _delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
                     _c = _delta.get("content")
@@ -1007,9 +979,6 @@ async def _stream_messages(
             logger.warning(diag)
         obs_output = "".join(output_parts) if _capture_io and output_parts else None
         _log_usage(user, model_alias, model_type, input_tokens, output_tokens, "/v1/messages", route=route, output_payload=obs_output)
-        if _monitoring:
-            cost = float(_calc_cost(route or {}, model_type, input_tokens, output_tokens))
-            log_monitor(user.id, monitor_body or body, chunks, model_alias, "/v1/messages", input_tokens, output_tokens, cost, model_type)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
     if extra_headers:
@@ -1195,7 +1164,6 @@ async def _passthrough_stream(
     route: dict[str, Any] | None = None,
 ) -> StreamingResponse:
     req = client.build_request("POST", url, content=raw_body, headers=headers, timeout=_STREAM_TIMEOUT)
-    _monitoring = is_monitored(user.id)
     _capture_io = capture_io_enabled()
 
     async def event_generator():
@@ -1203,7 +1171,6 @@ async def _passthrough_stream(
         output_tokens = 0
         cached_tokens = 0
         resp = None
-        chunks: list[dict] = []
         output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
         try:
             resp = await client.send(req, stream=True)
@@ -1217,8 +1184,6 @@ async def _passthrough_stream(
                 if line.startswith("data: ") and line != "data: [DONE]":
                     try:
                         chunk = json.loads(line[6:])
-                        if _monitoring:
-                            chunks.append(chunk)
                         if _capture_io:
                             # chat-completions shape (delta.content) OR
                             # Responses shape (response.output_text.delta)
@@ -1262,9 +1227,6 @@ async def _passthrough_stream(
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
         obs_output = "".join(output_parts) if _capture_io and output_parts else None
         _log_usage(user, model, model_type, input_tokens, output_tokens, path_suffix, route=route, cached_tokens=cached_tokens, output_payload=obs_output)
-        if _monitoring:
-            cost = float(_calc_cost(route or {}, model_type, input_tokens, output_tokens, cached_tokens))
-            log_monitor(user.id, json.loads(raw_body), chunks, model, path_suffix, input_tokens, output_tokens, cost, model_type)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
     if extra_headers:

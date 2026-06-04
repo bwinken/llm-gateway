@@ -442,12 +442,6 @@ function submitExport(e) {
                                     </button>
                                 </form>
                                 {% endif %}
-                                <button onclick="toggleMonitor({{ u.id }}, this)"
-                                        class="gw-btn text-xs px-3 py-1 monitor-btn {{ 'gw-btn-warn' if u.id in monitored_ids else 'gw-btn-ghost' }}"
-                                        data-monitoring="{{ 'true' if u.id in monitored_ids else 'false' }}">
-                                    <svg class="w-3.5 h-3.5 inline -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-                                    <span class="monitor-label">{{ 'Monitoring' if u.id in monitored_ids else 'Monitor' }}</span>
-                                </button>
                                 {% if not u.is_admin %}
                                 <form action="/admin/users/{{ u.id }}/delete" method="POST" data-username="{{ u.username }}"
                                       onsubmit="return confirm('Delete user ' + this.dataset.username + '? This cannot be undone.');">
@@ -542,12 +536,6 @@ function submitExport(e) {
                                         {{ 'Enable' if u.is_disabled else 'Disable' }}
                                     </button>
                                 </form>
-                                <button onclick="toggleMonitor({{ u.id }}, this)"
-                                        class="gw-btn text-xs px-3 py-1 monitor-btn {{ 'gw-btn-warn' if u.id in monitored_ids else 'gw-btn-ghost' }}"
-                                        data-monitoring="{{ 'true' if u.id in monitored_ids else 'false' }}">
-                                    <svg class="w-3.5 h-3.5 inline -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-                                    <span class="monitor-label">{{ 'Monitoring' if u.id in monitored_ids else 'Monitor' }}</span>
-                                </button>
                                 <form action="/admin/users/{{ u.id }}/delete" method="POST" data-username="{{ u.username }}"
                                       onsubmit="return confirm('Delete app ' + this.dataset.username + '? This cannot be undone.');">
                                     <button type="submit" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
@@ -568,31 +556,6 @@ function submitExport(e) {
                class="gw-btn gw-btn-ghost text-xs px-2 py-1 {{ 'opacity-30 pointer-events-none' if app_offset + app_limit >= app_total }}">&rarr; Next</a>
         </div>
         {% endif %}
-    </div>
-</div>
-
-{# ── Monitored Users ── #}
-<div id="monitorSection" class="gw-anim gw-d6 mt-6 hidden">
-    <div class="gw-card overflow-hidden">
-        <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid rgba(255,255,255,0.04)">
-            <div class="flex items-center gap-2">
-                <svg class="w-4 h-4 text-aw" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-                <h3 class="text-xs font-bold text-t3 uppercase tracking-wider">Active Monitors</h3>
-                <span id="monitorCount" class="text-[11px] text-t4"></span>
-            </div>
-            <button onclick="refreshMonitorStatus()" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Refresh</button>
-        </div>
-        <div class="overflow-x-auto">
-            <table class="gw-table">
-                <thead><tr>
-                    <th>User</th>
-                    <th style="text-align:right">Disk Usage</th>
-                    <th>File Types</th>
-                    <th style="text-align:right">Actions</th>
-                </tr></thead>
-                <tbody id="monitorBody"></tbody>
-            </table>
-        </div>
     </div>
 </div>
 
@@ -715,99 +678,6 @@ function submitExport(e) {
             .finally(function() { btn.disabled = false; setTimeout(function() { btn.textContent = origText; btn.classList.remove('text-green-400'); }, 1500); });
     }
     document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeKeyModal(); });
-
-    /* ── Monitor toggle ── */
-    function toggleMonitor(userId, btn) {
-        btn.disabled = true;
-        btn.classList.add('opacity-50');
-        fetch('/admin/users/' + userId + '/monitor', { method: 'POST' })
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (data.ok) {
-                    var label = btn.querySelector('.monitor-label');
-                    if (data.monitoring) {
-                        btn.dataset.monitoring = 'true';
-                        btn.classList.remove('gw-btn-ghost');
-                        btn.classList.add('gw-btn-warn');
-                        label.textContent = 'Monitoring';
-                    } else {
-                        btn.dataset.monitoring = 'false';
-                        btn.classList.remove('gw-btn-warn');
-                        btn.classList.add('gw-btn-ghost');
-                        label.textContent = 'Monitor';
-                    }
-                    refreshMonitorStatus();
-                } else {
-                    alert('Failed to toggle monitor.');
-                }
-            })
-            .catch(function() { alert('Network error.'); })
-            .finally(function() { btn.disabled = false; btn.classList.remove('opacity-50'); });
-    }
-
-    function refreshMonitorStatus() {
-        fetch('/admin/monitor')
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                var list = data.monitored || [];
-                var section = document.getElementById('monitorSection');
-                var body = document.getElementById('monitorBody');
-                var count = document.getElementById('monitorCount');
-                if (list.length === 0) {
-                    section.classList.add('hidden');
-                    return;
-                }
-                section.classList.remove('hidden');
-                count.textContent = list.length + ' user' + (list.length !== 1 ? 's' : '');
-                body.innerHTML = '';
-                list.forEach(function(m) {
-                    var types = Object.keys(m.types || {}).map(function(t) {
-                        return '<span class="inline-block text-[10px] bg-n3 text-t3 px-1.5 py-0.5 rounded mr-1">' + t + ' (' + m.types[t] + ' MB)</span>';
-                    }).join('') || '<span class="text-xs text-t4">No data yet</span>';
-                    var warning = m.warning ? '<span class="ml-1 text-[10px] text-ar font-semibold">! &gt;100 MB</span>' : '';
-                    var sizeClass = m.warning ? 'text-ar' : 'text-t1';
-                    var tr = document.createElement('tr');
-                    tr.innerHTML =
-                        '<td class="whitespace-nowrap"><span class="text-sm font-medium text-t1">' + m.username + '</span></td>' +
-                        '<td class="text-right whitespace-nowrap"><span class="text-sm font-mono ' + sizeClass + '">' + m.size_mb + ' MB</span>' + warning + '</td>' +
-                        '<td>' + types + '</td>' +
-                        '<td class="text-right"><button onclick="toggleMonitorById(' + m.user_id + ', this)" class="gw-btn gw-btn-ghost text-xs px-3 py-1">Stop</button></td>';
-                    body.appendChild(tr);
-                });
-            });
-    }
-
-    function toggleMonitorById(userId, btn) {
-        btn.disabled = true;
-        fetch('/admin/users/' + userId + '/monitor', { method: 'POST' })
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (data.ok) {
-                    // Update the matching button in user/app tables
-                    document.querySelectorAll('.monitor-btn').forEach(function(b) {
-                        if (b.onclick && b.onclick.toString().indexOf('(' + userId + ',') > -1) {
-                            var label = b.querySelector('.monitor-label');
-                            b.dataset.monitoring = data.monitoring ? 'true' : 'false';
-                            if (data.monitoring) {
-                                b.classList.remove('gw-btn-ghost');
-                                b.classList.add('gw-btn-warn');
-                                label.textContent = 'Monitoring';
-                            } else {
-                                b.classList.remove('gw-btn-warn');
-                                b.classList.add('gw-btn-ghost');
-                                label.textContent = 'Monitor';
-                            }
-                        }
-                    });
-                    refreshMonitorStatus();
-                }
-            })
-            .catch(function() { alert('Network error.'); })
-            .finally(function() { btn.disabled = false; });
-    }
-
-    // Load monitor status on page load
-    refreshMonitorStatus();
 </script>
 
 <script>

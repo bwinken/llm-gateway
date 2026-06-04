@@ -38,7 +38,6 @@ from app.services.anthropic_adapter import (
     anthropic_to_openai_request,
     openai_to_anthropic_response,
 )
-from app.services.monitor import is_monitored, log_monitor
 from app.services.responses_adapter import (
     ResponsesToChatStreamTranslator,
     openai_chat_to_responses_request,
@@ -418,10 +417,6 @@ async def _non_stream_chat(
     obs_output = (chat_data.get("choices") or [{}])[0].get("message") if capture_io_enabled() else None
     _log_usage(user, alias, model_type, input_tk, output_tk,
                "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk, backend="azure", output_payload=obs_output)
-    if is_monitored(user.id):
-        cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
-        log_monitor(user.id, monitor_body, chat_data, alias,
-                    "/azure/v1/chat/completions", input_tk, output_tk, cost, model_type)
     return JSONResponse(content=chat_data, headers=extra_headers or None)
 
 
@@ -457,7 +452,6 @@ async def _stream_chat(
             err_json = {"error": {"message": err_text[:500]}}
         return JSONResponse(status_code=resp.status_code, content=err_json)
 
-    _monitoring = is_monitored(user.id)
     _capture_io = capture_io_enabled()
     logger.info("Stream start | user={} model={} endpoint=/azure/v1/chat/completions",
                 user.username, alias)
@@ -470,12 +464,9 @@ async def _stream_chat(
 
     async def event_generator():
         translator = ResponsesToChatStreamTranslator(alias)
-        chunks: list[dict] = []
         output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
         try:
             for chunk in translator.start():
-                if _monitoring:
-                    chunks.append(chunk)
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
             async for kind, data in _pump_anthropic_lines(_resp_coro()):
@@ -495,8 +486,6 @@ async def _stream_chat(
                 if event is None:
                     continue
                 for chunk in translator.handle_event(event):
-                    if _monitoring:
-                        chunks.append(chunk)
                     if _capture_io:
                         _c = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content")
                         if isinstance(_c, str) and _c:
@@ -504,8 +493,6 @@ async def _stream_chat(
                     yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
             for chunk in translator.finish():
-                if _monitoring:
-                    chunks.append(chunk)
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             az_err = translator.derive_error_message()
             if az_err:
@@ -544,10 +531,6 @@ async def _stream_chat(
         obs_output = "".join(output_parts) if _capture_io and output_parts else None
         _log_usage(user, alias, model_type, input_tk, output_tk,
                    "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk, backend="azure", output_payload=obs_output)
-        if _monitoring:
-            cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
-            log_monitor(user.id, monitor_body, chunks, alias,
-                        "/azure/v1/chat/completions", input_tk, output_tk, cost, model_type)
 
     return StreamingResponse(
         event_generator(),
@@ -645,10 +628,6 @@ async def _non_stream_messages(
     obs_output = (chat_data.get("choices") or [{}])[0].get("message") if capture_io_enabled() else None
     _log_usage(user, alias, model_type, input_tk, output_tk,
                "/azure/v1/messages", route=route, cached_tokens=cached_tk, backend="azure", output_payload=obs_output)
-    if is_monitored(user.id):
-        cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
-        log_monitor(user.id, monitor_body, anthropic_data, alias,
-                    "/azure/v1/messages", input_tk, output_tk, cost, model_type)
     return JSONResponse(content=anthropic_data, headers=extra_headers or None)
 
 
@@ -682,7 +661,6 @@ async def _stream_messages(
             err_json = {"type": "error", "error": {"type": "api_error", "message": err_text[:500]}}
         return JSONResponse(status_code=resp.status_code, content=err_json)
 
-    _monitoring = is_monitored(user.id)
     _capture_io = capture_io_enabled()
     logger.info("Stream start | user={} model={} endpoint=/azure/v1/messages",
                 user.username, alias)
@@ -696,13 +674,10 @@ async def _stream_messages(
         # translator so the public Anthropic surface stays unchanged.
         responses_xlat = ResponsesToChatStreamTranslator(alias)
         anthropic_xlat = AnthropicStreamTranslator(alias)
-        chunks: list[dict] = []
         output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
 
         def _feed(chat_chunks) -> Iterator:
             for ch in chat_chunks:
-                if _monitoring:
-                    chunks.append(ch)
                 if _capture_io:
                     _c = ((ch.get("choices") or [{}])[0].get("delta") or {}).get("content")
                     if isinstance(_c, str) and _c:
@@ -793,10 +768,6 @@ async def _stream_messages(
         obs_output = "".join(output_parts) if _capture_io and output_parts else None
         _log_usage(user, alias, model_type, input_tk, output_tk,
                    "/azure/v1/messages", route=route, cached_tokens=cached_tk, backend="azure", output_payload=obs_output)
-        if _monitoring:
-            cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
-            log_monitor(user.id, monitor_body, chunks, alias,
-                        "/azure/v1/messages", input_tk, output_tk, cost, model_type)
 
     return StreamingResponse(
         event_generator(),
@@ -933,10 +904,6 @@ async def _non_stream_responses(
     obs_output = data.get("output") or data if capture_io_enabled() else None
     _log_usage(user, alias, model_type, input_tk, output_tk,
                "/azure/v1/responses", route=route, cached_tokens=cached_tk, backend="azure", output_payload=obs_output)
-    if is_monitored(user.id):
-        cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
-        log_monitor(user.id, monitor_body, data, alias,
-                    "/azure/v1/responses", input_tk, output_tk, cost, model_type)
     return JSONResponse(content=data, headers=extra_headers or None)
 
 
@@ -970,7 +937,6 @@ async def _stream_responses(
             err_json = {"error": {"message": err_text[:500]}}
         return JSONResponse(status_code=resp.status_code, content=err_json)
 
-    _monitoring = is_monitored(user.id)
     _capture_io = capture_io_enabled()
     logger.info("Stream start | user={} model={} endpoint=/azure/v1/responses",
                 user.username, alias)
@@ -985,7 +951,6 @@ async def _stream_responses(
         input_tk = 0
         output_tk = 0
         cached_tk = 0
-        recorded_events: list[dict] = []
         output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
         try:
             async for kind, data in _pump_anthropic_lines(_resp_coro()):
@@ -1012,8 +977,6 @@ async def _stream_responses(
                     event = json.loads(payload)
                 except json.JSONDecodeError:
                     continue
-                if _monitoring:
-                    recorded_events.append(event)
                 if _capture_io and event.get("type") == "response.output_text.delta":
                     _d = event.get("delta")
                     if isinstance(_d, str) and _d:
@@ -1037,10 +1000,6 @@ async def _stream_responses(
         obs_output = "".join(output_parts) if _capture_io and output_parts else None
         _log_usage(user, alias, model_type, input_tk, output_tk,
                    "/azure/v1/responses", route=route, cached_tokens=cached_tk, backend="azure", output_payload=obs_output)
-        if _monitoring:
-            cost = float(_calc_cost(route, model_type, input_tk, output_tk, cached_tk))
-            log_monitor(user.id, monitor_body, recorded_events, alias,
-                        "/azure/v1/responses", input_tk, output_tk, cost, model_type)
 
     return StreamingResponse(
         event_generator(),

@@ -480,7 +480,7 @@ llm-gateway/
 │   │   └── admin.py            # 管理面板 + API
 │   ├── services/
 │   │   ├── vllm_proxy.py       # vLLM 代理 + 容錯 + 記錄
-│   │   ├── azure_proxy.py      # Azure OpenAI 代理(共用認證/計費/監控)
+│   │   ├── azure_proxy.py      # Azure OpenAI 代理(共用認證/計費/觀測)
 │   │   ├── anthropic_adapter.py # Anthropic Messages 轉譯(兩個後端共用)
 │   │   ├── stats.py            # 儀表板彙總
 │   │   └── health.py           # 背景健康檢查迴圈

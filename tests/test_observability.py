@@ -125,8 +125,7 @@ class TestLogError:
 
         captured = {}
         with patch("app.services.vllm_proxy.get_langfuse", return_value=MagicMock()), \
-             patch("app.services.vllm_proxy.record_generation", lambda rec: captured.update(rec=rec)), \
-             patch("app.services.vllm_proxy.log_monitor_error") as mon:
+             patch("app.services.vllm_proxy.record_generation", lambda rec: captured.update(rec=rec)):
             vp._log_error(
                 SimpleNamespace(id=7, username="bob", display_name="Bob"),
                 {"messages": []}, "upstream boom", 502, "qwen", "/v1/messages", "llm",
@@ -136,15 +135,12 @@ class TestLogError:
         assert rec.username == "bob"
         assert "502" in rec.error and "boom" in rec.error
         assert rec.output_tokens == 0
-        # the monitor sink still fires
-        assert mon.called
 
     def test_noop_when_langfuse_unconfigured(self):
         import app.services.vllm_proxy as vp
 
         with patch("app.services.vllm_proxy.get_langfuse", return_value=None), \
-             patch("app.services.vllm_proxy.record_generation") as rg, \
-             patch("app.services.vllm_proxy.log_monitor_error"):
+             patch("app.services.vllm_proxy.record_generation") as rg:
             vp._log_error(
                 SimpleNamespace(id=7, username="bob", display_name="Bob"),
                 {}, "boom", 500, "qwen", "/v1/messages", "llm",

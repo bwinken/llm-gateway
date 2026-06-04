@@ -480,7 +480,7 @@ llm-gateway/
 │   │   └── admin.py            # Admin panel + API
 │   ├── services/
 │   │   ├── vllm_proxy.py       # vLLM proxy + fallback + logging
-│   │   ├── azure_proxy.py      # Azure OpenAI proxy (shares auth/billing/monitoring)
+│   │   ├── azure_proxy.py      # Azure OpenAI proxy (shares auth/billing/observability)
 │   │   ├── anthropic_adapter.py # Anthropic Messages translation (used by both backends)
 │   │   ├── stats.py            # Dashboard aggregations
 │   │   └── health.py           # Background health loop

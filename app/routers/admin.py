@@ -27,7 +27,6 @@ from app.core.config import (
 )
 from app.core.database import get_session
 from app.models.schema import AppOwner, User, UsageLog
-from app.services.monitor import add_monitor, list_monitored, remove_monitor, is_monitored
 from app.services.analytics import build_monthly_report, iter_months, parse_ym
 from app.services.stats import (
     get_all_users_usage,
@@ -158,9 +157,6 @@ async def admin_page(
     today_dau = dau_data[-1]["dau"] if dau_data else 0
     dept_usage = get_department_usage(session)
 
-    # Currently monitored user IDs (for toggle button state)
-    monitored_ids = {m["user_id"] for m in list_monitored()}
-
     return templates.TemplateResponse(
         "admin.html",
         {
@@ -183,7 +179,6 @@ async def admin_page(
             "current_year": now.year,
             "dau_data": dau_data,
             "today_dau": today_dau,
-            "monitored_ids": monitored_ids,
             "default_daily_limit": get_default_daily_limit(),
             # Pagination state
             "limit": limit,
@@ -802,29 +797,3 @@ async def export_users_csv(session: Session = Depends(get_session)):
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
-
-# ── Request Monitoring ──
-
-@router.post("/users/{user_id}/monitor")
-async def toggle_monitor(
-    user_id: int,
-    session: Session = Depends(get_session),
-):
-    """Toggle request monitoring for a user/app."""
-    target = session.exec(select(User).where(User.id == user_id)).first()
-    if not target:
-        raise HTTPException(status_code=404, detail="User not found.")
-
-    if is_monitored(user_id):
-        remove_monitor(user_id)
-        return JSONResponse({"ok": True, "monitoring": False, "username": target.username})
-    else:
-        add_monitor(user_id, target.username)
-        return JSONResponse({"ok": True, "monitoring": True, "username": target.username})
-
-
-@router.get("/monitor")
-async def get_monitor_status():
-    """Return currently monitored users with per-type request counts."""
-    return JSONResponse({"monitored": list_monitored()})
