@@ -235,6 +235,17 @@ LANGFUSE_CAPTURE_IO    # bool, default false — Phase 2 global I/O capture flag
 # integration is ENABLED only when HOST + PUBLIC + SECRET are all set
 ```
 
+## Phase 2 — endpoint coverage
+
+| Endpoint | Metrics (Phase 1) | I/O content (Phase 2) |
+|---|---|---|
+| `/v1/chat/completions`, `/azure/v1/chat/completions` | ✅ | ✅ input (OpenAI messages) + output (stream + non-stream) |
+| `/v1/messages`, `/azure/v1/messages` | ✅ | ✅ input (translated OpenAI messages) + output |
+| `/v1/responses`, `/azure/v1/responses` | ✅ | ✅ input + output, non-stream + stream (native Responses shape — Langfuse renders it; stream output read from `response.output_text.delta` events) |
+| **`/v1/embeddings` / `/v1/rerank` / `/v1/score`** | ✅ | ❌ **metrics only — never store I/O.** Embedding output is a large vector (noise + storage); input is bulk text (PII). `rerank` query-only capture is a possible future option, never docs/scores/vectors. |
+
+Status: Phase 2 I/O capture wired for all conversational paths on both backends (vLLM + Azure), stream + non-stream. All gated on `LANGFUSE_CAPTURE_IO` (default off).
+
 ## Plan (phases)
 
 - **Phase 1 — metrics only (no PII).** `observability.py` + `record_generation()` wired

@@ -34,8 +34,27 @@ def set_request_meta(
     session_id: str | None = None,
 ) -> None:
     _request_meta.set(
-        {"user_agent": user_agent, "x_app": x_app, "session_id": session_id}
+        {
+            "user_agent": user_agent,
+            "x_app": x_app,
+            "session_id": session_id,
+            "input_payload": None,
+        }
     )
+
+
+def set_io_input(payload: Any) -> None:
+    """Stash the request input (OpenAI chat `messages` shape) for Phase 2 I/O
+    capture. Set by the forward_* functions (which have the translated body)
+    only when capture is enabled; read at the `_log_usage` seam."""
+    meta = _request_meta.get()
+    # Mutate the current context's dict so the seam sees it without a re-set.
+    if meta:
+        meta["input_payload"] = payload
+    else:
+        _request_meta.set(
+            {"user_agent": None, "x_app": None, "session_id": None, "input_payload": payload}
+        )
 
 
 def get_request_meta() -> dict:

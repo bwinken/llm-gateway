@@ -12,6 +12,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import contextlib
+from decimal import Decimal
+from types import SimpleNamespace
 
 from app.services.observability import (
     GenerationRecord,
@@ -144,3 +146,46 @@ class TestRecordGeneration:
             record_generation(_make_record(user_agent="claude-cli/1.0", endpoint="/v1/messages"))
         client_score = next(c for c in gen.score.call_args_list if c.kwargs["name"] == "client")
         assert client_score.kwargs["value"] == "claude-code"
+
+
+class TestEmitObservationIO:
+    """Phase 2: _emit_observation attaches input/output ONLY when capture is on."""
+
+    def _emit(self, *, capture, output_payload, input_payload):
+        import app.services.vllm_proxy as vp
+        from app.services import observability as obs
+
+        captured = {}
+        obs.set_request_meta(user_agent="claude-cli", x_app=None, session_id=None)
+        if input_payload is not None:
+            obs.set_io_input(input_payload)
+        zero = Decimal("0")
+        with patch("app.services.vllm_proxy.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.vllm_proxy.record_generation", lambda rec: captured.update(rec=rec)), \
+             patch("app.services.vllm_proxy.capture_io_enabled", return_value=capture):
+            vp._emit_observation(
+                SimpleNamespace(id=42, username="alice", display_name="Alice"),
+                "qwen", "llm", 100, 5, "/v1/messages",
+                {"real_model": "r"}, 0, "vllm",
+                {"input": zero, "output": zero, "cache_read_input_tokens": zero, "total": zero},
+                output_payload=output_payload,
+            )
+        return captured["rec"]
+
+    def test_io_captured_when_enabled(self):
+        rec = self._emit(
+            capture=True,
+            output_payload="The answer is 42.",
+            input_payload=[{"role": "user", "content": "hi"}],
+        )
+        assert rec.input_payload == [{"role": "user", "content": "hi"}]
+        assert rec.output_payload == "The answer is 42."
+
+    def test_io_omitted_when_disabled(self):
+        rec = self._emit(
+            capture=False,
+            output_payload="The answer is 42.",
+            input_payload=[{"role": "user", "content": "hi"}],
+        )
+        assert rec.input_payload is None
+        assert rec.output_payload is None

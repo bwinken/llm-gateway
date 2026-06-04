@@ -42,9 +42,11 @@ from app.services.anthropic_adapter import (
 from app.services.monitor import is_monitored, log_monitor, log_monitor_error
 from app.services.observability import (
     GenerationRecord,
+    capture_io_enabled,
     get_langfuse,
     get_request_meta,
     record_generation,
+    set_io_input,
 )
 
 
@@ -348,6 +350,7 @@ def _emit_observation(
     cached_tokens: int,
     backend: str,
     breakdown: dict[str, Decimal],
+    output_payload: Any = None,
 ) -> None:
     """Build a GenerationRecord and hand it to Langfuse. No-op when unconfigured."""
     # Short-circuit before building anything when Langfuse is off (cached after
@@ -362,6 +365,12 @@ def _emit_observation(
     # empty-turn signal only meaningful for chat-like models (embeddings emit 0
     # output tokens legitimately).
     empty_turn = model_type in ("llm", "vlm") and output_tokens <= 1
+    # Phase 2: attach request/response content only when explicitly enabled.
+    input_payload = None
+    out_payload = None
+    if capture_io_enabled():
+        input_payload = meta.get("input_payload")
+        out_payload = output_payload
     record_generation(GenerationRecord(
         username=user.username,
         user_id=str(user.id),
@@ -378,6 +387,8 @@ def _emit_observation(
         x_app=meta.get("x_app"),
         session_id=meta.get("session_id"),
         display_name=getattr(user, "display_name", None),
+        input_payload=input_payload,
+        output_payload=out_payload,
     ))
 
 
@@ -391,6 +402,7 @@ def _log_usage(
     route: dict[str, Any] | None = None,
     cached_tokens: int = 0,
     backend: str = "vllm",
+    output_payload: Any = None,
 ) -> None:
     """Fire-and-forget usage logging in a background thread.
 
@@ -404,6 +416,10 @@ def _log_usage(
     `backend` ("vllm" | "azure") tags the Langfuse generation. Emitting the
     Langfuse generation happens here so every billable path is covered from one
     seam; it is a no-op when Langfuse is unconfigured.
+
+    `output_payload` (assistant text/content) is attached to the Langfuse
+    generation only when LANGFUSE_CAPTURE_IO is on (Phase 2); input is read
+    from the request-meta contextvar set by the forward_* function.
     """
     import asyncio
 
@@ -417,6 +433,7 @@ def _log_usage(
         _emit_observation(
             user, model, model_type, input_tokens, output_tokens,
             endpoint, route, cached_tokens, backend, breakdown,
+            output_payload=output_payload,
         )
     except Exception as exc:  # defensive — must never break logging/billing
         logger.warning("observability hook failed: {}", exc)
@@ -490,6 +507,10 @@ async def vllm_forward_chat_completions(
     monitor_body = body.copy()
     monitor_body["model"] = resolved_alias
 
+    # Phase 2: capture the (already OpenAI-shaped) messages as Langfuse input.
+    if capture_io_enabled():
+        set_io_input(body.get("messages"))
+
     if is_stream:
         return await _stream_chat(
             client, target_url, body, downstream_headers, user, resolved_alias, model_type,
@@ -522,7 +543,8 @@ async def _non_stream_chat(
     usage = data.get("usage", {})
     input_tk = usage.get("prompt_tokens", 0)
     output_tk = usage.get("completion_tokens", 0)
-    _log_usage(user, model, model_type, input_tk, output_tk, "/v1/chat/completions", route=route)
+    obs_output = (data.get("choices") or [{}])[0].get("message") if capture_io_enabled() else None
+    _log_usage(user, model, model_type, input_tk, output_tk, "/v1/chat/completions", route=route, output_payload=obs_output)
     if is_monitored(user.id):
         cost = float(_calc_cost(route or {}, model_type, input_tk, output_tk))
         log_monitor(user.id, monitor_body or body, data, model, "/v1/chat/completions", input_tk, output_tk, cost, model_type)
@@ -536,12 +558,14 @@ async def _stream_chat(
 ) -> StreamingResponse:
     req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     _monitoring = is_monitored(user.id)
+    _capture_io = capture_io_enabled()
 
     async def event_generator():
         input_tokens = 0
         output_tokens = 0
         resp = None
         chunks: list[dict] = [] if _monitoring else []
+        output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
         try:
             resp = await client.send(req, stream=True)
             async for line in resp.aiter_lines():
@@ -557,6 +581,10 @@ async def _stream_chat(
                         chunk = json.loads(line[6:])
                         if _monitoring:
                             chunks.append(chunk)
+                        if _capture_io:
+                            _c = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content")
+                            if isinstance(_c, str) and _c:
+                                output_parts.append(_c)
                         usage = chunk.get("usage")
                         if usage:
                             input_tokens = usage.get("prompt_tokens", input_tokens)
@@ -575,7 +603,8 @@ async def _stream_chat(
 
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
-        _log_usage(user, model, model_type, input_tokens, output_tokens, "/v1/chat/completions", route=route)
+        obs_output = "".join(output_parts) if _capture_io and output_parts else None
+        _log_usage(user, model, model_type, input_tokens, output_tokens, "/v1/chat/completions", route=route, output_payload=obs_output)
         if _monitoring:
             cost = float(_calc_cost(route or {}, model_type, input_tokens, output_tokens))
             log_monitor(user.id, monitor_body or body, chunks, model, "/v1/chat/completions", input_tokens, output_tokens, cost, model_type)
@@ -672,6 +701,10 @@ async def vllm_forward_responses(
     downstream_headers = _get_downstream_headers(route)
     extra_headers = _fallback_headers(fallback_reason)
 
+    # Phase 2: capture the request input (Responses API `input`, or messages).
+    if capture_io_enabled():
+        set_io_input(body_json.get("input") or body_json.get("messages") or body_json)
+
     # Always replace alias with real_model for downstream
     real_model = route["real_model"]
     body_json["model"] = real_model
@@ -716,7 +749,8 @@ async def _passthrough_non_stream(
     output_tk = usage.get("output_tokens", usage.get("completion_tokens", 0))
     details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
     cached_tk = details.get("cached_tokens", 0) if isinstance(details, dict) else 0
-    _log_usage(user, model, model_type, input_tk, output_tk, path_suffix, route=route, cached_tokens=cached_tk)
+    obs_output = data.get("output") or data if capture_io_enabled() else None
+    _log_usage(user, model, model_type, input_tk, output_tk, path_suffix, route=route, cached_tokens=cached_tk, output_payload=obs_output)
     if is_monitored(user.id):
         cost = float(_calc_cost(route or {}, model_type, input_tk, output_tk, cached_tk))
         log_monitor(user.id, json.loads(raw_body), data, model, path_suffix, input_tk, output_tk, cost, model_type)
@@ -754,6 +788,11 @@ async def vllm_forward_messages(
     )
     openai_body["model"] = real_model
     is_stream = bool(anthropic_body.get("stream", False))
+
+    # Phase 2: stash the translated OpenAI messages as the Langfuse input so it
+    # renders as a conversation. No-op unless LANGFUSE_CAPTURE_IO is on.
+    if capture_io_enabled():
+        set_io_input(openai_body.get("messages"))
 
     if is_stream:
         # Always include usage in the stream so we can report it back
@@ -810,6 +849,9 @@ async def _non_stream_messages(
 
     input_tk = anthropic_data["usage"]["input_tokens"]
     output_tk = anthropic_data["usage"]["output_tokens"]
+    obs_output = None
+    if capture_io_enabled():
+        obs_output = (openai_data.get("choices") or [{}])[0].get("message")
 
     # Empty / near-empty turn diagnostic (silent stop in Claude Code).
     text_chars = sum(
@@ -827,7 +869,7 @@ async def _non_stream_messages(
     if diag:
         logger.warning(diag)
 
-    _log_usage(user, model_alias, model_type, input_tk, output_tk, "/v1/messages", route=route)
+    _log_usage(user, model_alias, model_type, input_tk, output_tk, "/v1/messages", route=route, output_payload=obs_output)
     if is_monitored(user.id):
         cost = float(_calc_cost(route or {}, model_type, input_tk, output_tk))
         log_monitor(user.id, monitor_body or body, anthropic_data, model_alias, "/v1/messages", input_tk, output_tk, cost, model_type)
@@ -845,12 +887,14 @@ async def _stream_messages(
 ) -> StreamingResponse:
     req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     _monitoring = is_monitored(user.id)
+    _capture_io = capture_io_enabled()
 
     logger.info("Stream start | user={} model={} endpoint=/v1/messages", user.username, model_alias)
 
     async def event_generator():
         translator = AnthropicStreamTranslator(model_alias)
         chunks: list[dict] = []
+        output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
         try:
             for event in translator.start():
                 yield event
@@ -876,6 +920,11 @@ async def _stream_messages(
                     continue
                 if _monitoring:
                     chunks.append(chunk)
+                if _capture_io:
+                    _delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+                    _c = _delta.get("content")
+                    if isinstance(_c, str) and _c:
+                        output_parts.append(_c)
                 for event in translator.handle_chunk(chunk):
                     yield event
 
@@ -912,7 +961,8 @@ async def _stream_messages(
         )
         if diag:
             logger.warning(diag)
-        _log_usage(user, model_alias, model_type, input_tokens, output_tokens, "/v1/messages", route=route)
+        obs_output = "".join(output_parts) if _capture_io and output_parts else None
+        _log_usage(user, model_alias, model_type, input_tokens, output_tokens, "/v1/messages", route=route, output_payload=obs_output)
         if _monitoring:
             cost = float(_calc_cost(route or {}, model_type, input_tokens, output_tokens))
             log_monitor(user.id, monitor_body or body, chunks, model_alias, "/v1/messages", input_tokens, output_tokens, cost, model_type)
@@ -1102,6 +1152,7 @@ async def _passthrough_stream(
 ) -> StreamingResponse:
     req = client.build_request("POST", url, content=raw_body, headers=headers, timeout=_STREAM_TIMEOUT)
     _monitoring = is_monitored(user.id)
+    _capture_io = capture_io_enabled()
 
     async def event_generator():
         input_tokens = 0
@@ -1109,6 +1160,7 @@ async def _passthrough_stream(
         cached_tokens = 0
         resp = None
         chunks: list[dict] = []
+        output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
         try:
             resp = await client.send(req, stream=True)
             async for line in resp.aiter_lines():
@@ -1123,6 +1175,16 @@ async def _passthrough_stream(
                         chunk = json.loads(line[6:])
                         if _monitoring:
                             chunks.append(chunk)
+                        if _capture_io:
+                            # chat-completions shape (delta.content) OR
+                            # Responses shape (response.output_text.delta)
+                            _c = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content")
+                            if isinstance(_c, str) and _c:
+                                output_parts.append(_c)
+                            elif chunk.get("type") == "response.output_text.delta":
+                                _d = chunk.get("delta")
+                                if isinstance(_d, str) and _d:
+                                    output_parts.append(_d)
                         # Chat completions shape: usage at top level on the
                         # terminal chunk (when stream_options.include_usage=true).
                         usage = chunk.get("usage")
@@ -1154,7 +1216,8 @@ async def _passthrough_stream(
 
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
-        _log_usage(user, model, model_type, input_tokens, output_tokens, path_suffix, route=route, cached_tokens=cached_tokens)
+        obs_output = "".join(output_parts) if _capture_io and output_parts else None
+        _log_usage(user, model, model_type, input_tokens, output_tokens, path_suffix, route=route, cached_tokens=cached_tokens, output_payload=obs_output)
         if _monitoring:
             cost = float(_calc_cost(route or {}, model_type, input_tokens, output_tokens, cached_tokens))
             log_monitor(user.id, json.loads(raw_body), chunks, model, path_suffix, input_tokens, output_tokens, cost, model_type)
