@@ -184,8 +184,22 @@ api_version = "2024-08-01-preview"
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | RS256 public key path | `./keys/public.pem` |
 | `AUTH_BASE_URL` | JWT issuer URL (AuthCenter base URL) | `auth-center` |
 | `AZURE_HTTP_PROXY` | Optional HTTP proxy for `/azure/v1/*` downstream traffic only; supports inline credentials (`http://user:pass@proxy:8080`). Unset = Azure reached directly. vLLM traffic is never proxied. | _(unset)_ |
+| `LANGFUSE_HOST` | Langfuse base URL (self-hosted recommended). Observability is **enabled only when HOST + PUBLIC_KEY + SECRET_KEY are all set**; otherwise it is a no-op with zero overhead. | _(unset)_ |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse public key (`pk-lf-…`). | _(unset)_ |
+| `LANGFUSE_SECRET_KEY` | Langfuse secret key (`sk-lf-…`). | _(unset)_ |
+| `LANGFUSE_CAPTURE_IO` | When `true`, also send prompt/response **content** to Langfuse (Phase 2). PII-sensitive — see Observability below. Default off sends metrics only. | `false` |
 
 > OAuth2 login settings (OIDC issuer, client secret, redirect URL) are configured in `deploy/.env` for oauth2-proxy. See [deploy/README.md](deploy/README.md).
+
+### Observability (Langfuse)
+
+Optional. When `LANGFUSE_HOST` + `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` are all set, the gateway emits one Langfuse **generation** per billable request — non-blocking, errors swallowed, and a complete no-op when unset.
+
+- **Metrics (always, no PII):** user, model alias, endpoint, token usage, cost (computed by the gateway — Langfuse is **not** asked to re-price), latency, plus categorical scores for **client software** (`claude-code` / `roo-code` / `openai-compatible` / …, derived from `User-Agent` + endpoint), `empty_turn`, and `fallback_used`. This powers per-user / per-model / per-client analytics (filter by user in the Users view; group by model or `client` score; chart by day/month).
+- **Content (opt-in, PII):** set `LANGFUSE_CAPTURE_IO=true` to also attach the request messages and assistant response to each generation (chat / messages / responses, vLLM + Azure; embeddings/rerank/score are metrics-only by design). **Governance:** capturing individual users' prompts is individual-level monitoring — restrict Langfuse project access and confirm notice/consent before enabling in production.
+- **Version note:** built on the Langfuse Python SDK v4 (OTel-based); confirm SDK ↔ your Langfuse server version compatibility before rollout.
+
+See [docs/langfuse-observability.md](docs/langfuse-observability.md) for the full design.
 
 ---
 

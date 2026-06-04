@@ -184,8 +184,22 @@ api_version = "2024-08-01-preview"
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | RS256 公鑰路徑 | `./keys/public.pem` |
 | `AUTH_BASE_URL` | JWT issuer URL（AuthCenter 基底 URL） | `auth-center` |
 | `AZURE_HTTP_PROXY` | 選填,僅供 `/azure/v1/*` 下游流量使用的 HTTP proxy;支援內嵌帳密(`http://user:pass@proxy:8080`)。不設定則直連 Azure。vLLM 流量永遠不走 proxy。 | _(未設定)_ |
+| `LANGFUSE_HOST` | Langfuse base URL(建議自架)。**三把(HOST + PUBLIC_KEY + SECRET_KEY)都設齊才啟用**,否則完全 no-op、零開銷。 | _(未設定)_ |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse public key(`pk-lf-…`)。 | _(未設定)_ |
+| `LANGFUSE_SECRET_KEY` | Langfuse secret key(`sk-lf-…`)。 | _(未設定)_ |
+| `LANGFUSE_CAPTURE_IO` | 設為 `true` 時,額外把 prompt/回應**內容**送進 Langfuse(Phase 2),含 PII,見下方 Observability。預設只送 metrics。 | `false` |
 
 > OAuth2 登入設定（OIDC issuer、client secret、redirect URL）在 `deploy/.env` 中設定，供 oauth2-proxy 使用。詳見 [deploy/README.md](deploy/README.md)。
+
+### Observability(Langfuse)
+
+選填。當 `LANGFUSE_HOST` + `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` 都設齊時,gateway 會為每筆計費請求送出一筆 Langfuse **generation** —— 非阻塞、錯誤吞掉、未設定時完全 no-op。
+
+- **Metrics(永遠送,無 PII):** user、model alias、endpoint、token 用量、cost(由 gateway 自行計算,**不**讓 Langfuse 重新定價)、latency,以及 categorical scores:**client 軟體**(`claude-code` / `roo-code` / `openai-compatible` …,由 `User-Agent` + endpoint 推斷)、`empty_turn`、`fallback_used`。可做 per-user / per-model / per-client 分析(在 Users 視圖篩使用者;按 model 或 `client` score 分組;按天/月出圖)。
+- **內容(需明確開啟,含 PII):** 設 `LANGFUSE_CAPTURE_IO=true` 後,額外把請求 messages 與助理回應掛到 generation(chat / messages / responses,vLLM + Azure;embedding/rerank/score 刻意只送 metrics)。**治理:** 擷取個別使用者的 prompt 屬於個人層級監看 —— 上 production 前請限制 Langfuse project 存取權限並確認告知/同意。
+- **版本提醒:** 建構於 Langfuse Python SDK v4(OTel-based);上線前請確認 SDK ↔ 你的 Langfuse server 版本相容。
+
+完整設計見 [docs/langfuse-observability.md](docs/langfuse-observability.md)。
 
 ---
 
