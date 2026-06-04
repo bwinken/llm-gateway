@@ -73,6 +73,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Stash request headers for the observability hook (read at the _log_usage
+# seam). Pure-ASGI so the contextvar survives into streaming response bodies.
+from app.services.observability import RequestMetaMiddleware  # noqa: E402
+app.add_middleware(RequestMetaMiddleware)
+
 # --- Exception handlers ---
 
 @app.exception_handler(AccountDisabledError)

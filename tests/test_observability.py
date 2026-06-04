@@ -189,3 +189,62 @@ class TestEmitObservationIO:
         )
         assert rec.input_payload is None
         assert rec.output_payload is None
+
+
+class TestRequestMetaMiddleware:
+    """Header capture MUST live in the pure-ASGI middleware: a contextvar set
+    in the sync get_current_user dependency runs in a threadpool copy and is
+    lost at the _log_usage seam (regression guard for that bug)."""
+
+    def test_sets_meta_from_scope_headers_visible_to_inner_app(self):
+        import asyncio
+
+        from app.services.observability import RequestMetaMiddleware, get_request_meta
+
+        seen: dict = {}
+
+        async def inner(scope, receive, send):
+            # Same task as the middleware → contextvar must be visible here.
+            seen.update(get_request_meta())
+
+        mw = RequestMetaMiddleware(inner)
+        scope = {
+            "type": "http",
+            "headers": [
+                (b"user-agent", b"claude-cli/1.0 (external, cli)"),
+                (b"x-app", b"cli"),
+                (b"x-session-id", b"sess-123"),
+            ],
+        }
+
+        async def receive():
+            return {"type": "http.request"}
+
+        async def send(msg):
+            pass
+
+        asyncio.run(mw(scope, receive, send))
+        assert seen.get("user_agent") == "claude-cli/1.0 (external, cli)"
+        assert seen.get("x_app") == "cli"
+        assert seen.get("session_id") == "sess-123"
+
+    def test_non_http_scope_is_passthrough(self):
+        import asyncio
+
+        from app.services.observability import RequestMetaMiddleware
+
+        called = {}
+
+        async def inner(scope, receive, send):
+            called["ok"] = True
+
+        mw = RequestMetaMiddleware(inner)
+
+        async def receive():
+            return {}
+
+        async def send(msg):
+            pass
+
+        asyncio.run(mw({"type": "lifespan"}, receive, send))
+        assert called.get("ok") is True

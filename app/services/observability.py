@@ -60,6 +60,37 @@ def set_io_input(payload: Any) -> None:
 def get_request_meta() -> dict:
     return _request_meta.get()
 
+
+class RequestMetaMiddleware:
+    """Pure-ASGI middleware that stashes request headers (User-Agent, x-app,
+    x-session-id) into the request-meta contextvar for the observability hook.
+
+    Must be pure ASGI (NOT BaseHTTPMiddleware) and NOT a sync FastAPI
+    dependency: a contextvar written in a sync dependency runs in a threadpool
+    copy and is lost, and BaseHTTPMiddleware breaks contextvar propagation into
+    streaming bodies. A pure-ASGI middleware sets the contextvar in the
+    request's own task, so it stays visible at the `_log_usage` seam for both
+    non-stream and streaming responses (verified).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            headers: dict[str, str] = {}
+            for k, v in scope.get("headers") or []:
+                try:
+                    headers[k.decode("latin-1").lower()] = v.decode("latin-1")
+                except Exception:
+                    pass
+            set_request_meta(
+                user_agent=headers.get("user-agent"),
+                x_app=headers.get("x-app"),
+                session_id=headers.get("x-session-id"),
+            )
+        await self.app(scope, receive, send)
+
 # ---------------------------------------------------------------------------
 # Pure helpers (no Langfuse dependency)
 # ---------------------------------------------------------------------------
