@@ -392,6 +392,50 @@ def _emit_observation(
     ))
 
 
+def _log_error(
+    user: User,
+    body: Any,
+    error: Any,
+    status_code: int,
+    model: str,
+    endpoint: str,
+    model_type: str,
+) -> None:
+    """Record a FAILED request: the existing monitor error log + a Langfuse
+    error generation (level=ERROR + statusMessage + request_error score).
+
+    Does NOT write `usage_logs` — a failed call is not billable. No-op for
+    Langfuse when unconfigured; never raises. Replaces direct
+    `_log_error(user, ...)` calls so both sinks fire from one place
+    (and so the monitor sink can be dropped later without touching call sites).
+    """
+    log_monitor_error(user_id=user.id, request_body=body, error=error, status_code=status_code, model=model, endpoint=endpoint, model_type=model_type)
+    try:
+        if get_langfuse() is None:
+            return
+        meta = get_request_meta()
+        record_generation(GenerationRecord(
+            username=user.username,
+            user_id=str(user.id),
+            endpoint=endpoint,
+            backend="azure" if endpoint.startswith("/azure") else "vllm",
+            model_alias=model,
+            real_model=model,
+            model_type=model_type,
+            usage={"input": 0, "output": 0},
+            cost={"input": 0.0, "output": 0.0, "total": 0.0},
+            output_tokens=0,
+            error=f"{status_code}: {str(error)[:500]}",
+            is_error=True,
+            user_agent=meta.get("user_agent"),
+            x_app=meta.get("x_app"),
+            session_id=meta.get("session_id"),
+            display_name=getattr(user, "display_name", None),
+        ))
+    except Exception as exc:  # never let the error-hook break error handling
+        logger.warning("observability error-hook failed: {}", exc)
+
+
 def _log_usage(
     user: User,
     model: str,
@@ -532,11 +576,11 @@ async def _non_stream_chat(
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-        log_monitor_error(user.id, monitor_body or body, str(exc), 502, model, "/v1/chat/completions", model_type)
+        _log_error(user, monitor_body or body, str(exc), 502, model, "/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        log_monitor_error(user.id, monitor_body or body, resp.text[:500], resp.status_code, model, "/v1/chat/completions", model_type)
+        _log_error(user, monitor_body or body, resp.text[:500], resp.status_code, model, "/v1/chat/completions", model_type)
         return _error_response(resp)
 
     data = resp.json()
@@ -648,11 +692,11 @@ async def vllm_forward_simple_request(
         resp = await client.post(target_url, json=body, headers=downstream_headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-        log_monitor_error(user.id, body, str(exc), 502, resolved_alias, endpoint_label, model_type)
+        _log_error(user, body, str(exc), 502, resolved_alias, endpoint_label, model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        log_monitor_error(user.id, body, resp.text[:500], resp.status_code, resolved_alias, endpoint_label, model_type)
+        _log_error(user, body, resp.text[:500], resp.status_code, resolved_alias, endpoint_label, model_type)
         return _error_response(resp)
 
     data = resp.json()
@@ -736,11 +780,11 @@ async def _passthrough_non_stream(
         resp = await client.post(url, content=raw_body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-        log_monitor_error(user.id, json.loads(raw_body), str(exc), 502, model, path_suffix, model_type)
+        _log_error(user, json.loads(raw_body), str(exc), 502, model, path_suffix, model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        log_monitor_error(user.id, json.loads(raw_body), resp.text[:500], resp.status_code, model, path_suffix, model_type)
+        _log_error(user, json.loads(raw_body), resp.text[:500], resp.status_code, model, path_suffix, model_type)
         return _error_response(resp)
 
     data = resp.json()
@@ -837,11 +881,11 @@ async def _non_stream_messages(
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-        log_monitor_error(user.id, monitor_body or body, str(exc), 502, model_alias, "/v1/messages", model_type)
+        _log_error(user, monitor_body or body, str(exc), 502, model_alias, "/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        log_monitor_error(user.id, monitor_body or body, resp.text[:500], resp.status_code, model_alias, "/v1/messages", model_type)
+        _log_error(user, monitor_body or body, resp.text[:500], resp.status_code, model_alias, "/v1/messages", model_type)
         return _error_response(resp)
 
     openai_data = resp.json()

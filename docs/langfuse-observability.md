@@ -246,6 +246,8 @@ LANGFUSE_CAPTURE_IO    # bool, default false — Phase 2 global I/O capture flag
 
 Status: Phase 2 I/O capture wired for all conversational paths on both backends (vLLM + Azure), stream + non-stream. All gated on `LANGFUSE_CAPTURE_IO` (default off).
 
+**Failed requests** (downstream connection error / non-200) are also recorded — `_log_error` (wrapping the former `log_monitor_error` calls) emits a generation with `level=ERROR`, the upstream status + message in `statusMessage`, and a `request_error=true` categorical score (chart error rate per model/endpoint/user). No `usage_logs` row is written for failures.
+
 ## Plan (phases)
 
 - **Phase 1 — metrics only (no PII).** `observability.py` + `record_generation()` wired

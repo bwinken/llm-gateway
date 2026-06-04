@@ -104,6 +104,53 @@ class TestBuildScores:
         )
         assert {s["name"] for s in scores} == {"empty_turn", "fallback_used", "client", "output_tokens"}
 
+    def test_error_scores(self):
+        scores = build_scores(
+            empty_turn=False, fallback_used=False, client="claude-code",
+            output_tokens=0, is_error=True,
+        )
+        by = self._by_name(scores)
+        assert by["request_error"]["value"] == "true"
+        assert by["request_error"]["data_type"] == "CATEGORICAL"
+        assert by["client"]["value"] == "claude-code"
+        # per-response signals are omitted for errors
+        assert "empty_turn" not in by and "output_tokens" not in by
+
+
+class TestLogError:
+    """Failed requests must produce a Langfuse error generation (no DB write)."""
+
+    def test_emits_error_generation(self):
+        import app.services.vllm_proxy as vp
+
+        captured = {}
+        with patch("app.services.vllm_proxy.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.vllm_proxy.record_generation", lambda rec: captured.update(rec=rec)), \
+             patch("app.services.vllm_proxy.log_monitor_error") as mon:
+            vp._log_error(
+                SimpleNamespace(id=7, username="bob", display_name="Bob"),
+                {"messages": []}, "upstream boom", 502, "qwen", "/v1/messages", "llm",
+            )
+        rec = captured["rec"]
+        assert rec.is_error is True
+        assert rec.username == "bob"
+        assert "502" in rec.error and "boom" in rec.error
+        assert rec.output_tokens == 0
+        # the monitor sink still fires
+        assert mon.called
+
+    def test_noop_when_langfuse_unconfigured(self):
+        import app.services.vllm_proxy as vp
+
+        with patch("app.services.vllm_proxy.get_langfuse", return_value=None), \
+             patch("app.services.vllm_proxy.record_generation") as rg, \
+             patch("app.services.vllm_proxy.log_monitor_error"):
+            vp._log_error(
+                SimpleNamespace(id=7, username="bob", display_name="Bob"),
+                {}, "boom", 500, "qwen", "/v1/messages", "llm",
+            )
+        rg.assert_not_called()
+
 
 class TestRecordGeneration:
     """The two critical safety properties: no-op when unconfigured, never raises."""

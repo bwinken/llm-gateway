@@ -38,7 +38,7 @@ from app.services.anthropic_adapter import (
     anthropic_to_openai_request,
     openai_to_anthropic_response,
 )
-from app.services.monitor import is_monitored, log_monitor, log_monitor_error
+from app.services.monitor import is_monitored, log_monitor
 from app.services.responses_adapter import (
     ResponsesToChatStreamTranslator,
     openai_chat_to_responses_request,
@@ -51,6 +51,7 @@ from app.services.vllm_proxy import (
     _approx_token_count,
     _calc_cost,
     _error_response,
+    _log_error,
     _log_usage,
     _pump_anthropic_lines,
 )
@@ -396,14 +397,14 @@ async def _non_stream_chat(
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Azure downstream error: {}", exc)
-        log_monitor_error(user.id, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
         _log_azure_error(incoming_body, body, resp.text, resp.status_code,
                          alias, "/azure/v1/chat/completions")
-        log_monitor_error(user.id, monitor_body, resp.text[:500], resp.status_code,
+        _log_error(user, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/azure/v1/chat/completions", model_type)
         return _error_response(resp)
 
@@ -438,7 +439,7 @@ async def _stream_chat(
         resp = await client.send(req, stream=True)
     except Exception as exc:
         logger.error("Azure stream connect error: {}", exc)
-        log_monitor_error(user.id, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
@@ -448,7 +449,7 @@ async def _stream_chat(
         err_text = err_bytes.decode("utf-8", "replace")
         _log_azure_error(incoming_body, body, err_text, resp.status_code,
                          alias, "/azure/v1/chat/completions")
-        log_monitor_error(user.id, monitor_body, err_text[:500], resp.status_code,
+        _log_error(user, monitor_body, err_text[:500], resp.status_code,
                           alias, "/azure/v1/chat/completions", model_type)
         try:
             err_json = json.loads(err_text)
@@ -623,14 +624,14 @@ async def _non_stream_messages(
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Azure messages downstream error: {}", exc)
-        log_monitor_error(user.id, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
         _log_azure_error(incoming_body, body, resp.text, resp.status_code,
                          alias, "/azure/v1/messages")
-        log_monitor_error(user.id, monitor_body, resp.text[:500], resp.status_code,
+        _log_error(user, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/azure/v1/messages", model_type)
         return _error_response(resp)
 
@@ -663,7 +664,7 @@ async def _stream_messages(
         resp = await client.send(req, stream=True)
     except Exception as exc:
         logger.error("Azure messages stream connect error: {}", exc)
-        log_monitor_error(user.id, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
@@ -673,7 +674,7 @@ async def _stream_messages(
         err_text = err_bytes.decode("utf-8", "replace")
         _log_azure_error(incoming_body, body, err_text, resp.status_code,
                          alias, "/azure/v1/messages")
-        log_monitor_error(user.id, monitor_body, err_text[:500], resp.status_code,
+        _log_error(user, monitor_body, err_text[:500], resp.status_code,
                           alias, "/azure/v1/messages", model_type)
         try:
             err_json = json.loads(err_text)
@@ -913,14 +914,14 @@ async def _non_stream_responses(
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Azure responses downstream error: {}", exc)
-        log_monitor_error(user.id, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/responses", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
         _log_azure_error(monitor_body, body, resp.text, resp.status_code,
                          alias, "/azure/v1/responses")
-        log_monitor_error(user.id, monitor_body, resp.text[:500], resp.status_code,
+        _log_error(user, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/azure/v1/responses", model_type)
         return _error_response(resp)
 
@@ -951,7 +952,7 @@ async def _stream_responses(
         resp = await client.send(req, stream=True)
     except Exception as exc:
         logger.error("Azure responses stream connect error: {}", exc)
-        log_monitor_error(user.id, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/responses", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
@@ -961,7 +962,7 @@ async def _stream_responses(
         err_text = err_bytes.decode("utf-8", "replace")
         _log_azure_error(monitor_body, body, err_text, resp.status_code,
                          alias, "/azure/v1/responses")
-        log_monitor_error(user.id, monitor_body, err_text[:500], resp.status_code,
+        _log_error(user, monitor_body, err_text[:500], resp.status_code,
                           alias, "/azure/v1/responses", model_type)
         try:
             err_json = json.loads(err_text)

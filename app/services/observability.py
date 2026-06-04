@@ -142,6 +142,7 @@ def build_scores(
     fallback_used: bool,
     client: str,
     output_tokens: int,
+    is_error: bool = False,
 ) -> list[dict]:
     """Build the per-request Langfuse scores.
 
@@ -150,7 +151,16 @@ def build_scores(
     distribution and trend; `output_tokens` is NUMERIC for the
     `scores-numeric` view. Booleans are emitted as the strings "true"/"false"
     (categorical values are strings).
+
+    For a failed request (`is_error`) the per-response signals are meaningless,
+    so only `client` and a `request_error=true` categorical are emitted — the
+    latter lets you chart error rate per model / endpoint / user.
     """
+    if is_error:
+        return [
+            {"name": "request_error", "value": "true", "data_type": "CATEGORICAL"},
+            {"name": "client", "value": client, "data_type": "CATEGORICAL"},
+        ]
     return [
         {"name": "empty_turn", "value": "true" if empty_turn else "false", "data_type": "CATEGORICAL"},
         {"name": "fallback_used", "value": "true" if fallback_used else "false", "data_type": "CATEGORICAL"},
@@ -188,6 +198,7 @@ class GenerationRecord:
     session_id: str | None = None
     display_name: str | None = None
     error: str | None = None
+    is_error: bool = False              # failed request → level=ERROR + request_error score
     input_payload: Any = None           # Phase 2 (LANGFUSE_CAPTURE_IO)
     output_payload: Any = None          # Phase 2
 
@@ -305,6 +316,7 @@ def record_generation(rec: GenerationRecord) -> None:
                 fallback_used=rec.fallback_reason is not None,
                 client=client_label,
                 output_tokens=rec.output_tokens,
+                is_error=rec.is_error,
             ):
                 gen.score(name=s["name"], value=s["value"], data_type=s["data_type"])
     except Exception as exc:  # never break the proxy
