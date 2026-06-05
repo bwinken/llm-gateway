@@ -186,6 +186,70 @@ def build_scores(
     ]
 
 
+class StreamingChatOutput:
+    """Accumulate OpenAI streaming ``delta``s into a single assistant-message
+    dict for Langfuse output capture (Phase 2).
+
+    A streamed turn is split across many ``delta``s: text in ``content``,
+    reasoning in ``reasoning_content``, and tool calls in ``tool_calls``
+    fragments — the ``id`` / ``function.name`` arrive once on the opening
+    fragment, and ``function.arguments`` is streamed in pieces keyed by
+    ``index``. Concatenating only ``content`` (what the proxies used to do)
+    drops a tool-call-only turn entirely, leaving an empty Langfuse output.
+    This reassembles the whole turn so a streamed output matches what the
+    non-stream path records (the assistant ``message`` dict, incl.
+    ``tool_calls``).
+    """
+
+    def __init__(self) -> None:
+        self._text: list[str] = []
+        self._reasoning: list[str] = []
+        # index -> {"id", "type", "function": {"name", "arguments"}}
+        self._tool_calls: dict[int, dict] = {}
+
+    def add_delta(self, delta: Any) -> None:
+        if not isinstance(delta, dict):
+            return
+        content = delta.get("content")
+        if isinstance(content, str) and content:
+            self._text.append(content)
+        reasoning = delta.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning:
+            self._reasoning.append(reasoning)
+        for tc in delta.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            slot = self._tool_calls.setdefault(
+                tc.get("index", 0),
+                {"id": None, "type": "function", "function": {"name": "", "arguments": ""}},
+            )
+            if tc.get("id"):
+                slot["id"] = tc["id"]
+            if tc.get("type"):
+                slot["type"] = tc["type"]
+            fn = tc.get("function") or {}
+            if fn.get("name"):
+                slot["function"]["name"] = fn["name"]
+            args = fn.get("arguments")
+            if isinstance(args, str) and args:
+                slot["function"]["arguments"] += args
+
+    def as_message(self) -> dict | None:
+        """The assembled assistant message, or None when nothing was captured
+        (so an output is omitted only when the turn truly produced nothing)."""
+        if not (self._text or self._reasoning or self._tool_calls):
+            return None
+        msg: dict[str, Any] = {
+            "role": "assistant",
+            "content": "".join(self._text) if self._text else None,
+        }
+        if self._reasoning:
+            msg["reasoning_content"] = "".join(self._reasoning)
+        if self._tool_calls:
+            msg["tool_calls"] = [self._tool_calls[i] for i in sorted(self._tool_calls)]
+        return msg
+
+
 # ---------------------------------------------------------------------------
 # Generation record + Langfuse client (lazy, env-gated)
 # ---------------------------------------------------------------------------
