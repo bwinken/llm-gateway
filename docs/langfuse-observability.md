@@ -164,7 +164,8 @@ that can actually analyse it — confirmed against Langfuse Metrics API v2:
 | `empty_turn` (out≤1), `fallback_used` | **Scores** (`scores-categorical`) | designed for trend/aggregation |
 | `output_tokens` (for trending) | Score (`scores-numeric`) or usageDetails | — |
 | backend, model_type | **`tags`** (prefixed, low cardinality) | **filtering** only — e.g. `backend:vllm`, `type:llm` |
-| fallback_reason, `req_shape` (asst_thinking/asst_empty), latency_ms, org_code | `metadata` | filterable/displayable; not relied on for group-by (ttft_ms deferred) |
+| **request latency** (monotonic clock at the proxy) | generation **span duration** (`end_time` extended by the measured latency) + `metadata.latency_ms` | drives Langfuse's "Latency" column. The generation is emitted at the post-request `_log_usage` seam, and v4's `start_observation` can't backdate a span's start, so the span END is extended by the measured latency instead — duration is exact, absolute timestamp is the request-completion instant |
+| fallback_reason, `req_shape` (asst_thinking/asst_empty), org_code | `metadata` | filterable/displayable; not relied on for group-by (ttft_ms deferred) |
 | downstream error / truncation / empty-turn | `level` + `statusMessage` | error surfacing |
 
 > **Rule of thumb — where a field goes depends on how you'll use it:**

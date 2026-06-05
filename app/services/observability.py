@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextvars
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,8 +40,24 @@ def set_request_meta(
             "x_app": x_app,
             "session_id": session_id,
             "input_payload": None,
+            # Monotonic clock at request entry (set by RequestMetaMiddleware, which
+            # runs at the very start of every HTTP request in the request's own
+            # task). Read at the _log_usage seam to compute request latency — see
+            # request_latency_ms().
+            "start_monotonic": time.monotonic(),
         }
     )
+
+
+def request_latency_ms() -> float | None:
+    """Milliseconds elapsed since the request entered the proxy, or None if the
+    request-start marker is missing (e.g. a code path that bypassed the
+    middleware). Read at the `_log_usage` seam to stamp the Langfuse
+    generation's duration."""
+    start = _request_meta.get().get("start_monotonic")
+    if start is None:
+        return None
+    return (time.monotonic() - start) * 1000.0
 
 
 def set_io_input(payload: Any) -> None:
@@ -310,7 +327,18 @@ def record_generation(rec: GenerationRecord) -> None:
                 input=rec.input_payload,
                 output=rec.output_payload,
             )
-            gen.end()
+            # Stamp the span's duration with the real request latency so
+            # Langfuse's "Latency" column is correct. `start_observation` stamps
+            # the span start at "now" — but this seam runs AFTER the request
+            # finished, and v4's public API can't backdate a span's start, so we
+            # extend the END by the measured latency instead. The span DURATION
+            # (end - start) is therefore exact; only its absolute timestamp is
+            # the request-completion instant rather than the request-start
+            # instant. The raw number is also kept in metadata["latency_ms"].
+            if rec.latency_ms is not None:
+                gen.end(end_time=time.time_ns() + int(rec.latency_ms * 1_000_000))
+            else:
+                gen.end()
             for s in build_scores(
                 empty_turn=rec.empty_turn,
                 fallback_used=rec.fallback_reason is not None,
