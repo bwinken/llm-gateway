@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 from app.services.observability import (
     GenerationRecord,
+    StreamingChatOutput,
     build_scores,
     classify_client,
     record_generation,
@@ -218,6 +219,57 @@ class TestRecordGeneration:
             record_generation(_make_record(latency_ms=None))
         assert gen.end.call_args.kwargs == {}
         assert "latency_ms" not in client.start_observation.call_args.kwargs["metadata"]
+
+
+class TestStreamingChatOutput:
+    """Reassembles streamed OpenAI deltas into one assistant message so a
+    tool-call-only turn is captured (the empty-output regression guard)."""
+
+    def test_text_only(self):
+        acc = StreamingChatOutput()
+        for piece in ("Hel", "lo ", "world"):
+            acc.add_delta({"content": piece})
+        assert acc.as_message() == {"role": "assistant", "content": "Hello world"}
+
+    def test_tool_call_only_turn_is_captured(self):
+        # The exact case that used to produce an empty Langfuse output: no text,
+        # only a streamed tool call (id/name once, arguments in fragments).
+        acc = StreamingChatOutput()
+        acc.add_delta({"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+                                       "function": {"name": "get_weather", "arguments": ""}}]})
+        acc.add_delta({"tool_calls": [{"index": 0, "function": {"arguments": '{"city":'}}]})
+        acc.add_delta({"tool_calls": [{"index": 0, "function": {"arguments": '"SF"}'}}]})
+        msg = acc.as_message()
+        assert msg["role"] == "assistant"
+        assert msg["content"] is None
+        assert msg["tool_calls"] == [
+            {"id": "call_1", "type": "function",
+             "function": {"name": "get_weather", "arguments": '{"city":"SF"}'}}
+        ]
+
+    def test_parallel_tool_calls_kept_in_index_order(self):
+        acc = StreamingChatOutput()
+        acc.add_delta({"tool_calls": [{"index": 1, "id": "b", "function": {"name": "two", "arguments": "{}"}}]})
+        acc.add_delta({"tool_calls": [{"index": 0, "id": "a", "function": {"name": "one", "arguments": "{}"}}]})
+        ids = [tc["id"] for tc in acc.as_message()["tool_calls"]]
+        assert ids == ["a", "b"]
+
+    def test_reasoning_and_text(self):
+        acc = StreamingChatOutput()
+        acc.add_delta({"reasoning_content": "think..."})
+        acc.add_delta({"content": "answer"})
+        msg = acc.as_message()
+        assert msg["reasoning_content"] == "think..."
+        assert msg["content"] == "answer"
+
+    def test_nothing_captured_returns_none(self):
+        # Empty / role-only deltas → None, so an output is omitted only when the
+        # turn truly produced nothing.
+        acc = StreamingChatOutput()
+        acc.add_delta({"role": "assistant"})
+        acc.add_delta({})
+        acc.add_delta(None)
+        assert acc.as_message() is None
 
 
 class TestRequestLatency:

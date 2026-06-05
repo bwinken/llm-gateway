@@ -43,7 +43,11 @@ from app.services.responses_adapter import (
     openai_chat_to_responses_request,
     responses_to_openai_chat_response,
 )
-from app.services.observability import capture_io_enabled, set_io_input
+from app.services.observability import (
+    StreamingChatOutput,
+    capture_io_enabled,
+    set_io_input,
+)
 from app.services.vllm_proxy import (
     _ANTHROPIC_PING_EVENT,
     _NON_STREAM_TIMEOUT,
@@ -464,7 +468,7 @@ async def _stream_chat(
 
     async def event_generator():
         translator = ResponsesToChatStreamTranslator(alias)
-        output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
+        output_acc = StreamingChatOutput()  # Phase 2: assistant turn for Langfuse output
         try:
             for chunk in translator.start():
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
@@ -487,9 +491,7 @@ async def _stream_chat(
                     continue
                 for chunk in translator.handle_event(event):
                     if _capture_io:
-                        _c = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content")
-                        if isinstance(_c, str) and _c:
-                            output_parts.append(_c)
+                        output_acc.add_delta((chunk.get("choices") or [{}])[0].get("delta") or {})
                     yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
             for chunk in translator.finish():
@@ -528,7 +530,7 @@ async def _stream_chat(
                 translator.event_type_counts, err_msg,
                 _summarize_input_items(body.get("input")),
             )
-        obs_output = "".join(output_parts) if _capture_io and output_parts else None
+        obs_output = output_acc.as_message() if _capture_io else None
         _log_usage(user, alias, model_type, input_tk, output_tk,
                    "/azure/v1/chat/completions", route=route, cached_tokens=cached_tk, backend="azure", output_payload=obs_output)
 
@@ -674,14 +676,12 @@ async def _stream_messages(
         # translator so the public Anthropic surface stays unchanged.
         responses_xlat = ResponsesToChatStreamTranslator(alias)
         anthropic_xlat = AnthropicStreamTranslator(alias)
-        output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
+        output_acc = StreamingChatOutput()  # Phase 2: assistant turn for Langfuse output
 
         def _feed(chat_chunks) -> Iterator:
             for ch in chat_chunks:
                 if _capture_io:
-                    _c = ((ch.get("choices") or [{}])[0].get("delta") or {}).get("content")
-                    if isinstance(_c, str) and _c:
-                        output_parts.append(_c)
+                    output_acc.add_delta((ch.get("choices") or [{}])[0].get("delta") or {})
                 yield from anthropic_xlat.handle_chunk(ch)
 
         try:
@@ -765,7 +765,7 @@ async def _stream_messages(
                 responses_xlat.event_type_counts, err_msg,
                 _summarize_input_items(body.get("input")),
             )
-        obs_output = "".join(output_parts) if _capture_io and output_parts else None
+        obs_output = output_acc.as_message() if _capture_io else None
         _log_usage(user, alias, model_type, input_tk, output_tk,
                    "/azure/v1/messages", route=route, cached_tokens=cached_tk, backend="azure", output_payload=obs_output)
 
@@ -951,7 +951,8 @@ async def _stream_responses(
         input_tk = 0
         output_tk = 0
         cached_tk = 0
-        output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
+        output_acc = StreamingChatOutput()  # Phase 2: streamed Responses text
+        responses_output = None  # Phase 2: full Responses output[] from the terminal event
         try:
             async for kind, data in _pump_anthropic_lines(_resp_coro()):
                 if kind == "ping":
@@ -978,11 +979,11 @@ async def _stream_responses(
                 except json.JSONDecodeError:
                     continue
                 if _capture_io and event.get("type") == "response.output_text.delta":
-                    _d = event.get("delta")
-                    if isinstance(_d, str) and _d:
-                        output_parts.append(_d)
+                    output_acc.add_delta({"content": event.get("delta")})
                 if event.get("type") == "response.completed":
                     resp_data = event.get("response") or {}
+                    if _capture_io and isinstance(resp_data.get("output"), list):
+                        responses_output = resp_data["output"]
                     u = resp_data.get("usage") or {}
                     input_tk = u.get("input_tokens", input_tk) or input_tk
                     output_tk = u.get("output_tokens", output_tk) or output_tk
@@ -997,7 +998,9 @@ async def _stream_responses(
 
         if input_tk == 0 and output_tk == 0:
             logger.warning("Azure responses stream for model={} ended with 0 tokens", alias)
-        obs_output = "".join(output_parts) if _capture_io and output_parts else None
+        obs_output = None
+        if _capture_io:
+            obs_output = responses_output if responses_output is not None else output_acc.as_message()
         _log_usage(user, alias, model_type, input_tk, output_tk,
                    "/azure/v1/responses", route=route, cached_tokens=cached_tk, backend="azure", output_payload=obs_output)
 

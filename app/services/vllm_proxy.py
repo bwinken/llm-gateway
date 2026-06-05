@@ -41,6 +41,7 @@ from app.services.anthropic_adapter import (
 )
 from app.services.observability import (
     GenerationRecord,
+    StreamingChatOutput,
     capture_io_enabled,
     get_langfuse,
     get_request_meta,
@@ -604,7 +605,7 @@ async def _stream_chat(
         input_tokens = 0
         output_tokens = 0
         resp = None
-        output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
+        output_acc = StreamingChatOutput()  # Phase 2: assistant turn for Langfuse output
         try:
             resp = await client.send(req, stream=True)
             async for line in resp.aiter_lines():
@@ -619,9 +620,7 @@ async def _stream_chat(
                     try:
                         chunk = json.loads(line[6:])
                         if _capture_io:
-                            _c = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content")
-                            if isinstance(_c, str) and _c:
-                                output_parts.append(_c)
+                            output_acc.add_delta((chunk.get("choices") or [{}])[0].get("delta") or {})
                         usage = chunk.get("usage")
                         if usage:
                             input_tokens = usage.get("prompt_tokens", input_tokens)
@@ -640,7 +639,7 @@ async def _stream_chat(
 
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
-        obs_output = "".join(output_parts) if _capture_io and output_parts else None
+        obs_output = output_acc.as_message() if _capture_io else None
         _log_usage(user, model, model_type, input_tokens, output_tokens, "/v1/chat/completions", route=route, output_payload=obs_output)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
@@ -915,7 +914,7 @@ async def _stream_messages(
 
     async def event_generator():
         translator = AnthropicStreamTranslator(model_alias)
-        output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
+        output_acc = StreamingChatOutput()  # Phase 2: assistant turn for Langfuse output
         try:
             for event in translator.start():
                 yield event
@@ -940,10 +939,7 @@ async def _stream_messages(
                 except json.JSONDecodeError:
                     continue
                 if _capture_io:
-                    _delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
-                    _c = _delta.get("content")
-                    if isinstance(_c, str) and _c:
-                        output_parts.append(_c)
+                    output_acc.add_delta((chunk.get("choices") or [{}])[0].get("delta") or {})
                 for event in translator.handle_chunk(chunk):
                     yield event
 
@@ -980,7 +976,7 @@ async def _stream_messages(
         )
         if diag:
             logger.warning(diag)
-        obs_output = "".join(output_parts) if _capture_io and output_parts else None
+        obs_output = output_acc.as_message() if _capture_io else None
         _log_usage(user, model_alias, model_type, input_tokens, output_tokens, "/v1/messages", route=route, output_payload=obs_output)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
@@ -1174,7 +1170,8 @@ async def _passthrough_stream(
         output_tokens = 0
         cached_tokens = 0
         resp = None
-        output_parts: list[str] = []  # Phase 2: assistant text for Langfuse output
+        output_acc = StreamingChatOutput()  # Phase 2: chat-shape assistant turn
+        responses_output = None  # Phase 2: full Responses output[] from the terminal event
         try:
             resp = await client.send(req, stream=True)
             async for line in resp.aiter_lines():
@@ -1188,15 +1185,17 @@ async def _passthrough_stream(
                     try:
                         chunk = json.loads(line[6:])
                         if _capture_io:
-                            # chat-completions shape (delta.content) OR
-                            # Responses shape (response.output_text.delta)
-                            _c = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content")
-                            if isinstance(_c, str) and _c:
-                                output_parts.append(_c)
+                            # Prefer the terminal event's full output[] (incl.
+                            # function_call items); otherwise accumulate
+                            # chat-completions shape (delta.content / tool_calls)
+                            # or Responses text (response.output_text.delta).
+                            _resp = chunk.get("response")
+                            if isinstance(_resp, dict) and isinstance(_resp.get("output"), list):
+                                responses_output = _resp["output"]
                             elif chunk.get("type") == "response.output_text.delta":
-                                _d = chunk.get("delta")
-                                if isinstance(_d, str) and _d:
-                                    output_parts.append(_d)
+                                output_acc.add_delta({"content": chunk.get("delta")})
+                            else:
+                                output_acc.add_delta((chunk.get("choices") or [{}])[0].get("delta") or {})
                         # Chat completions shape: usage at top level on the
                         # terminal chunk (when stream_options.include_usage=true).
                         usage = chunk.get("usage")
@@ -1228,7 +1227,9 @@ async def _passthrough_stream(
 
         if input_tokens == 0 and output_tokens == 0:
             logger.warning("Stream for model={} ended with 0 tokens — downstream may not report usage", model)
-        obs_output = "".join(output_parts) if _capture_io and output_parts else None
+        obs_output = None
+        if _capture_io:
+            obs_output = responses_output if responses_output is not None else output_acc.as_message()
         _log_usage(user, model, model_type, input_tokens, output_tokens, path_suffix, route=route, cached_tokens=cached_tokens, output_payload=obs_output)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
