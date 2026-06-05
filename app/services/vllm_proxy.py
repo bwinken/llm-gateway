@@ -45,6 +45,7 @@ from app.services.observability import (
     get_langfuse,
     get_request_meta,
     record_generation,
+    request_latency_ms,
     set_io_input,
 )
 
@@ -382,6 +383,7 @@ def _emit_observation(
         cost=cost_details,
         output_tokens=output_tokens,
         empty_turn=empty_turn,
+        latency_ms=request_latency_ms(),
         user_agent=meta.get("user_agent"),
         x_app=meta.get("x_app"),
         session_id=meta.get("session_id"),
@@ -424,6 +426,7 @@ def _log_error(
             output_tokens=0,
             error=f"{status_code}: {str(error)[:500]}",
             is_error=True,
+            latency_ms=request_latency_ms(),
             user_agent=meta.get("user_agent"),
             x_app=meta.get("x_app"),
             session_id=meta.get("session_id"),

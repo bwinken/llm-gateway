@@ -190,6 +190,57 @@ class TestRecordGeneration:
         client_score = next(c for c in gen.score.call_args_list if c.kwargs["name"] == "client")
         assert client_score.kwargs["value"] == "claude-code"
 
+    def test_latency_stamps_span_duration(self):
+        # With a measured latency the span END is extended so its duration
+        # (Langfuse "Latency") equals the latency; metadata carries the raw ms.
+        import time
+
+        client = MagicMock()
+        gen = client.start_observation.return_value
+        with patch("app.services.observability.get_langfuse", return_value=client), \
+             patch("langfuse.propagate_attributes", lambda **kw: contextlib.nullcontext()):
+            before = time.time_ns()
+            record_generation(_make_record(latency_ms=1500.0))
+            after = time.time_ns()
+
+        end_time = gen.end.call_args.kwargs["end_time"]
+        # end ≈ now + 1500ms; the span start is ≈ now, so duration ≈ 1.5s.
+        assert before + 1_500_000_000 <= end_time <= after + 1_500_000_000
+        assert client.start_observation.call_args.kwargs["metadata"]["latency_ms"] == 1500.0
+
+    def test_no_latency_plain_end(self):
+        # Without a measured latency the span is ended plainly (no end_time) and
+        # no latency_ms leaks into metadata.
+        client = MagicMock()
+        gen = client.start_observation.return_value
+        with patch("app.services.observability.get_langfuse", return_value=client), \
+             patch("langfuse.propagate_attributes", lambda **kw: contextlib.nullcontext()):
+            record_generation(_make_record(latency_ms=None))
+        assert gen.end.call_args.kwargs == {}
+        assert "latency_ms" not in client.start_observation.call_args.kwargs["metadata"]
+
+
+class TestRequestLatency:
+    """request_latency_ms() reads the request-start marker set by the middleware."""
+
+    def test_returns_elapsed_after_request_start(self):
+        from app.services.observability import request_latency_ms, set_request_meta
+
+        set_request_meta(user_agent="claude-cli", x_app=None, session_id=None)
+        ms = request_latency_ms()
+        assert ms is not None and ms >= 0.0
+
+    def test_none_when_no_start_marker(self):
+        from app.services import observability as obs
+
+        # A meta dict without the start marker (e.g. a path that bypassed the
+        # middleware) → no latency rather than a crash.
+        token = obs._request_meta.set({"user_agent": None})
+        try:
+            assert obs.request_latency_ms() is None
+        finally:
+            obs._request_meta.reset(token)
+
 
 class TestEmitObservationIO:
     """Phase 2: _emit_observation attaches input/output ONLY when capture is on."""
@@ -232,6 +283,12 @@ class TestEmitObservationIO:
         )
         assert rec.input_payload is None
         assert rec.output_payload is None
+
+    def test_latency_threaded_from_request_meta(self):
+        # set_request_meta (called in _emit) stamps the request-start marker, so
+        # the emitted record carries a measured latency regardless of capture.
+        rec = self._emit(capture=False, output_payload=None, input_payload=None)
+        assert rec.latency_ms is not None and rec.latency_ms >= 0.0
 
 
 class TestRequestMetaMiddleware:
