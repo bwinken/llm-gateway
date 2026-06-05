@@ -2,10 +2,10 @@
 Unified ``/v1/*`` public API surface.
 
 Routes the OpenAI-compatible and Anthropic-compatible endpoints. Defaults
-to the vLLM backend (via ``vllm_proxy``); chat / messages / count_tokens
-additionally dispatch to Azure OpenAI (via ``azure_proxy``) when the
-requested ``model`` alias is configured under ``[azure_models.*]`` AND
-the caller has ``can_use_azure`` (or is admin). One base URL lets clients
+to the vLLM backend (via ``vllm_proxy``); chat / responses / messages /
+count_tokens additionally dispatch to Azure OpenAI (via ``azure_proxy``)
+when the requested ``model`` alias is configured under ``[azure_models.*]``
+AND the caller has ``can_use_azure`` (or is admin). One base URL lets clients
 like Claude Code's model picker see both backends side-by-side.
 
 Design: each base URL has its own default fallback. ``/v1/*`` serves
@@ -42,6 +42,7 @@ from app.services.azure_proxy import (
     azure_forward_chat_completions,
     azure_forward_count_tokens,
     azure_forward_messages,
+    azure_forward_responses,
 )
 from app.services.vllm_proxy import (
     vllm_forward_chat_completions,
@@ -183,6 +184,16 @@ async def chat_completions(request: Request, user: User = Depends(get_current_us
 @router.post("/v1/responses")
 @router.post("/responses")
 async def responses(request: Request, user: User = Depends(get_current_user)):
+    """OpenAI Responses API endpoint.
+
+    Dispatches to the Azure backend (pure Responses pass-through) when the
+    requested ``model`` alias is Azure-configured and the user has permission;
+    otherwise forwards to vLLM. Same Azure dispatch rule as
+    ``/v1/chat/completions``; see ``_route_to_azure``.
+    """
+    alias = await _peek_model_alias(request)
+    if alias and _route_to_azure(alias, user):
+        return await azure_forward_responses(request, user)
     return await vllm_forward_responses(
         request, user, allowed_types=["llm", "vlm"], path_suffix="/responses"
     )

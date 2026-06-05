@@ -1,7 +1,7 @@
 """Tests for the unified `/v1/*` dispatch (vLLM + Azure under one base URL).
 
-`/v1/models`, `/v1/messages`, `/v1/chat/completions`, and `/v1/messages/count_tokens`
-route by alias: when the requested ``model`` is configured under
+`/v1/models`, `/v1/messages`, `/v1/chat/completions`, `/v1/responses`, and
+`/v1/messages/count_tokens` route by alias: when the requested ``model`` is configured under
 ``[azure_models.*]`` AND the user has ``can_use_azure`` (or is admin), the
 request goes to the Azure path. Otherwise it stays on the vLLM path —
 Azure-only aliases requested by users without access quietly fall back
@@ -213,6 +213,100 @@ class TestUnifiedChatCompletions:
         assert "/openai/v1/responses" not in captured["url"]
         assert "mock-llm" in captured["url"] or "mock-vlm" in captured["url"]
         assert resp.headers.get("X-Model-Fallback")
+
+
+# ---------------------------------------------------------------------------
+# /v1/responses dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestUnifiedResponses:
+    def test_azure_alias_dispatched_to_responses_api(self, client, test_user):
+        """Azure-configured alias on /v1/responses must hit the Azure Responses
+        pass-through, rewriting body.model to the deployment name."""
+        captured: dict = {}
+
+        async def fake_post(url, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers", {})
+            captured["json"] = kwargs.get("json", {})
+            return _fake_response(200, _responses_payload("hi", 3, 2))
+
+        client.__httpx_mock__.post = fake_post
+
+        resp = client.post(
+            "/v1/responses",
+            json={
+                "model": "azure-gpt-4",
+                "input": [{"role": "user", "content": "hello"}],
+            },
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert captured["url"].endswith("/openai/v1/responses")
+        assert captured["headers"].get("api-key") == "azure-test-key"
+        # pure pass-through only rewrites the model alias → deployment name
+        assert captured["json"]["model"] == "gpt-4-deploy"
+
+    def test_vllm_alias_still_goes_to_vllm(self, client, test_user):
+        """A regular vLLM alias must NOT be hijacked by the Azure dispatcher."""
+        captured: dict = {}
+
+        async def fake_post(url, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers", {})
+            return make_httpx_response(
+                200,
+                {
+                    "id": "resp-1",
+                    "status": "completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                },
+            )
+
+        client.__httpx_mock__.post = fake_post
+
+        resp = client.post(
+            "/v1/responses",
+            json={"model": "test-llm", "input": [{"role": "user", "content": "hi"}]},
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert "/openai/v1/responses" not in captured["url"]
+        assert "mock-llm" in captured["url"]
+
+    def test_azure_alias_falls_back_to_vllm_without_permission(
+        self, client, db_session, test_user
+    ):
+        """Without can_use_azure an Azure alias on /v1/responses falls back to
+        the vLLM default rather than 404ing — same stance as the other routes."""
+        test_user.can_use_azure = False
+        db_session.add(test_user)
+        db_session.commit()
+
+        captured: dict = {}
+
+        async def fake_post(url, **kwargs):
+            captured["url"] = url
+            return make_httpx_response(
+                200,
+                {
+                    "id": "resp-1",
+                    "status": "completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                },
+            )
+
+        client.__httpx_mock__.post = fake_post
+
+        resp = client.post(
+            "/v1/responses",
+            json={"model": "azure-gpt-4", "input": [{"role": "user", "content": "hi"}]},
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert "/openai/v1/responses" not in captured["url"]
+        assert "mock-llm" in captured["url"] or "mock-vlm" in captured["url"]
 
 
 # ---------------------------------------------------------------------------
