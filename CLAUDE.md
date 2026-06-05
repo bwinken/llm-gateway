@@ -47,7 +47,7 @@ Client (Bearer API key) → FastAPI → deps.py (auth + daily limit check)
 ```
 
 The codebase has two parallel backends sharing the same auth, billing, monitoring, and pricing layers:
-- **Unified `/v1/*` surface** — `v1_api.py` is the public router; it serves vLLM via `vllm_proxy.py` by default and additionally dispatches chat / messages / count_tokens to `azure_proxy.py` when the requested `model` alias is configured under `[azure_models.*]` AND the caller has `can_use_azure` (or is admin). One base URL exposes both backends to clients like Claude Code's model picker.
+- **Unified `/v1/*` surface** — `v1_api.py` is the public router; it serves vLLM via `vllm_proxy.py` by default and additionally dispatches chat / responses / messages / count_tokens to `azure_proxy.py` when the requested `model` alias is configured under `[azure_models.*]` AND the caller has `can_use_azure` (or is admin). One base URL exposes both backends to clients like Claude Code's model picker.
 - **Azure OpenAI path** — `azure_api.py` + `azure_proxy.py` serve `/azure/v1/*` (and `/azure/messages*`). Azure-only surface; gated by `require_azure_access`.
 
 ### Unified `/v1/*` Dispatch
