@@ -13,8 +13,10 @@ import httpx
 
 from app.services.anthropic_adapter import (
     AnthropicStreamTranslator,
+    anthropic_request_io,
     anthropic_to_openai_request,
     empty_turn_warning,
+    openai_message_to_anthropic,
     openai_to_anthropic_response,
     summarize_request_shape,
 )
@@ -1143,3 +1145,58 @@ class TestEmptyTurnDiagnostics:
         assert "asst=1" in s
         assert "asst_thinking=0" in s
         assert "asst_empty=0" in s
+
+
+class TestObservabilityIOShape:
+    """The Anthropic endpoints must record Langfuse I/O in Anthropic shape (the
+    original content blocks), NOT the gateway's internal OpenAI pivot."""
+
+    def test_request_io_bare_messages_when_no_system_or_tools(self):
+        messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+        body = {"model": "claude", "messages": messages}
+        # No system/tools -> bare messages list (renders as a conversation).
+        assert anthropic_request_io(body) == messages
+
+    def test_request_io_keeps_system_and_tools(self):
+        messages = [{"role": "user", "content": "hi"}]
+        tools = [{"name": "get_weather", "input_schema": {"type": "object"}}]
+        body = {
+            "model": "claude",
+            "system": "You are helpful.",
+            "messages": messages,
+            "tools": tools,
+        }
+        io = anthropic_request_io(body)
+        assert io["messages"] == messages
+        assert io["system"] == "You are helpful."
+        assert io["tools"] == tools
+        # The OpenAI pivot would have folded system into a system message — the
+        # Anthropic capture keeps it as the top-level Anthropic field instead.
+        assert io["messages"] == messages
+
+    def test_message_to_anthropic_text_and_tool_use(self):
+        # An accumulated OpenAI assistant message (StreamingChatOutput.as_message
+        # shape) is translated to Anthropic content blocks.
+        openai_msg = {
+            "role": "assistant",
+            "content": "Let me check.",
+            "reasoning_content": "thinking...",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"city": "SF"}'},
+                }
+            ],
+        }
+        out = openai_message_to_anthropic(openai_msg, "claude")
+        assert out["role"] == "assistant"
+        types = [b["type"] for b in out["content"]]
+        # thinking block first, then text, then tool_use (Anthropic ordering).
+        assert types == ["thinking", "text", "tool_use"]
+        tool_block = out["content"][-1]
+        assert tool_block["name"] == "get_weather"
+        assert tool_block["input"] == {"city": "SF"}
+
+    def test_message_to_anthropic_none_when_empty(self):
+        assert openai_message_to_anthropic(None, "claude") is None

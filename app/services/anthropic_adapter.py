@@ -463,6 +463,49 @@ def openai_to_anthropic_response(
 
 
 # ---------------------------------------------------------------------------
+# Observability I/O capture (Anthropic-shape) — see observability.py / proxies
+# ---------------------------------------------------------------------------
+
+def anthropic_request_io(body: dict[str, Any]) -> Any:
+    """Build the Anthropic-shape input payload for Langfuse I/O capture.
+
+    The proxies translate the incoming Anthropic request to the gateway's
+    internal OpenAI pivot before forwarding; recording that pivot would show an
+    OpenAI conversation in the trace of an Anthropic endpoint. This returns the
+    original Anthropic request's salient fields instead, so the trace is a
+    faithful Anthropic record. Returns the bare ``messages`` list when there is
+    no ``system`` / ``tools`` (renders as a conversation), otherwise a dict that
+    keeps them alongside the messages.
+    """
+    messages = body.get("messages")
+    system = body.get("system")
+    tools = body.get("tools")
+    if system is None and not tools:
+        return messages
+    payload: dict[str, Any] = {"messages": messages}
+    if system is not None:
+        payload["system"] = system
+    if tools:
+        payload["tools"] = tools
+    return payload
+
+
+def openai_message_to_anthropic(
+    msg: dict[str, Any] | None, model_alias: str = "",
+) -> dict[str, Any] | None:
+    """Convert an accumulated OpenAI assistant message (from
+    ``StreamingChatOutput.as_message()``) to an Anthropic-shape assistant
+    message, so streamed-output I/O capture records the same Anthropic content
+    blocks as the non-stream path. Reuses ``openai_to_anthropic_response`` for
+    the block-building. Returns None when nothing was captured.
+    """
+    if not msg:
+        return None
+    anthropic = openai_to_anthropic_response({"choices": [{"message": msg}]}, model_alias)
+    return {"role": "assistant", "content": anthropic["content"]}
+
+
+# ---------------------------------------------------------------------------
 # Response: OpenAI -> Anthropic (streaming)
 # ---------------------------------------------------------------------------
 

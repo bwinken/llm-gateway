@@ -35,7 +35,9 @@ from app.core.server_state import get_azure_client
 from app.models.schema import User
 from app.services.anthropic_adapter import (
     AnthropicStreamTranslator,
+    anthropic_request_io,
     anthropic_to_openai_request,
+    openai_message_to_anthropic,
     openai_to_anthropic_response,
 )
 from app.services.responses_adapter import (
@@ -575,9 +577,10 @@ async def azure_forward_messages(
 
     _ensure_input(responses_body, anthropic_body, resolved_alias, "/azure/v1/messages")
 
-    # Phase 2: capture the translated OpenAI messages as Langfuse input.
+    # Phase 2: capture the ORIGINAL Anthropic request as Langfuse input so the
+    # trace stays in Anthropic shape (not the internal OpenAI pivot).
     if capture_io_enabled():
-        set_io_input(openai_body.get("messages"))
+        set_io_input(anthropic_request_io(anthropic_body))
 
     target_url = _build_responses_url(entry)
     headers = _build_headers(entry)
@@ -627,7 +630,10 @@ async def _non_stream_messages(
     input_tk = anthropic_data["usage"]["input_tokens"]
     output_tk = anthropic_data["usage"]["output_tokens"]
     cached_tk = _cached_tokens_from_responses(raw.get("usage") or {})
-    obs_output = (chat_data.get("choices") or [{}])[0].get("message") if capture_io_enabled() else None
+    obs_output = (
+        {"role": "assistant", "content": anthropic_data["content"]}
+        if capture_io_enabled() else None
+    )
     _log_usage(user, alias, model_type, input_tk, output_tk,
                "/azure/v1/messages", route=route, cached_tokens=cached_tk, backend="azure", output_payload=obs_output)
     return JSONResponse(content=anthropic_data, headers=extra_headers or None)
@@ -765,7 +771,10 @@ async def _stream_messages(
                 responses_xlat.event_type_counts, err_msg,
                 _summarize_input_items(body.get("input")),
             )
-        obs_output = output_acc.as_message() if _capture_io else None
+        obs_output = (
+            openai_message_to_anthropic(output_acc.as_message(), alias)
+            if _capture_io else None
+        )
         _log_usage(user, alias, model_type, input_tk, output_tk,
                    "/azure/v1/messages", route=route, cached_tokens=cached_tk, backend="azure", output_payload=obs_output)
 
