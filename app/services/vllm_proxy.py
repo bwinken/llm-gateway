@@ -34,8 +34,10 @@ from app.core.server_state import get_client, is_alive
 from app.models.schema import UsageLog, User
 from app.services.anthropic_adapter import (
     AnthropicStreamTranslator,
+    anthropic_request_io,
     anthropic_to_openai_request,
     empty_turn_warning,
+    openai_message_to_anthropic,
     openai_to_anthropic_response,
     summarize_request_shape,
 )
@@ -814,10 +816,11 @@ async def vllm_forward_messages(
     openai_body["model"] = real_model
     is_stream = bool(anthropic_body.get("stream", False))
 
-    # Phase 2: stash the translated OpenAI messages as the Langfuse input so it
-    # renders as a conversation. No-op unless LANGFUSE_CAPTURE_IO is on.
+    # Phase 2: stash the ORIGINAL Anthropic request as the Langfuse input so the
+    # trace of an Anthropic endpoint is a faithful Anthropic record (not the
+    # internal OpenAI pivot). No-op unless LANGFUSE_CAPTURE_IO is on.
     if capture_io_enabled():
-        set_io_input(openai_body.get("messages"))
+        set_io_input(anthropic_request_io(anthropic_body))
 
     if is_stream:
         # Always include usage in the stream so we can report it back
@@ -876,7 +879,9 @@ async def _non_stream_messages(
     output_tk = anthropic_data["usage"]["output_tokens"]
     obs_output = None
     if capture_io_enabled():
-        obs_output = (openai_data.get("choices") or [{}])[0].get("message")
+        # Record the Anthropic-shape assistant message (role + content blocks)
+        # so the trace matches the Anthropic surface, not the OpenAI pivot.
+        obs_output = {"role": "assistant", "content": anthropic_data["content"]}
 
     # Empty / near-empty turn diagnostic (silent stop in Claude Code).
     text_chars = sum(
@@ -976,7 +981,10 @@ async def _stream_messages(
         )
         if diag:
             logger.warning(diag)
-        obs_output = output_acc.as_message() if _capture_io else None
+        obs_output = (
+            openai_message_to_anthropic(output_acc.as_message(), model_alias)
+            if _capture_io else None
+        )
         _log_usage(user, model_alias, model_type, input_tokens, output_tokens, "/v1/messages", route=route, output_payload=obs_output)
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}

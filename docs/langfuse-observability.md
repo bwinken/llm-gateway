@@ -211,7 +211,7 @@ that can actually analyse it — confirmed against Langfuse Metrics API v2:
 - **Always:**
   - No-op when `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` unset.
   - Use gateway `_calc_cost` for `costDetails` (manual, overrides Langfuse pricing).
-  - Send I/O as the internal OpenAI chat `messages` shape (Phase 2) so Langfuse renders a conversation view.
+  - Send I/O in the shape of the endpoint's own surface (Phase 2): OpenAI chat `messages` for the OpenAI-style endpoints, **Anthropic content blocks for the `/v1/messages` family** (so an Anthropic endpoint's trace is a faithful Anthropic record, not the internal OpenAI pivot), native Responses for `/responses`.
   - Run the full test suite before commit; keep it green.
   - Best-effort & non-blocking: Langfuse failures are logged and swallowed, never
     surfaced into the request/response path.
@@ -241,7 +241,7 @@ LANGFUSE_CAPTURE_IO    # bool, default false — Phase 2 global I/O capture flag
 | Endpoint | Metrics (Phase 1) | I/O content (Phase 2) |
 |---|---|---|
 | `/v1/chat/completions`, `/azure/v1/chat/completions` | ✅ | ✅ input (OpenAI messages) + output (stream + non-stream) |
-| `/v1/messages`, `/azure/v1/messages` | ✅ | ✅ input (translated OpenAI messages) + output |
+| `/v1/messages`, `/azure/v1/messages` | ✅ | ✅ input (original Anthropic request — `messages`, plus `system`/`tools` when present) + output (Anthropic assistant `content` blocks, stream + non-stream) |
 | `/v1/responses`, `/azure/v1/responses` | ✅ | ✅ input + output, non-stream + stream (native Responses shape — Langfuse renders it; stream output read from `response.output_text.delta` events) |
 | **`/v1/embeddings` / `/v1/rerank` / `/v1/score`** | ✅ | ❌ **metrics only — never store I/O.** Embedding output is a large vector (noise + storage); input is bulk text (PII). `rerank` query-only capture is a possible future option, never docs/scores/vectors. |
 
@@ -257,9 +257,11 @@ Status: Phase 2 I/O capture wired for all conversational paths on both backends 
   (backend/type), metadata (incl. raw `user_agent`, `user_id` anchor), modelParameters,
   level/status. Includes the pure `classify_client(user_agent, endpoint)` helper.
   env-gated; `LANGFUSE_CAPTURE_IO` not yet used. Zero impact when unconfigured.
-- **Phase 2 — full I/O.** Behind `LANGFUSE_CAPTURE_IO`. Capture input as the internal
-  **OpenAI chat `messages` shape** (for `/v1/messages`, the already-translated
-  `openai_body["messages"]`) so Langfuse renders a conversation view; capture the
+- **Phase 2 — full I/O.** Behind `LANGFUSE_CAPTURE_IO`. Capture input in the shape of the
+  endpoint's own surface — OpenAI chat `messages` for the OpenAI-style paths, and the
+  **original Anthropic request** (`messages` + `system`/`tools`) for the `/v1/messages`
+  family via `anthropic_request_io`, with the streamed output translated back to Anthropic
+  content blocks via `openai_message_to_anthropic` so the trace matches the surface; capture the
   response (non-stream from the response dict; stream by accumulating chunks in the proxy
   loop, gated on `LANGFUSE_CAPTURE_IO` instead of `_monitoring`). Images via **Langfuse
   media handling** (Option B). Keep reasoning/thinking as a separate field.
