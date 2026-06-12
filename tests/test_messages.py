@@ -87,38 +87,156 @@ class TestRequestTranslation:
         out = anthropic_to_openai_request(body)
         assert out["messages"][0]["content"] == "You are helpful"
 
-    def test_inline_system_message_hoisted_to_front(self):
-        """A `role: "system"` entry inside `messages` (newer Claude Code injects
-        mid-conversation system reminders this way) must be hoisted into the
-        single leading system message — never emitted at a non-zero index.
-        Strict downstream chat templates (Qwen3.x) raise
-        "System message must be at the beginning" otherwise.
+    def test_leading_system_messages_hoisted_to_front(self):
+        """System / developer entries BEFORE the first real turn join the
+        top-level `system` field as the single leading system message — strict
+        downstream chat templates (Qwen3.x) raise
+        "System message must be at the beginning" for anything else.
         """
         body = {
             "model": "x",
             "system": "You are Claude Code.",
             "messages": [
+                {"role": "system", "content": "Extra leading instructions."},
                 {"role": "user", "content": "hi"},
                 {"role": "assistant", "content": "hello"},
-                {"role": "system", "content": "<system-reminder>stay on task</system-reminder>"},
-                {"role": "user", "content": "continue"},
             ],
         }
         out = anthropic_to_openai_request(body)
         system_indices = [
             i for i, m in enumerate(out["messages"]) if m["role"] == "system"
         ]
-        # Exactly one system message, and it is first.
         assert system_indices == [0]
-        # Both the top-level system and the inline reminder are preserved.
         assert "You are Claude Code." in out["messages"][0]["content"]
-        assert "stay on task" in out["messages"][0]["content"]
-        # The remaining (non-system) turns keep their order.
-        assert [m["role"] for m in out["messages"][1:]] == ["user", "assistant", "user"]
+        assert "Extra leading instructions." in out["messages"][0]["content"]
+        assert [m["role"] for m in out["messages"][1:]] == ["user", "assistant"]
 
-    def test_developer_message_hoisted_to_front(self):
-        """`role: "developer"` messages are hoisted into the leading system
-        block too (same downstream ordering constraint)."""
+    def test_mid_conversation_system_merged_into_previous_user(self):
+        """A `role: "system"` reminder between a user and an assistant turn
+        (e.g. Claude Code's IDE open-file event) is merged into the preceding
+        user message as <system-reminder> text — never emitted as a
+        mid-conversation system message, and never hoisted to the front (which
+        would lose its temporal position and invalidate the downstream's
+        prefix cache every turn).
+        """
+        body = {
+            "model": "x",
+            "system": "You are Claude Code.",
+            "messages": [
+                {"role": "user", "content": "A"},
+                {
+                    "role": "system",
+                    "content": "The user opened the file /home/u/JAM.v in the IDE.",
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "call_1", "name": "Skill", "input": {}},
+                    ],
+                },
+            ],
+        }
+        out = anthropic_to_openai_request(body)
+        roles = [m["role"] for m in out["messages"]]
+        assert roles == ["system", "user", "assistant"]
+        # Leading system prompt untouched by the reminder.
+        assert out["messages"][0]["content"] == "You are Claude Code."
+        # Reminder appended after the original user text, wrapped in tags.
+        user_content = out["messages"][1]["content"]
+        assert user_content.startswith("A")
+        assert "<system-reminder>" in user_content
+        assert "JAM.v" in user_content
+        assert user_content.index("A") < user_content.index("JAM.v")
+
+    def test_mid_conversation_system_prepended_to_next_user(self):
+        """A reminder arriving after an assistant turn attaches to the FRONT of
+        the next user message, preserving its original position."""
+        body = {
+            "model": "x",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+                {"role": "system", "content": "todo list updated"},
+                {"role": "user", "content": "continue"},
+            ],
+        }
+        out = anthropic_to_openai_request(body)
+        assert [m["role"] for m in out["messages"]] == ["user", "assistant", "user"]
+        last_user = out["messages"][2]["content"]
+        assert last_user.startswith("<system-reminder>")
+        assert "todo list updated" in last_user
+        assert last_user.endswith("continue")
+
+    def test_multiple_consecutive_reminders_kept_in_order(self):
+        body = {
+            "model": "x",
+            "messages": [
+                {"role": "user", "content": "A"},
+                {"role": "system", "content": "first reminder"},
+                {"role": "system", "content": "second reminder"},
+                {"role": "assistant", "content": "ok"},
+            ],
+        }
+        out = anthropic_to_openai_request(body)
+        assert [m["role"] for m in out["messages"]] == ["user", "assistant"]
+        user_content = out["messages"][0]["content"]
+        assert user_content.index("A") < user_content.index("first reminder")
+        assert user_content.index("first reminder") < user_content.index("second reminder")
+
+    def test_reminder_already_tagged_not_double_wrapped(self):
+        body = {
+            "model": "x",
+            "messages": [
+                {"role": "user", "content": "A"},
+                {
+                    "role": "system",
+                    "content": "<system-reminder>stay on task</system-reminder>",
+                },
+                {"role": "assistant", "content": "ok"},
+            ],
+        }
+        out = anthropic_to_openai_request(body)
+        user_content = out["messages"][0]["content"]
+        assert user_content.count("<system-reminder>") == 1
+
+    def test_reminder_after_tool_result_attaches_to_next_user(self):
+        """A reminder following a tool_result-only user turn (which emits only
+        `role: "tool"` messages) is buffered and prepended to the next real
+        user message instead of becoming a mid-conversation system message."""
+        body = {
+            "model": "x",
+            "messages": [
+                {"role": "user", "content": "run it"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "call_1", "name": "bash", "input": {}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "call_1", "content": "done"},
+                    ],
+                },
+                {"role": "system", "content": "The user opened JAM.v in the IDE."},
+                {"role": "user", "content": "what next?"},
+            ],
+        }
+        out = anthropic_to_openai_request(body)
+        roles = [m["role"] for m in out["messages"]]
+        assert "system" not in roles
+        assert roles == ["user", "assistant", "tool", "user"]
+        # Tool output untouched by the reminder.
+        assert out["messages"][2]["content"] == "done"
+        last_user = out["messages"][3]["content"]
+        assert last_user.startswith("<system-reminder>")
+        assert "JAM.v" in last_user
+        assert last_user.endswith("what next?")
+
+    def test_developer_message_merged_like_system(self):
+        """Mid-conversation `role: "developer"` messages get the same in-place
+        merge treatment as system reminders."""
         body = {
             "model": "x",
             "messages": [
@@ -127,8 +245,11 @@ class TestRequestTranslation:
             ],
         }
         out = anthropic_to_openai_request(body)
-        assert out["messages"][0] == {"role": "system", "content": "be concise"}
-        assert [m["role"] for m in out["messages"]] == ["system", "user"]
+        assert [m["role"] for m in out["messages"]] == ["user"]
+        user_content = out["messages"][0]["content"]
+        assert user_content.startswith("hi")
+        assert "be concise" in user_content
+        assert "<system-reminder>" in user_content
 
     def test_image_block_base64(self):
         body = {

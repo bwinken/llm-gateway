@@ -123,6 +123,37 @@ def _content_to_openai_text(content: Any) -> str:
     return ""
 
 
+def _wrap_system_reminder(text: str) -> str:
+    """Wrap mid-conversation system text the way Claude Code embeds it in user
+    messages when talking to the official API. Text that already carries the
+    tag is left untouched."""
+    if "<system-reminder>" in text:
+        return text
+    return f"<system-reminder>\n{text}\n</system-reminder>"
+
+
+def _merge_text_into_message(
+    msg_out: dict[str, Any], text: str, prepend: bool = False
+) -> None:
+    """Splice plain text into an already-built OpenAI message's content,
+    handling both the string and content-blocks shapes."""
+    content = msg_out.get("content", "")
+    if isinstance(content, list):
+        block = {"type": "text", "text": text}
+        if prepend:
+            content.insert(0, block)
+        else:
+            content.append(block)
+        return
+    existing = content if isinstance(content, str) else ""
+    if not existing:
+        msg_out["content"] = text
+    elif prepend:
+        msg_out["content"] = f"{text}\n\n{existing}"
+    else:
+        msg_out["content"] = f"{existing}\n\n{text}"
+
+
 def anthropic_to_openai_request(
     body: dict[str, Any],
     is_reasoning: bool = False,
@@ -138,15 +169,26 @@ def anthropic_to_openai_request(
     """
     openai_messages: list[dict[str, Any]] = []
 
-    # System content is collected here and emitted as a SINGLE message at the
-    # very front (index 0). Anthropic clients carry system text in the top-level
-    # "system" field, but newer Claude Code also injects mid-conversation
-    # "system" reminders as `role: "system"` entries inside `messages`. If those
-    # were emitted inline they would land at a non-zero index, and strict
+    # Conversation-LEADING system content (the top-level "system" field plus
+    # any system/developer entries that precede the first real turn) is
+    # collected here and emitted as a SINGLE message at index 0 — strict
     # downstream chat templates (e.g. Qwen3.x) raise
-    # "System message must be at the beginning". Hoisting every piece of system
-    # text into one leading message keeps the gateway's output valid for them.
+    # "System message must be at the beginning" for anything else.
+    #
+    # MID-conversation system entries (newer Claude Code injects IDE events /
+    # task reminders as `role: "system"` inside `messages`) are NOT hoisted to
+    # the front: that would tear them out of their temporal position and, worse,
+    # mutate the index-0 system message on every turn, invalidating the
+    # downstream's prefix cache for the whole history. Instead they are merged
+    # in place into the adjacent user message as <system-reminder> text — the
+    # exact shape Claude Code itself uses against the official Anthropic API —
+    # preserving ordering and strict role alternation.
     system_parts: list[str] = []
+
+    # Mid-conversation reminders waiting for the next user message (used when
+    # the preceding message isn't a user turn we can append to).
+    pending_reminders: list[str] = []
+    in_conversation = False
 
     # System prompt — Anthropic uses a top-level "system" field (string or list)
     system = body.get("system")
@@ -159,17 +201,35 @@ def anthropic_to_openai_request(
         role = msg.get("role", "user")
         content = msg.get("content", "")
 
-        # Hoist any system / developer role message into the leading system
-        # block rather than emitting it inline (see system_parts comment above).
+        # System / developer role messages: leading ones join the single
+        # index-0 system message; mid-conversation ones are merged into the
+        # adjacent user message (see system_parts comment above).
         if role in ("system", "developer"):
             text = _content_to_openai_text(content)
-            if text:
+            if not text:
+                continue
+            if not in_conversation:
                 system_parts.append(text)
+                continue
+            reminder = _wrap_system_reminder(text)
+            last = openai_messages[-1] if openai_messages else None
+            if last is not None and last.get("role") == "user":
+                _merge_text_into_message(last, reminder)
+            else:
+                pending_reminders.append(reminder)
             continue
+
+        in_conversation = True
 
         # Simple string content -> direct mapping
         if isinstance(content, str):
-            openai_messages.append({"role": role, "content": content})
+            msg_out = {"role": role, "content": content}
+            if role == "user" and pending_reminders:
+                _merge_text_into_message(
+                    msg_out, "\n\n".join(pending_reminders), prepend=True
+                )
+                pending_reminders.clear()
+            openai_messages.append(msg_out)
             continue
 
         if not isinstance(content, list):
@@ -248,9 +308,21 @@ def anthropic_to_openai_request(
             if (msg_out["content"] == "" and not tool_calls
                     and not thinking_parts and tool_results):
                 continue
+            if role == "user" and pending_reminders:
+                _merge_text_into_message(
+                    msg_out, "\n\n".join(pending_reminders), prepend=True
+                )
+                pending_reminders.clear()
             openai_messages.append(msg_out)
 
-    # Emit the consolidated system content as the single leading message.
+    # Reminders with no user message left to attach to (e.g. a trailing system
+    # entry) become their own user message so they are not silently dropped.
+    if pending_reminders:
+        openai_messages.append(
+            {"role": "user", "content": "\n\n".join(pending_reminders)}
+        )
+
+    # Emit the consolidated leading system content as the single index-0 message.
     if system_parts:
         openai_messages.insert(
             0, {"role": "system", "content": "\n\n".join(system_parts)}
