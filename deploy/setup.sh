@@ -345,10 +345,19 @@ fi
 # ╚══════════════════════════════════════════════════════════╝
 header "Step 9/9  Nginx 設定"
 
+# 模板檔：優先用部署目錄裡既有的 llm-gateway.nginx.conf（可能含操作者客製），
+# 否則退回 repo 內建的 example 模板
+NGINX_TEMPLATE="$DEPLOY_DIR/llm-gateway.nginx.conf"
+[ -f "$NGINX_TEMPLATE" ] || NGINX_TEMPLATE="$DEPLOY_DIR/llm-gateway-example.nginx.conf"
+
 if ! command -v nginx &>/dev/null; then
     warn "nginx 未安裝，跳過此步驟"
     info "請手動安裝 nginx 並設定反向代理"
-    info "  設定檔模板：$DEPLOY_DIR/llm-gateway.nginx.conf"
+    info "  設定檔模板：$NGINX_TEMPLATE"
+elif [ ! -f "$NGINX_TEMPLATE" ]; then
+    # 沒有模板就跳過 — 千萬不能讓 sed 讀不到檔案時把空內容
+    # 寫進 sites-available（空設定檔會通過 nginx -t，reload 後站台就消失）
+    warn "找不到 Nginx 設定模板，跳過此步驟（現有 Nginx 設定不變）"
 else
     # 讀取域名（優先從 deploy/.env 取得）
     DOMAIN_FROM_ENV=$(grep '^OAUTH2_REDIRECT_URL=' "$DEPLOY_DIR/.env" | sed 's|.*://||;s|/.*||')
@@ -358,19 +367,23 @@ else
         ask "Nginx server_name（域名）" "llm-gateway.your-domain.com" NGINX_DOMAIN
     fi
 
-    sed -e "s|__APP_DIR__|$APP_DIR|g" \
+    NGINX_RENDERED=$(sed -e "s|__APP_DIR__|$APP_DIR|g" \
         -e "s|llm-gateway.your-domain.com|$NGINX_DOMAIN|g" \
-        "$DEPLOY_DIR/llm-gateway.nginx.conf" \
-        | sudo tee /etc/nginx/sites-available/llm-gateway > /dev/null
-    sudo ln -sf /etc/nginx/sites-available/llm-gateway /etc/nginx/sites-enabled/llm-gateway
-
-    if sudo nginx -t 2>/dev/null; then
-        sudo systemctl reload nginx
-        ok "Nginx 設定已安裝（server_name: $NGINX_DOMAIN）"
+        "$NGINX_TEMPLATE")
+    if [ -z "$NGINX_RENDERED" ]; then
+        err "Nginx 模板渲染結果為空，跳過（現有 Nginx 設定不變）"
     else
-        err "Nginx 設定檔語法錯誤，請手動檢查"
-        info "  sudo nano /etc/nginx/sites-available/llm-gateway"
-        info "  sudo nginx -t && sudo systemctl reload nginx"
+        printf '%s\n' "$NGINX_RENDERED" | sudo tee /etc/nginx/sites-available/llm-gateway > /dev/null
+        sudo ln -sf /etc/nginx/sites-available/llm-gateway /etc/nginx/sites-enabled/llm-gateway
+
+        if sudo nginx -t 2>/dev/null; then
+            sudo systemctl reload nginx
+            ok "Nginx 設定已安裝（server_name: $NGINX_DOMAIN）"
+        else
+            err "Nginx 設定檔語法錯誤，請手動檢查"
+            info "  sudo nano /etc/nginx/sites-available/llm-gateway"
+            info "  sudo nginx -t && sudo systemctl reload nginx"
+        fi
     fi
 fi
 
