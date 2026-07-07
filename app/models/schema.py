@@ -23,6 +23,11 @@ class User(SQLModel, table=True):
     password_hash: str = Field(default="")
     api_key: str = Field(index=True, unique=True, default_factory=_generate_api_key)
     daily_limit_usd: float = Field(default=10.0)
+    # Optional Azure-specific sub-limit. Azure spend still counts toward
+    # daily_limit_usd (the overall budget); this additionally caps the Azure
+    # portion on its own. NULL or <= 0 → no separate Azure cap (current
+    # behavior for every existing user).
+    azure_daily_limit_usd: float | None = Field(default=None)
     is_admin: bool = Field(default=False)
     is_disabled: bool = Field(default=False)
     can_use_azure: bool = Field(default=False)
@@ -56,4 +61,8 @@ class UsageLog(SQLModel, table=True):
     output_tokens: int = Field(default=0)
     cost_usd: Decimal = Field(default=Decimal("0"), sa_column=sa.Column(sa.Numeric(12, 6), nullable=False, default=0))
     endpoint: str = Field(default="")
+    # Which downstream served the request: "vllm" (on-prem) or "azure".
+    # Lets billing/limits/reports split cloud spend from on-prem spend
+    # without parsing the endpoint label.
+    backend: str = Field(default="vllm", sa_column=sa.Column(sa.String, nullable=False, server_default="vllm"))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

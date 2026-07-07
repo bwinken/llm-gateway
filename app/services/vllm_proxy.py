@@ -303,6 +303,7 @@ def _log_usage_sync(
     output_tokens: int,
     cost: Decimal,
     endpoint: str,
+    backend: str = "vllm",
 ) -> None:
     """Synchronous DB write — meant to run in a thread via run_in_executor."""
     try:
@@ -315,6 +316,7 @@ def _log_usage_sync(
                 output_tokens=output_tokens,
                 cost_usd=cost,
                 endpoint=endpoint,
+                backend=backend,
             )
             session.add(log)
             session.commit()
@@ -460,9 +462,11 @@ def _log_usage(
     `cached_tokens` lets the Azure path bill prompt-cache hits at the
     discounted `cached_input_price_per_1m`; vLLM callers omit it.
 
-    `backend` ("vllm" | "azure") tags the Langfuse generation. Emitting the
-    Langfuse generation happens here so every billable path is covered from one
-    seam; it is a no-op when Langfuse is unconfigured.
+    `backend` ("vllm" | "azure") is persisted on the usage_logs row (so cloud
+    vs on-prem spend can be split for reporting and the Azure daily sub-limit)
+    and tags the Langfuse generation. Emitting the Langfuse generation happens
+    here so every billable path is covered from one seam; it is a no-op when
+    Langfuse is unconfigured.
 
     `output_payload` (assistant text/content) is attached to the Langfuse
     generation only when LANGFUSE_CAPTURE_IO is on (Phase 2); input is read
@@ -492,12 +496,14 @@ def _log_usage(
             _log_usage_sync,
             user.id, user.username, user.daily_limit_usd,
             model, model_type, input_tokens, output_tokens, cost, endpoint,
+            backend,
         )
     except RuntimeError:
         # No running loop (e.g. during testing) — run synchronously
         _log_usage_sync(
             user.id, user.username, user.daily_limit_usd,  # type: ignore[arg-type]
             model, model_type, input_tokens, output_tokens, cost, endpoint,
+            backend,
         )
 
 

@@ -11,7 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session, func, select
 
 from app.core.auth import AccountDisabledError
-from app.core.database import get_session
+from app.core.database import engine, get_session
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc
 from app.models.schema import UsageLog, User
@@ -87,6 +87,59 @@ def _check_daily_limit(session: Session, user: User) -> None:
     )
 
 
+def _check_azure_daily_limit(session: Session, user: User) -> None:
+    """Reject if the user has exceeded their Azure-specific daily sub-limit.
+
+    Azure spend always counts toward the overall ``daily_limit_usd`` (checked
+    in ``_check_daily_limit``); this additionally caps the Azure portion on
+    its own. ``azure_daily_limit_usd`` of ``None`` or ``<= 0`` means "no
+    separate Azure cap" — the default for every user, preserving pre-feature
+    behavior exactly.
+
+    Honors the same ``ENFORCE_DAILY_LIMIT`` soft-mode escape hatch as the
+    overall check.
+    """
+    limit = user.azure_daily_limit_usd
+    if limit is None or limit <= 0:
+        return
+
+    today_start = local_day_start_utc()
+    stmt = (
+        select(func.coalesce(func.sum(UsageLog.cost_usd), 0))
+        .where(UsageLog.user_id == user.id)
+        .where(UsageLog.created_at >= today_start)
+        .where(UsageLog.backend == "azure")
+    )
+    azure_cost = float(session.exec(stmt).one())
+    if azure_cost < limit:
+        return
+
+    if _enforce_daily_limit():
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Azure daily spending limit (${limit}) exceeded. "
+                f"Today (Azure): ${azure_cost:.4f}."
+            ),
+        )
+    logger.warning(
+        "Azure daily limit exceeded (soft mode) | user={} limit=${} today=${:.4f}",
+        user.username, limit, azure_cost,
+    )
+
+
+def ensure_azure_budget(user: User) -> None:
+    """Standalone Azure sub-limit check for call sites without a request-scoped
+    session — i.e. the unified ``/v1/*`` handlers, which only learn the request
+    is Azure-bound after peeking the model alias. Opens a short-lived session;
+    blocking, so async callers should wrap it in ``run_in_threadpool``.
+
+    Raises HTTP 429 when the user's Azure sub-limit is exhausted.
+    """
+    with Session(engine) as session:
+        _check_azure_daily_limit(session, user)
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
@@ -146,12 +199,17 @@ def get_current_user(
     return user
 
 
-def require_azure_access(user: User = Depends(get_current_user)) -> User:
-    """Dependency for /azure/v1/* endpoints — additionally checks Azure access flag."""
+def require_azure_access(
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> User:
+    """Dependency for /azure/v1/* endpoints — additionally checks the Azure
+    access flag and the per-user Azure daily sub-limit."""
     if not user.can_use_azure and not user.is_admin:
         logger.warning("Azure access denied for user '{}'", user.username)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Azure access not granted. Contact your administrator.",
         )
+    _check_azure_daily_limit(session, user)
     return user

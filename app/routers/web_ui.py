@@ -146,6 +146,13 @@ async def dashboard(
     daily_limit = user.daily_limit_usd if user.daily_limit_usd > 0 else 1.0
     usage_percent = min(100.0, (today_cost / daily_limit) * 100)
 
+    # Azure sub-budget: shown only when an azure_daily_limit_usd is set.
+    azure_today_cost = today["azure_cost_usd"]
+    azure_limit = user.azure_daily_limit_usd or 0.0
+    azure_usage_percent = (
+        min(100.0, (azure_today_cost / azure_limit) * 100) if azure_limit > 0 else 0.0
+    )
+
     claude_code_available = (_SETUP_DIR / "install-claude-code.bat").is_file()
 
     # Azure access — list configured Azure model aliases when the user has
@@ -184,6 +191,10 @@ async def dashboard(
             today_input=today["total_input_tokens"],
             today_output=today["total_output_tokens"],
             usage_percent=round(usage_percent, 1),
+            azure_today_cost=round(azure_today_cost, 4),
+            vllm_today_cost=round(today["vllm_cost_usd"], 4),
+            azure_limit=azure_limit,
+            azure_usage_percent=round(azure_usage_percent, 1),
             trend_data=trend_data,
             today_str=datetime.now(LOCAL_TZ).strftime("%Y-%m-%d"),
             owned_apps=owned_apps,

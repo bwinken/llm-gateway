@@ -420,6 +420,17 @@ function submitExport(e) {
                                        class="gw-input w-20 text-sm font-mono py-1 px-2">
                                 <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
                             </form>
+                            {% if u.can_use_azure %}
+                            <form action="/admin/users/{{ u.id }}/azure-limit" method="POST" class="flex items-center gap-2 mt-1"
+                                  title="Azure daily sub-limit (counts inside the overall limit). Empty = no separate Azure cap.">
+                                <span class="text-xs" style="color:#cab9ff">Az$</span>
+                                <input type="number" step="0.1" min="0" name="new_azure_limit"
+                                       value="{{ u.azure_daily_limit_usd if u.azure_daily_limit_usd is not none else '' }}"
+                                       placeholder="—"
+                                       class="gw-input w-20 text-sm font-mono py-1 px-2">
+                                <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
+                            </form>
+                            {% endif %}
                         </td>
                         <td class="whitespace-nowrap text-right">
                             <div class="flex items-center justify-end gap-2">
@@ -516,6 +527,17 @@ function submitExport(e) {
                                        class="gw-input w-20 text-sm font-mono py-1 px-2">
                                 <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
                             </form>
+                            {% if u.can_use_azure %}
+                            <form action="/admin/users/{{ u.id }}/azure-limit" method="POST" class="flex items-center gap-2 mt-1"
+                                  title="Azure daily sub-limit (counts inside the overall limit). Empty = no separate Azure cap.">
+                                <span class="text-xs" style="color:#cab9ff">Az$</span>
+                                <input type="number" step="0.1" min="0" name="new_azure_limit"
+                                       value="{{ u.azure_daily_limit_usd if u.azure_daily_limit_usd is not none else '' }}"
+                                       placeholder="—"
+                                       class="gw-input w-20 text-sm font-mono py-1 px-2">
+                                <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
+                            </form>
+                            {% endif %}
                         </td>
                         <td class="whitespace-nowrap text-right">
                             <div class="flex items-center justify-end gap-2">
