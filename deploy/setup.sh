@@ -286,10 +286,14 @@ fi
 header "Step 7/9  資料庫遷移"
 
 cd "$APP_DIR"
-if uv run alembic upgrade head 2>/dev/null; then
+if uv run alembic upgrade head; then
     ok "資料庫 schema 已同步"
 else
-    warn "資料庫遷移失敗 — 請確認 PostgreSQL 已啟動且 .env 中的 DATABASE_URL 正確"
+    err "資料庫遷移失敗 — 停止部署（不 restart Gateway，線上維持舊版程式碼運行）"
+    info "新程式碼在 schema 未升級時啟動會導致 usage 記錄寫入失敗、dashboard 錯誤"
+    info "請確認 PostgreSQL 已啟動且 .env 中的 DATABASE_URL 正確，然後重新執行 setup.sh"
+    info "（若因 lock timeout 中止，代表當下有長查詢佔住資料表 — 稍後重跑即可）"
+    exit 1
 fi
 
 # ── Checkpoint: 可以手動測試 Gateway ──
