@@ -144,6 +144,52 @@ class TestAzureSubLimitDefaultOff:
         assert _post_azure_chat(client).status_code == 200
 
 
+class TestUsersWithoutAzureAccess:
+    """Users without can_use_azure never touch the sub-limit machinery —
+    their behavior is byte-for-byte what it was before the feature,
+    even in the odd state where an admin set a sub-limit anyway."""
+
+    def _revoke_azure(self, db_session: Session, user: User) -> None:
+        user.can_use_azure = False
+        db_session.add(user)
+        db_session.commit()
+
+    def test_azure_surface_still_403_not_429(self, client, db_session, test_user):
+        """Permission check runs BEFORE the sub-limit check: a user without
+        access gets 403 (as today), never a 429 that would leak limit state."""
+        self._revoke_azure(db_session, test_user)
+        _set_azure_limit(db_session, test_user, 10.0)
+        _burn(db_session, test_user, Decimal("10.00"), "azure")
+        resp = _post_azure_chat(client)
+        assert resp.status_code == 403
+        assert "Azure access not granted" in resp.json()["detail"]
+
+    def test_unified_v1_still_falls_back_to_vllm(self, client, db_session, test_user):
+        """An Azure alias from a user without access keeps falling back to
+        the vLLM default (the gateway's longstanding stance) — the sub-limit
+        never enters the picture, even when exhausted."""
+        self._revoke_azure(db_session, test_user)
+        _set_azure_limit(db_session, test_user, 10.0)
+        _burn(db_session, test_user, Decimal("10.00"), "azure")
+        _mock_vllm_ok(client)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"model": "azure-gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        # Served by vLLM, logged as vllm.
+        logs = db_session.exec(select(UsageLog).where(UsageLog.endpoint == "/v1/chat/completions")).all()
+        assert logs and all(l.backend == "vllm" for l in logs)
+
+    def test_vllm_requests_unaffected(self, client, db_session, test_user):
+        self._revoke_azure(db_session, test_user)
+        _set_azure_limit(db_session, test_user, 10.0)
+        _burn(db_session, test_user, Decimal("10.00"), "azure")
+        _mock_vllm_ok(client)
+        assert _post_vllm_chat(client).status_code == 200
+
+
 class TestAzureSubLimitEnforcement:
     def test_under_azure_limit_passes(self, client, db_session, test_user):
         _set_azure_limit(db_session, test_user, 10.0)
