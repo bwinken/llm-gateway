@@ -639,6 +639,7 @@ function submitExport(e) {
 
     /* ── User Management tabs ── */
     function switchUmTab(tab) {
+        try { sessionStorage.setItem('umTab', tab); } catch (e) {}
         document.getElementById('umUsersPanel').classList.toggle('hidden', tab !== 'users');
         document.getElementById('umAppsPanel').classList.toggle('hidden', tab !== 'apps');
         var btnUsers = document.getElementById('umTabUsers');
@@ -755,5 +756,47 @@ function submitExport(e) {
         }
     });
 })();
+</script>
+
+<script>
+    /* ── Keep scroll position & active tab across full-page round-trips ──
+       Every action in the user-management tables (search, pagination, limit
+       saves, Azure/disable toggles, deletes) reloads /admin via GET or
+       POST-redirect, which would otherwise dump the viewport back at the
+       top of the page and reset the Users/Apps tab. */
+    (function(){
+        var Y_KEY = 'adminScroll';
+        function saveScroll(){
+            try { sessionStorage.setItem(Y_KEY, JSON.stringify({ y: window.scrollY, t: Date.now() })); } catch (e) {}
+        }
+        // Capture phase catches every form on the page (per-row action forms
+        // included) without wiring each one individually. AJAX-only forms
+        // save too, but the freshness window below keeps that harmless.
+        document.addEventListener('submit', saveScroll, true);
+        document.addEventListener('click', function(e){
+            var a = e.target && e.target.closest ? e.target.closest('a') : null;
+            if (!a) return;
+            var href = a.getAttribute('href') || '';
+            // Pagination links (?offset=...) and the search Clear link (/admin).
+            if (href.charAt(0) === '?' || href === '/admin') saveScroll();
+        }, true);
+
+        var saved = null;
+        try {
+            saved = JSON.parse(sessionStorage.getItem(Y_KEY));
+            sessionStorage.removeItem(Y_KEY);
+        } catch (e) {}
+        // 30s freshness window: restores after a round-trip reload, but a
+        // stale save (e.g. an AJAX submit that never navigated) won't yank
+        // the viewport when the admin returns to this page minutes later.
+        if (saved && typeof saved.y === 'number' && Date.now() - saved.t < 30000) {
+            window.scrollTo(0, saved.y);
+        }
+
+        // Re-open the tab (Users/Apps) that was active before the reload.
+        try {
+            if (sessionStorage.getItem('umTab') === 'apps') switchUmTab('apps');
+        } catch (e) {}
+    })();
 </script>
 {% endblock %}
