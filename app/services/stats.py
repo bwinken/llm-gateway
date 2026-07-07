@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import case as sa_case
 from sqlmodel import Session, func, select
 
 from app.core.timeutil import local_day_start_utc
@@ -24,24 +25,34 @@ def _local_date(session: Session, col):
 
 
 def get_user_daily_summary(session: Session, user_id: int) -> dict:
-    """Total tokens, cost, and request count for today (Asia/Taipei day)."""
+    """Total tokens, cost, and request count for today (Asia/Taipei day).
+
+    Also splits today's cost by backend (``azure_cost_usd`` — the remainder
+    is on-prem/vLLM) so the dashboard can show the Azure sub-budget.
+    """
     today_start = local_day_start_utc()
+    azure_case = sa_case((UsageLog.backend == "azure", UsageLog.cost_usd), else_=0)
     stmt = (
         select(
             func.coalesce(func.sum(UsageLog.input_tokens), 0).label("total_input"),
             func.coalesce(func.sum(UsageLog.output_tokens), 0).label("total_output"),
             func.coalesce(func.sum(UsageLog.cost_usd), 0).label("total_cost"),
             func.count(UsageLog.id).label("total_requests"),
+            func.coalesce(func.sum(azure_case), 0).label("azure_cost"),
         )
         .where(UsageLog.user_id == user_id)
         .where(UsageLog.created_at >= today_start)
     )
     row = session.exec(stmt).first()
+    total_cost = float(row[2]) if row else 0.0
+    azure_cost = float(row[4]) if row else 0.0
     return {
         "total_input_tokens": int(row[0]) if row else 0,
         "total_output_tokens": int(row[1]) if row else 0,
-        "total_cost_usd": float(row[2]) if row else 0.0,
+        "total_cost_usd": total_cost,
         "total_requests": int(row[3]) if row else 0,
+        "azure_cost_usd": azure_cost,
+        "vllm_cost_usd": total_cost - azure_cost,
     }
 
 

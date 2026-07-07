@@ -133,6 +133,7 @@ async def admin_page(
             "username": u.username,
             "api_key": u.api_key,
             "daily_limit_usd": u.daily_limit_usd,
+            "azure_daily_limit_usd": u.azure_daily_limit_usd,
             "is_admin": u.is_admin,
             "is_disabled": u.is_disabled,
             "can_use_azure": u.can_use_azure,
@@ -290,6 +291,39 @@ async def update_user_limit(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.post("/users/{user_id}/azure-limit")
+async def update_user_azure_limit(
+    user_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Set the user's Azure-specific daily sub-limit.
+
+    Empty value clears the sub-limit (NULL → Azure spend only bounded by the
+    overall daily_limit_usd, i.e. pre-feature behavior). 0 also means "no
+    separate Azure cap" but is stored as sent.
+    """
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    form = await request.form()
+    raw = form.get("new_azure_limit")
+    if raw is not None:
+        raw = str(raw).strip()
+        if raw == "":
+            target.azure_daily_limit_usd = None
+        else:
+            try:
+                target.azure_daily_limit_usd = float(raw)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="new_azure_limit must be a number.")
+        session.add(target)
+        session.commit()
+
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 @router.post("/default-limit")
 async def update_default_limit(
     request: Request,
@@ -430,6 +464,7 @@ async def list_users_api(
             "username": u.username,
             "api_key": u.api_key,
             "daily_limit_usd": u.daily_limit_usd,
+            "azure_daily_limit_usd": u.azure_daily_limit_usd,
             "is_admin": u.is_admin,
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
@@ -457,6 +492,9 @@ async def create_user_api(
     new_user = User(username=username)
     if "daily_limit_usd" in body:
         new_user.daily_limit_usd = float(body["daily_limit_usd"])
+    if "azure_daily_limit_usd" in body:
+        raw = body["azure_daily_limit_usd"]
+        new_user.azure_daily_limit_usd = None if raw is None else float(raw)
     if "is_admin" in body:
         new_user.is_admin = bool(body["is_admin"])
     session.add(new_user)
@@ -494,6 +532,9 @@ async def update_user_api(
 
     if "daily_limit_usd" in body:
         target.daily_limit_usd = float(body["daily_limit_usd"])
+    if "azure_daily_limit_usd" in body:
+        raw = body["azure_daily_limit_usd"]
+        target.azure_daily_limit_usd = None if raw is None else float(raw)
     if "is_admin" in body:
         target.is_admin = bool(body["is_admin"])
     if "owner_ids" in body:

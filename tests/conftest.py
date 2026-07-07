@@ -279,6 +279,9 @@ def _patch_all():
         patch("app.services.vllm_proxy.FALLBACK_MAP", TEST_FALLBACK_MAP),
         patch("app.services.vllm_proxy.get_client", return_value=_mock_httpx_client),
         patch("app.services.vllm_proxy.engine", _test_engine),
+        # ensure_azure_budget (unified /v1 Azure dispatch) opens its own
+        # session on this module-level engine — point it at the test DB.
+        patch("app.core.deps.engine", _test_engine),
         patch("app.services.vllm_proxy.is_alive", return_value=True),
         patch("app.services.azure_proxy.AZURE_MODELS", TEST_AZURE_MODELS),
         patch("app.services.azure_proxy.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),

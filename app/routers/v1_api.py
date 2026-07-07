@@ -29,13 +29,14 @@ misconfiguration that previously surfaced as a silent 404.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import (
     _MODEL_METADATA_KEYS,
     get_azure_models_snapshot,
     get_model_routing_snapshot,
 )
-from app.core.deps import get_current_user
+from app.core.deps import ensure_azure_budget, get_current_user
 from app.core.logger import logger
 from app.models.schema import User
 from app.services.azure_proxy import (
@@ -177,6 +178,11 @@ async def list_models(user: User = Depends(get_current_user)):
 async def chat_completions(request: Request, user: User = Depends(get_current_user)):
     alias = await _peek_model_alias(request)
     if alias and _route_to_azure(alias, user):
+        # Azure-bound: enforce the per-user Azure daily sub-limit (429 on
+        # exceed — deliberately NOT a silent fallback to vLLM, so the caller
+        # knows their Azure budget is exhausted rather than getting a
+        # different model's output). Blocking DB read → threadpool.
+        await run_in_threadpool(ensure_azure_budget, user)
         return await azure_forward_chat_completions(request, user)
     return await vllm_forward_chat_completions(request, user, allowed_types=["llm", "vlm"])
 
@@ -193,6 +199,8 @@ async def responses(request: Request, user: User = Depends(get_current_user)):
     """
     alias = await _peek_model_alias(request)
     if alias and _route_to_azure(alias, user):
+        # Same Azure sub-limit gate as /v1/chat/completions.
+        await run_in_threadpool(ensure_azure_budget, user)
         return await azure_forward_responses(request, user)
     return await vllm_forward_responses(
         request, user, allowed_types=["llm", "vlm"], path_suffix="/responses"
@@ -218,6 +226,8 @@ async def messages(request: Request, user: User = Depends(get_current_user)):
     """
     alias = await _peek_model_alias(request)
     if alias and _route_to_azure(alias, user):
+        # Same Azure sub-limit gate as /v1/chat/completions.
+        await run_in_threadpool(ensure_azure_budget, user)
         return await azure_forward_messages(request, user)
     return await vllm_forward_messages(request, user, allowed_types=["llm", "vlm"])
 
@@ -243,6 +253,10 @@ async def messages_count_tokens(
     """
     alias = await _peek_model_alias(request)
     if alias and _route_to_azure(alias, user):
+        # Gated like the billable Azure paths for parity with
+        # /azure/v1/messages/count_tokens (whose require_azure_access
+        # dependency also enforces the sub-limit).
+        await run_in_threadpool(ensure_azure_budget, user)
         return await azure_forward_count_tokens(request, user)
     return await vllm_forward_count_tokens(
         request, user, allowed_types=["llm", "vlm"]
