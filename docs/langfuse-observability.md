@@ -236,7 +236,10 @@ LANGFUSE_CAPTURE_IO    # bool, default false — Phase 2 global I/O capture flag
 LANGFUSE_SAMPLE_RATE   # float 0.0–1.0, default 1.0 — fraction of requests recorded
                        # (uniform random, applied at record_generation; 0.0 records
                        # nothing, out-of-range clamped, invalid → 1.0 with a warning;
-                       # usage_logs billing is never sampled)
+                       # usage_logs billing is never sampled). The SDK reads this
+                       # same env name natively — get_langfuse pins the SDK to
+                       # sample_rate=1.0 so the rate applies exactly once (no rate²
+                       # double-sampling, no SDK init ValueError on bad values).
 # integration is ENABLED only when HOST + PUBLIC + SECRET are all set
 ```
 

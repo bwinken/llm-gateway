@@ -456,6 +456,22 @@ class TestSampleRate:
             record_generation(_make_record())
         client.start_observation.assert_called_once()
 
+    def test_sdk_sampler_disabled_so_rate_applies_exactly_once(self, monkeypatch):
+        # The SDK also reads LANGFUSE_SAMPLE_RATE from env; if it installed its
+        # own TraceIdRatioBased sampler on top of the gateway gate the
+        # effective rate would be rate², and out-of-range env values would
+        # raise at SDK init. get_langfuse must pin the SDK to sample_rate=1.0.
+        from app.services.observability import get_langfuse
+
+        monkeypatch.setenv("LANGFUSE_HOST", "http://langfuse.test")
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+        monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "0.5")
+        with patch("langfuse.Langfuse") as LF:
+            client = get_langfuse()
+        assert client is LF.return_value
+        assert LF.call_args.kwargs["sample_rate"] == 1.0
+
     def test_fractional_rate_follows_rng(self, monkeypatch):
         monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "0.4")
         client = MagicMock()

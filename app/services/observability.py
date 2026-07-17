@@ -362,7 +362,12 @@ def get_langfuse():
         return None
     try:
         from langfuse import Langfuse  # reads LANGFUSE_* from env
-        _client = Langfuse()
+        # sample_rate=1.0 disables the SDK's own sampler: the SDK also reads
+        # LANGFUSE_SAMPLE_RATE from env, which would double-apply the rate
+        # (gateway gate × SDK TraceIdRatioBased ≈ rate²) and raise ValueError
+        # at init on out-of-range values. Sampling happens exactly once, at
+        # the gateway's record_generation gate (_should_sample).
+        _client = Langfuse(sample_rate=1.0)
         logger.info(
             "Langfuse observability enabled (host={}, sample_rate={})",
             os.getenv("LANGFUSE_HOST"), get_sample_rate(),
