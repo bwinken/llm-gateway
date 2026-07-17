@@ -28,9 +28,12 @@ class User(SQLModel, table=True):
     # portion on its own. NULL or <= 0 → no separate Azure cap (current
     # behavior for every existing user).
     azure_daily_limit_usd: float | None = Field(default=None)
+    # Same convention for AWS Bedrock (the /aws/v1/* surface).
+    bedrock_daily_limit_usd: float | None = Field(default=None)
     is_admin: bool = Field(default=False)
     is_disabled: bool = Field(default=False)
     can_use_azure: bool = Field(default=False)
+    can_use_bedrock: bool = Field(default=False)
     owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     display_name: str = Field(default="")
     org_code: str = Field(default="")
@@ -61,8 +64,8 @@ class UsageLog(SQLModel, table=True):
     output_tokens: int = Field(default=0)
     cost_usd: Decimal = Field(default=Decimal("0"), sa_column=sa.Column(sa.Numeric(12, 6), nullable=False, default=0))
     endpoint: str = Field(default="")
-    # Which downstream served the request: "vllm" (on-prem) or "azure".
-    # Lets billing/limits/reports split cloud spend from on-prem spend
-    # without parsing the endpoint label.
+    # Which downstream served the request: "vllm" (on-prem), "azure", or
+    # "bedrock". Lets billing/limits/reports split cloud spend from on-prem
+    # spend without parsing the endpoint label.
     backend: str = Field(default="vllm", sa_column=sa.Column(sa.String, nullable=False, server_default="vllm"))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

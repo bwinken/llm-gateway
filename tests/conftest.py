@@ -143,6 +143,49 @@ class FakeStreamResponse:
         pass
 
 
+class FakeBedrockStreamResponse:
+    """Simulates an httpx streaming ConverseStream response (binary AWS
+    event-stream frames via aiter_bytes).
+
+    `events` is a list of (event_type, payload_dict); each is encoded as a
+    proper event-stream frame with aws_eventstream.encode_event. Exception
+    events use ("exception:<type>", payload).
+    """
+
+    def __init__(self, events: list[tuple[str, dict]], status_code: int = 200,
+                 body_bytes: bytes | None = None):
+        from app.services.aws_eventstream import encode_event
+
+        self.status_code = status_code
+        self._body_bytes = body_bytes or b""
+        frames = []
+        for etype, payload in events:
+            if etype.startswith("exception:"):
+                headers = {
+                    ":message-type": "exception",
+                    ":exception-type": etype.split(":", 1)[1],
+                    ":content-type": "application/json",
+                }
+            else:
+                headers = {
+                    ":message-type": "event",
+                    ":event-type": etype,
+                    ":content-type": "application/json",
+                }
+            frames.append(encode_event(headers, json.dumps(payload).encode()))
+        self._frames = frames
+
+    async def aiter_bytes(self):
+        for frame in self._frames:
+            yield frame
+
+    async def aread(self):
+        return self._body_bytes
+
+    async def aclose(self):
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Test model routing / pricing
 # ---------------------------------------------------------------------------
@@ -224,6 +267,24 @@ TEST_AZURE_MODELS: dict[str, dict[str, Any]] = {
     },
 }
 
+# AWS Bedrock test models — separate map, parallel to AZURE_MODELS.
+TEST_BEDROCK_FALLBACK_MAP: dict[str, str] = {}
+
+TEST_BEDROCK_MODELS: dict[str, dict[str, Any]] = {
+    "bedrock-claude": {
+        "type": "llm",
+        "region": "us-east-1",
+        "model_id": "anthropic.claude-sonnet-4-20250514-v1:0",
+        "api_key": "bedrock-test-key",
+    },
+    "bedrock-nova": {
+        "type": "vlm",
+        "region": "us-west-2",
+        "model_id": "amazon.nova-pro-v1:0",
+        "api_key": "bedrock-test-key",
+    },
+}
+
 # ---------------------------------------------------------------------------
 # Build a test FastAPI app (no lifespan side-effects)
 # ---------------------------------------------------------------------------
@@ -245,8 +306,10 @@ def _build_test_app() -> FastAPI:
         patch("app.core.config.FALLBACK_MAP", TEST_FALLBACK_MAP),
         patch("app.core.config.AZURE_MODELS", TEST_AZURE_MODELS),
         patch("app.core.config.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),
+        patch("app.core.config.BEDROCK_MODELS", TEST_BEDROCK_MODELS),
+        patch("app.core.config.BEDROCK_FALLBACK_MAP", TEST_BEDROCK_FALLBACK_MAP),
     ):
-        from app.routers import admin, azure_api, v1_api, web_ui
+        from app.routers import admin, aws_api, azure_api, v1_api, web_ui
 
     test_app = FastAPI(lifespan=_noop_lifespan)
 
@@ -259,6 +322,7 @@ def _build_test_app() -> FastAPI:
     test_app.include_router(web_ui.router)
     test_app.include_router(v1_api.router)
     test_app.include_router(azure_api.router)
+    test_app.include_router(aws_api.router)
     test_app.include_router(admin.router)
 
     return test_app
@@ -268,32 +332,48 @@ def _build_test_app() -> FastAPI:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+# All patches applied for every test. Kept as a list + ExitStack because a
+# parenthesized multi-`with` counts each manager as a nested block and CPython
+# 3.11 caps those at 20 — this list is past that.
+_ALL_PATCHES = [
+    lambda: patch("app.services.vllm_proxy.MODEL_ROUTING", TEST_MODEL_ROUTING),
+    lambda: patch("app.services.vllm_proxy.PRICING_MAP", TEST_PRICING_MAP),
+    lambda: patch("app.services.vllm_proxy.FALLBACK_MAP", TEST_FALLBACK_MAP),
+    lambda: patch("app.services.vllm_proxy.get_client", return_value=_mock_httpx_client),
+    lambda: patch("app.services.vllm_proxy.engine", _test_engine),
+    # ensure_azure_budget / ensure_bedrock_budget (unified /v1 dispatch) open
+    # their own session on this module-level engine — point it at the test DB.
+    lambda: patch("app.core.deps.engine", _test_engine),
+    lambda: patch("app.services.vllm_proxy.is_alive", return_value=True),
+    lambda: patch("app.services.azure_proxy.AZURE_MODELS", TEST_AZURE_MODELS),
+    lambda: patch("app.services.azure_proxy.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),
+    lambda: patch("app.services.azure_proxy.get_azure_client", return_value=_mock_httpx_client),
+    lambda: patch("app.services.bedrock_proxy.BEDROCK_MODELS", TEST_BEDROCK_MODELS),
+    lambda: patch("app.services.bedrock_proxy.BEDROCK_FALLBACK_MAP", TEST_BEDROCK_FALLBACK_MAP),
+    lambda: patch("app.services.bedrock_proxy.get_bedrock_client", return_value=_mock_httpx_client),
+    lambda: patch("app.core.config.AZURE_MODELS", TEST_AZURE_MODELS),
+    lambda: patch("app.core.config.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),
+    lambda: patch("app.core.config.BEDROCK_MODELS", TEST_BEDROCK_MODELS),
+    lambda: patch("app.core.config.BEDROCK_FALLBACK_MAP", TEST_BEDROCK_FALLBACK_MAP),
+    lambda: patch("app.core.config.get_model_routing_snapshot", return_value=TEST_MODEL_ROUTING),
+    lambda: patch("app.core.config.get_azure_models_snapshot", return_value=TEST_AZURE_MODELS),
+    lambda: patch("app.core.config.get_bedrock_models_snapshot", return_value=TEST_BEDROCK_MODELS),
+    lambda: patch("app.core.server_state.get_client", return_value=_mock_httpx_client),
+    lambda: patch("app.core.server_state.get_azure_client", return_value=_mock_httpx_client),
+    lambda: patch("app.core.server_state.get_bedrock_client", return_value=_mock_httpx_client),
+    lambda: patch("app.core.auth._decode_jwt", _test_decode_jwt),
+]
+
+
 @pytest.fixture(autouse=True)
 def _patch_all():
     """Apply all patches for every test."""
     import app.services.vllm_proxy  # noqa: F811 — ensure module is loaded before patching
+    from contextlib import ExitStack
 
-    with (
-        patch("app.services.vllm_proxy.MODEL_ROUTING", TEST_MODEL_ROUTING),
-        patch("app.services.vllm_proxy.PRICING_MAP", TEST_PRICING_MAP),
-        patch("app.services.vllm_proxy.FALLBACK_MAP", TEST_FALLBACK_MAP),
-        patch("app.services.vllm_proxy.get_client", return_value=_mock_httpx_client),
-        patch("app.services.vllm_proxy.engine", _test_engine),
-        # ensure_azure_budget (unified /v1 Azure dispatch) opens its own
-        # session on this module-level engine — point it at the test DB.
-        patch("app.core.deps.engine", _test_engine),
-        patch("app.services.vllm_proxy.is_alive", return_value=True),
-        patch("app.services.azure_proxy.AZURE_MODELS", TEST_AZURE_MODELS),
-        patch("app.services.azure_proxy.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),
-        patch("app.services.azure_proxy.get_azure_client", return_value=_mock_httpx_client),
-        patch("app.core.config.AZURE_MODELS", TEST_AZURE_MODELS),
-        patch("app.core.config.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),
-        patch("app.core.config.get_model_routing_snapshot", return_value=TEST_MODEL_ROUTING),
-        patch("app.core.config.get_azure_models_snapshot", return_value=TEST_AZURE_MODELS),
-        patch("app.core.server_state.get_client", return_value=_mock_httpx_client),
-        patch("app.core.server_state.get_azure_client", return_value=_mock_httpx_client),
-        patch("app.core.auth._decode_jwt", _test_decode_jwt),
-    ):
+    with ExitStack() as stack:
+        for make_patch in _ALL_PATCHES:
+            stack.enter_context(make_patch())
         yield
 
 
@@ -316,6 +396,7 @@ def test_user(db_session: Session) -> User:
         is_admin=False,
         is_disabled=False,
         can_use_azure=True,   # ← default ON for tests so /azure/v1/* paths exercise normally
+        can_use_bedrock=True,  # ← same for /aws/v1/*
     )
     db_session.add(user)
     db_session.commit()

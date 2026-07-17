@@ -16,7 +16,12 @@ from sqlmodel import Session, select
 from app.models.schema import AppOwner, User
 
 from app.core.auth import get_web_user
-from app.core.config import APP_TITLE, get_azure_models_snapshot, get_model_routing_snapshot
+from app.core.config import (
+    APP_TITLE,
+    get_azure_models_snapshot,
+    get_bedrock_models_snapshot,
+    get_model_routing_snapshot,
+)
 from app.core.database import get_session
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ
@@ -153,6 +158,13 @@ async def dashboard(
         min(100.0, (azure_today_cost / azure_limit) * 100) if azure_limit > 0 else 0.0
     )
 
+    # Bedrock sub-budget — same contract as the Azure one above.
+    bedrock_today_cost = today["bedrock_cost_usd"]
+    bedrock_limit = user.bedrock_daily_limit_usd or 0.0
+    bedrock_usage_percent = (
+        min(100.0, (bedrock_today_cost / bedrock_limit) * 100) if bedrock_limit > 0 else 0.0
+    )
+
     claude_code_available = (_SETUP_DIR / "install-claude-code.bat").is_file()
 
     # Azure access — list configured Azure model aliases when the user has
@@ -164,6 +176,23 @@ async def dashboard(
             if entry.get("hidden"):
                 continue
             azure_models.append({
+                "alias": alias,
+                "type": entry.get("type", "llm"),
+                "display_name": entry.get("display_name", ""),
+                "context_window": entry.get("context_window"),
+                "supports_tools": entry.get("supports_tools", False),
+                "supports_vision": entry.get("supports_vision", False),
+                "supports_prompt_caching": entry.get("supports_prompt_caching", False),
+                "is_reasoning": entry.get("is_reasoning", False),
+            })
+
+    # Bedrock access — same contract as the Azure card above.
+    bedrock_models: list[dict] = []
+    if user.can_use_bedrock or user.is_admin:
+        for alias, entry in get_bedrock_models_snapshot().items():
+            if entry.get("hidden"):
+                continue
+            bedrock_models.append({
                 "alias": alias,
                 "type": entry.get("type", "llm"),
                 "display_name": entry.get("display_name", ""),
@@ -192,9 +221,12 @@ async def dashboard(
             today_output=today["total_output_tokens"],
             usage_percent=round(usage_percent, 1),
             azure_today_cost=round(azure_today_cost, 4),
+            bedrock_today_cost=round(bedrock_today_cost, 4),
             vllm_today_cost=round(today["vllm_cost_usd"], 4),
             azure_limit=azure_limit,
             azure_usage_percent=round(azure_usage_percent, 1),
+            bedrock_limit=bedrock_limit,
+            bedrock_usage_percent=round(bedrock_usage_percent, 1),
             trend_data=trend_data,
             today_str=datetime.now(LOCAL_TZ).strftime("%Y-%m-%d"),
             owned_apps=owned_apps,
@@ -202,6 +234,8 @@ async def dashboard(
             claude_code_available=claude_code_available,
             azure_access=user.can_use_azure or user.is_admin,
             azure_models=azure_models,
+            bedrock_access=user.can_use_bedrock or user.is_admin,
+            bedrock_models=bedrock_models,
         ),
     )
 

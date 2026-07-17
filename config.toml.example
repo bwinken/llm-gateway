@@ -179,3 +179,52 @@ api_key = "your-api-key"
 # supports_vision = true
 # input_price_per_1m = 2.50
 # output_price_per_1m = 10.00
+
+
+# ==========================================
+# AWS Bedrock fallback (optional)
+# ==========================================
+# Same contract as [azure_fallback], for the /aws/v1/* surface: when a
+# client posts an alias that isn't in [bedrock_models.*], fall back to the
+# alias listed here for the matching type instead of returning 400.
+# Responses include `X-Model-Fallback: <reason>`. No runtime error-driven
+# fallback (429/5xx) — Bedrock is a managed service.
+[bedrock_fallback]
+# llm = "claude-sonnet"
+
+
+# ==========================================
+# AWS Bedrock Models (served at /aws/v1/*)
+# ==========================================
+# The gateway sends every Bedrock LLM/VLM call to the Converse API
+# (/model/{model_id}/converse[-stream]) so every model family (Anthropic,
+# Nova, Llama, Mistral, ...) shares one code path:
+#  - `region` builds the default endpoint
+#    https://bedrock-runtime.{region}.amazonaws.com; set `endpoint` to
+#    override it (VPC endpoints, gov regions).
+#  - `model_id` is the Bedrock model ID or inference-profile ID, e.g.
+#    "anthropic.claude-sonnet-4-20250514-v1:0" or "us.anthropic....".
+#  - `api_key` is a long-term Bedrock API key (sent as Authorization:
+#    Bearer). IAM/SigV4 signing is not implemented yet.
+#  - Routed by model_id (no health-check). Type-aware fallback for unknown
+#    aliases via [bedrock_fallback] above. Same metadata and per-model
+#    pricing override fields as [models.*] are accepted.
+#  - Converse does not cover embeddings; `/aws/v1/embeddings` is
+#    intentionally not exposed. Configure embeddings on a vLLM backend.
+#  - Mark Claude models `is_reasoning = true` to translate Anthropic /
+#    OpenAI reasoning-effort requests into Bedrock extended thinking
+#    (budget_tokens bucketed by effort).
+# [bedrock_models."claude-sonnet"]
+# type = "llm"
+# region = "us-east-1"
+# model_id = "anthropic.claude-sonnet-4-20250514-v1:0"
+# api_key = "your-bedrock-api-key"
+# display_name = "Claude Sonnet (Bedrock)"
+# context_window = 200000
+# max_output_tokens = 8192
+# supports_tools = true
+# supports_vision = true
+# is_reasoning = true
+# input_price_per_1m = 3.00
+# output_price_per_1m = 15.00
+# cached_input_price_per_1m = 0.30

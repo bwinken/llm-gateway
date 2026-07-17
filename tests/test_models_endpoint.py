@@ -34,10 +34,10 @@ class TestListModels:
         for m in data["data"]:
             assert "id" in m
             assert m["object"] == "model"
-            # Azure entries get owned_by="azure-openai" since the unified
-            # `/v1/models` merges Azure aliases for users with can_use_azure
-            # (test_user has it True by default).
-            assert m["owned_by"] in ("llm-gateway", "azure-openai")
+            # Azure/Bedrock entries get their own owned_by since the unified
+            # `/v1/models` merges cloud aliases for users with the matching
+            # access flag (test_user has both True by default).
+            assert m["owned_by"] in ("llm-gateway", "azure-openai", "aws-bedrock")
             assert "type" in m
             assert "capability" in m
 

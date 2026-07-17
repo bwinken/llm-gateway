@@ -172,6 +172,17 @@ api_key     = "azure-key"
 api_version = "2024-08-01-preview"
 ```
 
+AWS Bedrock models (optional). Each entry exposes a Bedrock model as an alias served from `/aws/v1/*` (all families go through the Converse API; auth is a long-term Bedrock API key sent as a Bearer token):
+
+```toml
+[bedrock_models."claude-sonnet-bedrock"]
+type         = "llm"          # llm | vlm
+region       = "us-east-1"
+model_id     = "anthropic.claude-sonnet-4-20250514-v1:0"   # or an inference-profile ID
+api_key      = "bedrock-api-key"
+is_reasoning = true           # enables reasoning-effort → extended-thinking translation
+```
+
 > All model routing, pricing, and fallback settings can also be managed through the **Admin Panel → Model Config** web UI, which reads and writes `config.toml` directly.
 
 ### .env
@@ -184,6 +195,8 @@ api_version = "2024-08-01-preview"
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | RS256 public key path | `./keys/public.pem` |
 | `AUTH_BASE_URL` | JWT issuer URL (AuthCenter base URL) | `auth-center` |
 | `AZURE_HTTP_PROXY` | Optional HTTP proxy for `/azure/v1/*` downstream traffic only; supports inline credentials (`http://user:pass@proxy:8080`). Unset = Azure reached directly. vLLM traffic is never proxied. | _(unset)_ |
+| `BEDROCK_HTTP_PROXY` | Optional HTTP proxy for `/aws/v1/*` (Bedrock) downstream traffic only; same contract as `AZURE_HTTP_PROXY`. | _(unset)_ |
+| `BEDROCK_INSECURE` | When `true`, disable TLS verification on the Bedrock-bound client (corporate TLS-inspecting proxy); same contract as `AZURE_INSECURE`. | `false` |
 | `LANGFUSE_HOST` | Langfuse base URL (self-hosted recommended). Observability is **enabled only when HOST + PUBLIC_KEY + SECRET_KEY are all set**; otherwise it is a no-op with zero overhead. | _(unset)_ |
 | `LANGFUSE_PUBLIC_KEY` | Langfuse public key (`pk-lf-…`). | _(unset)_ |
 | `LANGFUSE_SECRET_KEY` | Langfuse secret key (`sk-lf-…`). | _(unset)_ |
@@ -290,6 +303,10 @@ Azure-backed deployments configured under `[azure_models.*]` are reachable two w
 2. **Through the dedicated `/azure/v1/*` surface** — for clients that should only ever see Azure deployments (e.g. an OpenAI-shaped client whose `base_url` you want pinned to Azure).
 
 Azure aliases appear on `/v1/models` only for users with `can_use_azure` (admins bypass) — that's how a single Claude Code base URL surfaces both backends without leaking Azure deployments to users who don't have access.
+
+### AWS Bedrock
+
+Bedrock models configured under `[bedrock_models.*]` follow the exact same pattern with the `/aws` prefix: reachable through the unified `/v1/*` surface (gated per-user by `can_use_bedrock`, merged into `/v1/models`) or through the dedicated `/aws/v1/*` surface (`/aws/v1/chat/completions`, `/aws/v1/messages`, `/aws/v1/messages/count_tokens`, `/aws/v1/models`). All model families (Anthropic, Nova, Llama, Mistral, …) are served via Bedrock's Converse API, so OpenAI-shaped and Anthropic-shaped clients both work against any of them, streaming included. An optional per-user `bedrock_daily_limit_usd` caps the Bedrock share of daily spend, mirroring the Azure sub-limit. Downstream auth uses a long-term Bedrock API key (`Authorization: Bearer`); IAM/SigV4 is not supported yet.
 
 ```python
 # Option 1: unified base URL (sees both vLLM and Azure aliases when can_use_azure)

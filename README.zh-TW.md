@@ -172,6 +172,17 @@ api_key     = "azure-key"
 api_version = "2024-08-01-preview"
 ```
 
+AWS Bedrock 模型（選填）。每個項目會以模型別名透過 `/aws/v1/*` 對外服務（所有模型家族統一走 Converse API；下游認證用長期 Bedrock API key，以 Bearer token 送出）：
+
+```toml
+[bedrock_models."claude-sonnet-bedrock"]
+type         = "llm"          # llm | vlm
+region       = "us-east-1"
+model_id     = "anthropic.claude-sonnet-4-20250514-v1:0"   # 或 inference profile ID
+api_key      = "bedrock-api-key"
+is_reasoning = true           # 啟用 reasoning-effort → extended thinking 轉譯
+```
+
 > 所有模型路由、計價和容錯設定也可以透過 **管理面板 → 模型設定** 的 Web UI 管理，直接讀寫 `config.toml`。
 
 ### .env
@@ -184,6 +195,8 @@ api_version = "2024-08-01-preview"
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | RS256 公鑰路徑 | `./keys/public.pem` |
 | `AUTH_BASE_URL` | JWT issuer URL（AuthCenter 基底 URL） | `auth-center` |
 | `AZURE_HTTP_PROXY` | 選填,僅供 `/azure/v1/*` 下游流量使用的 HTTP proxy;支援內嵌帳密(`http://user:pass@proxy:8080`)。不設定則直連 Azure。vLLM 流量永遠不走 proxy。 | _(未設定)_ |
+| `BEDROCK_HTTP_PROXY` | 選填,僅供 `/aws/v1/*`(Bedrock)下游流量使用的 HTTP proxy;規則同 `AZURE_HTTP_PROXY`。 | _(未設定)_ |
+| `BEDROCK_INSECURE` | 設為 `true` 時關閉 Bedrock 連線的 TLS 驗證(企業 TLS 檢查 proxy 場景);規則同 `AZURE_INSECURE`。 | `false` |
 | `LANGFUSE_HOST` | Langfuse base URL(建議自架)。**三把(HOST + PUBLIC_KEY + SECRET_KEY)都設齊才啟用**,否則完全 no-op、零開銷。 | _(未設定)_ |
 | `LANGFUSE_PUBLIC_KEY` | Langfuse public key(`pk-lf-…`)。 | _(未設定)_ |
 | `LANGFUSE_SECRET_KEY` | Langfuse secret key(`sk-lf-…`)。 | _(未設定)_ |
@@ -290,6 +303,10 @@ curl http://your-gateway/v1/models \
 2. **透過專屬 `/azure/v1/*` 介面** — 適用於「該 client 永遠只該看到 Azure」的情境(例如要把某個 OpenAI 形 client 的 `base_url` 鎖在 Azure)。
 
 Azure alias 只會在 `can_use_azure` 為 True 的使用者(admin 自動 bypass)看 `/v1/models` 時併入清單 — 這就是怎麼讓同一個 Claude Code base URL 同時暴露兩個後端,又不會把 Azure 部署洩漏給沒權限的使用者。
+
+### AWS Bedrock
+
+設定在 `[bedrock_models.*]` 的 Bedrock 模型走完全相同的模式,前綴是 `/aws`:可透過統一 `/v1/*` 介面(以 `can_use_bedrock` 逐使用者授權,alias 併入 `/v1/models`),或專屬的 `/aws/v1/*` 介面(`/aws/v1/chat/completions`、`/aws/v1/messages`、`/aws/v1/messages/count_tokens`、`/aws/v1/models`)。所有模型家族(Anthropic、Nova、Llama、Mistral…)統一經由 Bedrock 的 Converse API 服務,OpenAI 形與 Anthropic 形的 client 都能打任一模型,串流也支援。另有選填的 per-user `bedrock_daily_limit_usd` 子額度,規則與 Azure 子額度一致。下游認證使用長期 Bedrock API key(`Authorization: Bearer`);目前不支援 IAM/SigV4。
 
 ```python
 # 方案 1:統一 base URL(有 can_use_azure 時看得到 vLLM + Azure 兩邊 alias)

@@ -89,9 +89,11 @@ class TestUnifiedModelsList:
         assert "test-llm" in ids
         # Azure entries must NOT appear
         assert "azure-gpt-4" not in ids
-        # And no entry is marked as azure-owned
+        # And no entry is marked as azure-owned (test_user still has
+        # can_use_bedrock, so Bedrock entries legitimately remain).
         owners = {m["owned_by"] for m in resp.json()["data"]}
-        assert owners == {"llm-gateway"}
+        assert "azure-openai" not in owners
+        assert "llm-gateway" in owners
 
     def test_azure_embedding_excluded_from_chat_list(self, client, test_user):
         """The shared `/v1/models` endpoint serves chat clients; only llm/vlm
@@ -615,6 +617,34 @@ class TestDuplicateAliasGuard:
             },
         }
         # No exception, both maps populated.
-        _, routing, _, _, azure, _ = _build_config(raw)
+        _, routing, _, _, azure, _, bedrock, _ = _build_config(raw)
         assert "vllm-only" in routing
         assert "azure-only" in azure
+        assert bedrock == {}
+
+    def test_bedrock_collision_raises_at_config_build(self):
+        """Same alias under [models.<type>] AND [bedrock_models.*] must fail
+        config load — same guard as the Azure collision."""
+        from app.core.config import _build_config
+
+        raw = {
+            "models": {
+                "llm": {
+                    "claude-opus": {
+                        "base_url": "http://vllm:8000/v1",
+                        "real_model": "real",
+                        "api_key": "k",
+                    }
+                }
+            },
+            "bedrock_models": {
+                "claude-opus": {
+                    "type": "llm",
+                    "region": "us-east-1",
+                    "model_id": "anthropic.claude-x",
+                    "api_key": "k",
+                }
+            },
+        }
+        with pytest.raises(ValueError, match="claude-opus"):
+            _build_config(raw)

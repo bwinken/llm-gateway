@@ -22,7 +22,7 @@ from app.core.config import APP_TITLE
 from app.core.database import init_db
 from app.core.logger import logger
 from app.core.server_state import close_client, init_client
-from app.routers import admin, azure_api, v1_api, web_ui
+from app.routers import admin, aws_api, azure_api, v1_api, web_ui
 from app.services.health import health_check_loop
 
 _templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
@@ -112,4 +112,5 @@ async def account_disabled_handler(request: Request, exc: AccountDisabledError):
 app.include_router(web_ui.router)
 app.include_router(v1_api.router)
 app.include_router(azure_api.router)
+app.include_router(aws_api.router)
 app.include_router(admin.router)

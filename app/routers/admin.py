@@ -134,9 +134,11 @@ async def admin_page(
             "api_key": u.api_key,
             "daily_limit_usd": u.daily_limit_usd,
             "azure_daily_limit_usd": u.azure_daily_limit_usd,
+            "bedrock_daily_limit_usd": u.bedrock_daily_limit_usd,
             "is_admin": u.is_admin,
             "is_disabled": u.is_disabled,
             "can_use_azure": u.can_use_azure,
+            "can_use_bedrock": u.can_use_bedrock,
             "owners": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
@@ -324,6 +326,38 @@ async def update_user_azure_limit(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.post("/users/{user_id}/bedrock-limit")
+async def update_user_bedrock_limit(
+    user_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Set the user's Bedrock-specific daily sub-limit.
+
+    Empty value clears the sub-limit (NULL → Bedrock spend only bounded by
+    the overall daily_limit_usd). Same contract as the Azure sub-limit.
+    """
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    form = await request.form()
+    raw = form.get("new_bedrock_limit")
+    if raw is not None:
+        raw = str(raw).strip()
+        if raw == "":
+            target.bedrock_daily_limit_usd = None
+        else:
+            try:
+                target.bedrock_daily_limit_usd = float(raw)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="new_bedrock_limit must be a number.")
+        session.add(target)
+        session.commit()
+
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 @router.post("/default-limit")
 async def update_default_limit(
     request: Request,
@@ -397,6 +431,22 @@ async def toggle_azure(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.post("/users/{user_id}/toggle-bedrock")
+async def toggle_bedrock(
+    user_id: int,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Flip the user's can_use_bedrock flag."""
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    target.can_use_bedrock = not target.can_use_bedrock
+    session.add(target)
+    session.commit()
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 @router.post("/users/{user_id}/delete")
 async def delete_user(
     user_id: int,
@@ -465,6 +515,7 @@ async def list_users_api(
             "api_key": u.api_key,
             "daily_limit_usd": u.daily_limit_usd,
             "azure_daily_limit_usd": u.azure_daily_limit_usd,
+            "bedrock_daily_limit_usd": u.bedrock_daily_limit_usd,
             "is_admin": u.is_admin,
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
@@ -495,6 +546,9 @@ async def create_user_api(
     if "azure_daily_limit_usd" in body:
         raw = body["azure_daily_limit_usd"]
         new_user.azure_daily_limit_usd = None if raw is None else float(raw)
+    if "bedrock_daily_limit_usd" in body:
+        raw = body["bedrock_daily_limit_usd"]
+        new_user.bedrock_daily_limit_usd = None if raw is None else float(raw)
     if "is_admin" in body:
         new_user.is_admin = bool(body["is_admin"])
     session.add(new_user)
@@ -535,6 +589,9 @@ async def update_user_api(
     if "azure_daily_limit_usd" in body:
         raw = body["azure_daily_limit_usd"]
         target.azure_daily_limit_usd = None if raw is None else float(raw)
+    if "bedrock_daily_limit_usd" in body:
+        raw = body["bedrock_daily_limit_usd"]
+        target.bedrock_daily_limit_usd = None if raw is None else float(raw)
     if "is_admin" in body:
         target.is_admin = bool(body["is_admin"])
     if "owner_ids" in body:
