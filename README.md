@@ -188,6 +188,7 @@ api_version = "2024-08-01-preview"
 | `LANGFUSE_PUBLIC_KEY` | Langfuse public key (`pk-lf-…`). | _(unset)_ |
 | `LANGFUSE_SECRET_KEY` | Langfuse secret key (`sk-lf-…`). | _(unset)_ |
 | `LANGFUSE_CAPTURE_IO` | When `true`, also send prompt/response **content** to Langfuse (Phase 2). PII-sensitive — see Observability below. Default off sends metrics only. | `false` |
+| `LANGFUSE_SAMPLE_RATE` | Fraction of billable requests recorded in Langfuse, `0.0`–`1.0` (e.g. `0.1` ≈ 10%). `0.0` records nothing; out-of-range values are clamped, invalid values fall back to `1.0`. Billing in `usage_logs` is unaffected — every request is still billed. | `1.0` |
 
 > OAuth2 login settings (OIDC issuer, client secret, redirect URL) are configured in `deploy/.env` for oauth2-proxy. See [deploy/README.md](deploy/README.md).
 

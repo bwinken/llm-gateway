@@ -188,6 +188,7 @@ api_version = "2024-08-01-preview"
 | `LANGFUSE_PUBLIC_KEY` | Langfuse public key(`pk-lf-…`)。 | _(未設定)_ |
 | `LANGFUSE_SECRET_KEY` | Langfuse secret key(`sk-lf-…`)。 | _(未設定)_ |
 | `LANGFUSE_CAPTURE_IO` | 設為 `true` 時,額外把 prompt/回應**內容**送進 Langfuse(Phase 2),含 PII,見下方 Observability。預設只送 metrics。 | `false` |
+| `LANGFUSE_SAMPLE_RATE` | 送進 Langfuse 的取樣率,`0.0`–`1.0`(例如 `0.1` ≈ 記錄 10% 的請求)。`0.0` 完全不記錄;超出範圍會被 clamp,無法解析則回退 `1.0`。不影響 `usage_logs` 計費 —— 每筆請求照常計費。 | `1.0` |
 
 > OAuth2 登入設定（OIDC issuer、client secret、redirect URL）在 `deploy/.env` 中設定，供 oauth2-proxy 使用。詳見 [deploy/README.md](deploy/README.md)。
 

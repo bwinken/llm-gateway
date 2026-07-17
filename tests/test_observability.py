@@ -20,7 +20,9 @@ from app.services.observability import (
     StreamingChatOutput,
     build_scores,
     classify_client,
+    get_sample_rate,
     record_generation,
+    reset_langfuse_cache,
 )
 
 
@@ -400,3 +402,70 @@ class TestRequestMetaMiddleware:
 
         asyncio.run(mw({"type": "lifespan"}, receive, send))
         assert called.get("ok") is True
+
+
+class TestSampleRate:
+    """LANGFUSE_SAMPLE_RATE — fraction of requests recorded (0.0–1.0)."""
+
+    def setup_method(self):
+        reset_langfuse_cache()
+
+    def teardown_method(self):
+        reset_langfuse_cache()
+
+    def test_default_is_record_everything(self, monkeypatch):
+        monkeypatch.delenv("LANGFUSE_SAMPLE_RATE", raising=False)
+        assert get_sample_rate() == 1.0
+
+    def test_parses_valid_value(self, monkeypatch):
+        monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "0.25")
+        assert get_sample_rate() == 0.25
+
+    def test_invalid_value_falls_back_to_one(self, monkeypatch):
+        monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "banana")
+        assert get_sample_rate() == 1.0
+
+    def test_out_of_range_is_clamped(self, monkeypatch):
+        monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "1.5")
+        assert get_sample_rate() == 1.0
+        reset_langfuse_cache()
+        monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "-0.3")
+        assert get_sample_rate() == 0.0
+
+    def test_cached_until_reset(self, monkeypatch):
+        monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "0.5")
+        assert get_sample_rate() == 0.5
+        monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "0.9")
+        assert get_sample_rate() == 0.5  # still the cached parse
+        reset_langfuse_cache()
+        assert get_sample_rate() == 0.9
+
+    def test_rate_zero_records_nothing(self, monkeypatch):
+        monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "0.0")
+        client = MagicMock()
+        with patch("app.services.observability.get_langfuse", return_value=client):
+            record_generation(_make_record())
+        client.start_observation.assert_not_called()
+
+    def test_rate_one_always_records(self, monkeypatch):
+        monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "1.0")
+        client = MagicMock()
+        with patch("app.services.observability.get_langfuse", return_value=client), \
+             patch("langfuse.propagate_attributes", lambda **kw: contextlib.nullcontext()), \
+             patch("app.services.observability.random.random", side_effect=AssertionError("RNG must not be consulted at rate 1.0")):
+            record_generation(_make_record())
+        client.start_observation.assert_called_once()
+
+    def test_fractional_rate_follows_rng(self, monkeypatch):
+        monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "0.4")
+        client = MagicMock()
+        with patch("app.services.observability.get_langfuse", return_value=client), \
+             patch("langfuse.propagate_attributes", lambda **kw: contextlib.nullcontext()):
+            # draw below the rate -> recorded
+            with patch("app.services.observability.random.random", return_value=0.39):
+                record_generation(_make_record())
+            assert client.start_observation.call_count == 1
+            # draw at/above the rate -> skipped
+            with patch("app.services.observability.random.random", return_value=0.4):
+                record_generation(_make_record())
+            assert client.start_observation.call_count == 1
