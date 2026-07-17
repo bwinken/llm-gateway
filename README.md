@@ -41,7 +41,8 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 - **Usage tracking** — Per-user token and cost logging to PostgreSQL (shared across `/v1/*` and `/azure/v1/*`)
 - **OAuth2 SSO** — [AuthCenter](https://github.com/bwinken/authcenter) integration with RS256 JWT, auto-provisioning users with a configurable default daily limit
 - **Dual auth** — API key (Bearer token) for SDK/API, oauth2-proxy + JWT for web UI
-- **Per-user access control** — Admins can disable a user (rejects both API key and JWT auth with a styled HTML page or JSON 403) and gate Azure deployments behind a `can_use_azure` flag (admins bypass both)
+- **Per-user access control** — Admins can disable a user (rejects both API key and JWT auth with a styled HTML page or JSON 403) and gate Azure / AWS Bedrock deployments behind per-user `can_use_azure` / `can_use_bedrock` flags (admins bypass all)
+- **Cost export by backend** — Admin xlsx report includes a **Cost by Backend** sheet, and `GET /admin/api/export/user-backend-costs.csv` exports one row per (month × account) with separate On-prem (vLLM) / Azure / AWS Bedrock cost columns for billing/chargeback
 - **Web dashboard** — Usage stats, remaining-quota indicator, Chart.js trend charts, grouped server health status with admin-set model metadata badges (context window, tools, vision, cache) and live per-vLLM-server load (`running N · waiting M`, amber when requests queue, red overload warning); separate Azure access card listing configured Azure aliases when granted
 - **Admin panel** — User management with per-row Disable / Enable, Azure, Monitor, and Delete buttons; leaderboards, runtime-adjustable default daily limit, model config UI (routing/pricing/fallback)
 - **Background health checks** — Periodic pings to all downstream vLLM servers, plus a Prometheus `/metrics` scrape of each alive server for live running/waiting request counts shown on the dashboard

@@ -192,6 +192,12 @@
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                     Download xlsx
                 </button>
+                <button type="button" id="exportCsvBtn" onclick="return submitExportCsv()"
+                        class="gw-btn gw-btn-ghost text-sm px-4 py-2 gw-tip gw-tip-wide"
+                        data-tip="One row per (month × account) with separate On-prem / Azure / AWS Bedrock cost columns — for billing/chargeback systems.">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                    Backend costs (CSV)
+                </button>
             </form>
         </div>
         <div id="exportError" class="hidden mt-3 text-xs text-ar"></div>
@@ -210,22 +216,21 @@
     document.getElementById('exportTo').max = currMonth;
 })();
 
-function submitExport(e) {
-    e.preventDefault();
+function downloadExport(btnId, path, fallbackName) {
     var from = document.getElementById('exportFrom').value;
     var to = document.getElementById('exportTo').value;
     var err = document.getElementById('exportError');
     err.classList.add('hidden');
     if (!from || !to) { err.textContent = 'Select both months.'; err.classList.remove('hidden'); return false; }
     if (from > to) { err.textContent = '"From" must be on or before "To".'; err.classList.remove('hidden'); return false; }
-    var btn = document.getElementById('exportBtn');
+    var btn = document.getElementById(btnId);
     btn.disabled = true; btn.classList.add('opacity-50');
-    var url = '/admin/api/export/usage.xlsx?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to);
+    var url = path + '?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to);
     fetch(url, { credentials: 'same-origin' }).then(function(r){
         if (!r.ok) return r.text().then(function(t){ throw new Error(t || ('HTTP ' + r.status)); });
         var disp = r.headers.get('Content-Disposition') || '';
         var m = disp.match(/filename="([^"]+)"/);
-        var name = m ? m[1] : ('usage_' + from + '_to_' + to + '.xlsx');
+        var name = m ? m[1] : fallbackName.replace('{from}', from).replace('{to}', to);
         return r.blob().then(function(blob){ return {blob: blob, name: name}; });
     }).then(function(d){
         var a = document.createElement('a');
@@ -240,6 +245,15 @@ function submitExport(e) {
         btn.disabled = false; btn.classList.remove('opacity-50');
     });
     return false;
+}
+
+function submitExport(e) {
+    e.preventDefault();
+    return downloadExport('exportBtn', '/admin/api/export/usage.xlsx', 'usage_{from}_to_{to}.xlsx');
+}
+
+function submitExportCsv() {
+    return downloadExport('exportCsvBtn', '/admin/api/export/user-backend-costs.csv', 'user_backend_costs_{from}_to_{to}.csv');
 }
 </script>
 

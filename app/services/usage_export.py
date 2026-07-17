@@ -2,10 +2,12 @@
 Build an xlsx workbook from a MonthlyReport (see app.services.analytics).
 
 Sheets:
-  1. Summary        — one row per month (reqs, tokens, cost, DAU/MAU)
-  2. By Department  — (month × org_code) rows
-  3. By App         — (month × app account) rows, with owners
-  4. Top 10 Users   — (month × rank 1–10) rows with previous-month rank delta
+  1. Summary          — one row per month (reqs, tokens, cost, DAU/MAU)
+  2. By Department    — (month × org_code) rows
+  3. By App           — (month × app account) rows, with owners
+  4. Top 10 Users     — (month × rank 1–10) rows with previous-month rank delta
+  5. Cost by Backend  — (month × account) rows with the cost split across
+                        On-prem (vLLM) / Azure / AWS Bedrock, humans and apps
 """
 
 from __future__ import annotations
@@ -165,13 +167,53 @@ def _build_top_users(ws: Worksheet, report: MonthlyReport, limit: int = 10) -> N
     ws.freeze_panes = "A4"
 
 
+def _build_cost_by_backend(ws: Worksheet, report: MonthlyReport) -> None:
+    ws.title = "Cost by Backend"
+    ws.cell(
+        row=1, column=1,
+        value=(
+            "Per-account cost split by serving backend. Includes both human "
+            "users and app_* accounts (see Type). Total = On-prem + Azure + AWS."
+        ),
+    ).font = _META_FONT
+
+    headers = [
+        "Month", "Account", "Display Name", "Department", "Type",
+        "Requests", "Input Tokens", "Output Tokens",
+        "On-prem Cost (USD)", "Azure Cost (USD)", "AWS Cost (USD)",
+        "Total Cost (USD)",
+    ]
+    _write_header(ws, 3, headers)
+
+    row = 4
+    for bd in report.breakdowns:
+        for u in bd.by_user_backend:
+            ws.cell(row=row, column=1, value=bd.month)
+            ws.cell(row=row, column=2, value=u["username"])
+            ws.cell(row=row, column=3, value=u["display_name"])
+            ws.cell(row=row, column=4, value=u["org_code"])
+            ws.cell(row=row, column=5, value="App" if u["is_app"] else "User")
+            ws.cell(row=row, column=6, value=u["requests"])
+            ws.cell(row=row, column=7, value=u["input_tokens"])
+            ws.cell(row=row, column=8, value=u["output_tokens"])
+            ws.cell(row=row, column=9, value=u["vllm_cost_usd"]).number_format = "$#,##0.0000"
+            ws.cell(row=row, column=10, value=u["azure_cost_usd"]).number_format = "$#,##0.0000"
+            ws.cell(row=row, column=11, value=u["bedrock_cost_usd"]).number_format = "$#,##0.0000"
+            ws.cell(row=row, column=12, value=u["total_cost_usd"]).number_format = "$#,##0.0000"
+            row += 1
+
+    _autosize(ws)
+    ws.freeze_panes = "A4"
+
+
 def build_workbook(report: MonthlyReport) -> bytes:
-    """Render the full 4-sheet workbook as xlsx bytes."""
+    """Render the full 5-sheet workbook as xlsx bytes."""
     wb = Workbook()
     _build_summary(wb.active, report)
     _build_by_department(wb.create_sheet(), report)
     _build_by_app(wb.create_sheet(), report)
     _build_top_users(wb.create_sheet(), report)
+    _build_cost_by_backend(wb.create_sheet(), report)
 
     buf = BytesIO()
     wb.save(buf)

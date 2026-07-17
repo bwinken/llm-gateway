@@ -840,6 +840,70 @@ async def export_usage_report(
     )
 
 
+@router.get("/api/export/user-backend-costs.csv")
+async def export_user_backend_costs_csv(
+    session: Session = Depends(get_session),
+    from_: str = Query(..., alias="from", description="Start month YYYY-MM (inclusive)"),
+    to: str = Query(..., description="End month YYYY-MM (inclusive)"),
+):
+    """Export per-account cost split by serving backend as CSV.
+
+    One row per (month × account) with separate On-prem (vLLM) / Azure /
+    AWS Bedrock cost columns — the flat-file counterpart of the xlsx
+    "Cost by Backend" sheet, for feeding billing/chargeback systems.
+    Includes both human users and app_* accounts (see the `type` column).
+    """
+    import csv
+    import io
+
+    try:
+        parse_ym(from_)
+        parse_ym(to)
+        months = iter_months(from_, to)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if len(months) > _MAX_EXPORT_MONTHS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Range too wide: {len(months)} months (max {_MAX_EXPORT_MONTHS}).",
+        )
+
+    report = build_monthly_report(session, from_, to)
+
+    buf = io.StringIO()
+    buf.write("﻿")  # UTF-8 BOM so Excel opens CJK correctly
+    writer = csv.writer(buf)
+    writer.writerow([
+        "month", "username", "display_name", "org_code", "type",
+        "requests", "input_tokens", "output_tokens",
+        "vllm_cost_usd", "azure_cost_usd", "bedrock_cost_usd", "total_cost_usd",
+    ])
+    for bd in report.breakdowns:
+        for u in bd.by_user_backend:
+            writer.writerow([
+                bd.month,
+                u["username"],
+                u["display_name"],
+                u["org_code"],
+                "app" if u["is_app"] else "user",
+                u["requests"],
+                u["input_tokens"],
+                u["output_tokens"],
+                f"{u['vllm_cost_usd']:.6f}",
+                f"{u['azure_cost_usd']:.6f}",
+                f"{u['bedrock_cost_usd']:.6f}",
+                f"{u['total_cost_usd']:.6f}",
+            ])
+
+    filename = f"user_backend_costs_{from_}_to_{to}.csv"
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/api/export/users.csv")
 async def export_users_csv(session: Session = Depends(get_session)):
     """Export all real users (excluding app_* accounts) as CSV for mass mailing."""

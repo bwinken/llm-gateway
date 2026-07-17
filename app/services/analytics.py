@@ -23,6 +23,7 @@ class MonthBreakdown:
     by_department: list[dict]
     by_app: list[dict]
     user_ranking: list[dict]                        # full human ranking (for top-N + delta)
+    by_user_backend: list[dict] = field(default_factory=list)  # per-user cost split by backend
 
 
 @dataclass
@@ -240,6 +241,72 @@ def _user_ranking(session: Session, start: datetime, end: datetime) -> list[dict
     ]
 
 
+# Backends a usage_logs row can carry today. Rows written before backend
+# tagging existed were backfilled/server-defaulted to "vllm", so unknown
+# values can't occur in practice; the pivot still guards by counting any
+# unrecognized value under "vllm" (on-prem) so a future backend added
+# without updating this tuple degrades to a visible on-prem number rather
+# than silently vanishing from the per-backend columns.
+_KNOWN_BACKENDS = ("vllm", "azure", "bedrock")
+
+
+def _by_user_backend(session: Session, start: datetime, end: datetime) -> list[dict]:
+    """Per-user cost/token/request split by serving backend for one month.
+
+    Covers BOTH human users and app_* accounts (the export needs a complete
+    billing picture); `is_app` lets consumers separate them. One row per
+    user with `vllm_cost_usd` / `azure_cost_usd` / `bedrock_cost_usd`
+    columns pivoted from the `usage_logs.backend` tag, sorted by total cost
+    descending.
+    """
+    stmt = (
+        select(
+            User.id,
+            User.username,
+            User.display_name,
+            User.org_code,
+            UsageLog.backend,
+            func.count(UsageLog.id),
+            func.coalesce(func.sum(UsageLog.input_tokens), 0),
+            func.coalesce(func.sum(UsageLog.output_tokens), 0),
+            func.coalesce(func.sum(UsageLog.cost_usd), 0),
+        )
+        .join(User, UsageLog.user_id == User.id)
+        .where(UsageLog.created_at >= start)
+        .where(UsageLog.created_at < end)
+        .group_by(User.id, User.username, User.display_name, User.org_code, UsageLog.backend)
+    )
+    rows = session.exec(stmt).all()
+
+    by_user: dict[int, dict] = {}
+    for r in rows:
+        uid = int(r[0])
+        entry = by_user.setdefault(uid, {
+            "user_id": uid,
+            "username": r[1],
+            "display_name": r[2] or "",
+            "org_code": r[3] or "",
+            "is_app": str(r[1]).startswith("app_"),
+            "requests": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            **{f"{b}_cost_usd": 0.0 for b in _KNOWN_BACKENDS},
+            "total_cost_usd": 0.0,
+        })
+        backend = r[4] if r[4] in _KNOWN_BACKENDS else "vllm"
+        cost = float(r[8] or 0)
+        entry["requests"] += int(r[5])
+        entry["input_tokens"] += int(r[6])
+        entry["output_tokens"] += int(r[7])
+        entry[f"{backend}_cost_usd"] = round(entry[f"{backend}_cost_usd"] + cost, 6)
+        entry["total_cost_usd"] = round(entry["total_cost_usd"] + cost, 6)
+
+    return sorted(
+        by_user.values(),
+        key=lambda e: (-e["total_cost_usd"], e["user_id"]),
+    )
+
+
 def compute_month(session: Session, year: int, month: int) -> MonthBreakdown:
     start, end = _month_bounds(year, month)
     return MonthBreakdown(
@@ -248,6 +315,7 @@ def compute_month(session: Session, year: int, month: int) -> MonthBreakdown:
         by_department=_by_department(session, start, end),
         by_app=_by_app(session, start, end),
         user_ranking=_user_ranking(session, start, end),
+        by_user_backend=_by_user_backend(session, start, end),
     )
 
 
