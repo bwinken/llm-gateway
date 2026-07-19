@@ -17,11 +17,12 @@ Browser → Nginx (:80)
             ├─ /oauth2/*  → oauth2-proxy (:4180)  ← 處理登入/登出
             ├─ /v1/*      → Gateway                 ← API key 認證(vLLM 後端)
             ├─ /azure/*   → Gateway                 ← API key 認證(Azure OpenAI 後端)
+            ├─ /aws/*     → Gateway                 ← API key 認證(AWS Bedrock 後端)
             └─ /*         → auth_request → oauth2-proxy 驗證
                           → Gateway                 ← JWT header 認證
 ```
 
-範例 nginx 設定(`deploy/llm-gateway-example.nginx.conf`)在 HTTP 與 HTTPS 兩個 server context 中都有平行的 `/v1/` 和 `/azure/` 區塊。兩者都不經 oauth2-proxy,直接保留客戶端的 `Authorization: Bearer <api_key>` 轉發給 gateway。
+範例 nginx 設定(`deploy/llm-gateway-example.nginx.conf`)在 HTTP 與 HTTPS 兩個 server context 中都有平行的 `/v1/`、`/azure/` 和 `/aws/` 區塊。全部不經 oauth2-proxy,直接保留客戶端的 `Authorization: Bearer <api_key>` 轉發給 gateway。**升級既有部署注意**:setup.sh 是用你自行維護的 `deploy/llm-gateway.nginx.conf` 副本渲染 nginx 設定 — 當 gateway 更新新增了 API 前綴(例如 `/aws/`),要把對應的 `location` 區塊補進你的副本(或直接補進線上的 `/etc/nginx/sites-available/llm-gateway`),否則這些端點會落入需要 SSO 的 `location /`(HTTP 側)或 404(HTTPS 側)。
 
 - **Gateway**：user-level systemd service（Python/FastAPI）
 - **PostgreSQL + oauth2-proxy**：Docker Compose（`deploy/docker-compose.yml`）

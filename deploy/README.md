@@ -17,11 +17,12 @@ Browser → Nginx (:80)
             ├─ /oauth2/*  → oauth2-proxy (:4180)  ← handles login/logout
             ├─ /v1/*      → Gateway                 ← API key auth (vLLM backend)
             ├─ /azure/*   → Gateway                 ← API key auth (Azure OpenAI backend)
+            ├─ /aws/*     → Gateway                 ← API key auth (AWS Bedrock backend)
             └─ /*         → auth_request → oauth2-proxy validation
                           → Gateway                 ← JWT header auth
 ```
 
-The example nginx config (`deploy/llm-gateway-example.nginx.conf`) defines parallel `/v1/` and `/azure/` blocks in both the HTTP and HTTPS server contexts. Both bypass oauth2-proxy and forward straight to the gateway with the client's `Authorization: Bearer <api_key>` header preserved.
+The example nginx config (`deploy/llm-gateway-example.nginx.conf`) defines parallel `/v1/`, `/azure/`, and `/aws/` blocks in both the HTTP and HTTPS server contexts. All bypass oauth2-proxy and forward straight to the gateway with the client's `Authorization: Bearer <api_key>` header preserved. **Upgrading an existing deployment**: setup.sh renders nginx from your operator-maintained `deploy/llm-gateway.nginx.conf` copy — when a gateway update adds a new API prefix (like `/aws/`), copy the corresponding `location` block into your copy (or your live `/etc/nginx/sites-available/llm-gateway`) or those endpoints will fall through to the SSO-authenticated `location /` (HTTP) or 404 (HTTPS).
 
 - **Gateway**: user-level systemd service (Python/FastAPI)
 - **PostgreSQL + oauth2-proxy**: Docker Compose (`deploy/docker-compose.yml`)
