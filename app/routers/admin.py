@@ -134,9 +134,11 @@ async def admin_page(
             "api_key": u.api_key,
             "daily_limit_usd": u.daily_limit_usd,
             "azure_daily_limit_usd": u.azure_daily_limit_usd,
+            "bedrock_daily_limit_usd": u.bedrock_daily_limit_usd,
             "is_admin": u.is_admin,
             "is_disabled": u.is_disabled,
             "can_use_azure": u.can_use_azure,
+            "can_use_bedrock": u.can_use_bedrock,
             "owners": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
@@ -324,6 +326,38 @@ async def update_user_azure_limit(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.post("/users/{user_id}/bedrock-limit")
+async def update_user_bedrock_limit(
+    user_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Set the user's Bedrock-specific daily sub-limit.
+
+    Empty value clears the sub-limit (NULL → Bedrock spend only bounded by
+    the overall daily_limit_usd). Same contract as the Azure sub-limit.
+    """
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    form = await request.form()
+    raw = form.get("new_bedrock_limit")
+    if raw is not None:
+        raw = str(raw).strip()
+        if raw == "":
+            target.bedrock_daily_limit_usd = None
+        else:
+            try:
+                target.bedrock_daily_limit_usd = float(raw)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="new_bedrock_limit must be a number.")
+        session.add(target)
+        session.commit()
+
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 @router.post("/default-limit")
 async def update_default_limit(
     request: Request,
@@ -397,6 +431,22 @@ async def toggle_azure(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.post("/users/{user_id}/toggle-bedrock")
+async def toggle_bedrock(
+    user_id: int,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Flip the user's can_use_bedrock flag."""
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    target.can_use_bedrock = not target.can_use_bedrock
+    session.add(target)
+    session.commit()
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 @router.post("/users/{user_id}/delete")
 async def delete_user(
     user_id: int,
@@ -465,6 +515,7 @@ async def list_users_api(
             "api_key": u.api_key,
             "daily_limit_usd": u.daily_limit_usd,
             "azure_daily_limit_usd": u.azure_daily_limit_usd,
+            "bedrock_daily_limit_usd": u.bedrock_daily_limit_usd,
             "is_admin": u.is_admin,
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
@@ -495,6 +546,9 @@ async def create_user_api(
     if "azure_daily_limit_usd" in body:
         raw = body["azure_daily_limit_usd"]
         new_user.azure_daily_limit_usd = None if raw is None else float(raw)
+    if "bedrock_daily_limit_usd" in body:
+        raw = body["bedrock_daily_limit_usd"]
+        new_user.bedrock_daily_limit_usd = None if raw is None else float(raw)
     if "is_admin" in body:
         new_user.is_admin = bool(body["is_admin"])
     session.add(new_user)
@@ -535,6 +589,9 @@ async def update_user_api(
     if "azure_daily_limit_usd" in body:
         raw = body["azure_daily_limit_usd"]
         target.azure_daily_limit_usd = None if raw is None else float(raw)
+    if "bedrock_daily_limit_usd" in body:
+        raw = body["bedrock_daily_limit_usd"]
+        target.bedrock_daily_limit_usd = None if raw is None else float(raw)
     if "is_admin" in body:
         target.is_admin = bool(body["is_admin"])
     if "owner_ids" in body:
@@ -779,6 +836,70 @@ async def export_usage_report(
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/api/export/user-backend-costs.csv")
+async def export_user_backend_costs_csv(
+    session: Session = Depends(get_session),
+    from_: str = Query(..., alias="from", description="Start month YYYY-MM (inclusive)"),
+    to: str = Query(..., description="End month YYYY-MM (inclusive)"),
+):
+    """Export per-account cost split by serving backend as CSV.
+
+    One row per (month × account) with separate On-prem (vLLM) / Azure /
+    AWS Bedrock cost columns — the flat-file counterpart of the xlsx
+    "Cost by Backend" sheet, for feeding billing/chargeback systems.
+    Includes both human users and app_* accounts (see the `type` column).
+    """
+    import csv
+    import io
+
+    try:
+        parse_ym(from_)
+        parse_ym(to)
+        months = iter_months(from_, to)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if len(months) > _MAX_EXPORT_MONTHS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Range too wide: {len(months)} months (max {_MAX_EXPORT_MONTHS}).",
+        )
+
+    report = build_monthly_report(session, from_, to)
+
+    buf = io.StringIO()
+    buf.write("﻿")  # UTF-8 BOM so Excel opens CJK correctly
+    writer = csv.writer(buf)
+    writer.writerow([
+        "month", "username", "display_name", "org_code", "type",
+        "requests", "input_tokens", "output_tokens",
+        "vllm_cost_usd", "azure_cost_usd", "bedrock_cost_usd", "total_cost_usd",
+    ])
+    for bd in report.breakdowns:
+        for u in bd.by_user_backend:
+            writer.writerow([
+                bd.month,
+                u["username"],
+                u["display_name"],
+                u["org_code"],
+                "app" if u["is_app"] else "user",
+                u["requests"],
+                u["input_tokens"],
+                u["output_tokens"],
+                f"{u['vllm_cost_usd']:.6f}",
+                f"{u['azure_cost_usd']:.6f}",
+                f"{u['bedrock_cost_usd']:.6f}",
+                f"{u['total_cost_usd']:.6f}",
+            ])
+
+    filename = f"user_backend_costs_{from_}_to_{to}.csv"
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

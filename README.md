@@ -41,7 +41,8 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 - **Usage tracking** — Per-user token and cost logging to PostgreSQL (shared across `/v1/*` and `/azure/v1/*`)
 - **OAuth2 SSO** — [AuthCenter](https://github.com/bwinken/authcenter) integration with RS256 JWT, auto-provisioning users with a configurable default daily limit
 - **Dual auth** — API key (Bearer token) for SDK/API, oauth2-proxy + JWT for web UI
-- **Per-user access control** — Admins can disable a user (rejects both API key and JWT auth with a styled HTML page or JSON 403) and gate Azure deployments behind a `can_use_azure` flag (admins bypass both)
+- **Per-user access control** — Admins can disable a user (rejects both API key and JWT auth with a styled HTML page or JSON 403) and gate Azure / AWS Bedrock deployments behind per-user `can_use_azure` / `can_use_bedrock` flags (admins bypass all)
+- **Cost export by backend** — Admin xlsx report includes a **Cost by Backend** sheet, and `GET /admin/api/export/user-backend-costs.csv` exports one row per (month × account) with separate On-prem (vLLM) / Azure / AWS Bedrock cost columns for billing/chargeback
 - **Web dashboard** — Usage stats, remaining-quota indicator, Chart.js trend charts, grouped server health status with admin-set model metadata badges (context window, tools, vision, cache) and live per-vLLM-server load (`running N · waiting M`, amber when requests queue, red overload warning); separate Azure access card listing configured Azure aliases when granted
 - **Admin panel** — User management with per-row Disable / Enable, Azure, Monitor, and Delete buttons; leaderboards, runtime-adjustable default daily limit, model config UI (routing/pricing/fallback)
 - **Background health checks** — Periodic pings to all downstream vLLM servers, plus a Prometheus `/metrics` scrape of each alive server for live running/waiting request counts shown on the dashboard
@@ -172,6 +173,17 @@ api_key     = "azure-key"
 api_version = "2024-08-01-preview"
 ```
 
+AWS Bedrock models (optional). Each entry exposes a Bedrock model as an alias served from `/aws/v1/*` (all families go through the Converse API; auth is a long-term Bedrock API key sent as a Bearer token):
+
+```toml
+[bedrock_models."claude-sonnet-bedrock"]
+type         = "llm"          # llm | vlm
+region       = "us-east-1"
+model_id     = "anthropic.claude-sonnet-4-20250514-v1:0"   # or an inference-profile ID
+api_key      = "bedrock-api-key"
+is_reasoning = true           # enables reasoning-effort → extended-thinking translation
+```
+
 > All model routing, pricing, and fallback settings can also be managed through the **Admin Panel → Model Config** web UI, which reads and writes `config.toml` directly.
 
 ### .env
@@ -184,10 +196,13 @@ api_version = "2024-08-01-preview"
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | RS256 public key path | `./keys/public.pem` |
 | `AUTH_BASE_URL` | JWT issuer URL (AuthCenter base URL) | `auth-center` |
 | `AZURE_HTTP_PROXY` | Optional HTTP proxy for `/azure/v1/*` downstream traffic only; supports inline credentials (`http://user:pass@proxy:8080`). Unset = Azure reached directly. vLLM traffic is never proxied. | _(unset)_ |
+| `BEDROCK_HTTP_PROXY` | Optional HTTP proxy for `/aws/v1/*` (Bedrock) downstream traffic only; same contract as `AZURE_HTTP_PROXY`. | _(unset)_ |
+| `BEDROCK_INSECURE` | When `true`, disable TLS verification on the Bedrock-bound client (corporate TLS-inspecting proxy); same contract as `AZURE_INSECURE`. | `false` |
 | `LANGFUSE_HOST` | Langfuse base URL (self-hosted recommended). Observability is **enabled only when HOST + PUBLIC_KEY + SECRET_KEY are all set**; otherwise it is a no-op with zero overhead. | _(unset)_ |
 | `LANGFUSE_PUBLIC_KEY` | Langfuse public key (`pk-lf-…`). | _(unset)_ |
 | `LANGFUSE_SECRET_KEY` | Langfuse secret key (`sk-lf-…`). | _(unset)_ |
 | `LANGFUSE_CAPTURE_IO` | When `true`, also send prompt/response **content** to Langfuse (Phase 2). PII-sensitive — see Observability below. Default off sends metrics only. | `false` |
+| `LANGFUSE_SAMPLE_RATE` | Fraction of billable requests recorded in Langfuse, `0.0`–`1.0` (e.g. `0.1` ≈ 10%). `0.0` records nothing; out-of-range values are clamped, invalid values fall back to `1.0`. Billing in `usage_logs` is unaffected — every request is still billed. | `1.0` |
 
 > OAuth2 login settings (OIDC issuer, client secret, redirect URL) are configured in `deploy/.env` for oauth2-proxy. See [deploy/README.md](deploy/README.md).
 
@@ -289,6 +304,10 @@ Azure-backed deployments configured under `[azure_models.*]` are reachable two w
 2. **Through the dedicated `/azure/v1/*` surface** — for clients that should only ever see Azure deployments (e.g. an OpenAI-shaped client whose `base_url` you want pinned to Azure).
 
 Azure aliases appear on `/v1/models` only for users with `can_use_azure` (admins bypass) — that's how a single Claude Code base URL surfaces both backends without leaking Azure deployments to users who don't have access.
+
+### AWS Bedrock
+
+Bedrock models configured under `[bedrock_models.*]` follow the exact same pattern with the `/aws` prefix: reachable through the unified `/v1/*` surface (gated per-user by `can_use_bedrock`, merged into `/v1/models`) or through the dedicated `/aws/v1/*` surface (`/aws/v1/chat/completions`, `/aws/v1/messages`, `/aws/v1/messages/count_tokens`, `/aws/v1/models`). All model families (Anthropic, Nova, Llama, Mistral, …) are served via Bedrock's Converse API, so OpenAI-shaped and Anthropic-shaped clients both work against any of them, streaming included. An optional per-user `bedrock_daily_limit_usd` caps the Bedrock share of daily spend, mirroring the Azure sub-limit. Downstream auth uses a long-term Bedrock API key (`Authorization: Bearer`); IAM/SigV4 is not supported yet.
 
 ```python
 # Option 1: unified base URL (sees both vLLM and Azure aliases when can_use_azure)

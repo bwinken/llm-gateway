@@ -422,7 +422,11 @@ def _log_error(
             username=user.username,
             user_id=str(user.id),
             endpoint=endpoint,
-            backend="azure" if endpoint.startswith("/azure") else "vllm",
+            backend=(
+                "azure" if endpoint.startswith("/azure")
+                else "bedrock" if endpoint.startswith("/aws")
+                else "vllm"
+            ),
             model_alias=model,
             real_model=model,
             model_type=model_type,

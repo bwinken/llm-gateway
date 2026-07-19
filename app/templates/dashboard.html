@@ -183,6 +183,54 @@
 </div>
 {% endif %}
 
+{# ── AWS Bedrock access — only for users with the can_use_bedrock flag (admins always pass) ── #}
+{% if bedrock_access %}
+<div class="gw-card p-4 mb-8 gw-anim gw-d2 flex items-start gap-3"
+     style="background:rgba(255,153,51,0.04);border-color:rgba(255,153,51,0.18)">
+    <svg class="w-5 h-5 flex-shrink-0 mt-0.5" style="color:#ff9933" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+    </svg>
+    <div class="flex-1 text-sm">
+        <div class="flex items-center gap-2 mb-1">
+            <span class="text-t2 font-medium">AWS Bedrock access granted</span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                  style="background:rgba(255,153,51,0.12);color:#ff9933;border:1px solid rgba(255,153,51,0.2)">/aws/v1</span>
+        </div>
+        {% if bedrock_models %}
+        <div class="text-t3 mb-2">
+            You can use these Bedrock models. Point your client at <code class="font-mono text-xs text-t2 bg-n1 px-1 py-0.5 rounded">{{ gateway_base | replace('/v1', '/aws/v1') }}</code>:
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+            {% for m in bedrock_models %}
+            <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-n1 border border-[rgba(255,255,255,0.04)]">
+                <code class="text-xs font-mono text-t1">{{ m.alias }}</code>
+                {% if m.context_window %}
+                <span class="text-[10px] font-mono text-t4">{{ "{:,}".format(m.context_window) }} ctx</span>
+                {% endif %}
+                {% if m.is_reasoning %}
+                <span class="text-[10px] px-1 rounded gw-tip" data-tip="Reasoning model"
+                      style="background:rgba(245,166,35,0.1);color:#f5a623">reasoning</span>
+                {% endif %}
+                {% if m.supports_tools %}
+                <span class="text-[10px] px-1 rounded gw-tip" data-tip="Function calling"
+                      style="background:rgba(99,152,255,0.1);color:#6398ff">tools</span>
+                {% endif %}
+                {% if m.supports_vision %}
+                <span class="text-[10px] px-1 rounded gw-tip" data-tip="Vision"
+                      style="background:rgba(167,139,250,0.1);color:#a78bfa">vision</span>
+                {% endif %}
+            </span>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-t3">
+            You have access but no Bedrock models are currently configured. Contact your administrator.
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
 {# ── Monthly Stats (top row) ── #}
 <h3 class="text-[11px] font-semibold text-t4 uppercase tracking-wider mb-3 gw-anim gw-d2">This Month</h3>
 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 mb-6">
@@ -233,12 +281,13 @@
                 <span class="text-ag">Unlimited</span>
             {% endif %}
         </div>
-        {% if azure_today_cost > 0 or azure_limit > 0 %}
+        {% if azure_today_cost > 0 or azure_limit > 0 or bedrock_today_cost > 0 or bedrock_limit > 0 %}
         <div class="mt-2 pt-2 border-t border-n3 text-[11px] text-t4 font-mono space-y-1">
             <div class="flex justify-between">
                 <span class="gw-tip" data-tip="On-prem (vLLM) portion of today's cost">On-prem</span>
                 <span class="text-t2">${{ "%.4f"|format(vllm_today_cost) }}</span>
             </div>
+            {% if azure_today_cost > 0 or azure_limit > 0 %}
             <div class="flex justify-between">
                 <span class="gw-tip gw-tip-wide" data-tip="Azure portion of today's cost{{ '. Azure calls return 429 when the Azure sub-limit is exceeded.' if azure_limit > 0 }}" style="color:#cab9ff">Azure</span>
                 <span class="text-t2">${{ "%.4f"|format(azure_today_cost) }}{% if azure_limit > 0 %} <span class="{{ 'text-ar' if azure_usage_percent > 90 else 'text-t4' }}">/ ${{ azure_limit }}</span>{% endif %}</span>
@@ -247,6 +296,18 @@
             <div class="w-full rounded-full h-1 overflow-hidden bg-n3">
                 <div class="h-1 rounded-full transition-all {{ 'bg-ar' if azure_usage_percent > 90 else '' }}" style="width: {{ azure_usage_percent }}%; {{ 'background:#a78bfa' if azure_usage_percent <= 90 }}"></div>
             </div>
+            {% endif %}
+            {% endif %}
+            {% if bedrock_today_cost > 0 or bedrock_limit > 0 %}
+            <div class="flex justify-between">
+                <span class="gw-tip gw-tip-wide" data-tip="AWS Bedrock portion of today's cost{{ '. Bedrock calls return 429 when the Bedrock sub-limit is exceeded.' if bedrock_limit > 0 }}" style="color:#ffcb8a">AWS</span>
+                <span class="text-t2">${{ "%.4f"|format(bedrock_today_cost) }}{% if bedrock_limit > 0 %} <span class="{{ 'text-ar' if bedrock_usage_percent > 90 else 'text-t4' }}">/ ${{ bedrock_limit }}</span>{% endif %}</span>
+            </div>
+            {% if bedrock_limit > 0 %}
+            <div class="w-full rounded-full h-1 overflow-hidden bg-n3">
+                <div class="h-1 rounded-full transition-all {{ 'bg-ar' if bedrock_usage_percent > 90 else '' }}" style="width: {{ bedrock_usage_percent }}%; {{ 'background:#ff9933' if bedrock_usage_percent <= 90 }}"></div>
+            </div>
+            {% endif %}
             {% endif %}
         </div>
         {% endif %}

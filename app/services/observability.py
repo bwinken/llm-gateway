@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextvars
 import os
+import random
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -286,6 +287,7 @@ class GenerationRecord:
 
 _client = None
 _initialized = False
+_sample_rate: float | None = None
 
 
 def _config_present() -> bool:
@@ -301,6 +303,52 @@ def capture_io_enabled() -> bool:
     return os.getenv("LANGFUSE_CAPTURE_IO", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def get_sample_rate() -> float:
+    """Fraction of billable requests to record in Langfuse (LANGFUSE_SAMPLE_RATE).
+
+    Parsed once and cached (like the client singleton, reset via
+    reset_langfuse_cache) so a malformed value warns a single time instead of
+    on every request. Unset/blank or unparsable -> 1.0 (record everything);
+    out-of-range values are clamped into [0.0, 1.0]. 0.0 disables recording
+    entirely while keeping the client configured.
+    """
+    global _sample_rate
+    if _sample_rate is not None:
+        return _sample_rate
+    raw = os.getenv("LANGFUSE_SAMPLE_RATE", "").strip()
+    rate = 1.0
+    if raw:
+        try:
+            rate = float(raw)
+        except ValueError:
+            logger.warning(
+                "Invalid LANGFUSE_SAMPLE_RATE={!r} — expected a number in [0.0, 1.0]; using 1.0",
+                raw,
+            )
+            rate = 1.0
+        else:
+            if rate < 0.0 or rate > 1.0:
+                clamped = min(max(rate, 0.0), 1.0)
+                logger.warning(
+                    "LANGFUSE_SAMPLE_RATE={} out of range [0.0, 1.0] — clamping to {}",
+                    rate, clamped,
+                )
+                rate = clamped
+    _sample_rate = rate
+    return _sample_rate
+
+
+def _should_sample() -> bool:
+    """Per-request sampling decision. Avoids the RNG entirely at the edges so
+    rate=1.0 (the default) stays deterministic and free."""
+    rate = get_sample_rate()
+    if rate >= 1.0:
+        return True
+    if rate <= 0.0:
+        return False
+    return random.random() < rate
+
+
 def get_langfuse():
     """Lazily build the singleton Langfuse client. Returns None (no-op) when
     LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY are not all set, or if init fails.
@@ -314,8 +362,16 @@ def get_langfuse():
         return None
     try:
         from langfuse import Langfuse  # reads LANGFUSE_* from env
-        _client = Langfuse()
-        logger.info("Langfuse observability enabled (host={})", os.getenv("LANGFUSE_HOST"))
+        # sample_rate=1.0 disables the SDK's own sampler: the SDK also reads
+        # LANGFUSE_SAMPLE_RATE from env, which would double-apply the rate
+        # (gateway gate × SDK TraceIdRatioBased ≈ rate²) and raise ValueError
+        # at init on out-of-range values. Sampling happens exactly once, at
+        # the gateway's record_generation gate (_should_sample).
+        _client = Langfuse(sample_rate=1.0)
+        logger.info(
+            "Langfuse observability enabled (host={}, sample_rate={})",
+            os.getenv("LANGFUSE_HOST"), get_sample_rate(),
+        )
     except Exception as exc:  # never let init break the app
         logger.warning("Langfuse init failed, observability disabled: {}", exc)
         _client = None
@@ -332,20 +388,26 @@ def flush_langfuse() -> None:
 
 
 def reset_langfuse_cache() -> None:
-    """Test helper — drop the cached client so env changes take effect."""
-    global _client, _initialized
+    """Test helper — drop the cached client and sample rate so env changes
+    take effect."""
+    global _client, _initialized, _sample_rate
     _client = None
     _initialized = False
+    _sample_rate = None
 
 
 def record_generation(rec: GenerationRecord) -> None:
     """Fire-and-forget: emit one Langfuse generation for a completed request.
 
-    No-op when Langfuse is unconfigured. NEVER raises into the request path —
-    any SDK/serialisation error is logged and swallowed.
+    No-op when Langfuse is unconfigured. When LANGFUSE_SAMPLE_RATE < 1.0 the
+    request is recorded with that probability (uniform across success and
+    error generations). NEVER raises into the request path — any
+    SDK/serialisation error is logged and swallowed.
     """
     client = get_langfuse()
     if client is None:
+        return
+    if not _should_sample():
         return
     try:
         from langfuse import propagate_attributes

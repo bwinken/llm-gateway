@@ -41,7 +41,8 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 - **用量追蹤** — 逐請求記錄每位使用者的 token 數與費用至 PostgreSQL（`/v1/*` 與 `/azure/v1/*` 共用）
 - **OAuth2 SSO** — 整合 [AuthCenter](https://github.com/bwinken/authcenter)，RS256 JWT 驗證,自動建立使用者並套用可調整的預設每日額度
 - **雙重驗證** — SDK/API 使用 Bearer API key，Web UI 使用 oauth2-proxy + JWT
-- **使用者層級存取控制** — 管理員可將使用者停用（API key 與 JWT 認證皆會回 403,瀏覽器看到的是樣式化 HTML 頁、API 客戶端拿到 JSON 403),亦可用 `can_use_azure` 旗標單獨授權 Azure 部署的存取(admin 兩者皆免檢查)
+- **使用者層級存取控制** — 管理員可將使用者停用（API key 與 JWT 認證皆會回 403,瀏覽器看到的是樣式化 HTML 頁、API 客戶端拿到 JSON 403),亦可用 `can_use_azure` / `can_use_bedrock` 旗標分別授權 Azure / AWS Bedrock 的存取(admin 全部免檢查)
+- **依後端拆分的費用匯出** — 管理員 xlsx 報表含 **Cost by Backend** 分頁;`GET /admin/api/export/user-backend-costs.csv` 每 (月 × 帳號) 一列,分開列出 On-prem (vLLM) / Azure / AWS Bedrock 費用欄位,方便對接帳務/分攤系統
 - **Web 儀表板** — 用量統計、剩餘額度顯示、Chart.js 趨勢圖、分組的伺服器健康狀態,模型旁顯示管理員設定的 metadata badge(context window、tools、vision、cache),並即時顯示每台 vLLM 伺服器的負載(`running N · waiting M`,有請求排隊時轉琥珀色,過載時轉紅色警示);授權 Azure 存取後另有獨立的 Azure 存取卡片列出可用 Azure 別名
 - **管理面板** — 使用者管理(每列有 Disable / Enable、Azure、Monitor、Delete 四顆按鈕)、排行榜、可在執行期調整的預設每日額度、模型設定 UI(路由/計價/容錯)
 - **背景健康檢查** — 定期 ping 所有下游 vLLM 伺服器,並抓取每台存活伺服器的 Prometheus `/metrics`,取得即時的 running/waiting 請求數顯示於儀表板
@@ -172,6 +173,17 @@ api_key     = "azure-key"
 api_version = "2024-08-01-preview"
 ```
 
+AWS Bedrock 模型（選填）。每個項目會以模型別名透過 `/aws/v1/*` 對外服務（所有模型家族統一走 Converse API；下游認證用長期 Bedrock API key，以 Bearer token 送出）：
+
+```toml
+[bedrock_models."claude-sonnet-bedrock"]
+type         = "llm"          # llm | vlm
+region       = "us-east-1"
+model_id     = "anthropic.claude-sonnet-4-20250514-v1:0"   # 或 inference profile ID
+api_key      = "bedrock-api-key"
+is_reasoning = true           # 啟用 reasoning-effort → extended thinking 轉譯
+```
+
 > 所有模型路由、計價和容錯設定也可以透過 **管理面板 → 模型設定** 的 Web UI 管理，直接讀寫 `config.toml`。
 
 ### .env
@@ -184,10 +196,13 @@ api_version = "2024-08-01-preview"
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | RS256 公鑰路徑 | `./keys/public.pem` |
 | `AUTH_BASE_URL` | JWT issuer URL（AuthCenter 基底 URL） | `auth-center` |
 | `AZURE_HTTP_PROXY` | 選填,僅供 `/azure/v1/*` 下游流量使用的 HTTP proxy;支援內嵌帳密(`http://user:pass@proxy:8080`)。不設定則直連 Azure。vLLM 流量永遠不走 proxy。 | _(未設定)_ |
+| `BEDROCK_HTTP_PROXY` | 選填,僅供 `/aws/v1/*`(Bedrock)下游流量使用的 HTTP proxy;規則同 `AZURE_HTTP_PROXY`。 | _(未設定)_ |
+| `BEDROCK_INSECURE` | 設為 `true` 時關閉 Bedrock 連線的 TLS 驗證(企業 TLS 檢查 proxy 場景);規則同 `AZURE_INSECURE`。 | `false` |
 | `LANGFUSE_HOST` | Langfuse base URL(建議自架)。**三把(HOST + PUBLIC_KEY + SECRET_KEY)都設齊才啟用**,否則完全 no-op、零開銷。 | _(未設定)_ |
 | `LANGFUSE_PUBLIC_KEY` | Langfuse public key(`pk-lf-…`)。 | _(未設定)_ |
 | `LANGFUSE_SECRET_KEY` | Langfuse secret key(`sk-lf-…`)。 | _(未設定)_ |
 | `LANGFUSE_CAPTURE_IO` | 設為 `true` 時,額外把 prompt/回應**內容**送進 Langfuse(Phase 2),含 PII,見下方 Observability。預設只送 metrics。 | `false` |
+| `LANGFUSE_SAMPLE_RATE` | 送進 Langfuse 的取樣率,`0.0`–`1.0`(例如 `0.1` ≈ 記錄 10% 的請求)。`0.0` 完全不記錄;超出範圍會被 clamp,無法解析則回退 `1.0`。不影響 `usage_logs` 計費 —— 每筆請求照常計費。 | `1.0` |
 
 > OAuth2 登入設定（OIDC issuer、client secret、redirect URL）在 `deploy/.env` 中設定，供 oauth2-proxy 使用。詳見 [deploy/README.md](deploy/README.md)。
 
@@ -289,6 +304,10 @@ curl http://your-gateway/v1/models \
 2. **透過專屬 `/azure/v1/*` 介面** — 適用於「該 client 永遠只該看到 Azure」的情境(例如要把某個 OpenAI 形 client 的 `base_url` 鎖在 Azure)。
 
 Azure alias 只會在 `can_use_azure` 為 True 的使用者(admin 自動 bypass)看 `/v1/models` 時併入清單 — 這就是怎麼讓同一個 Claude Code base URL 同時暴露兩個後端,又不會把 Azure 部署洩漏給沒權限的使用者。
+
+### AWS Bedrock
+
+設定在 `[bedrock_models.*]` 的 Bedrock 模型走完全相同的模式,前綴是 `/aws`:可透過統一 `/v1/*` 介面(以 `can_use_bedrock` 逐使用者授權,alias 併入 `/v1/models`),或專屬的 `/aws/v1/*` 介面(`/aws/v1/chat/completions`、`/aws/v1/messages`、`/aws/v1/messages/count_tokens`、`/aws/v1/models`)。所有模型家族(Anthropic、Nova、Llama、Mistral…)統一經由 Bedrock 的 Converse API 服務,OpenAI 形與 Anthropic 形的 client 都能打任一模型,串流也支援。另有選填的 per-user `bedrock_daily_limit_usd` 子額度,規則與 Azure 子額度一致。下游認證使用長期 Bedrock API key(`Authorization: Bearer`);目前不支援 IAM/SigV4。
 
 ```python
 # 方案 1:統一 base URL(有 can_use_azure 時看得到 vLLM + Azure 兩邊 alias)

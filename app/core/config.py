@@ -77,6 +77,16 @@ _AZURE_REQUIRED_KEYS: tuple[str, ...] = ("type", "endpoint", "deployment", "api_
 _AZURE_OPTIONAL_KEYS: tuple[str, ...] = ("api_version",)
 _AZURE_DEFAULT_API_VERSION = "2024-08-01-preview"
 
+# [bedrock_models.*] entries (AWS Bedrock deployments, served via /aws/v1/*).
+# `model_id` is the Bedrock model ID or inference-profile ID (e.g.
+# "anthropic.claude-sonnet-4-20250514-v1:0" or "us.anthropic...."). `region`
+# builds the default endpoint (https://bedrock-runtime.{region}.amazonaws.com);
+# `endpoint` overrides it (VPC endpoints, gov regions). `api_key` is a
+# long-term Bedrock API key sent as `Authorization: Bearer` — IAM/SigV4 is
+# not implemented yet (auth is isolated in bedrock_proxy._build_headers so it
+# can be added without touching routing).
+_BEDROCK_DEFAULT_REGION = "us-east-1"
+
 
 def _build_config(raw: dict[str, Any]) -> tuple[
     dict[str, Any],
@@ -85,8 +95,11 @@ def _build_config(raw: dict[str, Any]) -> tuple[
     dict[str, str],
     dict[str, dict[str, Any]],
     dict[str, str],
+    dict[str, dict[str, Any]],
+    dict[str, str],
 ]:
-    """Return (APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP, AZURE_MODELS, AZURE_FALLBACK_MAP)."""
+    """Return (APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP,
+    AZURE_MODELS, AZURE_FALLBACK_MAP, BEDROCK_MODELS, BEDROCK_FALLBACK_MAP)."""
 
     # --- app ---
     app_config: dict[str, Any] = raw.get("app", {})
@@ -173,25 +186,71 @@ def _build_config(raw: dict[str, Any]) -> tuple[
         if isinstance(alias, str):
             azure_fallback_map[type_key] = alias
 
-    # Unified `/v1/*` dispatch (v1_api) routes a request by looking up the
-    # `model` alias in MODEL_ROUTING first, then AZURE_MODELS. A name that
-    # lives in both maps is ambiguous — refuse to start instead of silently
-    # picking one and surprising the operator. Operators who really need
-    # two backends behind the same alias should pick one and rename the
-    # other (or split clients to the dedicated `/azure/v1/*` endpoints).
-    collisions = sorted(set(model_routing) & set(azure_models))
-    if collisions:
-        raise ValueError(
-            "config.toml: alias(es) declared in both [models.*] and "
-            f"[azure_models.*]: {collisions}. Aliases must be unique across "
-            "vLLM and Azure so unified `/v1/*` routing is deterministic."
-        )
+    # --- bedrock_models (AWS Bedrock deployments — separate routing) ---
+    bedrock_models: dict[str, dict[str, Any]] = {}
+    for alias, cfg in raw.get("bedrock_models", {}).items():
+        if not isinstance(cfg, dict):
+            continue
+        entry: dict[str, Any] = {
+            "type": cfg.get("type", "llm"),
+            "region": cfg.get("region", _BEDROCK_DEFAULT_REGION),
+            "model_id": cfg.get("model_id", ""),
+            "api_key": cfg.get("api_key", ""),
+        }
+        # Optional endpoint override (VPC endpoint / gov region); when absent
+        # bedrock_proxy builds https://bedrock-runtime.{region}.amazonaws.com.
+        if cfg.get("endpoint"):
+            entry["endpoint"] = str(cfg["endpoint"]).rstrip("/")
+        for meta_key in _MODEL_METADATA_KEYS:
+            if meta_key in cfg:
+                entry[meta_key] = cfg[meta_key]
+        for internal_key in _MODEL_INTERNAL_KEYS:
+            if internal_key in cfg:
+                entry[internal_key] = cfg[internal_key]
+        for price_key in _MODEL_PRICING_KEYS:
+            if price_key in cfg:
+                entry[price_key] = float(cfg[price_key])
+        bedrock_models[alias] = entry
 
-    return app_config, model_routing, pricing_map, fallback_map, azure_models, azure_fallback_map
+    # --- bedrock_fallback (type -> preferred Bedrock alias) ---
+    # Mirrors [azure_fallback]: reactive to unknown/wrong-type aliases only;
+    # Bedrock is a managed service so there's no proactive health probe.
+    bedrock_fallback_map: dict[str, str] = {}
+    for type_key, alias in raw.get("bedrock_fallback", {}).items():
+        if isinstance(alias, str):
+            bedrock_fallback_map[type_key] = alias
+
+    # Unified `/v1/*` dispatch (v1_api) routes a request by looking up the
+    # `model` alias across MODEL_ROUTING / AZURE_MODELS / BEDROCK_MODELS.
+    # A name that lives in more than one map is ambiguous — refuse to start
+    # instead of silently picking one and surprising the operator. Operators
+    # who really need two backends behind the same alias should pick one and
+    # rename the other (or split clients to the dedicated `/azure/v1/*` /
+    # `/aws/v1/*` endpoints).
+    for a_name, b_name, a_map, b_map in (
+        ("[models.*]", "[azure_models.*]", model_routing, azure_models),
+        ("[models.*]", "[bedrock_models.*]", model_routing, bedrock_models),
+        ("[azure_models.*]", "[bedrock_models.*]", azure_models, bedrock_models),
+    ):
+        collisions = sorted(set(a_map) & set(b_map))
+        if collisions:
+            raise ValueError(
+                f"config.toml: alias(es) declared in both {a_name} and "
+                f"{b_name}: {collisions}. Aliases must be unique across "
+                "backends so unified `/v1/*` routing is deterministic."
+            )
+
+    return (
+        app_config, model_routing, pricing_map, fallback_map,
+        azure_models, azure_fallback_map, bedrock_models, bedrock_fallback_map,
+    )
 
 
 _raw = _load_toml()
-APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP, AZURE_MODELS, AZURE_FALLBACK_MAP = _build_config(_raw)
+(
+    APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP,
+    AZURE_MODELS, AZURE_FALLBACK_MAP, BEDROCK_MODELS, BEDROCK_FALLBACK_MAP,
+) = _build_config(_raw)
 
 _config_lock = threading.Lock()
 _config_mtime: float = _CONFIG_PATH.stat().st_mtime
@@ -226,7 +285,10 @@ def reload_config() -> None:
         _config_mtime = _CONFIG_PATH.stat().st_mtime
     except OSError:
         pass
-    _, new_routing, new_pricing, new_fallback, new_azure, new_azure_fallback = _build_config(raw)
+    (
+        _, new_routing, new_pricing, new_fallback,
+        new_azure, new_azure_fallback, new_bedrock, new_bedrock_fallback,
+    ) = _build_config(raw)
 
     # Pre-compute stale keys outside the lock
     stale_routing = set(MODEL_ROUTING) - set(new_routing)
@@ -234,6 +296,8 @@ def reload_config() -> None:
     stale_fallback = set(FALLBACK_MAP) - set(new_fallback)
     stale_azure = set(AZURE_MODELS) - set(new_azure)
     stale_azure_fallback = set(AZURE_FALLBACK_MAP) - set(new_azure_fallback)
+    stale_bedrock = set(BEDROCK_MODELS) - set(new_bedrock)
+    stale_bedrock_fallback = set(BEDROCK_FALLBACK_MAP) - set(new_bedrock_fallback)
 
     with _config_lock:
         # Swap all dicts as close together as possible
@@ -242,6 +306,8 @@ def reload_config() -> None:
         FALLBACK_MAP.update(new_fallback)
         AZURE_MODELS.update(new_azure)
         AZURE_FALLBACK_MAP.update(new_azure_fallback)
+        BEDROCK_MODELS.update(new_bedrock)
+        BEDROCK_FALLBACK_MAP.update(new_bedrock_fallback)
         for k in stale_routing:
             MODEL_ROUTING.pop(k, None)
         for k in stale_pricing:
@@ -252,6 +318,10 @@ def reload_config() -> None:
             AZURE_MODELS.pop(k, None)
         for k in stale_azure_fallback:
             AZURE_FALLBACK_MAP.pop(k, None)
+        for k in stale_bedrock:
+            BEDROCK_MODELS.pop(k, None)
+        for k in stale_bedrock_fallback:
+            BEDROCK_FALLBACK_MAP.pop(k, None)
 
 
 def save_config(
@@ -260,6 +330,8 @@ def save_config(
     fallback: dict[str, str],
     azure_models: dict[str, dict[str, Any]] | None = None,
     azure_fallback: dict[str, str] | None = None,
+    bedrock_models: dict[str, dict[str, Any]] | None = None,
+    bedrock_fallback: dict[str, str] | None = None,
 ) -> None:
     """Write config back to config.toml and reload globals."""
     raw = _load_toml()
@@ -341,6 +413,41 @@ def save_config(
         else:
             raw.pop("azure_fallback", None)
 
+    # Rebuild [bedrock_models.*] section — same None-leaves-untouched
+    # convention as azure_models above.
+    if bedrock_models is not None:
+        bedrock_section: dict[str, dict[str, Any]] = {}
+        for alias, info in bedrock_models.items():
+            entry: dict[str, Any] = {
+                "type": info.get("type", "llm"),
+                "region": info.get("region") or _BEDROCK_DEFAULT_REGION,
+                "model_id": info.get("model_id", ""),
+                "api_key": info.get("api_key", ""),
+            }
+            if info.get("endpoint"):
+                entry["endpoint"] = str(info["endpoint"]).rstrip("/")
+            for meta_key in _MODEL_METADATA_KEYS:
+                if meta_key in info:
+                    entry[meta_key] = info[meta_key]
+            for internal_key in _MODEL_INTERNAL_KEYS:
+                if internal_key in info:
+                    entry[internal_key] = info[internal_key]
+            for price_key in _MODEL_PRICING_KEYS:
+                if price_key in info:
+                    entry[price_key] = float(info[price_key])
+            bedrock_section[alias] = entry
+        raw["bedrock_models"] = bedrock_section
+    elif "bedrock_models" in raw and not raw.get("bedrock_models"):
+        raw.pop("bedrock_models", None)
+
+    # Rebuild [bedrock_fallback] section — same convention as [azure_fallback].
+    if bedrock_fallback is not None:
+        cleaned = {k: v for k, v in bedrock_fallback.items() if v}
+        if cleaned:
+            raw["bedrock_fallback"] = cleaned
+        else:
+            raw.pop("bedrock_fallback", None)
+
     # Atomic write: write to temp file then rename to prevent corruption
     dir_path = _CONFIG_PATH.parent
     fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix=".toml.tmp")
@@ -367,6 +474,8 @@ def get_config_data() -> dict[str, Any]:
         "fallback": dict(FALLBACK_MAP),
         "azure_models": dict(AZURE_MODELS),
         "azure_fallback": dict(AZURE_FALLBACK_MAP),
+        "bedrock_models": dict(BEDROCK_MODELS),
+        "bedrock_fallback": dict(BEDROCK_FALLBACK_MAP),
     }
 
 
@@ -374,6 +483,12 @@ def get_azure_models_snapshot() -> dict[str, dict[str, Any]]:
     """Return a shallow copy of AZURE_MODELS safe for iteration."""
     _check_auto_reload()
     return dict(AZURE_MODELS)
+
+
+def get_bedrock_models_snapshot() -> dict[str, dict[str, Any]]:
+    """Return a shallow copy of BEDROCK_MODELS safe for iteration."""
+    _check_auto_reload()
+    return dict(BEDROCK_MODELS)
 
 
 def get_default_daily_limit() -> float:

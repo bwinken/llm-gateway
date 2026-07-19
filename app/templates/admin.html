@@ -192,6 +192,12 @@
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                     Download xlsx
                 </button>
+                <button type="button" id="exportCsvBtn" onclick="return submitExportCsv()"
+                        class="gw-btn gw-btn-ghost text-sm px-4 py-2 gw-tip gw-tip-wide"
+                        data-tip="One row per (month × account) with separate On-prem / Azure / AWS Bedrock cost columns — for billing/chargeback systems.">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                    Backend costs (CSV)
+                </button>
             </form>
         </div>
         <div id="exportError" class="hidden mt-3 text-xs text-ar"></div>
@@ -210,22 +216,21 @@
     document.getElementById('exportTo').max = currMonth;
 })();
 
-function submitExport(e) {
-    e.preventDefault();
+function downloadExport(btnId, path, fallbackName) {
     var from = document.getElementById('exportFrom').value;
     var to = document.getElementById('exportTo').value;
     var err = document.getElementById('exportError');
     err.classList.add('hidden');
     if (!from || !to) { err.textContent = 'Select both months.'; err.classList.remove('hidden'); return false; }
     if (from > to) { err.textContent = '"From" must be on or before "To".'; err.classList.remove('hidden'); return false; }
-    var btn = document.getElementById('exportBtn');
+    var btn = document.getElementById(btnId);
     btn.disabled = true; btn.classList.add('opacity-50');
-    var url = '/admin/api/export/usage.xlsx?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to);
+    var url = path + '?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to);
     fetch(url, { credentials: 'same-origin' }).then(function(r){
         if (!r.ok) return r.text().then(function(t){ throw new Error(t || ('HTTP ' + r.status)); });
         var disp = r.headers.get('Content-Disposition') || '';
         var m = disp.match(/filename="([^"]+)"/);
-        var name = m ? m[1] : ('usage_' + from + '_to_' + to + '.xlsx');
+        var name = m ? m[1] : fallbackName.replace('{from}', from).replace('{to}', to);
         return r.blob().then(function(blob){ return {blob: blob, name: name}; });
     }).then(function(d){
         var a = document.createElement('a');
@@ -240,6 +245,15 @@ function submitExport(e) {
         btn.disabled = false; btn.classList.remove('opacity-50');
     });
     return false;
+}
+
+function submitExport(e) {
+    e.preventDefault();
+    return downloadExport('exportBtn', '/admin/api/export/usage.xlsx', 'usage_{from}_to_{to}.xlsx');
+}
+
+function submitExportCsv() {
+    return downloadExport('exportCsvBtn', '/admin/api/export/user-backend-costs.csv', 'user_backend_costs_{from}_to_{to}.csv');
 }
 </script>
 
@@ -431,6 +445,17 @@ function submitExport(e) {
                                 <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
                             </form>
                             {% endif %}
+                            {% if u.can_use_bedrock %}
+                            <form action="/admin/users/{{ u.id }}/bedrock-limit" method="POST" class="flex items-center gap-2 mt-1"
+                                  title="Bedrock daily sub-limit (counts inside the overall limit). Empty = no separate Bedrock cap.">
+                                <span class="text-xs" style="color:#ffcb8a">Aw$</span>
+                                <input type="number" step="0.1" min="0" name="new_bedrock_limit"
+                                       value="{{ u.bedrock_daily_limit_usd if u.bedrock_daily_limit_usd is not none else '' }}"
+                                       placeholder="—"
+                                       class="gw-input w-20 text-sm font-mono py-1 px-2">
+                                <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
+                            </form>
+                            {% endif %}
                         </td>
                         <td class="whitespace-nowrap text-right">
                             <div class="flex items-center justify-end gap-2">
@@ -441,6 +466,15 @@ function submitExport(e) {
                                             style="{{ 'background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.4);color:#cab9ff' if u.can_use_azure else '' }}"
                                             title="{{ 'Azure granted' if u.can_use_azure else 'No Azure access' }}">
                                         Azure
+                                    </button>
+                                </form>
+                                <form action="/admin/users/{{ u.id }}/toggle-bedrock" method="POST" data-username="{{ u.username }}"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.can_use_bedrock else 'false' }} ? 'Revoke' : 'Grant') + ' AWS Bedrock access?');">
+                                    <button type="submit"
+                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.can_use_bedrock else 'gw-btn-ghost' }}"
+                                            style="{{ 'background:rgba(255,153,51,0.15);border-color:rgba(255,153,51,0.4);color:#ffcb8a' if u.can_use_bedrock else '' }}"
+                                            title="{{ 'AWS Bedrock granted' if u.can_use_bedrock else 'No AWS Bedrock access' }}">
+                                        AWS
                                     </button>
                                 </form>
                                 {% if not u.is_admin %}
@@ -538,6 +572,17 @@ function submitExport(e) {
                                 <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
                             </form>
                             {% endif %}
+                            {% if u.can_use_bedrock %}
+                            <form action="/admin/users/{{ u.id }}/bedrock-limit" method="POST" class="flex items-center gap-2 mt-1"
+                                  title="Bedrock daily sub-limit (counts inside the overall limit). Empty = no separate Bedrock cap.">
+                                <span class="text-xs" style="color:#ffcb8a">Aw$</span>
+                                <input type="number" step="0.1" min="0" name="new_bedrock_limit"
+                                       value="{{ u.bedrock_daily_limit_usd if u.bedrock_daily_limit_usd is not none else '' }}"
+                                       placeholder="—"
+                                       class="gw-input w-20 text-sm font-mono py-1 px-2">
+                                <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
+                            </form>
+                            {% endif %}
                         </td>
                         <td class="whitespace-nowrap text-right">
                             <div class="flex items-center justify-end gap-2">
@@ -548,6 +593,15 @@ function submitExport(e) {
                                             style="{{ 'background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.4);color:#cab9ff' if u.can_use_azure else '' }}"
                                             title="{{ 'Azure granted' if u.can_use_azure else 'No Azure access' }}">
                                         Azure
+                                    </button>
+                                </form>
+                                <form action="/admin/users/{{ u.id }}/toggle-bedrock" method="POST" data-username="{{ u.username }}"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.can_use_bedrock else 'false' }} ? 'Revoke' : 'Grant') + ' AWS Bedrock access?');">
+                                    <button type="submit"
+                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.can_use_bedrock else 'gw-btn-ghost' }}"
+                                            style="{{ 'background:rgba(255,153,51,0.15);border-color:rgba(255,153,51,0.4);color:#ffcb8a' if u.can_use_bedrock else '' }}"
+                                            title="{{ 'AWS Bedrock granted' if u.can_use_bedrock else 'No AWS Bedrock access' }}">
+                                        AWS
                                     </button>
                                 </form>
                                 <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-username="{{ u.username }}"

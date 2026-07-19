@@ -140,6 +140,50 @@ def ensure_azure_budget(user: User) -> None:
         _check_azure_daily_limit(session, user)
 
 
+def _check_bedrock_daily_limit(session: Session, user: User) -> None:
+    """Reject if the user has exceeded their Bedrock-specific daily sub-limit.
+
+    Bedrock spend always counts toward the overall ``daily_limit_usd``; this
+    additionally caps the Bedrock portion on its own. ``NULL`` or ``<= 0``
+    means "no separate Bedrock cap" (the default). Honors the same
+    ``ENFORCE_DAILY_LIMIT`` soft-mode escape hatch as the overall check.
+    """
+    limit = user.bedrock_daily_limit_usd
+    if limit is None or limit <= 0:
+        return
+
+    today_start = local_day_start_utc()
+    stmt = (
+        select(func.coalesce(func.sum(UsageLog.cost_usd), 0))
+        .where(UsageLog.user_id == user.id)
+        .where(UsageLog.created_at >= today_start)
+        .where(UsageLog.backend == "bedrock")
+    )
+    bedrock_cost = float(session.exec(stmt).one())
+    if bedrock_cost < limit:
+        return
+
+    if _enforce_daily_limit():
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Bedrock daily spending limit (${limit}) exceeded. "
+                f"Today (Bedrock): ${bedrock_cost:.4f}."
+            ),
+        )
+    logger.warning(
+        "Bedrock daily limit exceeded (soft mode) | user={} limit=${} today=${:.4f}",
+        user.username, limit, bedrock_cost,
+    )
+
+
+def ensure_bedrock_budget(user: User) -> None:
+    """Standalone Bedrock sub-limit check for the unified ``/v1/*`` handlers
+    (same shape/contract as ``ensure_azure_budget``)."""
+    with Session(engine) as session:
+        _check_bedrock_daily_limit(session, user)
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
@@ -212,4 +256,20 @@ def require_azure_access(
             detail="Azure access not granted. Contact your administrator.",
         )
     _check_azure_daily_limit(session, user)
+    return user
+
+
+def require_bedrock_access(
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> User:
+    """Dependency for /aws/v1/* endpoints — additionally checks the Bedrock
+    access flag and the per-user Bedrock daily sub-limit."""
+    if not user.can_use_bedrock and not user.is_admin:
+        logger.warning("Bedrock access denied for user '{}'", user.username)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bedrock access not granted. Contact your administrator.",
+        )
+    _check_bedrock_daily_limit(session, user)
     return user

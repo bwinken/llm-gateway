@@ -34,9 +34,10 @@ from starlette.concurrency import run_in_threadpool
 from app.core.config import (
     _MODEL_METADATA_KEYS,
     get_azure_models_snapshot,
+    get_bedrock_models_snapshot,
     get_model_routing_snapshot,
 )
-from app.core.deps import ensure_azure_budget, get_current_user
+from app.core.deps import ensure_azure_budget, ensure_bedrock_budget, get_current_user
 from app.core.logger import logger
 from app.models.schema import User
 from app.services.azure_proxy import (
@@ -44,6 +45,11 @@ from app.services.azure_proxy import (
     azure_forward_count_tokens,
     azure_forward_messages,
     azure_forward_responses,
+)
+from app.services.bedrock_proxy import (
+    bedrock_forward_chat_completions,
+    bedrock_forward_count_tokens,
+    bedrock_forward_messages,
 )
 from app.services.vllm_proxy import (
     vllm_forward_chat_completions,
@@ -102,6 +108,27 @@ def _route_to_azure(alias: str, user: User) -> bool:
     # asking for an alias they don't have access to.
     logger.info(
         "Azure alias '{}' requested by user '{}' without can_use_azure; "
+        "falling back to vLLM default",
+        alias, user.username,
+    )
+    return False
+
+
+def _route_to_bedrock(alias: str, user: User) -> bool:
+    """Whether ``alias`` should be dispatched to the Bedrock backend.
+
+    Same contract as ``_route_to_azure``: True only when the alias is
+    configured under ``[bedrock_models.*]`` AND the caller has Bedrock
+    access; otherwise the request stays on the vLLM path and falls back
+    through ``_resolve_model`` like any unknown alias.
+    """
+    bedrock_models = get_bedrock_models_snapshot()
+    if alias not in bedrock_models:
+        return False
+    if user.can_use_bedrock or user.is_admin:
+        return True
+    logger.info(
+        "Bedrock alias '{}' requested by user '{}' without can_use_bedrock; "
         "falling back to vLLM default",
         alias, user.username,
     )
@@ -170,6 +197,23 @@ async def list_models(user: User = Depends(get_current_user)):
                     entry[meta_key] = route[meta_key]
             models.append(entry)
 
+    if user.can_use_bedrock or user.is_admin:
+        for alias, route in get_bedrock_models_snapshot().items():
+            model_type = route.get("type", "llm")
+            if model_type not in ("llm", "vlm"):
+                continue
+            entry = {
+                "id": alias,
+                "object": "model",
+                "owned_by": "aws-bedrock",
+                "type": model_type,
+                "capability": _TYPE_CAPABILITIES.get(model_type, model_type),
+            }
+            for meta_key in _MODEL_METADATA_KEYS:
+                if meta_key in route:
+                    entry[meta_key] = route[meta_key]
+            models.append(entry)
+
     return {"object": "list", "data": models}
 
 
@@ -184,6 +228,10 @@ async def chat_completions(request: Request, user: User = Depends(get_current_us
         # different model's output). Blocking DB read → threadpool.
         await run_in_threadpool(ensure_azure_budget, user)
         return await azure_forward_chat_completions(request, user)
+    if alias and _route_to_bedrock(alias, user):
+        # Same contract as the Azure gate above, for the Bedrock sub-limit.
+        await run_in_threadpool(ensure_bedrock_budget, user)
+        return await bedrock_forward_chat_completions(request, user)
     return await vllm_forward_chat_completions(request, user, allowed_types=["llm", "vlm"])
 
 
@@ -229,6 +277,9 @@ async def messages(request: Request, user: User = Depends(get_current_user)):
         # Same Azure sub-limit gate as /v1/chat/completions.
         await run_in_threadpool(ensure_azure_budget, user)
         return await azure_forward_messages(request, user)
+    if alias and _route_to_bedrock(alias, user):
+        await run_in_threadpool(ensure_bedrock_budget, user)
+        return await bedrock_forward_messages(request, user)
     return await vllm_forward_messages(request, user, allowed_types=["llm", "vlm"])
 
 
@@ -258,6 +309,9 @@ async def messages_count_tokens(
         # dependency also enforces the sub-limit).
         await run_in_threadpool(ensure_azure_budget, user)
         return await azure_forward_count_tokens(request, user)
+    if alias and _route_to_bedrock(alias, user):
+        await run_in_threadpool(ensure_bedrock_budget, user)
+        return await bedrock_forward_count_tokens(request, user)
     return await vllm_forward_count_tokens(
         request, user, allowed_types=["llm", "vlm"]
     )
