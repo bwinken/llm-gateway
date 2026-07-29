@@ -212,6 +212,20 @@ Covers the "all models DOWN while containers are alive" failure mode.
 | `TestPumpMaxIdle` | `_pump_sse_lines` aborts a downstream that produces no data within `max_idle` (yields `('err', TimeoutError)`) and always closes the response so the pool connection is recycled; happy-path lines flow through unchanged |
 | `TestHealthPoolStarvation` | `check_all_servers` keeps the previous alive state on `httpx.PoolTimeout` (probe never left the gateway) but still marks the server DOWN on a real `ConnectError` |
 
+### `test_native_messages.py` — `native_messages` pass-through flag
+
+Routes flagged `native_messages = true` forward Anthropic requests as-is to
+the downstream vLLM's native `/v1/messages` (>= 0.11.1) instead of
+translating via the OpenAI pivot.
+
+| Test class | What it covers |
+|---|---|
+| `TestNativeNonStream` | Pass-through hits `{base_url}/messages` with alias→real_model swap (response model rewritten back to alias); 404 falls back to the translation path (`/chat/completions`); non-404 downstream errors propagate |
+| `TestNativeStream` | Native Anthropic SSE forwarded verbatim with `message_start.model` rewritten to the alias; stream dying without `message_stop` emits an `overloaded_error` event; stream 404 pre-flight falls back to the translated stream |
+| `TestNativeCountTokens` | Native `/messages/count_tokens` used when flagged; any failure falls back to the `/tokenize` translation flow |
+| `TestNormalizeAnthropicMessages` | `normalize_anthropic_messages` pure-function behavior: schema-clean requests returned as the same object (pure pass-through); leading system-role entries hoisted into the top-level `system` field (existing `cache_control` blocks preserved verbatim); mid-conversation system entries merged into the adjacent user message as `<system-reminder>` text (append to previous user / prepend to next / trailing orphan becomes its own user message); plus an end-to-end check that the native path applies it before forwarding |
+| `TestFlagOff` | Without the flag the translation path is used unchanged |
+
 ### `test_admin.py` — Admin REST API
 
 | Test class | What it covers |

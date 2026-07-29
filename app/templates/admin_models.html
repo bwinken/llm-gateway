@@ -149,6 +149,9 @@ function renderPanels(types) {
 // Optional per-model metadata keys — kept in sync with _MODEL_METADATA_KEYS
 // in app/core/config.py. The backend preserves any of these that are
 // present and strips them if absent, so saving with an empty field = unset.
+// `native_messages` is an internal flag (_MODEL_INTERNAL_KEYS, not surfaced
+// via /v1/models) but is listed here so collectFromDOM round-trips its
+// checkbox the same way.
 const META_KEYS = [
     'display_name',
     'context_window',
@@ -157,6 +160,7 @@ const META_KEYS = [
     'supports_vision',
     'supports_prompt_caching',
     'is_reasoning',
+    'native_messages',
 ];
 
 // Optional per-model pricing override keys — kept in sync with
@@ -260,6 +264,11 @@ function renderMetaRow(alias, info) {
     const sVis = info.supports_vision === true;
     const sCache = info.supports_prompt_caching === true;
     const sReason = info.is_reasoning === true;
+    const sNative = info.native_messages === true;
+    const nativeTip = 'Forward Anthropic /v1/messages requests as-is to the native '
+        + 'vLLM endpoint (vLLM >= 0.11.1) instead of translating via the OpenAI '
+        + 'pivot. Auto-falls back to translation if the server answers 404/405. '
+        + 'Requires a matching --reasoning-parser on the downstream for thinking output.';
     return `
         <tr id="meta-${a}" class="${visible ? '' : 'hidden'}" style="background:rgba(255,255,255,0.015)">
             <td colspan="6" class="px-5 py-4 space-y-4">
@@ -294,6 +303,10 @@ function renderMetaRow(alias, info) {
                     <label class="flex items-center gap-2 pt-5">
                         <input type="checkbox" ${sReason ? 'checked' : ''} data-alias="${a}" data-field="is_reasoning" data-meta="1" onchange="updateField(this)" class="gw-checkbox">
                         <span class="text-t3">is_reasoning</span>
+                    </label>
+                    <label class="flex items-center gap-2 pt-5">
+                        <input type="checkbox" ${sNative ? 'checked' : ''} data-alias="${a}" data-field="native_messages" data-meta="1" onchange="updateField(this)" class="gw-checkbox">
+                        <span class="text-t3 gw-tip gw-tip-wide" data-tip="${escAttr(nativeTip)}">native_messages</span>
                     </label>
                 </div>
                 </div>

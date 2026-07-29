@@ -665,6 +665,7 @@ async def save_config_api(
     }
     _INTERNAL_TYPES: dict[str, type | tuple[type, ...]] = {
         "hidden": bool,
+        "native_messages": bool,
     }
     for alias, info in models.items():
         if not isinstance(info, dict):

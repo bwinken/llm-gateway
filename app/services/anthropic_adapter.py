@@ -154,6 +154,99 @@ def _merge_text_into_message(
         msg_out["content"] = f"{existing}\n\n{text}"
 
 
+def normalize_anthropic_messages(body: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a raw Anthropic request for the native pass-through path.
+
+    The official Anthropic schema only allows ``user``/``assistant`` roles
+    inside ``messages``, but some Claude Code builds inject IDE events / task
+    reminders as ``role: "system"`` entries. Sent verbatim to a native
+    downstream those either get rejected outright or rendered mid-template
+    (strict templates like Qwen3.x raise "System message must be at the
+    beginning"). This applies the same policy as the translation path, but in
+    Anthropic shape:
+
+      - system/developer entries BEFORE the first real turn join the
+        top-level ``system`` field (appended as text blocks, preserving any
+        cache_control blocks already there);
+      - MID-conversation entries are merged into the adjacent user message as
+        ``<system-reminder>`` text (appended to a preceding user message,
+        otherwise prepended to the next one; a trailing orphan becomes its
+        own user message) — the shape Claude Code itself uses against the
+        official API, preserving temporal order and never touching the
+        index-0 content (downstream prefix cache stays valid).
+
+    Returns the body unchanged (same object) when ``messages`` is already
+    clean, so the common case stays a pure pass-through. Never mutates the
+    input; dirty requests get copied message dicts.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not any(
+        isinstance(m, dict) and m.get("role") in ("system", "developer")
+        for m in messages
+    ):
+        return body
+
+    def _as_blocks(content: Any) -> list[dict[str, Any]]:
+        if isinstance(content, list):
+            return list(content)
+        return [{"type": "text", "text": content if isinstance(content, str) else ""}]
+
+    system_blocks: list[dict[str, Any]] = []
+    system = body.get("system")
+    if isinstance(system, str) and system:
+        system_blocks.append({"type": "text", "text": system})
+    elif isinstance(system, list):
+        system_blocks.extend(system)
+
+    out_messages: list[dict[str, Any]] = []
+    pending: list[str] = []
+    in_conversation = False
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            out_messages.append(msg)
+            continue
+        role = msg.get("role")
+        if role in ("system", "developer"):
+            text = _content_to_openai_text(msg.get("content", ""))
+            if not text:
+                continue
+            if not in_conversation:
+                system_blocks.append({"type": "text", "text": text})
+                continue
+            reminder = _wrap_system_reminder(text)
+            last = out_messages[-1] if out_messages else None
+            if last is not None and last.get("role") == "user":
+                blocks = _as_blocks(last.get("content", ""))
+                blocks.append({"type": "text", "text": reminder})
+                last["content"] = blocks
+            else:
+                pending.append(reminder)
+            continue
+
+        in_conversation = True
+        new_msg = dict(msg)
+        if role == "user" and pending:
+            blocks = _as_blocks(new_msg.get("content", ""))
+            for i, reminder in enumerate(pending):
+                blocks.insert(i, {"type": "text", "text": reminder})
+            pending.clear()
+            new_msg["content"] = blocks
+        out_messages.append(new_msg)
+
+    if pending:
+        out_messages.append({
+            "role": "user",
+            "content": [{"type": "text", "text": r} for r in pending],
+        })
+
+    out = dict(body)
+    out["messages"] = out_messages
+    if system_blocks:
+        out["system"] = system_blocks
+    return out
+
+
 def anthropic_to_openai_request(
     body: dict[str, Any],
     is_reasoning: bool = False,
