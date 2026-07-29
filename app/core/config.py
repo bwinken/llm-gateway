@@ -62,8 +62,13 @@ _MODEL_PRICING_KEYS: tuple[str, ...] = (
 
 # Internal config keys stored in config.toml and loaded into MODEL_ROUTING
 # but NOT surfaced to API clients via GET /v1/models.
+# `native_messages`: the downstream vLLM server (>= v0.11.1) exposes the
+# native Anthropic /v1/messages endpoint — forward Anthropic requests as-is
+# instead of translating through the OpenAI pivot. Per-model opt-in because
+# a mixed fleet may run older vLLM versions on some servers.
 _MODEL_INTERNAL_KEYS: tuple[str, ...] = (
     "hidden",
+    "native_messages",
 )
 
 

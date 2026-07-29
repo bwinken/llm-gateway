@@ -804,6 +804,254 @@ async def _passthrough_non_stream(
 # 4. vllm_forward_messages - Anthropic /v1/messages compatibility
 # ---------------------------------------------------------------------------
 
+class _NativeAnthropicCapture:
+    """Rebuild the Anthropic assistant turn from native /v1/messages SSE
+    events (Phase 2 I/O capture only). Best-effort: any malformed event is
+    skipped rather than breaking the stream."""
+
+    def __init__(self):
+        self._blocks: dict[int, dict[str, Any]] = {}
+        self._json_frag: dict[int, str] = {}
+
+    def handle(self, chunk: dict[str, Any]) -> None:
+        try:
+            ctype = chunk.get("type")
+            if ctype == "content_block_start":
+                idx = int(chunk.get("index", 0))
+                self._blocks[idx] = dict(chunk.get("content_block") or {})
+            elif ctype == "content_block_delta":
+                idx = int(chunk.get("index", 0))
+                delta = chunk.get("delta") or {}
+                block = self._blocks.setdefault(idx, {"type": "text", "text": ""})
+                dtype = delta.get("type")
+                if dtype == "text_delta":
+                    block["text"] = block.get("text", "") + delta.get("text", "")
+                elif dtype == "thinking_delta":
+                    block["thinking"] = block.get("thinking", "") + delta.get("thinking", "")
+                elif dtype == "input_json_delta":
+                    self._json_frag[idx] = self._json_frag.get(idx, "") + delta.get("partial_json", "")
+                elif dtype == "signature_delta":
+                    block["signature"] = block.get("signature", "") + delta.get("signature", "")
+        except Exception:
+            pass
+
+    def as_message(self) -> dict[str, Any]:
+        blocks = []
+        for idx in sorted(self._blocks):
+            block = self._blocks[idx]
+            if idx in self._json_frag:
+                try:
+                    block["input"] = json.loads(self._json_frag[idx])
+                except Exception:
+                    block["input"] = {}
+            blocks.append(block)
+        return {"role": "assistant", "content": blocks}
+
+
+def _anthropic_content_chars(content: list) -> tuple[int, int]:
+    """(text_chars, thinking_chars) over Anthropic content blocks."""
+    text_chars = sum(
+        len(b.get("text", "")) for b in content
+        if isinstance(b, dict) and b.get("type") == "text"
+    )
+    thinking_chars = sum(
+        len(b.get("thinking", "")) for b in content
+        if isinstance(b, dict) and b.get("type") == "thinking"
+    )
+    return text_chars, thinking_chars
+
+
+async def _forward_messages_native(
+    client, anthropic_body: dict, user: User,
+    model_alias: str, model_type: str, route: dict[str, Any],
+    extra_headers: dict[str, str], req_shape: str,
+) -> StreamingResponse | JSONResponse | None:
+    """Forward an Anthropic request as-is to a vLLM native /v1/messages
+    endpoint (``native_messages = true`` on the route).
+
+    Returns None when the downstream answers 404/405 — it doesn't actually
+    serve the native endpoint (older vLLM) — so the caller falls back to the
+    translation path. Only ``model`` is mutated (alias → real_model on the
+    way down, real_model → alias on the way back up).
+    """
+    native_body = dict(anthropic_body)
+    native_body["model"] = route["real_model"]
+    url = f"{route['base_url']}/messages"
+    headers = _get_downstream_headers(route)
+    is_stream = bool(anthropic_body.get("stream", False))
+    _capture_io = capture_io_enabled()
+
+    if not is_stream:
+        try:
+            resp = await client.post(url, json=native_body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
+        except Exception as exc:
+            logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
+            _log_error(user, anthropic_body, str(exc), 502, model_alias, "/v1/messages", model_type)
+            raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+        if resp.status_code in (404, 405):
+            return None
+        if resp.status_code != 200:
+            _log_error(user, anthropic_body, resp.text[:500], resp.status_code, model_alias, "/v1/messages", model_type)
+            return _error_response(resp)
+
+        data = resp.json()
+        data["model"] = model_alias
+        usage = data.get("usage") or {}
+        input_tk = usage.get("input_tokens", 0) or 0
+        output_tk = usage.get("output_tokens", 0) or 0
+        cached_tk = usage.get("cache_read_input_tokens", 0) or 0
+        obs_output = (
+            {"role": "assistant", "content": data.get("content", [])}
+            if _capture_io else None
+        )
+        text_chars, thinking_chars = _anthropic_content_chars(data.get("content", []))
+        diag = empty_turn_warning(
+            model_alias, input_tk, output_tk, data.get("stop_reason"),
+            text_chars, thinking_chars, req_shape,
+        )
+        if diag:
+            logger.warning(diag)
+        _log_usage(
+            user, model_alias, model_type, input_tk, output_tk, "/v1/messages",
+            route=route, cached_tokens=cached_tk, output_payload=obs_output,
+        )
+        return JSONResponse(content=data, headers=extra_headers)
+
+    # --- streaming ---
+    req = client.build_request("POST", url, json=native_body, headers=headers, timeout=_STREAM_TIMEOUT)
+    logger.info("Stream start (native) | user={} model={} endpoint=/v1/messages", user.username, model_alias)
+    try:
+        resp = await client.send(req, stream=True)
+    except Exception as exc:
+        logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
+        _log_error(user, anthropic_body, str(exc), 502, model_alias, "/v1/messages", model_type)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+
+    if resp.status_code in (404, 405):
+        await resp.aclose()
+        return None
+    if resp.status_code != 200:
+        # Pre-flight: a 4xx/5xx here is a plain JSON body, not an SSE stream.
+        body_bytes = await resp.aread()
+        await resp.aclose()
+        _log_error(user, anthropic_body, body_bytes[:500], resp.status_code, model_alias, "/v1/messages", model_type)
+        try:
+            content = json.loads(body_bytes)
+        except Exception:
+            content = {"error": body_bytes.decode(errors="replace")[:500]}
+        return JSONResponse(content=content, status_code=resp.status_code)
+
+    async def _resp_coro():
+        return resp
+
+    async def event_generator():
+        input_tokens = 0
+        output_tokens = 0
+        cached_tokens = 0
+        stop_reason = None
+        saw_message_stop = False
+        failed = False
+        text_chars = 0
+        thinking_chars = 0
+        capture = _NativeAnthropicCapture() if _capture_io else None
+        # True whenever the previous yielded line completed an SSE event
+        # (blank separator) — the only place a ping can be injected without
+        # splitting an `event:`/`data:` pair.
+        at_boundary = True
+
+        async for kind, data in _pump_sse_lines(_resp_coro()):
+            if kind == "ping":
+                if at_boundary:
+                    yield _ANTHROPIC_PING_EVENT
+                continue
+            if kind == "err":
+                logger.error("Stream error: {}: {}", type(data).__name__, data)
+                failed = True
+                break
+            if kind == "done":
+                break
+
+            line = data
+            if not line:
+                at_boundary = True
+                yield "\n"
+                continue
+
+            if line.startswith("data: "):
+                try:
+                    chunk = json.loads(line[6:])
+                except json.JSONDecodeError:
+                    chunk = None
+                if isinstance(chunk, dict):
+                    ctype = chunk.get("type")
+                    if ctype == "message_start":
+                        msg = chunk.get("message") or {}
+                        usage = msg.get("usage") or {}
+                        input_tokens = usage.get("input_tokens", input_tokens) or input_tokens
+                        cached_tokens = usage.get("cache_read_input_tokens", 0) or cached_tokens
+                        if msg.get("model"):
+                            # Hide the downstream real_model behind the alias.
+                            msg["model"] = model_alias
+                            line = "data: " + json.dumps(chunk, ensure_ascii=False)
+                    elif ctype == "message_delta":
+                        usage = chunk.get("usage") or {}
+                        output_tokens = usage.get("output_tokens", output_tokens) or output_tokens
+                        stop_reason = (chunk.get("delta") or {}).get("stop_reason", stop_reason)
+                    elif ctype == "message_stop":
+                        saw_message_stop = True
+                    elif ctype == "content_block_delta":
+                        delta = chunk.get("delta") or {}
+                        if delta.get("type") == "text_delta":
+                            text_chars += len(delta.get("text", ""))
+                        elif delta.get("type") == "thinking_delta":
+                            thinking_chars += len(delta.get("thinking", ""))
+                    if capture is not None:
+                        capture.handle(chunk)
+
+            at_boundary = False
+            yield f"{line}\n"
+
+        if failed or not saw_message_stop:
+            # Same contract as AnthropicStreamTranslator.fail(): a stream that
+            # dies without message_stop must NOT look complete — emit an
+            # overloaded_error so Claude Code retries with backoff.
+            if not failed:
+                logger.warning(
+                    "Native Anthropic stream ended without message_stop | model={} — truncated",
+                    model_alias,
+                )
+            if not at_boundary:
+                yield "\n"
+            err_payload = json.dumps({
+                "type": "error",
+                "error": {
+                    "type": "overloaded_error",
+                    "message": "Downstream stream ended prematurely; the response may be incomplete.",
+                },
+            })
+            yield f"event: error\ndata: {err_payload}\n\n"
+
+        diag = empty_turn_warning(
+            model_alias, input_tokens, output_tokens, stop_reason,
+            text_chars, thinking_chars, req_shape,
+        )
+        if diag:
+            logger.warning(diag)
+        obs_output = capture.as_message() if capture is not None else None
+        _log_usage(
+            user, model_alias, model_type, input_tokens, output_tokens, "/v1/messages",
+            route=route, cached_tokens=cached_tokens, output_payload=obs_output,
+        )
+
+    resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
+    resp_headers.update(extra_headers)
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers=resp_headers,
+    )
+
+
 async def vllm_forward_messages(
     request: Request,
     user: User,
@@ -811,7 +1059,12 @@ async def vllm_forward_messages(
 ) -> StreamingResponse | JSONResponse:
     """Accept an Anthropic Messages API request, translate to OpenAI chat
     completions, forward to the downstream server, then translate the response
-    back to Anthropic format."""
+    back to Anthropic format.
+
+    Routes with ``native_messages = true`` skip the translation entirely and
+    pass the Anthropic body straight to the downstream vLLM's native
+    /v1/messages endpoint (vLLM >= 0.11.1), falling back to translation when
+    the downstream answers 404/405."""
     try:
         anthropic_body = await request.json()
     except Exception:
@@ -826,17 +1079,30 @@ async def vllm_forward_messages(
     downstream_headers = _get_downstream_headers(route)
     extra_headers = _fallback_headers(fallback_reason)
 
+    # Phase 2: stash the ORIGINAL Anthropic request as the Langfuse input
+    # (shared by both the native and translated paths below).
+    if capture_io_enabled():
+        set_io_input(anthropic_request_io(anthropic_body))
+
+    req_shape = summarize_request_shape(anthropic_body)
+
+    if route.get("native_messages"):
+        result = await _forward_messages_native(
+            get_client(), anthropic_body, user,
+            resolved_alias, model_type, route, extra_headers, req_shape,
+        )
+        if result is not None:
+            return result
+        logger.warning(
+            "Downstream {} has native_messages=true but /v1/messages returned 404/405 "
+            "(vLLM < 0.11.1?) — falling back to translation", base_url,
+        )
+
     openai_body = anthropic_to_openai_request(
         anthropic_body, is_reasoning=bool(route.get("is_reasoning")),
     )
     openai_body["model"] = real_model
     is_stream = bool(anthropic_body.get("stream", False))
-
-    # Phase 2: stash the ORIGINAL Anthropic request as the Langfuse input so the
-    # trace of an Anthropic endpoint is a faithful Anthropic record (not the
-    # internal OpenAI pivot). No-op unless LANGFUSE_CAPTURE_IO is on.
-    if capture_io_enabled():
-        set_io_input(anthropic_request_io(anthropic_body))
 
     if is_stream:
         # Always include usage in the stream so we can report it back
@@ -850,11 +1116,6 @@ async def vllm_forward_messages(
 
     monitor_body = dict(anthropic_body)
     monitor_body["model"] = resolved_alias
-
-    # Compact request-shape summary for the empty-turn diagnostic (see
-    # _stream_messages / _non_stream_messages). Computed from the original
-    # Anthropic body so thinking blocks are still visible.
-    req_shape = summarize_request_shape(anthropic_body)
 
     if is_stream:
         return await _stream_messages(
@@ -1044,6 +1305,31 @@ async def vllm_forward_count_tokens(
     base_url = route["base_url"]
     downstream_headers = _get_downstream_headers(route)
     extra_headers = _fallback_headers(fallback_reason)
+
+    # Native path: vLLM >= 0.11.1 serves /v1/messages/count_tokens directly —
+    # counts with the exact chat template the native /v1/messages call will
+    # use. Any failure (older vLLM, network) falls through to the /tokenize
+    # translation below, which has its own chars/4 last resort.
+    if route.get("native_messages"):
+        native_body = dict(anthropic_body)
+        native_body["model"] = real_model
+        try:
+            resp = await get_client().post(
+                f"{base_url}/messages/count_tokens",
+                json=native_body, headers=downstream_headers, timeout=30.0,
+            )
+            if resp.status_code == 200:
+                count = resp.json().get("input_tokens")
+                if isinstance(count, (int, float)) and not isinstance(count, bool):
+                    return JSONResponse(
+                        content={"input_tokens": int(count)},
+                        headers=extra_headers,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "native count_tokens failed for {}: {} — falling back to /tokenize",
+                resolved_alias, exc,
+            )
 
     openai_body = anthropic_to_openai_request(anthropic_body)
     # Build a /tokenize payload — vLLM accepts chat-style messages directly

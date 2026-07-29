@@ -81,6 +81,10 @@ api_key = "your-api-key"
 # supports_prompt_caching = false
 # is_reasoning = false    # Set true for thinking / chain-of-thought models (o1/QwQ/DeepSeek-R1 etc.)
 # hidden = false          # Hide from user-facing pages and /v1/models (still usable via API)
+# native_messages = false # Set true when the downstream vLLM (>= 0.11.1) serves the native
+#                         # Anthropic /v1/messages endpoint: Anthropic requests (Claude Code)
+#                         # are forwarded as-is instead of translated via the OpenAI pivot.
+#                         # Auto-falls back to translation if the server answers 404/405.
 
 # ------------------------------------------
 # VLM (Vision Language Model)
