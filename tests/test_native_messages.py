@@ -12,6 +12,7 @@ import json
 import httpx
 import pytest
 
+from app.services.anthropic_adapter import normalize_anthropic_messages
 from tests.conftest import (
     FakeStreamResponse,
     TEST_MODEL_ROUTING,
@@ -279,6 +280,136 @@ class TestNativeCountTokens:
         assert resp.json() == {"input_tokens": 9}
         assert captured["urls"][0].endswith("/messages/count_tokens")
         assert captured["urls"][1].endswith("/tokenize")
+
+
+class TestNormalizeAnthropicMessages:
+    """Pure-function tests for the native path's system-role normalization."""
+
+    def test_clean_request_returned_unchanged_same_object(self):
+        body = {
+            "model": "x",
+            "system": "You are Claude Code.",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+            ],
+        }
+        assert normalize_anthropic_messages(body) is body
+
+    def test_leading_system_entry_hoisted_to_system_field(self):
+        body = {
+            "model": "x",
+            "system": "Base instructions.",
+            "messages": [
+                {"role": "system", "content": "Extra leading."},
+                {"role": "user", "content": "hi"},
+            ],
+        }
+        out = normalize_anthropic_messages(body)
+        roles = [m["role"] for m in out["messages"]]
+        assert roles == ["user"]
+        system_texts = [b["text"] for b in out["system"]]
+        assert system_texts == ["Base instructions.", "Extra leading."]
+        # Input body not mutated.
+        assert len(body["messages"]) == 2
+        assert body["system"] == "Base instructions."
+
+    def test_system_block_list_with_cache_control_preserved(self):
+        cc_block = {
+            "type": "text",
+            "text": "Base.",
+            "cache_control": {"type": "ephemeral"},
+        }
+        body = {
+            "model": "x",
+            "system": [cc_block],
+            "messages": [
+                {"role": "system", "content": "Extra."},
+                {"role": "user", "content": "hi"},
+            ],
+        }
+        out = normalize_anthropic_messages(body)
+        assert out["system"][0] is cc_block  # original block kept verbatim
+        assert out["system"][1]["text"] == "Extra."
+
+    def test_mid_conversation_system_merged_into_previous_user(self):
+        body = {
+            "model": "x",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "system", "content": "IDE opened file foo.py"},
+                {"role": "assistant", "content": "hello"},
+            ],
+        }
+        out = normalize_anthropic_messages(body)
+        roles = [m["role"] for m in out["messages"]]
+        assert roles == ["user", "assistant"]
+        user_content = out["messages"][0]["content"]
+        assert isinstance(user_content, list)
+        assert user_content[0] == {"type": "text", "text": "hi"}
+        assert "<system-reminder>" in user_content[1]["text"]
+        assert "IDE opened file foo.py" in user_content[1]["text"]
+
+    def test_system_after_assistant_prepended_to_next_user(self):
+        body = {
+            "model": "x",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+                {"role": "system", "content": "Reminder text"},
+                {"role": "user", "content": "next question"},
+            ],
+        }
+        out = normalize_anthropic_messages(body)
+        roles = [m["role"] for m in out["messages"]]
+        assert roles == ["user", "assistant", "user"]
+        next_user = out["messages"][2]["content"]
+        assert "<system-reminder>" in next_user[0]["text"]
+        assert next_user[1] == {"type": "text", "text": "next question"}
+
+    def test_trailing_system_becomes_own_user_message(self):
+        body = {
+            "model": "x",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+                {"role": "system", "content": "Trailing reminder"},
+            ],
+        }
+        out = normalize_anthropic_messages(body)
+        assert out["messages"][-1]["role"] == "user"
+        assert "<system-reminder>" in out["messages"][-1]["content"][0]["text"]
+
+    def test_normalization_applied_on_native_path(self, client, test_user, native_llm):
+        downstream = make_httpx_response(200, {
+            "id": "msg_1", "type": "message", "role": "assistant",
+            "model": "real-llm-v1",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 1},
+        })
+        post, captured = make_post_router({"/messages": downstream})
+        client.__httpx_mock__.post = post
+
+        resp = client.post(
+            "/v1/messages",
+            json={
+                "model": "test-llm",
+                "max_tokens": 100,
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "system", "content": "IDE event"},
+                    {"role": "assistant", "content": "hello"},
+                    {"role": "user", "content": "next"},
+                ],
+            },
+            headers=auth_header(),
+        )
+
+        assert resp.status_code == 200
+        sent = captured["json"]["messages"]
+        assert [m["role"] for m in sent] == ["user", "assistant", "user"]
+        assert "<system-reminder>" in json.dumps(sent[0]["content"])
 
 
 class TestFlagOff:

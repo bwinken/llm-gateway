@@ -37,6 +37,7 @@ from app.services.anthropic_adapter import (
     anthropic_request_io,
     anthropic_to_openai_request,
     empty_turn_warning,
+    normalize_anthropic_messages,
     openai_message_to_anthropic,
     openai_to_anthropic_response,
     summarize_request_shape,
@@ -871,10 +872,12 @@ async def _forward_messages_native(
 
     Returns None when the downstream answers 404/405 — it doesn't actually
     serve the native endpoint (older vLLM) — so the caller falls back to the
-    translation path. Only ``model`` is mutated (alias → real_model on the
-    way down, real_model → alias on the way back up).
+    translation path. The body is passed through except for ``model``
+    (alias → real_model down, real_model → alias on the way back up) and the
+    system-role normalization (a no-op for schema-clean requests — see
+    ``normalize_anthropic_messages``).
     """
-    native_body = dict(anthropic_body)
+    native_body = dict(normalize_anthropic_messages(anthropic_body))
     native_body["model"] = route["real_model"]
     url = f"{route['base_url']}/messages"
     headers = _get_downstream_headers(route)
@@ -1311,7 +1314,7 @@ async def vllm_forward_count_tokens(
     # use. Any failure (older vLLM, network) falls through to the /tokenize
     # translation below, which has its own chars/4 last resort.
     if route.get("native_messages"):
-        native_body = dict(anthropic_body)
+        native_body = dict(normalize_anthropic_messages(anthropic_body))
         native_body["model"] = real_model
         try:
             resp = await get_client().post(
