@@ -58,7 +58,7 @@ from app.services.vllm_proxy import (
     _error_response,
     _log_error,
     _log_usage,
-    _pump_anthropic_lines,
+    _pump_sse_lines,
 )
 
 
@@ -463,7 +463,7 @@ async def _stream_chat(
                 user.username, alias)
 
     async def _resp_coro():
-        # _pump_anthropic_lines awaits its argument and calls aclose() in
+        # _pump_sse_lines awaits its argument and calls aclose() in
         # its finally block, so wrap the already-opened response in a coro
         # to reuse the pump's lifecycle/ping handling without re-sending.
         return resp
@@ -475,7 +475,7 @@ async def _stream_chat(
             for chunk in translator.start():
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-            async for kind, data in _pump_anthropic_lines(_resp_coro()):
+            async for kind, data in _pump_sse_lines(_resp_coro()):
                 if kind == "ping":
                     # vLLM-style ping isn't part of the chat completions SSE
                     # contract; emit an SSE comment so proxies don't strip it.
@@ -698,7 +698,7 @@ async def _stream_messages(
             for event in _feed(responses_xlat.start()):
                 yield event
 
-            async for kind, data in _pump_anthropic_lines(_resp_coro()):
+            async for kind, data in _pump_sse_lines(_resp_coro()):
                 if kind == "ping":
                     yield _ANTHROPIC_PING_EVENT
                     continue
@@ -963,7 +963,7 @@ async def _stream_responses(
         output_acc = StreamingChatOutput()  # Phase 2: streamed Responses text
         responses_output = None  # Phase 2: full Responses output[] from the terminal event
         try:
-            async for kind, data in _pump_anthropic_lines(_resp_coro()):
+            async for kind, data in _pump_sse_lines(_resp_coro()):
                 if kind == "ping":
                     # Keep proxies / curl-less clients aware the connection
                     # is alive while Azure thinks. SSE comments are spec.
