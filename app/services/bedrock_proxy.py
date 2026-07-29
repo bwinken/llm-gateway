@@ -64,9 +64,9 @@ from app.services.observability import (
     set_io_input,
 )
 from app.services.vllm_proxy import (
-    _ANTHROPIC_MAX_IDLE,
+    _SSE_MAX_IDLE,
     _ANTHROPIC_PING_EVENT,
-    _ANTHROPIC_PING_INTERVAL,
+    _SSE_PING_INTERVAL,
     _NON_STREAM_TIMEOUT,
     _approx_token_count,
     _error_response,
@@ -208,12 +208,12 @@ def _log_bedrock_error(
 
 async def _pump_bedrock_events(
     send_coro,
-    ping_interval: float = _ANTHROPIC_PING_INTERVAL,
-    max_idle: float = _ANTHROPIC_MAX_IDLE,
+    ping_interval: float = _SSE_PING_INTERVAL,
+    max_idle: float = _SSE_MAX_IDLE,
 ):
     """Run a ConverseStream request as a background task and yield events.
 
-    The binary-framing sibling of ``vllm_proxy._pump_anthropic_lines``:
+    The binary-framing sibling of ``vllm_proxy._pump_sse_lines``:
     reads raw bytes, feeds them through ``EventStreamDecoder``, and yields
 
       ('ping', None)                    — ping_interval s of downstream silence

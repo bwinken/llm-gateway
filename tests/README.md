@@ -203,6 +203,15 @@ and `_parse_vllm_metrics` (parses Prometheus text, sums
 `vllm:num_requests_running` / `vllm:num_requests_waiting` across
 `model_name` labels, returns `None` on a parse miss or non-vLLM output).
 
+### `test_stream_idle_guard.py` — SSE pump max-idle + health pool starvation
+
+Covers the "all models DOWN while containers are alive" failure mode.
+
+| Test class | What it covers |
+|---|---|
+| `TestPumpMaxIdle` | `_pump_sse_lines` aborts a downstream that produces no data within `max_idle` (yields `('err', TimeoutError)`) and always closes the response so the pool connection is recycled; happy-path lines flow through unchanged |
+| `TestHealthPoolStarvation` | `check_all_servers` keeps the previous alive state on `httpx.PoolTimeout` (probe never left the gateway) but still marks the server DOWN on a real `ConnectError` |
+
 ### `test_admin.py` — Admin REST API
 
 | Test class | What it covers |

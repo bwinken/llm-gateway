@@ -7,9 +7,17 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
+
 from app.core.config import MODEL_ROUTING, _check_auto_reload
 from app.core.logger import logger
-from app.core.server_state import get_client, prune_cache, set_alive, set_metrics
+from app.core.server_state import (
+    get_health_client,
+    pool_snapshot,
+    prune_cache,
+    set_alive,
+    set_metrics,
+)
 
 
 def _metrics_url(base_url: str) -> str:
@@ -63,7 +71,9 @@ def _last_number(line: str) -> float | None:
 async def check_all_servers() -> None:
     """Ping every unique base_url in MODEL_ROUTING concurrently."""
     seen: dict[str, str] = {}  # base_url -> api_key
-    client = get_client()
+    # Dedicated probe client — never contends with user traffic for pool
+    # slots, so a failed probe reflects the downstream, not the gateway.
+    client = get_health_client()
 
     # Collect unique base_urls with their first api_key (snapshot to avoid mutation during iter)
     _check_auto_reload()
@@ -79,6 +89,11 @@ async def check_all_servers() -> None:
         try:
             resp = await client.get(f"{base_url}/models", headers=headers, timeout=5.0)
             alive = resp.status_code == 200
+        except httpx.PoolTimeout:
+            # Probe never left the gateway — this says nothing about the
+            # downstream, so keep whatever state the last real probe set.
+            logger.warning("Health probe pool-starved for {} — keeping previous state", base_url)
+            return
         except Exception:
             alive = False
         set_alive(base_url, alive)
@@ -104,6 +119,30 @@ async def check_all_servers() -> None:
 
     await asyncio.gather(*[_ping(url, key) for url, key in seen.items()])
     prune_cache(set(seen.keys()))
+    _report_pool_utilization()
+
+
+def _report_pool_utilization() -> None:
+    """Surface shared-client pool pressure in the log once per health cycle.
+
+    Long-lived streams each hold one pool connection, so a pool creeping
+    toward its limit is the early warning for the "all servers DOWN + slow
+    requests" failure mode. WARNING at >=80%, DEBUG otherwise.
+    """
+    snap = pool_snapshot()
+    if not snap or not snap.get("max"):
+        return
+    in_use, cap = snap["in_use"], snap["max"]
+    if in_use >= cap * 0.8:
+        logger.warning(
+            "httpx pool pressure: {}/{} connections in use (total open: {})",
+            in_use, cap, snap["connections"],
+        )
+    else:
+        logger.debug(
+            "httpx pool: {}/{} in use (total open: {})",
+            in_use, cap, snap["connections"],
+        )
 
 
 async def health_check_loop(interval: int = 30) -> None:

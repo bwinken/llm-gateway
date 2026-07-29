@@ -65,17 +65,21 @@ _NON_STREAM_TIMEOUT = 280.0
 
 # Hard ceiling on total downstream silence for a streaming request. The
 # per-chunk read timeout is unbounded (reasoning models stall legitimately),
-# but a truly dead downstream would otherwise hang the request — and its ping
-# heartbeat — forever. After this many seconds with no real chunk, the pump
-# gives up so the caller can surface an error instead of spinning.
-_ANTHROPIC_MAX_IDLE = 300.0
+# but a truly dead downstream would otherwise hang the request forever — each
+# hung stream permanently holds one shared-pool connection, and enough of
+# them accumulated over weeks exhausts the pool (slow requests + health
+# probes failing). After this many seconds with no real chunk, the pump gives
+# up so the connection is recycled and the caller can surface an error.
+# Applies to ALL SSE stream paths (chat completions, responses, Anthropic).
+_SSE_MAX_IDLE = 300.0
 
-# How often to send an Anthropic SSE `event: ping` while a stream is silent.
-# Claude Code treats long gaps without any event as a dead connection. Keep
-# this well below the smallest client idle timeout we expect to see (~15s
-# observed for some Claude Code builds) — at 10s we get ~33% headroom for
-# network jitter, buffer flush, and process scheduling.
-_ANTHROPIC_PING_INTERVAL = 10.0
+# How often the pump emits an idle tick while a stream is silent. The
+# Anthropic path forwards each tick as an SSE `event: ping` — Claude Code
+# treats long gaps without any event as a dead connection, and 10s keeps
+# ~33% headroom under the smallest client idle timeout observed (~15s). The
+# OpenAI-shape paths (chat/responses) consume the tick only for idle
+# accounting and emit nothing on the wire.
+_SSE_PING_INTERVAL = 10.0
 # Real Anthropic's ping carries `{"type": "ping"}` as the data payload.
 # Claude Code parses every SSE event's data as JSON and dispatches on the
 # `type` key — an empty `{}` payload looks malformed to that parser and may
@@ -83,10 +87,10 @@ _ANTHROPIC_PING_INTERVAL = 10.0
 _ANTHROPIC_PING_EVENT = 'event: ping\ndata: {"type": "ping"}\n\n'
 
 
-async def _pump_anthropic_lines(
+async def _pump_sse_lines(
     send_coro,
-    ping_interval: float = _ANTHROPIC_PING_INTERVAL,
-    max_idle: float = _ANTHROPIC_MAX_IDLE,
+    ping_interval: float = _SSE_PING_INTERVAL,
+    max_idle: float = _SSE_MAX_IDLE,
 ):
     """Run a streaming HTTP request as a background task and yield events.
 
@@ -616,37 +620,39 @@ async def _stream_chat(
     async def event_generator():
         input_tokens = 0
         output_tokens = 0
-        resp = None
         output_acc = StreamingChatOutput()  # Phase 2: assistant turn for Langfuse output
-        try:
-            resp = await client.send(req, stream=True)
-            async for line in resp.aiter_lines():
-                if not line:
-                    yield "\n"
-                    continue
+        # The pump owns the response lifecycle (aclose) and enforces the
+        # max-idle ceiling so a dead downstream can't hold a pool connection
+        # forever. Idle ticks are consumed silently — OpenAI-shape clients
+        # get no heartbeat on the wire.
+        async for kind, data in _pump_sse_lines(client.send(req, stream=True)):
+            if kind == "ping":
+                continue
+            if kind == "done":
+                break
+            if kind == "err":
+                logger.error("Stream error: {}: {}", type(data).__name__, data)
+                yield f"data: {json.dumps({'error': str(data)})}\n\n"
+                break
 
-                yield f"{line}\n\n"
+            line = data
+            if not line:
+                yield "\n"
+                continue
 
-                # Parse usage from SSE data lines
-                if line.startswith("data: ") and line != "data: [DONE]":
-                    try:
-                        chunk = json.loads(line[6:])
-                        if _capture_io:
-                            output_acc.add_delta((chunk.get("choices") or [{}])[0].get("delta") or {})
-                        usage = chunk.get("usage")
-                        if usage:
-                            input_tokens = usage.get("prompt_tokens", input_tokens)
-                            output_tokens = usage.get("completion_tokens", output_tokens)
-                    except (json.JSONDecodeError, KeyError):
-                        pass
-        except Exception as exc:
-            logger.error("Stream error: {}: {}", type(exc).__name__, exc)
-            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
-        finally:
-            if resp is not None:
+            yield f"{line}\n\n"
+
+            # Parse usage from SSE data lines
+            if line.startswith("data: ") and line != "data: [DONE]":
                 try:
-                    await resp.aclose()
-                except Exception:
+                    chunk = json.loads(line[6:])
+                    if _capture_io:
+                        output_acc.add_delta((chunk.get("choices") or [{}])[0].get("delta") or {})
+                    usage = chunk.get("usage")
+                    if usage:
+                        input_tokens = usage.get("prompt_tokens", input_tokens)
+                        output_tokens = usage.get("completion_tokens", output_tokens)
+                except (json.JSONDecodeError, KeyError):
                     pass
 
         if input_tokens == 0 and output_tokens == 0:
@@ -934,7 +940,7 @@ async def _stream_messages(
             for event in translator.start():
                 yield event
 
-            async for kind, data in _pump_anthropic_lines(client.send(req, stream=True)):
+            async for kind, data in _pump_sse_lines(client.send(req, stream=True)):
                 if kind == "ping":
                     yield _ANTHROPIC_PING_EVENT
                     continue
@@ -1187,60 +1193,59 @@ async def _passthrough_stream(
         input_tokens = 0
         output_tokens = 0
         cached_tokens = 0
-        resp = None
         output_acc = StreamingChatOutput()  # Phase 2: chat-shape assistant turn
         responses_output = None  # Phase 2: full Responses output[] from the terminal event
-        try:
-            resp = await client.send(req, stream=True)
-            async for line in resp.aiter_lines():
-                if not line:
-                    yield "\n"
-                    continue
+        # Pump owns aclose + the max-idle ceiling (see _stream_chat).
+        async for kind, data in _pump_sse_lines(client.send(req, stream=True)):
+            if kind == "ping":
+                continue
+            if kind == "done":
+                break
+            if kind == "err":
+                logger.error("Stream error: {}: {}", type(data).__name__, data)
+                yield f"data: {json.dumps({'error': str(data)})}\n\n"
+                break
 
-                yield f"{line}\n\n"
+            line = data
+            if not line:
+                yield "\n"
+                continue
 
-                if line.startswith("data: ") and line != "data: [DONE]":
-                    try:
-                        chunk = json.loads(line[6:])
-                        if _capture_io:
-                            # Prefer the terminal event's full output[] (incl.
-                            # function_call items); otherwise accumulate
-                            # chat-completions shape (delta.content / tool_calls)
-                            # or Responses text (response.output_text.delta).
-                            _resp = chunk.get("response")
-                            if isinstance(_resp, dict) and isinstance(_resp.get("output"), list):
-                                responses_output = _resp["output"]
-                            elif chunk.get("type") == "response.output_text.delta":
-                                output_acc.add_delta({"content": chunk.get("delta")})
-                            else:
-                                output_acc.add_delta((chunk.get("choices") or [{}])[0].get("delta") or {})
-                        # Chat completions shape: usage at top level on the
-                        # terminal chunk (when stream_options.include_usage=true).
-                        usage = chunk.get("usage")
-                        # Responses API shape: usage is nested inside the
-                        # `response` object on the `response.completed` event
-                        # (and on `response.incomplete` / `response.failed`).
-                        # Roo Code's "OpenAI" provider hits /v1/responses
-                        # without enabling stream_options, so this is the only
-                        # path that ever reports tokens for it.
-                        if not usage and isinstance(chunk.get("response"), dict):
-                            usage = chunk["response"].get("usage")
-                        if usage:
-                            input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", input_tokens))
-                            output_tokens = usage.get("output_tokens", usage.get("completion_tokens", output_tokens))
-                            details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
-                            if isinstance(details, dict):
-                                cached_tokens = details.get("cached_tokens", cached_tokens) or cached_tokens
-                    except (json.JSONDecodeError, KeyError):
-                        pass
-        except Exception as exc:
-            logger.error("Stream error: {}: {}", type(exc).__name__, exc)
-            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
-        finally:
-            if resp is not None:
+            yield f"{line}\n\n"
+
+            if line.startswith("data: ") and line != "data: [DONE]":
                 try:
-                    await resp.aclose()
-                except Exception:
+                    chunk = json.loads(line[6:])
+                    if _capture_io:
+                        # Prefer the terminal event's full output[] (incl.
+                        # function_call items); otherwise accumulate
+                        # chat-completions shape (delta.content / tool_calls)
+                        # or Responses text (response.output_text.delta).
+                        _resp = chunk.get("response")
+                        if isinstance(_resp, dict) and isinstance(_resp.get("output"), list):
+                            responses_output = _resp["output"]
+                        elif chunk.get("type") == "response.output_text.delta":
+                            output_acc.add_delta({"content": chunk.get("delta")})
+                        else:
+                            output_acc.add_delta((chunk.get("choices") or [{}])[0].get("delta") or {})
+                    # Chat completions shape: usage at top level on the
+                    # terminal chunk (when stream_options.include_usage=true).
+                    usage = chunk.get("usage")
+                    # Responses API shape: usage is nested inside the
+                    # `response` object on the `response.completed` event
+                    # (and on `response.incomplete` / `response.failed`).
+                    # Roo Code's "OpenAI" provider hits /v1/responses
+                    # without enabling stream_options, so this is the only
+                    # path that ever reports tokens for it.
+                    if not usage and isinstance(chunk.get("response"), dict):
+                        usage = chunk["response"].get("usage")
+                    if usage:
+                        input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", input_tokens))
+                        output_tokens = usage.get("output_tokens", usage.get("completion_tokens", output_tokens))
+                        details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
+                        if isinstance(details, dict):
+                            cached_tokens = details.get("cached_tokens", cached_tokens) or cached_tokens
+                except (json.JSONDecodeError, KeyError):
                     pass
 
         if input_tokens == 0 and output_tokens == 0:
