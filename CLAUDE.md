@@ -87,7 +87,7 @@ Six forwarding methods, all sharing `_resolve_model()` for health-aware routing:
 
 | Method | Used by | Behavior |
 |---|---|---|
-| `vllm_forward_chat_completions` | `/v1/chat/completions` | Stream + non-stream, SSE parsing |
+| `vllm_forward_chat_completions` | `/v1/chat/completions` | Stream + non-stream, SSE parsing. Aligns the `reasoning`/`reasoning_content` dialect split on assistant messages in both directions (`_align_reasoning_fields`): whichever name the client sends, both are forwarded (vLLM >= 0.20 reads only `reasoning` on input — vllm-project/vllm#38488; DeepSeek-convention clients/downstreams use `reasoning_content`); non-stream responses get the same aliasing back to the client. Stream chunks are passed through untouched (vLLM currently dual-emits both names). `vllm_forward_tokenize` applies the same request-direction alignment so chat-style tokenize counts match what `/chat/completions` will actually render. |
 | `vllm_forward_simple_request` | `/v1/embeddings`, `/v1/rerank`, `/v1/score` | Non-streaming, 120s timeout |
 | `vllm_forward_responses` | `/v1/responses` | Raw pass-through, only mutates model field. Usage extraction handles both chat-completions shape (top-level `usage`) and Responses-API shape (`response.completed → response.usage` on the SSE stream, top-level `usage.input_tokens` on non-stream) so Roo Code's "OpenAI" provider — which posts to `/v1/responses` — gets billed instead of logged as 0/0 tokens. |
 | `vllm_forward_messages` | `/v1/messages` | Anthropic→OpenAI translation, OpenAI→Anthropic response, stream + non-stream. Routes with `native_messages = true` bypass translation entirely — see below. |

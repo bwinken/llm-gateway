@@ -356,6 +356,118 @@ class TestChatCompletionsStream:
         assert "data: [DONE]" in body
 
 
+class TestReasoningFieldAlignment:
+    """The gateway absorbs the `reasoning` / `reasoning_content` dialect
+    split (DeepSeek & vLLM < 0.20 vs vLLM >= 0.20, which silently drops
+    `reasoning_content` on incoming messages — vllm-project/vllm#38488):
+    whichever name a client sends, both reach the downstream; whichever the
+    downstream emits, both reach the client."""
+
+    _DOWNSTREAM = {
+        "id": "chatcmpl-abc",
+        "object": "chat.completion",
+        "model": "real-llm-v1",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "ok"},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
+    }
+
+    def _post_capture(self, response):
+        captured = {}
+
+        async def _post(url, *args, **kwargs):
+            captured["json"] = kwargs.get("json")
+            return response
+
+        return _post, captured
+
+    def _request_with_history(self, client, assistant_msg):
+        return client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-llm",
+                "messages": [
+                    {"role": "user", "content": "q1"},
+                    assistant_msg,
+                    {"role": "user", "content": "q2"},
+                ],
+            },
+            headers=auth_header(),
+        )
+
+    def test_reasoning_content_aliased_to_reasoning(self, client, test_user):
+        post, captured = self._post_capture(make_httpx_response(200, self._DOWNSTREAM))
+        client.__httpx_mock__.post = post
+
+        resp = self._request_with_history(
+            client,
+            {"role": "assistant", "content": "a1", "reasoning_content": "prior thoughts"},
+        )
+
+        assert resp.status_code == 200
+        sent = captured["json"]["messages"][1]
+        assert sent["reasoning"] == "prior thoughts"
+        assert sent["reasoning_content"] == "prior thoughts"
+
+    def test_reasoning_aliased_to_reasoning_content(self, client, test_user):
+        post, captured = self._post_capture(make_httpx_response(200, self._DOWNSTREAM))
+        client.__httpx_mock__.post = post
+
+        resp = self._request_with_history(
+            client,
+            {"role": "assistant", "content": "a1", "reasoning": "prior thoughts"},
+        )
+
+        assert resp.status_code == 200
+        sent = captured["json"]["messages"][1]
+        assert sent["reasoning_content"] == "prior thoughts"
+        assert sent["reasoning"] == "prior thoughts"
+
+    def test_no_fields_added_when_absent(self, client, test_user):
+        post, captured = self._post_capture(make_httpx_response(200, self._DOWNSTREAM))
+        client.__httpx_mock__.post = post
+
+        resp = self._request_with_history(
+            client, {"role": "assistant", "content": "a1"},
+        )
+
+        assert resp.status_code == 200
+        sent = captured["json"]["messages"][1]
+        assert "reasoning" not in sent
+        assert "reasoning_content" not in sent
+        # user messages untouched
+        assert "reasoning" not in captured["json"]["messages"][0]
+
+    def test_response_reasoning_aliased_for_client(self, client, test_user):
+        downstream = {
+            "id": "chatcmpl-abc",
+            "object": "chat.completion",
+            "model": "real-llm-v1",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "ok",
+                            "reasoning": "model thoughts"},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
+        }
+        client.__httpx_mock__.post = make_post_coro(make_httpx_response(200, downstream))
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"model": "test-llm", "messages": [{"role": "user", "content": "Hi"}]},
+            headers=auth_header(),
+        )
+
+        assert resp.status_code == 200
+        message = resp.json()["choices"][0]["message"]
+        assert message["reasoning_content"] == "model thoughts"
+        assert message["reasoning"] == "model thoughts"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
