@@ -396,7 +396,16 @@ def anthropic_to_openai_request(
             if tool_calls:
                 msg_out["tool_calls"] = tool_calls
             if thinking_parts:
-                msg_out["reasoning_content"] = "".join(thinking_parts)
+                # Send BOTH field names: vLLM >= 0.20 only reads `reasoning`
+                # on incoming assistant messages (it renamed the field and
+                # silently drops `reasoning_content` — vllm-project/vllm
+                # #38488), while older vLLM / DeepSeek-style downstreams read
+                # `reasoning_content`. Emitting both keeps historical thinking
+                # alive across every downstream; each ignores the name it
+                # doesn't know.
+                joined_thinking = "".join(thinking_parts)
+                msg_out["reasoning_content"] = joined_thinking
+                msg_out["reasoning"] = joined_thinking
             # Skip empty placeholders left over from pure tool_result messages
             if (msg_out["content"] == "" and not tool_calls
                     and not thinking_parts and tool_results):

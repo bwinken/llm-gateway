@@ -348,9 +348,12 @@ class TestRequestTranslation:
         assert tool_msg["content"] == "72F sunny"
 
     def test_thinking_block_preserved_as_reasoning_content(self):
-        """An assistant turn's `thinking` block round-trips back as
-        `reasoning_content` on the OpenAI message so reasoning-aware chat
-        templates (e.g. Qwen3 preserve_thinking) can re-inject it."""
+        """An assistant turn's `thinking` block round-trips back as BOTH
+        `reasoning_content` (older vLLM / DeepSeek convention) and
+        `reasoning` (vLLM >= 0.20 only reads this name on incoming messages
+        and silently drops `reasoning_content` — vllm-project/vllm#38488),
+        so reasoning-aware chat templates (e.g. Qwen3 preserve_thinking)
+        actually receive it regardless of downstream version."""
         body = {
             "model": "x",
             "messages": [
@@ -370,6 +373,23 @@ class TestRequestTranslation:
         assert assistant_msg["role"] == "assistant"
         assert assistant_msg["content"] == "The answer is 42."
         assert assistant_msg["reasoning_content"] == "first I consider..."
+        assert assistant_msg["reasoning"] == "first I consider..."
+
+    def test_no_reasoning_fields_without_thinking_blocks(self):
+        """Assistant turns without thinking blocks carry neither reasoning
+        field — downstreams must see a clean message, not empty strings."""
+        body = {
+            "model": "x",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+                {"role": "user", "content": "again"},
+            ],
+        }
+        out = anthropic_to_openai_request(body)
+        assistant_msg = out["messages"][1]
+        assert "reasoning_content" not in assistant_msg
+        assert "reasoning" not in assistant_msg
 
     def test_effort_string_mapped(self):
         for eff, expected in [
