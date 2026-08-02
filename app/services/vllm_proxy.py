@@ -538,6 +538,42 @@ def _tokenize_url(base_url: str) -> str:
     return f"{root}/tokenize"
 
 
+def _align_reasoning_fields(messages: Any) -> None:
+    """Mirror `reasoning` <-> `reasoning_content` on assistant messages, in place.
+
+    The two names are dialects of the same field: DeepSeek (and vLLM < 0.20)
+    read `reasoning_content`, vLLM >= 0.20 reads only `reasoning` on incoming
+    messages and silently drops the other (vllm-project/vllm#38488). Clients
+    speak whichever dialect they grew up with, so the gateway aligns them —
+    whichever name is present gets copied to the missing one, and downstream /
+    client each pick the name they know. No-op when neither field is present.
+    """
+    if not isinstance(messages, list):
+        return
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        reasoning = msg.get("reasoning")
+        reasoning_content = msg.get("reasoning_content")
+        if isinstance(reasoning_content, str) and reasoning_content and not reasoning:
+            msg["reasoning"] = reasoning_content
+        elif isinstance(reasoning, str) and reasoning and not reasoning_content:
+            msg["reasoning_content"] = reasoning
+
+
+def _align_reasoning_in_response(data: dict) -> None:
+    """Same aliasing for a non-stream chat completions response, in place.
+
+    vLLM currently dual-emits both names but its docs mark `reasoning_content`
+    for eventual removal; aliasing here keeps DeepSeek-convention clients
+    working regardless of what the downstream emits.
+    """
+    for choice in data.get("choices") or []:
+        message = choice.get("message") if isinstance(choice, dict) else None
+        if isinstance(message, dict):
+            _align_reasoning_fields([message])
+
+
 async def vllm_forward_chat_completions(
     request: Request,
     user: User,
@@ -550,6 +586,9 @@ async def vllm_forward_chat_completions(
     # Swap to real_model for the downstream server
     real_model = route["real_model"]
     body["model"] = real_model
+    # Absorb the reasoning / reasoning_content dialect split so neither the
+    # client's nor the downstream's version matters (see _align_reasoning_fields).
+    _align_reasoning_fields(body.get("messages"))
     base_url = route["base_url"]
     model_type = route["type"]
     downstream_headers = _get_downstream_headers(route)
@@ -602,6 +641,7 @@ async def _non_stream_chat(
         return _error_response(resp)
 
     data = resp.json()
+    _align_reasoning_in_response(data)
     usage = data.get("usage", {})
     input_tk = usage.get("prompt_tokens", 0)
     output_tk = usage.get("completion_tokens", 0)
@@ -1422,6 +1462,10 @@ async def vllm_forward_tokenize(
     _resolved_alias, route, fallback_reason = _resolve_model(model_name, allowed_types)
 
     body_json["model"] = route["real_model"]
+    # Same dialect alignment as chat completions — a chat-style tokenize
+    # payload renders through the same template, so reasoning history must
+    # arrive under the name the downstream reads for counts to match.
+    _align_reasoning_fields(body_json.get("messages"))
     base_url = route["base_url"]
     downstream_headers = _get_downstream_headers(route)
     extra_headers = _fallback_headers(fallback_reason)
