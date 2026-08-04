@@ -47,187 +47,188 @@
     </div>
 </div>
 
-{# ── System Status ── #}
-<div class="gw-card p-5 mb-8 gw-anim gw-d2">
-    <div class="flex flex-col gap-4">
-        <div class="flex items-center gap-2 border-b pb-3" style="border-color: rgba(255,255,255,0.04);">
-            <div class="gw-dot-on"></div>
-            <span class="text-sm font-bold text-t2 gw-tip gw-tip-wide" data-tip="Health check pings all servers every 30s">System Status</span>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {% set type_labels = {
-                'llm': 'LLM (Chat)',
-                'vlm': 'VLM (Vision)',
-                'embedding': 'Embedding',
-                'vision_embedding': 'Vision Embedding',
-                'reranker': 'Reranker',
-                'vision_reranker': 'Vision Reranker'
-            } %}
-            {% for type_key, servers in server_groups.items() %}
-                {% if servers %}
-                <div class="flex flex-col gap-2">
-                    <h4 class="text-[11px] font-bold text-t4 uppercase tracking-wider pl-1">
+{# ── Models — On-Prem (vLLM) ── #}
+{% set type_labels = {
+    'llm': 'LLM (Chat)',
+    'vlm': 'VLM (Vision)',
+    'embedding': 'Embedding',
+    'vision_embedding': 'Vision Embedding',
+    'reranker': 'Reranker',
+    'vision_reranker': 'Vision Reranker'
+} %}
+{% set type_order = ['llm', 'vlm', 'embedding', 'vision_embedding', 'reranker', 'vision_reranker'] %}
+{# Capability badge macro shared by all three model sections #}
+{% macro capability_badges(m) %}
+    {% if m.is_reasoning %}
+    <span class="text-[10px] px-1 py-0.5 rounded gw-tip" data-tip="Reasoning model (emits thinking tokens)"
+          style="background:rgba(245,166,35,0.1);color:#f5a623">reasoning</span>
+    {% endif %}
+    {% if m.supports_tools %}
+    <span class="text-[10px] px-1 py-0.5 rounded gw-tip" data-tip="Function calling / tool use"
+          style="background:rgba(99,152,255,0.1);color:#6398ff">tools</span>
+    {% endif %}
+    {% if m.supports_vision %}
+    <span class="text-[10px] px-1 py-0.5 rounded gw-tip" data-tip="Vision (image input)"
+          style="background:rgba(167,139,250,0.1);color:#a78bfa">vision</span>
+    {% endif %}
+    {% if m.supports_prompt_caching %}
+    <span class="text-[10px] px-1 py-0.5 rounded gw-tip" data-tip="Prompt caching"
+          style="background:rgba(77,217,232,0.1);color:#4dd9e8">cache</span>
+    {% endif %}
+{% endmacro %}
+{# Cloud (Azure / Bedrock) model table: type subsections, price-sorted rows.
+   Same layout as the on-prem table minus Status/Load/Max Out — managed
+   services aren't health-probed. #}
+{% macro cloud_model_table(groups) %}
+<div class="overflow-x-auto">
+    <table class="gw-table">
+        <thead>
+            <tr>
+                <th class="text-left">Model</th>
+                <th class="text-right gw-tip" data-tip="Max input tokens">Context</th>
+                <th class="text-right gw-tip" data-tip="Billed input price, USD per 1M tokens">In $/1M</th>
+                <th class="text-right gw-tip" data-tip="Billed output price, USD per 1M tokens">Out $/1M</th>
+                <th class="text-left">Capabilities</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% set extra = groups.keys() | reject('in', type_order) | list %}
+            {% for type_key in type_order + extra if type_key in groups and groups[type_key] %}
+            <tr style="background:rgba(255,255,255,0.015)">
+                <td colspan="5" class="py-1.5">
+                    <span class="text-[11px] font-bold text-t4 uppercase tracking-wider">
                         {{ type_labels[type_key] if type_key in type_labels else type_key|upper }}
-                    </h4>
-                    <div class="flex flex-col gap-1.5">
-                        {% for s in servers %}
-                        <div class="px-3 py-2 rounded-lg text-sm
-                            {{ 'bg-[rgba(61,214,140,0.04)] border border-[rgba(61,214,140,0.08)]' if s.alive else 'bg-[rgba(255,92,92,0.04)] border border-[rgba(255,92,92,0.08)]' }}">
-                            <div class="flex items-center justify-between gap-2">
-                                <div class="flex items-center gap-2 truncate">
-                                    <div class="{{ 'gw-dot-on' if s.alive else 'gw-dot-off' }}"></div>
-                                    <span class="font-medium truncate text-t2">{{ s.name }}</span>
-                                </div>
-                                <span class="text-[10px] font-mono {{ 'text-ag' if s.alive else 'text-ar' }} flex-shrink-0">
-                                    {{ 'ONLINE' if s.alive else 'DOWN' }}
-                                </span>
-                            </div>
-                            {# Load snapshot from vLLM /metrics — shown only when scrape succeeded #}
-                            {% if s.alive and s.running is not none %}
-                            <div class="flex items-center gap-3 mt-1.5 text-[10px] font-mono">
-                                <span class="text-t4 gw-tip" data-tip="Requests actively generating on this server">
-                                    running <b class="text-t2">{{ s.running }}</b>
-                                </span>
-                                <span class="gw-tip {{ 'text-ar' if s.waiting >= 10 else 'text-aa' if s.waiting > 0 else 'text-t4' }}"
-                                      data-tip="Requests queued waiting for a slot — high values mean this server is overloaded">
-                                    waiting <b>{{ s.waiting }}</b>
-                                </span>
-                            </div>
-                            {% endif %}
-                            {% if s.supports_tools or s.supports_vision or s.supports_prompt_caching or s.is_reasoning or s.context_window %}
-                            <div class="flex flex-wrap items-center gap-1 mt-1.5">
-                                {% if s.context_window %}
-                                <span class="text-[10px] font-mono text-t4 gw-tip" data-tip="Context window">
-                                    {{ "{:,}".format(s.context_window) }} ctx
-                                </span>
-                                {% endif %}
-                                {% if s.is_reasoning %}
-                                <span class="text-[10px] px-1 py-0.5 rounded gw-tip" data-tip="Reasoning model (emits thinking tokens)"
-                                      style="background:rgba(245,166,35,0.1);color:#f5a623">reasoning</span>
-                                {% endif %}
-                                {% if s.supports_tools %}
-                                <span class="text-[10px] px-1 py-0.5 rounded gw-tip" data-tip="Function calling / tool use"
-                                      style="background:rgba(99,152,255,0.1);color:#6398ff">tools</span>
-                                {% endif %}
-                                {% if s.supports_vision %}
-                                <span class="text-[10px] px-1 py-0.5 rounded gw-tip" data-tip="Vision (image input)"
-                                      style="background:rgba(167,139,250,0.1);color:#a78bfa">vision</span>
-                                {% endif %}
-                                {% if s.supports_prompt_caching %}
-                                <span class="text-[10px] px-1 py-0.5 rounded gw-tip" data-tip="Prompt caching"
-                                      style="background:rgba(77,217,232,0.1);color:#4dd9e8">cache</span>
-                                {% endif %}
-                            </div>
-                            {% endif %}
-                        </div>
-                        {% endfor %}
-                    </div>
-                </div>
-                {% endif %}
+                    </span>
+                    <span class="text-[10px] text-t4 ml-2">· sorted by price</span>
+                </td>
+            </tr>
+            {% for m in groups[type_key] %}
+            <tr>
+                <td class="whitespace-nowrap">
+                    <code class="text-sm font-mono font-medium text-t1">{{ m.alias }}</code>
+                    {% if m.display_name %}<div class="text-[11px] text-t4">{{ m.display_name }}</div>{% endif %}
+                </td>
+                <td class="whitespace-nowrap text-right text-[11px] font-mono text-t3">
+                    {{ "{:,}".format(m.context_window) if m.context_window else '—' }}
+                </td>
+                <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">${{ '%g'|format(m.input_price) }}</td>
+                <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">${{ '%g'|format(m.output_price) }}</td>
+                <td><div class="flex flex-wrap items-center gap-1">{{ capability_badges(m) }}</div></td>
+            </tr>
             {% endfor %}
-            {% set has_any = server_groups.values() | sum(start=[]) | length > 0 %}
-            {% if not has_any %}
-                <div class="col-span-full text-center py-4">
-                    <span class="text-sm text-t4">No servers configured in config.toml</span>
-                </div>
-            {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endmacro %}
+<div class="gw-card p-5 mb-6 gw-anim gw-d2">
+    <div class="flex items-center justify-between gap-2 border-b pb-3 mb-1" style="border-color: rgba(255,255,255,0.04);">
+        <div class="flex items-center gap-2">
+            <div class="gw-dot-on"></div>
+            <span class="text-sm font-bold text-t2 gw-tip gw-tip-wide" data-tip="On-prem vLLM servers. Health check pings all servers every 30s; load numbers come from each server's /metrics.">On-Prem Models</span>
         </div>
+        <code class="text-[11px] font-mono text-t4 bg-n1 px-1.5 py-0.5 rounded">{{ gateway_base }}</code>
     </div>
+    {% set has_any = server_groups.values() | sum(start=[]) | length > 0 %}
+    {% if has_any %}
+    <div class="overflow-x-auto">
+        <table class="gw-table">
+            <thead>
+                <tr>
+                    <th class="text-left">Status</th>
+                    <th class="text-left">Model</th>
+                    <th class="text-left gw-tip" data-tip="Live load — running = generating now, waiting = queued (high means overloaded)">Load</th>
+                    <th class="text-right gw-tip" data-tip="Max input tokens">Context</th>
+                    <th class="text-right gw-tip" data-tip="Max tokens generated per response">Max Out</th>
+                    <th class="text-right gw-tip" data-tip="Billed input price, USD per 1M tokens">In $/1M</th>
+                    <th class="text-right gw-tip" data-tip="Billed output price, USD per 1M tokens">Out $/1M</th>
+                    <th class="text-left">Capabilities</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% set extra_types = server_groups.keys() | reject('in', type_order) | list %}
+                {% for type_key in type_order + extra_types if type_key in server_groups and server_groups[type_key] %}
+                <tr style="background:rgba(255,255,255,0.015)">
+                    <td colspan="8" class="py-1.5">
+                        <span class="text-[11px] font-bold text-t4 uppercase tracking-wider">
+                            {{ type_labels[type_key] if type_key in type_labels else type_key|upper }}
+                        </span>
+                        <span class="text-[10px] text-t4 ml-2">· sorted by price</span>
+                    </td>
+                </tr>
+                {% for s in server_groups[type_key] %}
+                <tr>
+                    <td class="whitespace-nowrap">
+                        <span class="inline-flex items-center gap-1.5">
+                            <span class="{{ 'gw-dot-on' if s.alive else 'gw-dot-off' }}"></span>
+                            <span class="text-[10px] font-mono {{ 'text-ag' if s.alive else 'text-ar' }}">{{ 'ONLINE' if s.alive else 'DOWN' }}</span>
+                        </span>
+                    </td>
+                    <td class="whitespace-nowrap">
+                        <code class="text-sm font-mono font-medium text-t1">{{ s.name }}</code>
+                        {% if s.display_name %}<div class="text-[11px] text-t4">{{ s.display_name }}</div>{% endif %}
+                    </td>
+                    <td class="whitespace-nowrap text-[11px] font-mono">
+                        {% if s.alive and s.running is not none %}
+                        <span class="text-t4">run <b class="text-t2">{{ s.running }}</b></span>
+                        <span class="ml-2 {{ 'text-ar' if s.waiting >= 10 else 'text-aa' if s.waiting > 0 else 'text-t4' }}">wait <b>{{ s.waiting }}</b></span>
+                        {% else %}<span class="text-t4">—</span>{% endif %}
+                    </td>
+                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t3">
+                        {{ "{:,}".format(s.context_window) if s.context_window else '—' }}
+                    </td>
+                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t3">
+                        {{ "{:,}".format(s.max_output_tokens) if s.max_output_tokens else '—' }}
+                    </td>
+                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">${{ '%g'|format(s.input_price) }}</td>
+                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">${{ '%g'|format(s.output_price) }}</td>
+                    <td><div class="flex flex-wrap items-center gap-1">{{ capability_badges(s) }}</div></td>
+                </tr>
+                {% endfor %}
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-center py-4"><span class="text-sm text-t4">No servers configured in config.toml</span></div>
+    {% endif %}
 </div>
 
-{# ── Azure access — only for users with the can_use_azure flag (admins always pass) ── #}
+{# ── Models — Azure OpenAI: rendered ONLY for users with can_use_azure (admins always pass) ── #}
 {% if azure_access %}
-<div class="gw-card p-4 mb-8 gw-anim gw-d2 flex items-start gap-3"
-     style="background:rgba(167,139,250,0.04);border-color:rgba(167,139,250,0.18)">
-    <svg class="w-5 h-5 flex-shrink-0 mt-0.5" style="color:#a78bfa" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-    </svg>
-    <div class="flex-1 text-sm">
-        <div class="flex items-center gap-2 mb-1">
-            <span class="text-t2 font-medium">Azure OpenAI access granted</span>
-            <span class="text-[10px] px-1.5 py-0.5 rounded font-mono"
-                  style="background:rgba(167,139,250,0.12);color:#a78bfa;border:1px solid rgba(167,139,250,0.2)">/azure/v1</span>
+<div class="gw-card p-5 mb-6 gw-anim gw-d2" style="border-color:rgba(167,139,250,0.18)">
+    <div class="flex items-center justify-between gap-2 border-b pb-3 mb-1" style="border-color: rgba(255,255,255,0.04);">
+        <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:#a78bfa"></span>
+            <span class="text-sm font-bold text-t2 gw-tip gw-tip-wide" data-tip="Azure OpenAI deployments you have access to. Managed service — no health probe; also reachable through the unified base URL with the same aliases.">Azure OpenAI Models</span>
         </div>
-        {% if azure_models %}
-        <div class="text-t3 mb-2">
-            You can use these Azure models. Point your client at <code class="font-mono text-xs text-t2 bg-n1 px-1 py-0.5 rounded">{{ gateway_base | replace('/v1', '/azure/v1') }}</code>:
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-            {% for m in azure_models %}
-            <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-n1 border border-[rgba(255,255,255,0.04)]">
-                <code class="text-xs font-mono text-t1">{{ m.alias }}</code>
-                {% if m.context_window %}
-                <span class="text-[10px] font-mono text-t4">{{ "{:,}".format(m.context_window) }} ctx</span>
-                {% endif %}
-                {% if m.is_reasoning %}
-                <span class="text-[10px] px-1 rounded gw-tip" data-tip="Reasoning model"
-                      style="background:rgba(245,166,35,0.1);color:#f5a623">reasoning</span>
-                {% endif %}
-                {% if m.supports_tools %}
-                <span class="text-[10px] px-1 rounded gw-tip" data-tip="Function calling"
-                      style="background:rgba(99,152,255,0.1);color:#6398ff">tools</span>
-                {% endif %}
-                {% if m.supports_vision %}
-                <span class="text-[10px] px-1 rounded gw-tip" data-tip="Vision"
-                      style="background:rgba(167,139,250,0.1);color:#a78bfa">vision</span>
-                {% endif %}
-            </span>
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="text-t3">
-            You have access but no Azure models are currently configured. Contact your administrator.
-        </div>
-        {% endif %}
+        <code class="text-[11px] font-mono px-1.5 py-0.5 rounded"
+              style="background:rgba(167,139,250,0.12);color:#a78bfa">{{ gateway_base | replace('/v1', '/azure/v1') }}</code>
     </div>
+    {% if azure_groups %}
+    {{ cloud_model_table(azure_groups) }}
+    {% else %}
+    <div class="text-center py-4"><span class="text-sm text-t4">You have access but no Azure models are currently configured. Contact your administrator.</span></div>
+    {% endif %}
 </div>
 {% endif %}
 
-{# ── AWS Bedrock access — only for users with the can_use_bedrock flag (admins always pass) ── #}
+{# ── Models — AWS Bedrock: rendered ONLY for users with can_use_bedrock (admins always pass) ── #}
 {% if bedrock_access %}
-<div class="gw-card p-4 mb-8 gw-anim gw-d2 flex items-start gap-3"
-     style="background:rgba(255,153,51,0.04);border-color:rgba(255,153,51,0.18)">
-    <svg class="w-5 h-5 flex-shrink-0 mt-0.5" style="color:#ff9933" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-    </svg>
-    <div class="flex-1 text-sm">
-        <div class="flex items-center gap-2 mb-1">
-            <span class="text-t2 font-medium">AWS Bedrock access granted</span>
-            <span class="text-[10px] px-1.5 py-0.5 rounded font-mono"
-                  style="background:rgba(255,153,51,0.12);color:#ff9933;border:1px solid rgba(255,153,51,0.2)">/aws/v1</span>
+<div class="gw-card p-5 mb-6 gw-anim gw-d2" style="border-color:rgba(255,153,51,0.18)">
+    <div class="flex items-center justify-between gap-2 border-b pb-3 mb-1" style="border-color: rgba(255,255,255,0.04);">
+        <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:#ff9933"></span>
+            <span class="text-sm font-bold text-t2 gw-tip gw-tip-wide" data-tip="AWS Bedrock models you have access to. Managed service — no health probe; also reachable through the unified base URL with the same aliases.">AWS Bedrock Models</span>
         </div>
-        {% if bedrock_models %}
-        <div class="text-t3 mb-2">
-            You can use these Bedrock models. Point your client at <code class="font-mono text-xs text-t2 bg-n1 px-1 py-0.5 rounded">{{ gateway_base | replace('/v1', '/aws/v1') }}</code>:
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-            {% for m in bedrock_models %}
-            <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-n1 border border-[rgba(255,255,255,0.04)]">
-                <code class="text-xs font-mono text-t1">{{ m.alias }}</code>
-                {% if m.context_window %}
-                <span class="text-[10px] font-mono text-t4">{{ "{:,}".format(m.context_window) }} ctx</span>
-                {% endif %}
-                {% if m.is_reasoning %}
-                <span class="text-[10px] px-1 rounded gw-tip" data-tip="Reasoning model"
-                      style="background:rgba(245,166,35,0.1);color:#f5a623">reasoning</span>
-                {% endif %}
-                {% if m.supports_tools %}
-                <span class="text-[10px] px-1 rounded gw-tip" data-tip="Function calling"
-                      style="background:rgba(99,152,255,0.1);color:#6398ff">tools</span>
-                {% endif %}
-                {% if m.supports_vision %}
-                <span class="text-[10px] px-1 rounded gw-tip" data-tip="Vision"
-                      style="background:rgba(167,139,250,0.1);color:#a78bfa">vision</span>
-                {% endif %}
-            </span>
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="text-t3">
-            You have access but no Bedrock models are currently configured. Contact your administrator.
-        </div>
-        {% endif %}
+        <code class="text-[11px] font-mono px-1.5 py-0.5 rounded"
+              style="background:rgba(255,153,51,0.12);color:#ff9933">{{ gateway_base | replace('/v1', '/aws/v1') }}</code>
     </div>
+    {% if bedrock_groups %}
+    {{ cloud_model_table(bedrock_groups) }}
+    {% else %}
+    <div class="text-center py-4"><span class="text-sm text-t4">You have access but no Bedrock models are currently configured. Contact your administrator.</span></div>
+    {% endif %}
 </div>
 {% endif %}
 

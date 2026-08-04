@@ -279,6 +279,12 @@ def get_model_routing_snapshot() -> dict[str, dict[str, Any]]:
     return dict(MODEL_ROUTING)
 
 
+def get_pricing_snapshot() -> dict[str, dict[str, float]]:
+    """Return a shallow copy of PRICING_MAP safe for iteration."""
+    _check_auto_reload()
+    return dict(PRICING_MAP)
+
+
 def reload_config() -> None:
     """Re-read config.toml and update all globals in-place.
 
