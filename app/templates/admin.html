@@ -813,11 +813,68 @@ function submitExportCsv() {
 </script>
 
 <script>
+    /* ── In-place saves for the per-user limit forms ──
+       Daily / Azure / Bedrock limit edits used to POST-redirect and reload
+       the whole page for every single Save, which made bulk-editing limits
+       painfully slow (viewport jump, table re-render, re-find the row).
+       Intercept just those forms and submit via fetch: green flash on the
+       input = saved, red flash + alert = rejected. Everything else on the
+       page (toggles, deletes, search) still round-trips as before. */
+    (function(){
+        var LIMIT_ACTION = /\/admin\/users\/\d+\/(limit|azure-limit|bedrock-limit)$/;
+
+        function flash(el, ok) {
+            if (!el) return;
+            el.style.transition = 'box-shadow 0.15s';
+            el.style.boxShadow = ok
+                ? '0 0 0 2px rgba(52, 211, 153, 0.85)'
+                : '0 0 0 2px rgba(248, 113, 113, 0.9)';
+            setTimeout(function(){ el.style.boxShadow = ''; }, 1200);
+        }
+
+        document.addEventListener('submit', function(e){
+            var form = e.target;
+            if (!(form instanceof HTMLFormElement) || !LIMIT_ACTION.test(form.action)) return;
+            e.preventDefault();
+
+            var btn = form.querySelector('button[type="submit"]');
+            var input = form.querySelector('input[type="number"]');
+            var label = btn ? btn.textContent : '';
+            if (btn) { btn.disabled = true; btn.textContent = '…'; }
+
+            fetch(form.action, {
+                method: 'POST',
+                // URLSearchParams keeps the body urlencoded, same as a
+                // native form submit — the backend Form(...) params and the
+                // 303-redirect response both behave identically.
+                body: new URLSearchParams(new FormData(form)),
+            })
+            .then(function(resp){
+                if (!resp.ok) {
+                    return resp.text().then(function(t){
+                        throw new Error('HTTP ' + resp.status + (t ? ': ' + t.slice(0, 200) : ''));
+                    });
+                }
+                flash(input, true);
+            })
+            .catch(function(err){
+                flash(input, false);
+                alert('Save failed — ' + err.message);
+            })
+            .then(function(){
+                if (btn) { btn.disabled = false; btn.textContent = label; }
+            });
+        }, true);
+    })();
+</script>
+
+<script>
     /* ── Keep scroll position & active tab across full-page round-trips ──
-       Every action in the user-management tables (search, pagination, limit
-       saves, Azure/disable toggles, deletes) reloads /admin via GET or
+       Actions in the user-management tables (search, pagination,
+       Azure/disable toggles, deletes) reload /admin via GET or
        POST-redirect, which would otherwise dump the viewport back at the
-       top of the page and reset the Users/Apps tab. */
+       top of the page and reset the Users/Apps tab. (Limit saves are AJAX
+       now and never leave the page.) */
     (function(){
         var Y_KEY = 'adminScroll';
         function saveScroll(){
