@@ -935,7 +935,8 @@ async def export_users_csv(session: Session = Depends(get_session)):
     buf.write("﻿")  # UTF-8 BOM so Excel opens CJK correctly
     writer = csv.writer(buf)
     writer.writerow([
-        "username", "display_name", "org_code", "is_admin",
+        "username", "display_name", "org_code", "is_admin", "is_disabled",
+        "can_use_azure", "can_use_bedrock",
         "daily_limit_usd", "created_at",
         "monthly_cost_usd", "monthly_requests", "last_active_at",
     ])
@@ -946,6 +947,9 @@ async def export_users_csv(session: Session = Depends(get_session)):
             u.display_name or "",
             u.org_code or "",
             "true" if u.is_admin else "false",
+            "true" if u.is_disabled else "false",
+            "true" if u.can_use_azure else "false",
+            "true" if u.can_use_bedrock else "false",
             f"{u.daily_limit_usd:.2f}",
             fmt_dt(u.created_at),
             f"{m.get('cost', 0.0):.6f}",
