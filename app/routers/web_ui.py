@@ -21,6 +21,7 @@ from app.core.config import (
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
     get_model_routing_snapshot,
+    get_pricing_snapshot,
 )
 from app.core.database import get_session
 from app.core.server_state import get_metrics, is_alive
@@ -35,6 +36,25 @@ _SETUP_ALLOWED = {
     "llm-gateway-ca.crt",
     "install-cert.bat",
 }
+
+
+def _resolve_prices(entry: dict, model_type: str, pricing_map: dict) -> tuple[float, float]:
+    """(input, output) USD per 1M tokens for a model entry.
+
+    Same priority as billing's ``_calc_cost``: per-model override (both
+    ``input_price_per_1m`` and ``output_price_per_1m`` present) → per-type
+    ``[pricing.<type>]`` → ``_default`` — so what the dashboard shows is
+    exactly what the request will be billed at.
+    """
+    if "input_price_per_1m" in entry and "output_price_per_1m" in entry:
+        return float(entry["input_price_per_1m"]), float(entry["output_price_per_1m"])
+    p = pricing_map.get(model_type) or pricing_map.get("_default") or {}
+    return float(p.get("input_price_per_1m", 0.0)), float(p.get("output_price_per_1m", 0.0))
+
+
+def _price_sort_key(m: dict):
+    """Cheapest first; ties broken by alias for a stable listing."""
+    return (m["input_price"] + m["output_price"], m.get("name") or m.get("alias") or "")
 
 
 def _common_ctx(request: Request, **extra) -> dict:
@@ -117,7 +137,9 @@ async def dashboard(
 
     # Build grouped server status keyed by raw type (skip hidden models).
     # Each entry carries optional metadata for capability badges next to the
-    # online/down indicator.
+    # online/down indicator, plus the effective billing prices so the list
+    # can sort by (and display) cost.
+    pricing_map = get_pricing_snapshot()
     server_groups: dict[str, list[dict]] = {}
     for model_name, route in get_model_routing_snapshot().items():
         if route.get("hidden"):
@@ -127,6 +149,7 @@ async def dashboard(
         if model_type not in server_groups:
             server_groups[model_type] = []
         metrics = get_metrics(base_url)
+        in_price, out_price = _resolve_prices(route, model_type, pricing_map)
         server_groups[model_type].append(
             {
                 "name": model_name,
@@ -139,11 +162,15 @@ async def dashboard(
                 "supports_vision": route.get("supports_vision", False),
                 "supports_prompt_caching": route.get("supports_prompt_caching", False),
                 "is_reasoning": route.get("is_reasoning", False),
+                "input_price": in_price,
+                "output_price": out_price,
                 # Load snapshot from /metrics — None when unavailable.
                 "running": metrics.get("running") if metrics else None,
                 "waiting": metrics.get("waiting") if metrics else None,
             }
         )
+    for servers in server_groups.values():
+        servers.sort(key=_price_sort_key)
 
     # Today's totals + budget percentage based on today's cost vs daily limit
     today = get_user_daily_summary(session, user.id)
@@ -168,40 +195,41 @@ async def dashboard(
     claude_code_available = (_SETUP_DIR / "install-claude-code.bat").is_file()
 
     # Azure access — list configured Azure model aliases when the user has
-    # been granted access. Hidden Azure entries are skipped so admins can
-    # stage models without exposing them yet (mirrors the vLLM `hidden` flag).
-    azure_models: list[dict] = []
-    if user.can_use_azure or user.is_admin:
-        for alias, entry in get_azure_models_snapshot().items():
+    # been granted access, grouped by model type and sorted by price (same
+    # shape as server_groups so the template renders all backends uniformly).
+    # Hidden Azure entries are skipped so admins can stage models without
+    # exposing them yet (mirrors the vLLM `hidden` flag).
+    def _cloud_groups(snapshot: dict) -> dict[str, list[dict]]:
+        groups: dict[str, list[dict]] = {}
+        for alias, entry in snapshot.items():
             if entry.get("hidden"):
                 continue
-            azure_models.append({
+            model_type = entry.get("type", "llm")
+            in_price, out_price = _resolve_prices(entry, model_type, pricing_map)
+            groups.setdefault(model_type, []).append({
                 "alias": alias,
-                "type": entry.get("type", "llm"),
+                "type": model_type,
                 "display_name": entry.get("display_name", ""),
                 "context_window": entry.get("context_window"),
                 "supports_tools": entry.get("supports_tools", False),
                 "supports_vision": entry.get("supports_vision", False),
                 "supports_prompt_caching": entry.get("supports_prompt_caching", False),
                 "is_reasoning": entry.get("is_reasoning", False),
+                "input_price": in_price,
+                "output_price": out_price,
             })
+        for models in groups.values():
+            models.sort(key=_price_sort_key)
+        return groups
 
-    # Bedrock access — same contract as the Azure card above.
-    bedrock_models: list[dict] = []
+    azure_groups: dict[str, list[dict]] = {}
+    if user.can_use_azure or user.is_admin:
+        azure_groups = _cloud_groups(get_azure_models_snapshot())
+
+    # Bedrock access — same contract as the Azure section above.
+    bedrock_groups: dict[str, list[dict]] = {}
     if user.can_use_bedrock or user.is_admin:
-        for alias, entry in get_bedrock_models_snapshot().items():
-            if entry.get("hidden"):
-                continue
-            bedrock_models.append({
-                "alias": alias,
-                "type": entry.get("type", "llm"),
-                "display_name": entry.get("display_name", ""),
-                "context_window": entry.get("context_window"),
-                "supports_tools": entry.get("supports_tools", False),
-                "supports_vision": entry.get("supports_vision", False),
-                "supports_prompt_caching": entry.get("supports_prompt_caching", False),
-                "is_reasoning": entry.get("is_reasoning", False),
-            })
+        bedrock_groups = _cloud_groups(get_bedrock_models_snapshot())
 
     return templates.TemplateResponse(
         "dashboard.html",
@@ -233,9 +261,9 @@ async def dashboard(
             server_groups=server_groups,
             claude_code_available=claude_code_available,
             azure_access=user.can_use_azure or user.is_admin,
-            azure_models=azure_models,
+            azure_groups=azure_groups,
             bedrock_access=user.can_use_bedrock or user.is_admin,
-            bedrock_models=bedrock_models,
+            bedrock_groups=bedrock_groups,
         ),
     )
 

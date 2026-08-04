@@ -79,3 +79,25 @@ class TestDashboardModelSections:
         assert "test-embedding" in body
         # Health column present (mocked is_alive returns True in tests)
         assert "ONLINE" in body or "DOWN" in body
+
+    def test_type_subsections_rendered(self, client, db_session):
+        """Every model type in TEST_MODEL_ROUTING gets its own subsection
+        header — including rerankers and the vision_* types."""
+        db_session.add(User(username="subsectuser"))
+        db_session.commit()
+
+        resp = _get_dashboard(client, "subsectuser")
+        body = resp.text
+        for label in ("LLM (Chat)", "VLM (Vision)", "Embedding",
+                      "Vision Embedding", "Reranker", "Vision Reranker"):
+            assert label in body, f"missing subsection: {label}"
+
+    def test_price_columns_rendered(self, client, db_session):
+        db_session.add(User(username="priceuser"))
+        db_session.commit()
+
+        resp = _get_dashboard(client, "priceuser")
+        body = resp.text
+        assert "In $/1M" in body
+        assert "Out $/1M" in body
+        assert "sorted by price" in body

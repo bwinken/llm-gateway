@@ -76,6 +76,51 @@
           style="background:rgba(77,217,232,0.1);color:#4dd9e8">cache</span>
     {% endif %}
 {% endmacro %}
+{# Cloud (Azure / Bedrock) model table: type subsections, price-sorted rows.
+   Same layout as the on-prem table minus Status/Load/Max Out — managed
+   services aren't health-probed. #}
+{% macro cloud_model_table(groups) %}
+<div class="overflow-x-auto">
+    <table class="gw-table">
+        <thead>
+            <tr>
+                <th class="text-left">Model</th>
+                <th class="text-right gw-tip" data-tip="Max input tokens">Context</th>
+                <th class="text-right gw-tip" data-tip="Billed input price, USD per 1M tokens">In $/1M</th>
+                <th class="text-right gw-tip" data-tip="Billed output price, USD per 1M tokens">Out $/1M</th>
+                <th class="text-left">Capabilities</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% set extra = groups.keys() | reject('in', type_order) | list %}
+            {% for type_key in type_order + extra if type_key in groups and groups[type_key] %}
+            <tr style="background:rgba(255,255,255,0.015)">
+                <td colspan="5" class="py-1.5">
+                    <span class="text-[11px] font-bold text-t4 uppercase tracking-wider">
+                        {{ type_labels[type_key] if type_key in type_labels else type_key|upper }}
+                    </span>
+                    <span class="text-[10px] text-t4 ml-2">· sorted by price</span>
+                </td>
+            </tr>
+            {% for m in groups[type_key] %}
+            <tr>
+                <td class="whitespace-nowrap">
+                    <code class="text-sm font-mono font-medium text-t1">{{ m.alias }}</code>
+                    {% if m.display_name %}<div class="text-[11px] text-t4">{{ m.display_name }}</div>{% endif %}
+                </td>
+                <td class="whitespace-nowrap text-right text-[11px] font-mono text-t3">
+                    {{ "{:,}".format(m.context_window) if m.context_window else '—' }}
+                </td>
+                <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">${{ '%g'|format(m.input_price) }}</td>
+                <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">${{ '%g'|format(m.output_price) }}</td>
+                <td><div class="flex flex-wrap items-center gap-1">{{ capability_badges(m) }}</div></td>
+            </tr>
+            {% endfor %}
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endmacro %}
 <div class="gw-card p-5 mb-6 gw-anim gw-d2">
     <div class="flex items-center justify-between gap-2 border-b pb-3 mb-1" style="border-color: rgba(255,255,255,0.04);">
         <div class="flex items-center gap-2">
@@ -92,15 +137,25 @@
                 <tr>
                     <th class="text-left">Status</th>
                     <th class="text-left">Model</th>
-                    <th class="text-left">Type</th>
                     <th class="text-left gw-tip" data-tip="Live load — running = generating now, waiting = queued (high means overloaded)">Load</th>
                     <th class="text-right gw-tip" data-tip="Max input tokens">Context</th>
                     <th class="text-right gw-tip" data-tip="Max tokens generated per response">Max Out</th>
+                    <th class="text-right gw-tip" data-tip="Billed input price, USD per 1M tokens">In $/1M</th>
+                    <th class="text-right gw-tip" data-tip="Billed output price, USD per 1M tokens">Out $/1M</th>
                     <th class="text-left">Capabilities</th>
                 </tr>
             </thead>
             <tbody>
-                {% for type_key in type_order if type_key in server_groups %}
+                {% set extra_types = server_groups.keys() | reject('in', type_order) | list %}
+                {% for type_key in type_order + extra_types if type_key in server_groups and server_groups[type_key] %}
+                <tr style="background:rgba(255,255,255,0.015)">
+                    <td colspan="8" class="py-1.5">
+                        <span class="text-[11px] font-bold text-t4 uppercase tracking-wider">
+                            {{ type_labels[type_key] if type_key in type_labels else type_key|upper }}
+                        </span>
+                        <span class="text-[10px] text-t4 ml-2">· sorted by price</span>
+                    </td>
+                </tr>
                 {% for s in server_groups[type_key] %}
                 <tr>
                     <td class="whitespace-nowrap">
@@ -113,7 +168,6 @@
                         <code class="text-sm font-mono font-medium text-t1">{{ s.name }}</code>
                         {% if s.display_name %}<div class="text-[11px] text-t4">{{ s.display_name }}</div>{% endif %}
                     </td>
-                    <td class="whitespace-nowrap text-xs text-t3">{{ type_labels[type_key] if type_key in type_labels else type_key|upper }}</td>
                     <td class="whitespace-nowrap text-[11px] font-mono">
                         {% if s.alive and s.running is not none %}
                         <span class="text-t4">run <b class="text-t2">{{ s.running }}</b></span>
@@ -126,28 +180,8 @@
                     <td class="whitespace-nowrap text-right text-[11px] font-mono text-t3">
                         {{ "{:,}".format(s.max_output_tokens) if s.max_output_tokens else '—' }}
                     </td>
-                    <td><div class="flex flex-wrap items-center gap-1">{{ capability_badges(s) }}</div></td>
-                </tr>
-                {% endfor %}
-                {% endfor %}
-                {% for type_key, servers in server_groups.items() if type_key not in type_order %}
-                {% for s in servers %}
-                <tr>
-                    <td class="whitespace-nowrap">
-                        <span class="inline-flex items-center gap-1.5">
-                            <span class="{{ 'gw-dot-on' if s.alive else 'gw-dot-off' }}"></span>
-                            <span class="text-[10px] font-mono {{ 'text-ag' if s.alive else 'text-ar' }}">{{ 'ONLINE' if s.alive else 'DOWN' }}</span>
-                        </span>
-                    </td>
-                    <td class="whitespace-nowrap"><code class="text-sm font-mono font-medium text-t1">{{ s.name }}</code></td>
-                    <td class="whitespace-nowrap text-xs text-t3">{{ type_key|upper }}</td>
-                    <td class="whitespace-nowrap text-[11px] font-mono text-t4">—</td>
-                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t3">
-                        {{ "{:,}".format(s.context_window) if s.context_window else '—' }}
-                    </td>
-                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t3">
-                        {{ "{:,}".format(s.max_output_tokens) if s.max_output_tokens else '—' }}
-                    </td>
+                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">${{ '%g'|format(s.input_price) }}</td>
+                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">${{ '%g'|format(s.output_price) }}</td>
                     <td><div class="flex flex-wrap items-center gap-1">{{ capability_badges(s) }}</div></td>
                 </tr>
                 {% endfor %}
@@ -171,34 +205,8 @@
         <code class="text-[11px] font-mono px-1.5 py-0.5 rounded"
               style="background:rgba(167,139,250,0.12);color:#a78bfa">{{ gateway_base | replace('/v1', '/azure/v1') }}</code>
     </div>
-    {% if azure_models %}
-    <div class="overflow-x-auto">
-        <table class="gw-table">
-            <thead>
-                <tr>
-                    <th class="text-left">Model</th>
-                    <th class="text-left">Type</th>
-                    <th class="text-right gw-tip" data-tip="Max input tokens">Context</th>
-                    <th class="text-left">Capabilities</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for m in azure_models %}
-                <tr>
-                    <td class="whitespace-nowrap">
-                        <code class="text-sm font-mono font-medium text-t1">{{ m.alias }}</code>
-                        {% if m.display_name %}<div class="text-[11px] text-t4">{{ m.display_name }}</div>{% endif %}
-                    </td>
-                    <td class="whitespace-nowrap text-xs text-t3">{{ type_labels[m.type] if m.type in type_labels else m.type|upper }}</td>
-                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t3">
-                        {{ "{:,}".format(m.context_window) if m.context_window else '—' }}
-                    </td>
-                    <td><div class="flex flex-wrap items-center gap-1">{{ capability_badges(m) }}</div></td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+    {% if azure_groups %}
+    {{ cloud_model_table(azure_groups) }}
     {% else %}
     <div class="text-center py-4"><span class="text-sm text-t4">You have access but no Azure models are currently configured. Contact your administrator.</span></div>
     {% endif %}
@@ -216,34 +224,8 @@
         <code class="text-[11px] font-mono px-1.5 py-0.5 rounded"
               style="background:rgba(255,153,51,0.12);color:#ff9933">{{ gateway_base | replace('/v1', '/aws/v1') }}</code>
     </div>
-    {% if bedrock_models %}
-    <div class="overflow-x-auto">
-        <table class="gw-table">
-            <thead>
-                <tr>
-                    <th class="text-left">Model</th>
-                    <th class="text-left">Type</th>
-                    <th class="text-right gw-tip" data-tip="Max input tokens">Context</th>
-                    <th class="text-left">Capabilities</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for m in bedrock_models %}
-                <tr>
-                    <td class="whitespace-nowrap">
-                        <code class="text-sm font-mono font-medium text-t1">{{ m.alias }}</code>
-                        {% if m.display_name %}<div class="text-[11px] text-t4">{{ m.display_name }}</div>{% endif %}
-                    </td>
-                    <td class="whitespace-nowrap text-xs text-t3">{{ type_labels[m.type] if m.type in type_labels else m.type|upper }}</td>
-                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t3">
-                        {{ "{:,}".format(m.context_window) if m.context_window else '—' }}
-                    </td>
-                    <td><div class="flex flex-wrap items-center gap-1">{{ capability_badges(m) }}</div></td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+    {% if bedrock_groups %}
+    {{ cloud_model_table(bedrock_groups) }}
     {% else %}
     <div class="text-center py-4"><span class="text-sm text-t4">You have access but no Bedrock models are currently configured. Contact your administrator.</span></div>
     {% endif %}
