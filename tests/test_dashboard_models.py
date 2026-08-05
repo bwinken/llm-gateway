@@ -101,3 +101,47 @@ class TestDashboardModelSections:
         assert "In $/1M" in body
         assert "Out $/1M" in body
         assert "sorted by price" in body
+
+
+class TestCostSplitAccessGating:
+    """The Today's Cost backend-split rows must not surface a cloud backend
+    to users without access — a stale sub-limit alone isn't enough. Real
+    spend (access revoked mid-day) stays visible: billing truth wins."""
+
+    def test_stale_limit_without_access_hides_row(self, client, db_session):
+        # Sub-limit left behind after access was revoked — no AWS row.
+        db_session.add(User(username="stalelimit", can_use_bedrock=False,
+                            bedrock_daily_limit_usd=5.0))
+        db_session.commit()
+
+        body = _get_dashboard(client, "stalelimit").text
+        assert 'data-tip="AWS Bedrock portion' not in body
+
+    def test_limit_with_access_shows_row(self, client, db_session):
+        db_session.add(User(username="withaccess", can_use_bedrock=True,
+                            bedrock_daily_limit_usd=5.0))
+        db_session.commit()
+
+        body = _get_dashboard(client, "withaccess").text
+        assert 'data-tip="AWS Bedrock portion' in body
+
+    def test_todays_spend_shows_even_after_revoke(self, client, db_session):
+        from datetime import datetime, timezone
+        from app.models.schema import UsageLog
+
+        db_session.add(User(username="revoked", can_use_bedrock=False))
+        db_session.commit()
+        u = db_session.exec(
+            __import__("sqlmodel").select(User).where(User.username == "revoked")
+        ).first()
+        db_session.add(UsageLog(
+            user_id=u.id, model="bedrock-claude", model_type="llm",
+            input_tokens=100, output_tokens=10, cost_usd=0.5,
+            endpoint="/aws/v1/messages", backend="bedrock",
+            created_at=datetime.now(timezone.utc),
+        ))
+        db_session.commit()
+
+        body = _get_dashboard(client, "revoked").text
+        # Spend happened today — the row must stay visible despite no access.
+        assert 'data-tip="AWS Bedrock portion' in body
