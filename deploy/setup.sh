@@ -320,17 +320,18 @@ systemctl --user enable llm-gateway
 systemctl --user restart llm-gateway
 ok "llm-gateway.service 已啟動"
 
-# 排程任務（獨立進程,不影響 gateway 服務本體）:
-#   - 每小時異常使用掃描（偵測告警,不會封鎖任何人）
-#   - 每月 usage_logs 保留期清理
+# 排程任務（獨立進程,不影響 gateway 服務本體）
+#   - 異常使用掃描（每小時,偵測告警,不會封鎖任何人）→ 自動啟用
+#   - usage_logs 保留期清理（每月,會【刪除】一年前的計費資料）→ 僅安裝
+#     不啟用:刪除帳務底帳是治理決定,PG 在此規模存多年也無壓力。
+#     需要時手動啟用:systemctl --user enable --now llm-gateway-cleanup.timer
 cp "$DEPLOY_DIR/llm-gateway-scan.service"    "$HOME/.config/systemd/user/"
 cp "$DEPLOY_DIR/llm-gateway-scan.timer"      "$HOME/.config/systemd/user/"
 cp "$DEPLOY_DIR/llm-gateway-cleanup.service" "$HOME/.config/systemd/user/"
 cp "$DEPLOY_DIR/llm-gateway-cleanup.timer"   "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
 systemctl --user enable --now llm-gateway-scan.timer
-systemctl --user enable --now llm-gateway-cleanup.timer
-ok "排程任務已啟用（scan: hourly / cleanup: monthly）"
+ok "異常掃描 timer 已啟用（hourly）；cleanup timer 僅安裝未啟用"
 
 # lingering
 if loginctl show-user "$(whoami)" 2>/dev/null | grep -q "Linger=yes"; then
