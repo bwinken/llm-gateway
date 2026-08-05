@@ -38,21 +38,27 @@ def _map_stop_reason(openai_finish: str | None) -> str | None:
     return _OPENAI_TO_ANTHROPIC_STOP.get(openai_finish, "end_turn")
 
 
-# OpenAI / Azure reasoning_effort accepts low | medium | high. Anthropic
-# clients express reasoning depth two ways:
-#   - a top-level `effort` string (low/medium/high, plus Claude Code's
-#     extra-high / max which we clamp to high)
+# Anthropic clients express reasoning depth two ways:
+#   - a top-level `effort` string (minimal/low/medium/high, plus Claude
+#     Code's xhigh / extra-high / max spellings)
 #   - `thinking: {"type": "enabled", "budget_tokens": N}` — a token budget
-#     we bucket into the three effort levels.
+#     we bucket into effort levels.
+# Policy: translate FAITHFULLY, never clamp. A downstream that doesn't know
+# a level ignores or rejects it visibly; a downstream that does know it
+# (e.g. newer OpenAI-family models with `xhigh` / `minimal` / `none`) gives
+# the user the effort response they actually asked for. Only spelling
+# variants are normalized here.
 _EFFORT_ALIASES: dict[str, str] = {
+    "minimal": "minimal",
+    "none": "none",
     "low": "low",
     "medium": "medium",
     "high": "high",
-    "extra-high": "high",
-    "extra_high": "high",
-    "max": "high",
-    "minimal": "low",
-    "none": "low",
+    "xhigh": "xhigh",
+    "x-high": "xhigh",
+    "extra-high": "xhigh",
+    "extra_high": "xhigh",
+    "max": "xhigh",
 }
 
 
@@ -62,12 +68,13 @@ def _map_reasoning_effort(body: dict[str, Any]) -> str | None:
     Returns None when the request expresses no reasoning preference, so the
     caller leaves `reasoning_effort` unset and the downstream uses its own
     default. Downstreams without a reasoning_effort knob (e.g. Qwen3) simply
-    ignore the field — translating it here is harmless and future-proofs the
-    Azure o-series / any model that does honour it.
+    ignore the field. Unknown effort spellings pass through verbatim
+    (lowercased) — the downstream is the authority on what it supports.
     """
     effort = body.get("effort")
     if isinstance(effort, str) and effort.strip():
-        return _EFFORT_ALIASES.get(effort.strip().lower(), "high")
+        normalized = effort.strip().lower()
+        return _EFFORT_ALIASES.get(normalized, normalized)
 
     thinking = body.get("thinking")
     if isinstance(thinking, dict) and thinking.get("type") == "enabled":
@@ -78,7 +85,9 @@ def _map_reasoning_effort(body: dict[str, Any]) -> str | None:
                 return "low"
             if budget <= 16384:
                 return "medium"
-            return "high"
+            if budget <= 32768:
+                return "high"
+            return "xhigh"
     return None
 
 

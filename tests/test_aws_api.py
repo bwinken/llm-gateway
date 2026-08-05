@@ -198,6 +198,29 @@ class TestConverseRequestTranslation:
         }, model_id="amazon.nova-pro-v1:0")
         assert "additionalModelRequestFields" not in out
 
+    def test_xhigh_effort_gets_larger_claude_budget(self):
+        out = self._xlate({
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "xhigh",
+        }, model_id="anthropic.claude-sonnet-4-20250514-v1:0")
+        assert out["additionalModelRequestFields"]["thinking"]["budget_tokens"] == 32768
+
+    def test_none_effort_disables_claude_thinking(self):
+        out = self._xlate({
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "none", "temperature": 0.7,
+        }, model_id="anthropic.claude-sonnet-4-20250514-v1:0")
+        # thinking off entirely — and sampling overrides stay usable
+        assert "additionalModelRequestFields" not in out
+        assert out["inferenceConfig"]["temperature"] == 0.7
+
+    def test_effort_passthrough_for_openai_family(self):
+        out = self._xlate({
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "xhigh",
+        }, model_id="openai.gpt-oss-120b-1:0")
+        assert out["additionalModelRequestFields"]["reasoning_effort"] == "xhigh"
+
     def test_assistant_reasoning_content_not_replayed(self):
         # Bedrock validates thinking signatures the gateway can't produce.
         out = self._xlate({
