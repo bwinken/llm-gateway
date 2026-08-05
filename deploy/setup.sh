@@ -320,6 +320,18 @@ systemctl --user enable llm-gateway
 systemctl --user restart llm-gateway
 ok "llm-gateway.service 已啟動"
 
+# 排程任務（獨立進程,不影響 gateway 服務本體）:
+#   - 每小時異常使用掃描（偵測告警,不會封鎖任何人）
+#   - 每月 usage_logs 保留期清理
+cp "$DEPLOY_DIR/llm-gateway-scan.service"    "$HOME/.config/systemd/user/"
+cp "$DEPLOY_DIR/llm-gateway-scan.timer"      "$HOME/.config/systemd/user/"
+cp "$DEPLOY_DIR/llm-gateway-cleanup.service" "$HOME/.config/systemd/user/"
+cp "$DEPLOY_DIR/llm-gateway-cleanup.timer"   "$HOME/.config/systemd/user/"
+systemctl --user daemon-reload
+systemctl --user enable --now llm-gateway-scan.timer
+systemctl --user enable --now llm-gateway-cleanup.timer
+ok "排程任務已啟用（scan: hourly / cleanup: monthly）"
+
 # lingering
 if loginctl show-user "$(whoami)" 2>/dev/null | grep -q "Linger=yes"; then
     ok "Lingering 已啟用"

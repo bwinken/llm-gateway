@@ -26,7 +26,7 @@ from app.core.config import (
     set_default_daily_limit,
 )
 from app.core.database import get_session
-from app.models.schema import AppOwner, User, UsageLog
+from app.models.schema import AnomalyEvent, AppOwner, User, UsageLog
 from app.services.analytics import build_monthly_report, iter_months, parse_ym
 from app.services.stats import (
     get_all_users_usage,
@@ -160,6 +160,33 @@ async def admin_page(
     today_dau = dau_data[-1]["dau"] if dau_data else 0
     dept_usage = get_department_usage(session)
 
+    # Open anomaly findings (populated by scripts/scan_anomalies.py; empty
+    # until the scan timer is set up — the card renders only when non-empty).
+    anomaly_rows = session.exec(
+        select(AnomalyEvent)
+        .where(AnomalyEvent.status.in_(("new", "acknowledged")))  # type: ignore[attr-defined]
+        .order_by(AnomalyEvent.status, AnomalyEvent.ratio.desc())  # type: ignore[attr-defined]
+        .limit(20)
+    ).all()
+    anomaly_usernames: dict[int, str] = {}
+    uids = [e.user_id for e in anomaly_rows if e.user_id is not None]
+    if uids:
+        for uid, uname in session.exec(select(User.id, User.username).where(User.id.in_(uids))).all():  # type: ignore[attr-defined]
+            anomaly_usernames[int(uid)] = str(uname)
+    import json as _json
+    anomalies = []
+    for e in anomaly_rows:
+        try:
+            summary = _json.loads(e.detail).get("summary", "")
+        except Exception:
+            summary = ""
+        anomalies.append({
+            "id": e.id, "rule": e.rule, "severity": e.severity, "status": e.status,
+            "user_id": e.user_id, "model": e.model, "scope": e.scope,
+            "observed": e.observed, "baseline": e.baseline, "ratio": e.ratio,
+            "summary": summary,
+        })
+
     return templates.TemplateResponse(
         "admin.html",
         {
@@ -179,6 +206,8 @@ async def admin_page(
             "monthly_total_output": totals["output_tokens"],
             "monthly_total_reqs": totals["requests"],
             "dept_usage": dept_usage,
+            "anomalies": anomalies,
+            "anomaly_usernames": anomaly_usernames,
             "current_year": now.year,
             "dau_data": dau_data,
             "today_dau": today_dau,
@@ -804,6 +833,53 @@ async def save_config_api(
 
     save_config(models, pricing, fallback or {}, azure_models, azure_fallback)
     return JSONResponse({"ok": True})
+
+
+# ── Anomaly findings (populated by scripts/scan_anomalies.py) ──
+
+@router.get("/api/anomalies")
+async def list_anomalies(
+    status: str = "new",
+    limit: int = 50,
+    session: Session = Depends(get_session),
+):
+    """List anomaly findings. `status` = new | acknowledged | resolved | all."""
+    stmt = select(AnomalyEvent).order_by(AnomalyEvent.created_at.desc())  # type: ignore[attr-defined]
+    if status != "all":
+        stmt = stmt.where(AnomalyEvent.status == status)
+    rows = session.exec(stmt.limit(max(1, min(limit, 200)))).all()
+    return JSONResponse([
+        {
+            "id": e.id, "scope": e.scope, "rule": e.rule, "severity": e.severity,
+            "user_id": e.user_id, "model": e.model,
+            "window_start": e.window_start.isoformat(), "window_end": e.window_end.isoformat(),
+            "observed": e.observed, "baseline": e.baseline, "ratio": e.ratio,
+            "detail": e.detail, "status": e.status,
+            "created_at": e.created_at.isoformat(),
+        }
+        for e in rows
+    ])
+
+
+def _set_anomaly_status(session: Session, event_id: int, status: str) -> JSONResponse:
+    ev = session.get(AnomalyEvent, event_id)
+    if not ev:
+        raise HTTPException(status_code=404, detail="Anomaly event not found.")
+    ev.status = status
+    ev.updated_at = datetime.now(timezone.utc)
+    session.add(ev)
+    session.commit()
+    return JSONResponse({"ok": True, "id": event_id, "status": status})
+
+
+@router.post("/api/anomalies/{event_id}/ack")
+async def ack_anomaly(event_id: int, session: Session = Depends(get_session)):
+    return _set_anomaly_status(session, event_id, "acknowledged")
+
+
+@router.post("/api/anomalies/{event_id}/resolve")
+async def resolve_anomaly(event_id: int, session: Session = Depends(get_session)):
+    return _set_anomaly_status(session, event_id, "resolved")
 
 
 # ── Usage Export ──

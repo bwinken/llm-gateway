@@ -1,0 +1,10 @@
+[Unit]
+Description=Run LLM Gateway usage_logs cleanup monthly
+
+[Timer]
+OnCalendar=monthly
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target
