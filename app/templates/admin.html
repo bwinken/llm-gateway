@@ -272,7 +272,7 @@ function submitExportCsv() {
                 </tr></thead>
                 <tbody>
                     {% for d in dept_usage %}
-                    <tr>
+                    <tr class="dept-row">
                         <td>
                             <span class="text-sm font-medium text-t1">{{ d.department }}</span>
                         </td>
@@ -288,6 +288,39 @@ function submitExportCsv() {
                     {% endif %}
                 </tbody>
             </table>
+            {% if dept_usage|length > 15 %}
+            {# Client-side pager: rows are already rendered (sorted by cost),
+               JS just windows them 15 at a time — no page round-trip. #}
+            <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)">
+                <button id="deptPrev" class="gw-btn gw-btn-ghost text-xs px-2 py-1">&larr; Prev</button>
+                <span id="deptRange"></span>
+                <button id="deptNext" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Next &rarr;</button>
+            </div>
+            <script>
+            (function(){
+                var SIZE = 15;
+                var rows = Array.prototype.slice.call(document.querySelectorAll('.dept-row'));
+                if (rows.length <= SIZE) return;
+                var page = 0;
+                var prev = document.getElementById('deptPrev');
+                var next = document.getElementById('deptNext');
+                var range = document.getElementById('deptRange');
+                function render(){
+                    var start = page * SIZE, end = Math.min(start + SIZE, rows.length);
+                    rows.forEach(function(r, i){ r.style.display = (i >= start && i < end) ? '' : 'none'; });
+                    range.textContent = (start + 1) + '-' + end + ' of ' + rows.length;
+                    var atStart = page === 0, atEnd = end >= rows.length;
+                    prev.classList.toggle('opacity-30', atStart);
+                    prev.classList.toggle('pointer-events-none', atStart);
+                    next.classList.toggle('opacity-30', atEnd);
+                    next.classList.toggle('pointer-events-none', atEnd);
+                }
+                prev.addEventListener('click', function(){ if (page > 0) { page--; render(); } });
+                next.addEventListener('click', function(){ if ((page + 1) * SIZE < rows.length) { page++; render(); } });
+                render();
+            })();
+            </script>
+            {% endif %}
         </div>
     </div>
 </div>

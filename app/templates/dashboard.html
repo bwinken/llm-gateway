@@ -282,13 +282,19 @@
                 <span class="text-ag">Unlimited</span>
             {% endif %}
         </div>
-        {% if azure_today_cost > 0 or azure_limit > 0 or bedrock_today_cost > 0 or bedrock_limit > 0 %}
+        {# A cloud backend's row appears only when the user has that access
+           OR actually spent on it today (real spend must never be hidden —
+           e.g. access revoked mid-day). A stale sub-limit alone must NOT
+           surface a backend the user has no access to. #}
+        {% set show_azure_row = azure_today_cost > 0 or (azure_access and azure_limit > 0) %}
+        {% set show_bedrock_row = bedrock_today_cost > 0 or (bedrock_access and bedrock_limit > 0) %}
+        {% if show_azure_row or show_bedrock_row %}
         <div class="mt-2 pt-2 border-t border-n3 text-[11px] text-t4 font-mono space-y-1">
             <div class="flex justify-between">
                 <span class="gw-tip" data-tip="On-prem (vLLM) portion of today's cost">On-prem</span>
                 <span class="text-t2">${{ "%.4f"|format(vllm_today_cost) }}</span>
             </div>
-            {% if azure_today_cost > 0 or azure_limit > 0 %}
+            {% if show_azure_row %}
             <div class="flex justify-between">
                 <span class="gw-tip gw-tip-wide" data-tip="Azure portion of today's cost{{ '. Azure calls return 429 when the Azure sub-limit is exceeded.' if azure_limit > 0 }}" style="color:#cab9ff">Azure</span>
                 <span class="text-t2">${{ "%.4f"|format(azure_today_cost) }}{% if azure_limit > 0 %} <span class="{{ 'text-ar' if azure_usage_percent > 90 else 'text-t4' }}">/ ${{ azure_limit }}</span>{% endif %}</span>
@@ -299,7 +305,7 @@
             </div>
             {% endif %}
             {% endif %}
-            {% if bedrock_today_cost > 0 or bedrock_limit > 0 %}
+            {% if show_bedrock_row %}
             <div class="flex justify-between">
                 <span class="gw-tip gw-tip-wide" data-tip="AWS Bedrock portion of today's cost{{ '. Bedrock calls return 429 when the Bedrock sub-limit is exceeded.' if bedrock_limit > 0 }}" style="color:#ffcb8a">AWS</span>
                 <span class="text-t2">${{ "%.4f"|format(bedrock_today_cost) }}{% if bedrock_limit > 0 %} <span class="{{ 'text-ar' if bedrock_usage_percent > 90 else 'text-t4' }}">/ ${{ bedrock_limit }}</span>{% endif %}</span>
