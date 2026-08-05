@@ -56,7 +56,11 @@ _DATA_URL_PREFIX = "data:image/"
 # reasoning_effort -> Claude thinking budget_tokens (Bedrock
 # additionalModelRequestFields). Buckets mirror the Anthropic adapter's
 # budget->effort mapping so a Claude Code round trip lands near its origin.
-_EFFORT_TO_BUDGET = {"low": 2048, "medium": 8192, "high": 16384}
+# "minimal" maps to Anthropic's floor (1024); "xhigh" (Claude Code's
+# extra-high / max) gets a genuinely larger budget so the higher setting is
+# felt rather than silently clamped. "none" is handled at the call site —
+# it means thinking OFF, not a tiny budget.
+_EFFORT_TO_BUDGET = {"minimal": 1024, "low": 2048, "medium": 8192, "high": 16384, "xhigh": 32768}
 
 
 def _image_part_to_converse(part: dict[str, Any]) -> dict[str, Any] | None:
@@ -261,16 +265,24 @@ def openai_chat_to_converse_request(
     if effort:
         mid = (model_id or "").lower()
         if "anthropic" in mid:
-            out["additionalModelRequestFields"] = {
-                "thinking": {
-                    "type": "enabled",
-                    "budget_tokens": _EFFORT_TO_BUDGET.get(effort, _EFFORT_TO_BUDGET["medium"]),
-                },
-            }
-            # Anthropic rejects sampling overrides alongside extended thinking.
-            inference.pop("temperature", None)
-            inference.pop("topP", None)
+            if effort == "none":
+                # "none" = thinking off — omit the thinking block entirely
+                # (sampling overrides stay usable without extended thinking).
+                pass
+            else:
+                out["additionalModelRequestFields"] = {
+                    "thinking": {
+                        "type": "enabled",
+                        "budget_tokens": _EFFORT_TO_BUDGET.get(effort, _EFFORT_TO_BUDGET["medium"]),
+                    },
+                }
+                # Anthropic rejects sampling overrides alongside extended thinking.
+                inference.pop("temperature", None)
+                inference.pop("topP", None)
         elif "openai" in mid:
+            # Verbatim pass-through — the model is the authority on which
+            # effort levels it supports (gpt-oss knows low/medium/high;
+            # newer OpenAI-family models add minimal/none/xhigh).
             out["additionalModelRequestFields"] = {"reasoning_effort": effort}
         # Other families: no portable reasoning knob — rely on model defaults.
 

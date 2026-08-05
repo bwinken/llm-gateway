@@ -392,9 +392,16 @@ class TestRequestTranslation:
         assert "reasoning" not in assistant_msg
 
     def test_effort_string_mapped(self):
+        """Faithful translation — every level survives, no clamping.
+
+        Spelling variants normalize (max / extra-high → xhigh) but the level
+        itself is preserved; downstreams that don't know a level ignore or
+        reject it visibly, downstreams that do give the user what they set.
+        """
         for eff, expected in [
+            ("minimal", "minimal"), ("none", "none"),
             ("low", "low"), ("medium", "medium"), ("high", "high"),
-            ("max", "high"), ("extra-high", "high"), ("minimal", "low"),
+            ("xhigh", "xhigh"), ("max", "xhigh"), ("extra-high", "xhigh"),
         ]:
             body = {
                 "model": "x",
@@ -404,10 +411,22 @@ class TestRequestTranslation:
             out = anthropic_to_openai_request(body, is_reasoning=True)
             assert out["reasoning_effort"] == expected, f"effort={eff}"
 
+    def test_unknown_effort_passes_through(self):
+        """Unrecognized spellings pass through verbatim (lowercased) — the
+        downstream is the authority on what it supports."""
+        body = {
+            "model": "x",
+            "messages": [{"role": "user", "content": "hi"}],
+            "effort": "Ultra",
+        }
+        out = anthropic_to_openai_request(body, is_reasoning=True)
+        assert out["reasoning_effort"] == "ultra"
+
     def test_thinking_budget_bucketed_to_effort(self):
         for budget, expected in [(1024, "low"), (4096, "low"),
                                  (8192, "medium"), (16384, "medium"),
-                                 (32000, "high")]:
+                                 (32000, "high"), (32768, "high"),
+                                 (48000, "xhigh")]:
             body = {
                 "model": "x",
                 "messages": [{"role": "user", "content": "hi"}],
