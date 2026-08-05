@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import sqlalchemy as sa
-from sqlalchemy import Index
+from sqlalchemy import Index, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -69,3 +69,38 @@ class UsageLog(SQLModel, table=True):
     # spend without parsing the endpoint label.
     backend: str = Field(default="vllm", sa_column=sa.Column(sa.String, nullable=False, server_default="vllm"))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class AnomalyEvent(SQLModel, table=True):
+    """Findings from the periodic usage-anomaly scan (scripts/scan_anomalies.py).
+
+    One row per (scope, rule, window_start) — the scan upserts, so re-running
+    the same window is idempotent and an ongoing anomaly keeps updating one
+    row (window_end / observed grow) instead of spawning a row per run.
+    `scope` is "user:<id>" for per-account rules and "model:<alias>" for
+    model-level rules (empty-turn rate), which keeps the uniqueness key
+    non-null; `user_id` / `model` are denormalized copies for joins and
+    display. Alert side-channels must fire only when a row is CREATED, never
+    on updates, so a long-running anomaly alerts exactly once.
+    """
+    __tablename__ = "anomaly_events"
+    __table_args__ = (
+        UniqueConstraint("scope", "rule", "window_start", name="uq_anomaly_scope_rule_window"),
+        Index("ix_anomaly_status_created", "status", "created_at"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    scope: str = Field()                    # "user:<id>" | "model:<alias>"
+    rule: str = Field()                     # cost_spike | off_hours | burst_rate | behavior_shift | empty_turn_rate
+    severity: str = Field(default="warning")  # info | warning | critical
+    user_id: int | None = Field(default=None, foreign_key="users.id", index=True)
+    model: str | None = Field(default=None)
+    window_start: datetime = Field()
+    window_end: datetime = Field()
+    observed: float = Field(default=0.0)
+    baseline: float = Field(default=0.0)
+    ratio: float = Field(default=0.0)
+    detail: str = Field(default="{}")       # JSON: summary + structured context
+    status: str = Field(default="new")      # new | acknowledged | resolved
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

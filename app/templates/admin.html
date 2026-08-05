@@ -257,6 +257,68 @@ function submitExportCsv() {
 }
 </script>
 
+{# ── Anomalies (from scripts/scan_anomalies.py; hidden when nothing open) ── #}
+{% if anomalies %}
+<div class="mb-8 gw-anim gw-d4">
+    <div class="gw-card overflow-hidden" style="border-color:rgba(255,92,92,0.25)">
+        <div class="px-5 py-3 flex items-center gap-2" style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <h3 class="text-xs font-bold uppercase tracking-wider" style="color:#ff8a8a">Anomalies</h3>
+            <span class="text-[11px] text-t4">unusual usage patterns flagged by the hourly scan</span>
+            <span class="ml-auto text-[11px] text-t4 font-mono">{{ anomalies|length }} open</span>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="gw-table">
+                <thead><tr>
+                    <th>Severity</th><th>Rule</th><th>Target</th><th>Detail</th>
+                    <th style="text-align:right">Observed / Baseline</th><th style="text-align:right">Actions</th>
+                </tr></thead>
+                <tbody>
+                    {% for a in anomalies %}
+                    <tr id="anomaly-{{ a.id }}" class="{{ 'opacity-50' if a.status == 'acknowledged' }}">
+                        <td class="whitespace-nowrap">
+                            <span class="text-[10px] px-1.5 py-0.5 rounded font-mono uppercase"
+                                  style="{{ 'background:rgba(255,92,92,0.12);color:#ff8a8a' if a.severity == 'critical' else 'background:rgba(245,166,35,0.12);color:#f5a623' }}">
+                                {{ a.severity }}</span>
+                        </td>
+                        <td class="whitespace-nowrap text-sm font-mono text-t2">{{ a.rule }}</td>
+                        <td class="whitespace-nowrap text-sm">
+                            {% if a.user_id %}<span class="text-t1 font-medium">{{ anomaly_usernames.get(a.user_id, 'user #' ~ a.user_id) }}</span>
+                            {% elif a.model %}<code class="text-t1 font-mono">{{ a.model }}</code>
+                            {% else %}{{ a.scope }}{% endif %}
+                        </td>
+                        <td class="text-xs text-t3" style="max-width:340px">{{ a.summary }}</td>
+                        <td class="whitespace-nowrap text-right text-xs font-mono text-t3">
+                            {{ '%g'|format(a.observed) }} / {{ '%g'|format(a.baseline) }}
+                            <span class="text-t4">(×{{ '%g'|format(a.ratio) }})</span>
+                        </td>
+                        <td class="whitespace-nowrap text-right">
+                            {% if a.status == 'new' %}
+                            <button onclick="anomalyAction({{ a.id }}, 'ack')" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Ack</button>
+                            {% endif %}
+                            <button onclick="anomalyAction({{ a.id }}, 'resolve')" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Resolve</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+<script>
+function anomalyAction(id, action) {
+    fetch('/admin/api/anomalies/' + id + '/' + action, { method: 'POST' })
+        .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function(){
+            var row = document.getElementById('anomaly-' + id);
+            if (!row) return;
+            if (action === 'resolve') { row.remove(); }
+            else { row.classList.add('opacity-50'); var b = row.querySelector('button'); if (b && b.textContent === 'Ack') b.remove(); }
+        })
+        .catch(function(e){ alert('Failed: ' + e.message); });
+}
+</script>
+{% endif %}
+
 {# ── Department Usage ── #}
 <div class="mb-8 gw-anim gw-d4">
     <div class="gw-card overflow-hidden">
