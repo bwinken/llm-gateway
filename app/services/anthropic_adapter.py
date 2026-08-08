@@ -256,6 +256,82 @@ def normalize_anthropic_messages(body: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# Top-level request fields stock vLLM's native /v1/messages schema accepts.
+# Claude Code attaches beta capabilities as extra body fields —
+# `context_management`, `output_config` (structured outputs; auto mode's
+# permission classifier uses this), `betas`, and `thinking: {"type":
+# "adaptive"}` — which a strict downstream parser rejects with
+# 400 "Extra inputs are not permitted", killing the whole request. The
+# gateway protocol's sanctioned degradation is to drop the capability's body
+# field (paired with its beta header, which the gateway already doesn't
+# forward): the feature turns off quietly client-side instead of hard-failing.
+_NATIVE_ALLOWED_KEYS: frozenset[str] = frozenset({
+    "model", "messages", "system", "max_tokens", "metadata",
+    "stop_sequences", "stream", "temperature", "top_k", "top_p",
+    "tools", "tool_choice", "thinking",
+})
+
+# Same idea per tool entry: Claude Code's beta tool fields (`strict`,
+# `defer_loading`) ride on each tool dict and trip the same strict parsers.
+_NATIVE_TOOL_KEYS: frozenset[str] = frozenset({
+    "name", "description", "input_schema", "type", "cache_control",
+})
+
+
+def sanitize_native_messages_body(
+    body: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Strip request fields stock vLLM's native Anthropic endpoint rejects.
+
+    Returns ``(clean_body, dropped)`` where ``dropped`` names what was
+    removed (for the caller to log). The common clean request comes back as
+    the same object with an empty list — pure pass-through stays pure.
+
+    - Unknown top-level fields are dropped (see ``_NATIVE_ALLOWED_KEYS``).
+    - ``thinking`` survives only with type ``enabled``/``disabled``; the
+      newer ``adaptive`` type is dropped so the downstream's own default
+      applies instead of a schema error.
+    - Non-whitelisted keys on each tool entry are dropped.
+    """
+    dropped: list[str] = []
+
+    top_extra = [k for k in body if k not in _NATIVE_ALLOWED_KEYS]
+
+    thinking = body.get("thinking")
+    thinking_ok = not isinstance(thinking, dict) or thinking.get("type") in (
+        "enabled", "disabled",
+    )
+
+    tools = body.get("tools")
+    dirty_tools = isinstance(tools, list) and any(
+        isinstance(t, dict) and any(k not in _NATIVE_TOOL_KEYS for k in t)
+        for t in tools
+    )
+
+    if not top_extra and thinking_ok and not dirty_tools:
+        return body, dropped
+
+    out = {k: v for k, v in body.items() if k in _NATIVE_ALLOWED_KEYS}
+    dropped.extend(top_extra)
+
+    if not thinking_ok:
+        out.pop("thinking", None)
+        dropped.append(f"thinking(type={thinking.get('type')!r})")
+
+    if dirty_tools:
+        clean_tools = []
+        tool_extras: set[str] = set()
+        for t in tools:
+            if isinstance(t, dict):
+                tool_extras.update(k for k in t if k not in _NATIVE_TOOL_KEYS)
+                t = {k: v for k, v in t.items() if k in _NATIVE_TOOL_KEYS}
+            clean_tools.append(t)
+        out["tools"] = clean_tools
+        dropped.extend(f"tools[].{k}" for k in sorted(tool_extras))
+
+    return out, dropped
+
+
 def anthropic_to_openai_request(
     body: dict[str, Any],
     is_reasoning: bool = False,

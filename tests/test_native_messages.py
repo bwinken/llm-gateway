@@ -12,7 +12,10 @@ import json
 import httpx
 import pytest
 
-from app.services.anthropic_adapter import normalize_anthropic_messages
+from app.services.anthropic_adapter import (
+    normalize_anthropic_messages,
+    sanitize_native_messages_body,
+)
 from tests.conftest import (
     FakeStreamResponse,
     TEST_MODEL_ROUTING,
@@ -438,3 +441,103 @@ class TestFlagOff:
 
         assert resp.status_code == 200
         assert captured["urls"] == ["http://mock-llm:8000/v1/chat/completions"]
+
+
+class TestSanitizeNativeBody:
+    """sanitize_native_messages_body: Claude Code beta fields (auto mode's
+    classifier requests carry output_config / context_management, adaptive
+    thinking, tool strict/defer_loading) are stripped before hitting stock
+    vLLM's strict schema instead of 400ing the whole request."""
+
+    def test_clean_body_returned_same_object(self):
+        body = {
+            "model": "test-llm",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "enabled", "budget_tokens": 2048},
+            "tools": [{"name": "t", "description": "d", "input_schema": {}}],
+        }
+        out, dropped = sanitize_native_messages_body(body)
+        assert out is body
+        assert dropped == []
+
+    def test_beta_top_level_fields_dropped(self):
+        body = {
+            "model": "test-llm",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "hi"}],
+            "context_management": {"edits": []},
+            "output_config": {"format": {"type": "json_schema"}},
+            "betas": ["context-management-2025-06-27"],
+        }
+        out, dropped = sanitize_native_messages_body(body)
+        assert "context_management" not in out
+        assert "output_config" not in out
+        assert "betas" not in out
+        assert set(dropped) == {"context_management", "output_config", "betas"}
+        # Known fields survive untouched.
+        assert out["max_tokens"] == 100
+        assert out["messages"] == body["messages"]
+
+    def test_adaptive_thinking_dropped_enabled_kept(self):
+        adaptive = {
+            "model": "m", "messages": [],
+            "thinking": {"type": "adaptive"},
+        }
+        out, dropped = sanitize_native_messages_body(adaptive)
+        assert "thinking" not in out
+        assert dropped == ["thinking(type='adaptive')"]
+
+        enabled = {
+            "model": "m", "messages": [],
+            "thinking": {"type": "disabled"},
+        }
+        out, dropped = sanitize_native_messages_body(enabled)
+        assert out is enabled
+        assert dropped == []
+
+    def test_beta_tool_fields_stripped(self):
+        body = {
+            "model": "m", "messages": [],
+            "tools": [
+                {"name": "t1", "description": "d", "input_schema": {},
+                 "strict": True, "defer_loading": True},
+                {"name": "t2", "input_schema": {}},
+            ],
+        }
+        out, dropped = sanitize_native_messages_body(body)
+        assert out["tools"][0] == {"name": "t1", "description": "d", "input_schema": {}}
+        assert out["tools"][1] == {"name": "t2", "input_schema": {}}
+        assert sorted(dropped) == ["tools[].defer_loading", "tools[].strict"]
+
+    def test_native_path_forwards_sanitized_body(self, client, test_user, native_llm):
+        """End-to-end: beta fields never reach the downstream."""
+        downstream = make_httpx_response(200, {
+            "id": "msg_1", "type": "message", "role": "assistant",
+            "model": "real-llm-v1",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 1},
+        })
+        post, captured = make_post_router({"/messages": downstream})
+        client.__httpx_mock__.post = post
+
+        resp = client.post(
+            "/v1/messages",
+            json={
+                "model": "test-llm",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+                "thinking": {"type": "adaptive"},
+                "context_management": {"edits": []},
+                "output_config": {"format": {"type": "json_schema"}},
+            },
+            headers=auth_header(),
+        )
+
+        assert resp.status_code == 200
+        sent = captured["json"]
+        assert "context_management" not in sent
+        assert "output_config" not in sent
+        assert "thinking" not in sent
+        assert sent["model"] == "real-llm-v1"
