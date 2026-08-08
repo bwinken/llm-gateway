@@ -293,7 +293,8 @@
                             ("DISABLE_INTERLEAVED_THINKING", "Set to 1 to suppress interleaved thinking blocks."),
                         ]),
                         ("Telemetry & updates", [
-                            ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "Set to 1 to block update checks and non-essential phone-home. Also disables gateway model discovery — leave unset if you use CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY."),
+                            ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "Master switch bundling DISABLE_TELEMETRY, DISABLE_ERROR_REPORTING, feedback/surveys and the auto-updater. Presence counts — even \"0\" enables it; remove the key to turn it off. Also disables gateway model discovery: use the granular flags instead if you want CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY."),
+                            ("DISABLE_ERROR_REPORTING", "Set to 1 to disable Sentry crash reporting (granular alternative to the master switch)."),
                             ("DISABLE_TELEMETRY", "Set to 1 to disable OTel metrics/events."),
                             ("CLAUDECODE", "Internal marker set to 1 inside Claude Code sessions; generally not user-set."),
                         ]),

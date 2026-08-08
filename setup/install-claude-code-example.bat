@@ -66,11 +66,15 @@ set "CUSTOM_MODEL_CAPABILITIES=tools"
 
 REM  Set to 1 to let Claude Code populate its /model picker from the
 REM  gateway's GET /v1/models at startup (CLAUDE_CODE_ENABLE_GATEWAY_
-REM  MODEL_DISCOVERY). NOTE: discovery never runs while
-REM  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1, so enabling this also
-REM  leaves nonessential traffic ON (update checks etc.). Claude Code
-REM  only keeps model IDs containing "claude" or "anthropic" — name
-REM  gateway aliases accordingly if they should show up in the picker.
+REM  MODEL_DISCOVERY). Discovery counts as "nonessential traffic", so it
+REM  never runs while CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set
+REM  (set to ANY value, even "0" — Claude Code only checks presence).
+REM  When enabled, the master flag is therefore REMOVED and replaced with
+REM  its granular equivalents (DISABLE_ERROR_REPORTING here, plus the
+REM  DISABLE_TELEMETRY knob above), keeping phone-home blocked while
+REM  discovery — which only talks to this gateway — still works.
+REM  Claude Code only keeps model IDs containing "claude" or "anthropic";
+REM  name gateway aliases accordingly if they should show in the picker.
 set "ENABLE_MODEL_DISCOVERY=1"
 
 set "MAX_CONTEXT_TOKENS=0"
@@ -325,7 +329,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$e['ANTHROPIC_BASE_URL']='%GATEWAY_URL%';" ^
   "$e['ANTHROPIC_API_KEY']='%API_KEY%';" ^
   "$e['ANTHROPIC_AUTH_TOKEN']='%API_KEY%';" ^
-  "if('%ENABLE_MODEL_DISCOVERY%' -eq '1'){$e['CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY']='1';$e.Remove('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC')}else{$e['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1';$e.Remove('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY')};" ^
+  "if('%ENABLE_MODEL_DISCOVERY%' -eq '1'){$e['CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY']='1';$e['DISABLE_ERROR_REPORTING']='1';$e.Remove('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC')}else{$e['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1';$e.Remove('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY')};" ^
   "if('%DISABLE_TELEMETRY%' -eq '1'){$e['DISABLE_TELEMETRY']='1'};" ^
   "if('%DISABLE_INTERLEAVED_THINKING%' -eq '1'){$e['DISABLE_INTERLEAVED_THINKING']='1'};" ^
   "if('%DISABLE_1M_CONTEXT%' -eq '1'){$e['CLAUDE_CODE_DISABLE_1M_CONTEXT']='1'};" ^
