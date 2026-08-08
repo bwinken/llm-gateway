@@ -64,6 +64,15 @@ set "CUSTOM_MODEL_ALIAS="
 set "CUSTOM_MODEL_DESCRIPTION="
 set "CUSTOM_MODEL_CAPABILITIES=tools"
 
+REM  Set to 1 to let Claude Code populate its /model picker from the
+REM  gateway's GET /v1/models at startup (CLAUDE_CODE_ENABLE_GATEWAY_
+REM  MODEL_DISCOVERY). NOTE: discovery never runs while
+REM  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1, so enabling this also
+REM  leaves nonessential traffic ON (update checks etc.). Claude Code
+REM  only keeps model IDs containing "claude" or "anthropic" — name
+REM  gateway aliases accordingly if they should show up in the picker.
+set "ENABLE_MODEL_DISCOVERY=1"
+
 set "MAX_CONTEXT_TOKENS=0"
 set "MAX_OUTPUT_TOKENS=0"
 set "AUTO_COMPACT_WINDOW=0"
@@ -316,7 +325,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$e['ANTHROPIC_BASE_URL']='%GATEWAY_URL%';" ^
   "$e['ANTHROPIC_API_KEY']='%API_KEY%';" ^
   "$e['ANTHROPIC_AUTH_TOKEN']='%API_KEY%';" ^
-  "$e['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1';" ^
+  "if('%ENABLE_MODEL_DISCOVERY%' -eq '1'){$e['CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY']='1';$e.Remove('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC')}else{$e['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1';$e.Remove('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY')};" ^
   "if('%DISABLE_TELEMETRY%' -eq '1'){$e['DISABLE_TELEMETRY']='1'};" ^
   "if('%DISABLE_INTERLEAVED_THINKING%' -eq '1'){$e['DISABLE_INTERLEAVED_THINKING']='1'};" ^
   "if('%DISABLE_1M_CONTEXT%' -eq '1'){$e['CLAUDE_CODE_DISABLE_1M_CONTEXT']='1'};" ^
@@ -353,6 +362,11 @@ echo.
 echo    Settings written to %USERPROFILE%\.claude\settings.json
 echo      ANTHROPIC_BASE_URL        = %GATEWAY_URL%
 echo      ANTHROPIC_API_KEY         = %API_KEY_MASKED%
+if "%ENABLE_MODEL_DISCOVERY%"=="1" (
+    echo      GATEWAY_MODEL_DISCOVERY   = enabled ^(nonessential traffic left on^)
+) else (
+    echo      GATEWAY_MODEL_DISCOVERY   = disabled ^(nonessential traffic blocked^)
+)
 if not "%DEFAULT_MODEL%"=="" echo      model                     = %DEFAULT_MODEL%
 if not "%SMALL_FAST_MODEL%"=="" echo      ANTHROPIC_SMALL_FAST_MODEL = %SMALL_FAST_MODEL%
 if defined GIT_BASH_PATH (

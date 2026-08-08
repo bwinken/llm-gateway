@@ -278,6 +278,7 @@
                             ("ANTHROPIC_BASE_URL", "Base URL of the Claude-compatible API. Point this at the gateway."),
                             ("ANTHROPIC_API_KEY", "Your personal API key (from the dashboard). Used as Bearer token."),
                             ("ANTHROPIC_AUTH_TOKEN", "Alternative token header. Use API_KEY unless told otherwise."),
+                            ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "Set to 1 to fill the /model picker from the gateway's /v1/models at startup. Never runs while CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1, and only model IDs containing \"claude\" or \"anthropic\" are kept."),
                         ]),
                         ("Custom model option", [
                             ("ANTHROPIC_CUSTOM_MODEL_OPTION", "Model alias to expose as a picker entry (matches the \"model\" top-level key)."),
@@ -292,7 +293,7 @@
                             ("DISABLE_INTERLEAVED_THINKING", "Set to 1 to suppress interleaved thinking blocks."),
                         ]),
                         ("Telemetry & updates", [
-                            ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "Set to 1 to block update checks and non-essential phone-home."),
+                            ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "Set to 1 to block update checks and non-essential phone-home. Also disables gateway model discovery — leave unset if you use CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY."),
                             ("DISABLE_TELEMETRY", "Set to 1 to disable OTel metrics/events."),
                             ("CLAUDECODE", "Internal marker set to 1 inside Claude Code sessions; generally not user-set."),
                         ]),

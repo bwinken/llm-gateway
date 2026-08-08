@@ -38,6 +38,7 @@ from app.services.anthropic_adapter import (
     anthropic_to_openai_request,
     empty_turn_warning,
     normalize_anthropic_messages,
+    sanitize_native_messages_body,
     openai_message_to_anthropic,
     openai_to_anthropic_response,
     summarize_request_shape,
@@ -917,7 +918,15 @@ async def _forward_messages_native(
     system-role normalization (a no-op for schema-clean requests — see
     ``normalize_anthropic_messages``).
     """
-    native_body = dict(normalize_anthropic_messages(anthropic_body))
+    native_body, dropped = sanitize_native_messages_body(
+        normalize_anthropic_messages(anthropic_body)
+    )
+    native_body = dict(native_body)
+    if dropped:
+        logger.warning(
+            "Native /v1/messages: dropped unsupported field(s) {} | user={} model={}",
+            dropped, user.username, model_alias,
+        )
     native_body["model"] = route["real_model"]
     url = f"{route['base_url']}/messages"
     headers = _get_downstream_headers(route)
@@ -1354,7 +1363,10 @@ async def vllm_forward_count_tokens(
     # use. Any failure (older vLLM, network) falls through to the /tokenize
     # translation below, which has its own chars/4 last resort.
     if route.get("native_messages"):
-        native_body = dict(normalize_anthropic_messages(anthropic_body))
+        native_body, _dropped = sanitize_native_messages_body(
+            normalize_anthropic_messages(anthropic_body)
+        )
+        native_body = dict(native_body)
         native_body["model"] = real_model
         try:
             resp = await get_client().post(
