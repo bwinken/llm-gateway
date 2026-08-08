@@ -110,8 +110,23 @@ class TestHealthPoolStarvation:
         _run_check(_PoolStarvedClient(), {"m": {"base_url": url, "api_key": ""}})
         assert real_is_alive(url) is True
 
-    def test_connect_error_still_marks_down(self):
+    def test_connect_error_marks_down_after_hysteresis(self):
+        """An UP server survives one failed probe (blip tolerance) but is
+        marked DOWN on the second consecutive failure."""
         url = "http://idle-guard-test-b:8000/v1"
+        health._consecutive_failures.pop(url, None)
         set_alive(url, True)
+        routing = {"m": {"base_url": url, "api_key": ""}}
+        _run_check(_DeadClient(), routing)
+        assert real_is_alive(url) is True  # first failure: kept UP
+        _run_check(_DeadClient(), routing)
+        assert real_is_alive(url) is False  # second consecutive: DOWN
+
+    def test_connect_error_marks_never_up_server_down_immediately(self):
+        """Hysteresis only protects the UP state — a server that has never
+        probed successfully goes (stays) DOWN on the first failure."""
+        url = "http://idle-guard-test-c:8000/v1"
+        health._consecutive_failures.pop(url, None)
+        set_alive(url, False)
         _run_check(_DeadClient(), {"m": {"base_url": url, "api_key": ""}})
         assert real_is_alive(url) is False

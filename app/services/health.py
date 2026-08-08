@@ -13,11 +13,40 @@ from app.core.config import MODEL_ROUTING, _check_auto_reload
 from app.core.logger import logger
 from app.core.server_state import (
     get_health_client,
+    is_alive,
     pool_snapshot,
     prune_cache,
     set_alive,
     set_metrics,
 )
+
+# Consecutive probe failures required before a currently-UP server is marked
+# DOWN. A single failed probe against a healthy server is usually a blip
+# (GC pause, momentary saturation); flipping on the first failure made the
+# cache flap and needlessly rerouted a whole interval of traffic. A server
+# that is already DOWN (or has never succeeded) is marked DOWN immediately —
+# hysteresis only protects the UP state. Recovery is instant: one successful
+# probe flips UP and resets the counter.
+_DOWN_AFTER = 2
+_consecutive_failures: dict[str, int] = {}
+
+
+def _apply_probe_result(base_url: str, alive: bool) -> bool:
+    """Update the health cache with hysteresis; return the recorded state."""
+    if alive:
+        _consecutive_failures.pop(base_url, None)
+        set_alive(base_url, True)
+        return True
+    fails = _consecutive_failures.get(base_url, 0) + 1
+    _consecutive_failures[base_url] = fails
+    if fails >= _DOWN_AFTER or not is_alive(base_url):
+        set_alive(base_url, False)
+        return False
+    logger.warning(
+        "Health probe failed for {} ({}/{}) — keeping UP until threshold",
+        base_url, fails, _DOWN_AFTER,
+    )
+    return True
 
 
 def _metrics_url(base_url: str) -> str:
@@ -96,7 +125,7 @@ async def check_all_servers() -> None:
             return
         except Exception:
             alive = False
-        set_alive(base_url, alive)
+        alive = _apply_probe_result(base_url, alive)
         if not alive:
             logger.warning("Server DOWN: {}", base_url)
             set_metrics(base_url, None)
@@ -119,6 +148,8 @@ async def check_all_servers() -> None:
 
     await asyncio.gather(*[_ping(url, key) for url, key in seen.items()])
     prune_cache(set(seen.keys()))
+    for url in [u for u in _consecutive_failures if u not in seen]:
+        _consecutive_failures.pop(url, None)
     _report_pool_utilization()
 
 

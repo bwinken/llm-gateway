@@ -72,8 +72,7 @@ class TestResponsesNonStream:
         captured = {}
 
         async def capture_post(*args, **kwargs):
-            raw = kwargs.get("content", b"")
-            captured["body"] = json.loads(raw) if raw else {}
+            captured["body"] = kwargs.get("json") or {}
             return make_httpx_response(200, {
                 "id": "resp-swap",
                 "object": "response",
