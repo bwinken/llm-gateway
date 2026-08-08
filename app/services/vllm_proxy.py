@@ -30,7 +30,7 @@ from sqlmodel import Session
 from app.core.config import FALLBACK_MAP, MODEL_ROUTING, PRICING_MAP, _check_auto_reload
 from app.core.database import engine
 from app.core.logger import logger
-from app.core.server_state import get_client, is_alive
+from app.core.server_state import get_client, is_alive, mark_down
 from app.models.schema import UsageLog, User
 from app.services.anthropic_adapter import (
     AnthropicStreamTranslator,
@@ -528,6 +528,174 @@ def _fallback_headers(fallback_reason: str | None) -> dict[str, str]:
     return {}
 
 
+# ---------------------------------------------------------------------------
+# Request-time failover
+#
+# The health cache is refreshed every 30s, so a server that just died would
+# otherwise 502 every request until the next probe. Instead, each downstream
+# call gets ONE failover retry against a different alive server of the same
+# type when:
+#   - the CONNECTION fails (request never sent — always safe to retry); the
+#     dead server is additionally marked DOWN in the health cache so
+#     subsequent requests skip it immediately, or
+#   - the response is 502/503/504 (LB "backend gone" / overloaded — no
+#     partial output exists); the server is NOT marked down for these, it
+#     answered, it just can't serve right now.
+# Streams only fail over BEFORE the response is handed to the SSE pump —
+# never mid-stream. Other statuses (4xx, 500) surface as-is: they are
+# request- or model-specific and would fail identically elsewhere.
+# ---------------------------------------------------------------------------
+
+_FAILOVER_STATUSES = frozenset({502, 503, 504})
+_CONNECT_FAILURES = (httpx.ConnectError, httpx.ConnectTimeout)
+
+
+def _alternative_route(
+    model_type: str, exclude_base_url: str
+) -> tuple[str, dict[str, Any]] | None:
+    """An alive same-type route on a DIFFERENT server, preferring the
+    configured fallback alias. None when no distinct candidate exists."""
+    fb_alias = FALLBACK_MAP.get(model_type)
+    if fb_alias:
+        r = MODEL_ROUTING.get(fb_alias)
+        if (
+            r and r["type"] == model_type
+            and r["base_url"] != exclude_base_url and is_alive(r["base_url"])
+        ):
+            return fb_alias, r
+    for alias, r in MODEL_ROUTING.items():
+        if (
+            r["type"] == model_type
+            and r["base_url"] != exclude_base_url and is_alive(r["base_url"])
+        ):
+            return alias, r
+    return None
+
+
+def _failover_route(
+    model_type: str, failed_route: dict[str, Any], why: str, *, mark: bool
+) -> tuple[str, dict[str, Any], str] | None:
+    """Handle a failed attempt: optionally mark the server DOWN, then pick
+    an alternative. Returns (alias, route, note) or None."""
+    if mark:
+        mark_down(failed_route["base_url"])
+        logger.warning("Marked DOWN after {}: {}", why, failed_route["base_url"])
+    alt = _alternative_route(model_type, failed_route["base_url"])
+    if alt is None:
+        logger.warning(
+            "No failover candidate after {} on {}", why, failed_route["base_url"],
+        )
+        return None
+    alias, route = alt
+    logger.warning(
+        "Failover: {} on {} — retrying on {} (alias={})",
+        why, failed_route["base_url"], route["base_url"], alias,
+    )
+    return alias, route, f"failover: {why}"
+
+
+async def _post_with_failover(
+    client, path: str, body: dict, alias: str, model_type: str,
+    route: dict[str, Any], timeout: float = _NON_STREAM_TIMEOUT,
+):
+    """POST ``{route.base_url}{path}`` with a single failover retry.
+
+    Mutates ``body["model"]`` to each attempt's real_model. Returns
+    ``(resp, alias, route, note)`` — alias/route reflect the server that
+    actually answered; ``note`` is set when failover happened. Re-raises the
+    connect exception when the final attempt fails at the connection level.
+    """
+    note: str | None = None
+    while True:
+        body["model"] = route["real_model"]
+        url = f"{route['base_url']}{path}"
+        try:
+            resp = await client.post(
+                url, json=body, headers=_get_downstream_headers(route), timeout=timeout,
+            )
+        except _CONNECT_FAILURES as exc:
+            alt = (
+                _failover_route(
+                    model_type, route, f"connect failure ({type(exc).__name__})", mark=True,
+                )
+                if note is None else None
+            )
+            if alt is None:
+                raise
+            alias, route, note = alt
+            continue
+        if note is None and resp.status_code in _FAILOVER_STATUSES:
+            alt = _failover_route(
+                model_type, route, f"HTTP {resp.status_code}", mark=False,
+            )
+            if alt is not None:
+                alias, route, note = alt
+                continue
+        return resp, alias, route, note
+
+
+async def _open_stream_with_failover(
+    client, path: str, body: dict, alias: str, model_type: str,
+    route: dict[str, Any],
+):
+    """Open a streaming connection with a single failover retry (pre-flight
+    only — nothing has been sent to the client yet). Same contract as
+    ``_post_with_failover``; non-failover statuses are returned as-is for
+    the caller's existing pre-flight/pump handling."""
+    note: str | None = None
+    while True:
+        body["model"] = route["real_model"]
+        req = client.build_request(
+            "POST", f"{route['base_url']}{path}", json=body,
+            headers=_get_downstream_headers(route), timeout=_STREAM_TIMEOUT,
+        )
+        try:
+            resp = await client.send(req, stream=True)
+        except _CONNECT_FAILURES as exc:
+            alt = (
+                _failover_route(
+                    model_type, route, f"connect failure ({type(exc).__name__})", mark=True,
+                )
+                if note is None else None
+            )
+            if alt is None:
+                raise
+            alias, route, note = alt
+            continue
+        if note is None and resp.status_code in _FAILOVER_STATUSES:
+            alt = _failover_route(
+                model_type, route, f"HTTP {resp.status_code}", mark=False,
+            )
+            if alt is not None:
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
+                alias, route, note = alt
+                continue
+        return resp, alias, route, note
+
+
+async def _opened(resp):
+    """Adapt an already-opened streaming response to _pump_sse_lines's
+    send-coroutine interface."""
+    return resp
+
+
+def _merge_failover_header(
+    extra_headers: dict[str, str] | None, note: str | None
+) -> dict[str, str] | None:
+    if not note:
+        return extra_headers
+    merged = dict(extra_headers or {})
+    # A resolve-time fallback reason (if any) is superseded by the
+    # request-time failover note — the latter names the server that served.
+    merged["X-Model-Fallback"] = (
+        f"{merged['X-Model-Fallback']}; {note}" if merged.get("X-Model-Fallback") else note
+    )
+    return merged
+
+
 def _tokenize_url(base_url: str) -> str:
     """vLLM exposes /tokenize at the server root, not under /v1, but the
     configured base_url usually ends in /v1 (so chat/completions etc. resolve
@@ -631,11 +799,14 @@ async def _non_stream_chat(
     route: dict[str, Any] | None = None,
 ) -> JSONResponse:
     try:
-        resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
+        resp, model, route, failover_note = await _post_with_failover(
+            client, "/chat/completions", body, model, model_type, route,
+        )
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         _log_error(user, monitor_body or body, str(exc), 502, model, "/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    extra_headers = _merge_failover_header(extra_headers, failover_note)
 
     if resp.status_code != 200:
         _log_error(user, monitor_body or body, resp.text[:500], resp.status_code, model, "/v1/chat/completions", model_type)
@@ -656,7 +827,15 @@ async def _stream_chat(
     extra_headers: dict[str, str] | None = None, monitor_body: dict | None = None,
     route: dict[str, Any] | None = None,
 ) -> StreamingResponse:
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
+    try:
+        opened_resp, model, route, failover_note = await _open_stream_with_failover(
+            client, "/chat/completions", body, model, model_type, route,
+        )
+    except Exception as exc:
+        logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
+        _log_error(user, monitor_body or body, str(exc), 502, model, "/v1/chat/completions", model_type)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    extra_headers = _merge_failover_header(extra_headers, failover_note)
     _capture_io = capture_io_enabled()
 
     async def event_generator():
@@ -667,7 +846,7 @@ async def _stream_chat(
         # max-idle ceiling so a dead downstream can't hold a pool connection
         # forever. Idle ticks are consumed silently — OpenAI-shape clients
         # get no heartbeat on the wire.
-        async for kind, data in _pump_sse_lines(client.send(req, stream=True)):
+        async for kind, data in _pump_sse_lines(_opened(opened_resp)):
             if kind == "ping":
                 continue
             if kind == "done":
@@ -735,14 +914,16 @@ async def vllm_forward_simple_request(
     extra_headers = _fallback_headers(fallback_reason)
 
     client = get_client()
-    target_url = f"{base_url}{path_suffix}"
 
     try:
-        resp = await client.post(target_url, json=body, headers=downstream_headers, timeout=_NON_STREAM_TIMEOUT)
+        resp, resolved_alias, route, failover_note = await _post_with_failover(
+            client, path_suffix, body, resolved_alias, model_type, route,
+        )
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         _log_error(user, body, str(exc), 502, resolved_alias, endpoint_label, model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    extra_headers = _merge_failover_header(extra_headers, failover_note)
 
     if resp.status_code != 200:
         _log_error(user, body, resp.text[:500], resp.status_code, resolved_alias, endpoint_label, model_type)
@@ -796,39 +977,40 @@ async def vllm_forward_responses(
     # Always replace alias with real_model for downstream
     real_model = route["real_model"]
     body_json["model"] = real_model
-    raw_body = json.dumps(body_json).encode()
 
     client = get_client()
-    target_url = f"{base_url}{path_suffix}"
     is_stream = body_json.get("stream", False)
 
     if is_stream:
         return await _passthrough_stream(
-            client, target_url, raw_body, downstream_headers,
+            client, body_json, downstream_headers,
             user, resolved_alias, model_type, path_suffix, extra_headers, route,
         )
     else:
         return await _passthrough_non_stream(
-            client, target_url, raw_body, downstream_headers,
+            client, body_json, downstream_headers,
             user, resolved_alias, model_type, path_suffix, extra_headers, route,
         )
 
 
 async def _passthrough_non_stream(
-    client, url: str, raw_body: bytes, headers: dict,
+    client, body_json: dict, headers: dict,
     user: User, model: str, model_type: str, path_suffix: str,
     extra_headers: dict[str, str] | None = None,
     route: dict[str, Any] | None = None,
 ) -> JSONResponse:
     try:
-        resp = await client.post(url, content=raw_body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
+        resp, model, route, failover_note = await _post_with_failover(
+            client, path_suffix, body_json, model, model_type, route,
+        )
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-        _log_error(user, json.loads(raw_body), str(exc), 502, model, path_suffix, model_type)
+        _log_error(user, body_json, str(exc), 502, model, path_suffix, model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    extra_headers = _merge_failover_header(extra_headers, failover_note)
 
     if resp.status_code != 200:
-        _log_error(user, json.loads(raw_body), resp.text[:500], resp.status_code, model, path_suffix, model_type)
+        _log_error(user, body_json, resp.text[:500], resp.status_code, model, path_suffix, model_type)
         return _error_response(resp)
 
     data = resp.json()
@@ -936,6 +1118,17 @@ async def _forward_messages_native(
     if not is_stream:
         try:
             resp = await client.post(url, json=native_body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
+        except _CONNECT_FAILURES as exc:
+            # Server unreachable — mark it DOWN and let the caller fall back
+            # to the translation path, whose own failover picks an alive
+            # server (the native endpoint of a *different* server may not
+            # exist, so failing over inside the native path isn't safe).
+            mark_down(route["base_url"])
+            logger.warning(
+                "Native /v1/messages connect failure on {} ({}) — marked DOWN, "
+                "falling back to translation", route["base_url"], type(exc).__name__,
+            )
+            return None
         except Exception as exc:
             logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
             _log_error(user, anthropic_body, str(exc), 502, model_alias, "/v1/messages", model_type)
@@ -974,6 +1167,15 @@ async def _forward_messages_native(
     logger.info("Stream start (native) | user={} model={} endpoint=/v1/messages", user.username, model_alias)
     try:
         resp = await client.send(req, stream=True)
+    except _CONNECT_FAILURES as exc:
+        # Same contract as the non-stream branch above: mark DOWN, fall back
+        # to translation (nothing has been sent to the client yet).
+        mark_down(route["base_url"])
+        logger.warning(
+            "Native /v1/messages connect failure on {} ({}) — marked DOWN, "
+            "falling back to translation", route["base_url"], type(exc).__name__,
+        )
+        return None
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         _log_error(user, anthropic_body, str(exc), 502, model_alias, "/v1/messages", model_type)
@@ -1146,8 +1348,8 @@ async def vllm_forward_messages(
         if result is not None:
             return result
         logger.warning(
-            "Downstream {} has native_messages=true but /v1/messages returned 404/405 "
-            "(vLLM < 0.11.1?) — falling back to translation", base_url,
+            "Downstream {} native /v1/messages unavailable (404/405 — vLLM < 0.11.1? — "
+            "or connect failure) — falling back to translation", base_url,
         )
 
     openai_body = anthropic_to_openai_request(
@@ -1191,11 +1393,14 @@ async def _non_stream_messages(
     req_shape: str = "",
 ) -> JSONResponse:
     try:
-        resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
+        resp, model_alias, route, failover_note = await _post_with_failover(
+            client, "/chat/completions", body, model_alias, model_type, route,
+        )
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         _log_error(user, monitor_body or body, str(exc), 502, model_alias, "/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    extra_headers = _merge_failover_header(extra_headers, failover_note)
 
     if resp.status_code != 200:
         _log_error(user, monitor_body or body, resp.text[:500], resp.status_code, model_alias, "/v1/messages", model_type)
@@ -1241,10 +1446,18 @@ async def _stream_messages(
     route: dict[str, Any] | None = None,
     req_shape: str = "",
 ) -> StreamingResponse:
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
-    _capture_io = capture_io_enabled()
-
     logger.info("Stream start | user={} model={} endpoint=/v1/messages", user.username, model_alias)
+
+    try:
+        opened_resp, model_alias, route, failover_note = await _open_stream_with_failover(
+            client, "/chat/completions", body, model_alias, model_type, route,
+        )
+    except Exception as exc:
+        logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
+        _log_error(user, monitor_body or body, str(exc), 502, model_alias, "/v1/messages", model_type)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    extra_headers = _merge_failover_header(extra_headers, failover_note)
+    _capture_io = capture_io_enabled()
 
     async def event_generator():
         translator = AnthropicStreamTranslator(model_alias)
@@ -1253,7 +1466,7 @@ async def _stream_messages(
             for event in translator.start():
                 yield event
 
-            async for kind, data in _pump_sse_lines(client.send(req, stream=True)):
+            async for kind, data in _pump_sse_lines(_opened(opened_resp)):
                 if kind == "ping":
                     yield _ANTHROPIC_PING_EVENT
                     continue
@@ -1526,12 +1739,20 @@ def _approx_token_count(messages: list[dict[str, Any]]) -> int:
 
 
 async def _passthrough_stream(
-    client, url: str, raw_body: bytes, headers: dict,
+    client, body_json: dict, headers: dict,
     user: User, model: str, model_type: str, path_suffix: str,
     extra_headers: dict[str, str] | None = None,
     route: dict[str, Any] | None = None,
 ) -> StreamingResponse:
-    req = client.build_request("POST", url, content=raw_body, headers=headers, timeout=_STREAM_TIMEOUT)
+    try:
+        opened_resp, model, route, failover_note = await _open_stream_with_failover(
+            client, path_suffix, body_json, model, model_type, route,
+        )
+    except Exception as exc:
+        logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
+        _log_error(user, body_json, str(exc), 502, model, path_suffix, model_type)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    extra_headers = _merge_failover_header(extra_headers, failover_note)
     _capture_io = capture_io_enabled()
 
     async def event_generator():
@@ -1541,7 +1762,7 @@ async def _passthrough_stream(
         output_acc = StreamingChatOutput()  # Phase 2: chat-shape assistant turn
         responses_output = None  # Phase 2: full Responses output[] from the terminal event
         # Pump owns aclose + the max-idle ceiling (see _stream_chat).
-        async for kind, data in _pump_sse_lines(client.send(req, stream=True)):
+        async for kind, data in _pump_sse_lines(_opened(opened_resp)):
             if kind == "ping":
                 continue
             if kind == "done":

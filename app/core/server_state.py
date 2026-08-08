@@ -39,15 +39,21 @@ _metrics_cache: dict[str, dict[str, int]] = {}
 
 
 def _make_cloud_client(proxy: str, insecure: bool) -> httpx.AsyncClient:
-    kwargs: dict = dict(
-        timeout=httpx.Timeout(30.0, connect=10.0),
+    # retries=1 covers connection ESTABLISHMENT only (httpx never re-sends a
+    # request that already went out), so a transient TCP blip costs one silent
+    # reconnect instead of a user-visible 502.
+    transport_kwargs: dict = dict(
+        retries=1,
         limits=httpx.Limits(max_connections=200, max_keepalive_connections=40),
-        follow_redirects=True,
         verify=not insecure,
     )
     if proxy:
-        kwargs["proxy"] = proxy
-    return httpx.AsyncClient(**kwargs)
+        transport_kwargs["proxy"] = proxy
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(30.0, connect=10.0),
+        follow_redirects=True,
+        transport=httpx.AsyncHTTPTransport(**transport_kwargs),
+    )
 
 
 def _env_flag(name: str) -> bool:
@@ -68,13 +74,19 @@ async def init_client() -> None:
     # peak concurrent streams — not average request rate. Downstreams are
     # internal LAN servers, so idle capacity is cheap.
     _client_max_connections = _env_int("DOWNSTREAM_MAX_CONNECTIONS", 1000)
+    # retries=1 on the transport retries CONNECTION ESTABLISHMENT only — a
+    # request that was already sent is never replayed — so a transient TCP
+    # blip on the LAN costs one silent reconnect instead of a 502.
     _client = httpx.AsyncClient(
         timeout=httpx.Timeout(30.0, connect=10.0),
-        limits=httpx.Limits(
-            max_connections=_client_max_connections,
-            max_keepalive_connections=_env_int("DOWNSTREAM_MAX_KEEPALIVE_CONNECTIONS", 100),
-        ),
         follow_redirects=True,
+        transport=httpx.AsyncHTTPTransport(
+            retries=1,
+            limits=httpx.Limits(
+                max_connections=_client_max_connections,
+                max_keepalive_connections=_env_int("DOWNSTREAM_MAX_KEEPALIVE_CONNECTIONS", 100),
+            ),
+        ),
     )
     # Dedicated health-probe client: its pool must never be starved by user
     # traffic, so a probe failure always means the downstream itself is bad.
@@ -179,6 +191,14 @@ def get_bedrock_client() -> httpx.AsyncClient:
 
 def set_alive(base_url: str, alive: bool) -> None:
     _health_cache[base_url] = alive
+
+
+def mark_down(base_url: str) -> None:
+    """Request-layer circuit break: a connect attempt to this server just
+    failed, so flip it DOWN immediately instead of letting requests 502 for
+    up to a full health-check interval. The next successful probe (or a
+    request-layer recovery) flips it back UP."""
+    _health_cache[base_url] = False
 
 
 def is_alive(base_url: str) -> bool:

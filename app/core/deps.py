@@ -13,7 +13,7 @@ from sqlmodel import Session, func, select
 from app.core.auth import AccountDisabledError
 from app.core.database import engine, get_session
 from app.core.logger import logger
-from app.core.timeutil import local_day_start_utc
+from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
 from app.models.schema import UsageLog, User
 
 _bearer = HTTPBearer(auto_error=False)
@@ -79,6 +79,7 @@ def _check_daily_limit(session: Session, user: User) -> None:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"Daily spending limit (${user.daily_limit_usd}) exceeded. Today: ${today_cost:.4f}.",
+            headers={"Retry-After": str(seconds_until_local_midnight())},
         )
     # Soft mode: let the request through but make the overage visible.
     logger.warning(
@@ -121,6 +122,7 @@ def _check_azure_daily_limit(session: Session, user: User) -> None:
                 f"Azure daily spending limit (${limit}) exceeded. "
                 f"Today (Azure): ${azure_cost:.4f}."
             ),
+            headers={"Retry-After": str(seconds_until_local_midnight())},
         )
     logger.warning(
         "Azure daily limit exceeded (soft mode) | user={} limit=${} today=${:.4f}",
@@ -170,6 +172,7 @@ def _check_bedrock_daily_limit(session: Session, user: User) -> None:
                 f"Bedrock daily spending limit (${limit}) exceeded. "
                 f"Today (Bedrock): ${bedrock_cost:.4f}."
             ),
+            headers={"Retry-After": str(seconds_until_local_midnight())},
         )
     logger.warning(
         "Bedrock daily limit exceeded (soft mode) | user={} limit=${} today=${:.4f}",
