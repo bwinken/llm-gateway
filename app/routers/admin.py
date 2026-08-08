@@ -22,8 +22,10 @@ from app.core.config import (
     APP_TITLE,
     get_config_data,
     get_default_daily_limit,
+    get_site_links,
     save_config,
     set_default_daily_limit,
+    set_site_links,
 )
 from app.core.database import get_session
 from app.models.schema import AnomalyEvent, AppOwner, User, UsageLog
@@ -45,6 +47,9 @@ router = APIRouter(
 )
 _templates_dir = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
+# base.html reads the admin-editable links (support bot / install guide) on
+# every page — same global as web_ui's template environment.
+templates.env.globals["get_site_links"] = get_site_links
 
 
 # ── Web UI ──
@@ -212,6 +217,7 @@ async def admin_page(
             "dau_data": dau_data,
             "today_dau": today_dau,
             "default_daily_limit": get_default_daily_limit(),
+            "site_links": get_site_links(),
             # Pagination state
             "limit": limit,
             "offset": offset,
@@ -422,6 +428,37 @@ async def update_default_limit(
     session.commit()
     bumped = result.rowcount or 0
     logger.info("Default daily limit set to ${} — bumped {} users", new_default, bumped)
+
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/site-links")
+async def update_site_links(request: Request):
+    """Set the web-UI site links (support bot / install guide).
+
+    Both URLs are stored in config.toml [app]. An empty value hides the
+    corresponding UI element (floating support-bot button / navbar
+    "Install Guide" link). Only http(s) or site-relative URLs are accepted
+    so an admin typo can never inject a javascript: link into every page.
+    """
+    form = await request.form()
+
+    def _clean_url(field: str) -> str:
+        value = str(form.get(field) or "").strip()
+        if value and not value.lower().startswith(("http://", "https://", "/")):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field} must start with http://, https:// or /.",
+            )
+        return value
+
+    support_bot_url = _clean_url("support_bot_url")
+    install_guide_url = _clean_url("install_guide_url")
+    set_site_links(support_bot_url=support_bot_url, install_guide_url=install_guide_url)
+    logger.info(
+        "Site links updated | support_bot_url={} install_guide_url={}",
+        support_bot_url or "(hidden)", install_guide_url or "(hidden)",
+    )
 
     return RedirectResponse(url="/admin", status_code=303)
 
