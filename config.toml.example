@@ -7,6 +7,15 @@ host = "0.0.0.0"
 port = 8050
 log_level = "info"
 
+# Web-UI site links, editable at runtime from the admin panel (Site Links
+# card). Empty string hides the corresponding element.
+# support_bot_url:  floating support-bot button at the bottom-right of every
+#                   page; clicking it opens this URL in a new tab.
+# install_guide_url: navbar "Install Guide" link — the step-by-step Claude
+#                   Code tools installation page; opens in a new tab.
+support_bot_url = ""
+install_guide_url = ""
+
 # ==========================================
 # Pricing (USD per 1M tokens)
 # ==========================================

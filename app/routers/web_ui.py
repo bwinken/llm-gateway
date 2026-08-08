@@ -22,6 +22,7 @@ from app.core.config import (
     get_bedrock_models_snapshot,
     get_model_routing_snapshot,
     get_pricing_snapshot,
+    get_site_links,
 )
 from app.core.database import get_session
 from app.core.server_state import get_metrics, is_alive
@@ -31,6 +32,10 @@ from app.services.stats import get_daily_trends, get_owned_apps_summary, get_use
 router = APIRouter()
 _templates_dir = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
+# base.html reads the admin-editable links (support bot / install guide) on
+# every page, so expose them as a template global instead of threading them
+# through every render context.
+templates.env.globals["get_site_links"] = get_site_links
 _SETUP_DIR = Path(__file__).resolve().parent.parent.parent / "setup"
 _SETUP_ALLOWED = {
     "llm-gateway-ca.crt",

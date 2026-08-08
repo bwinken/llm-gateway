@@ -297,11 +297,12 @@ def reload_config() -> None:
     except OSError:
         pass
     (
-        _, new_routing, new_pricing, new_fallback,
+        new_app_config, new_routing, new_pricing, new_fallback,
         new_azure, new_azure_fallback, new_bedrock, new_bedrock_fallback,
     ) = _build_config(raw)
 
     # Pre-compute stale keys outside the lock
+    stale_app = set(APP_CONFIG) - set(new_app_config)
     stale_routing = set(MODEL_ROUTING) - set(new_routing)
     stale_pricing = set(PRICING_MAP) - set(new_pricing)
     stale_fallback = set(FALLBACK_MAP) - set(new_fallback)
@@ -312,6 +313,7 @@ def reload_config() -> None:
 
     with _config_lock:
         # Swap all dicts as close together as possible
+        APP_CONFIG.update(new_app_config)
         MODEL_ROUTING.update(new_routing)
         PRICING_MAP.update(new_pricing)
         FALLBACK_MAP.update(new_fallback)
@@ -319,6 +321,8 @@ def reload_config() -> None:
         AZURE_FALLBACK_MAP.update(new_azure_fallback)
         BEDROCK_MODELS.update(new_bedrock)
         BEDROCK_FALLBACK_MAP.update(new_bedrock_fallback)
+        for k in stale_app:
+            APP_CONFIG.pop(k, None)
         for k in stale_routing:
             MODEL_ROUTING.pop(k, None)
         for k in stale_pricing:
@@ -518,9 +522,40 @@ def get_default_daily_limit() -> float:
 
 def set_default_daily_limit(value: float) -> None:
     """Persist new default daily limit to config.toml and reload."""
+    _save_app_keys({"default_daily_limit_usd": float(value)})
+
+
+# Admin-editable web-UI links, stored in the [app] section. An empty string
+# hides the corresponding UI element (floating support-bot button / navbar
+# install-guide link).
+_SITE_LINK_KEYS: tuple[str, ...] = ("support_bot_url", "install_guide_url")
+
+
+def get_site_links() -> dict[str, str]:
+    """Return admin-editable site link URLs.
+
+    - ``support_bot_url``: target of the floating support-bot button shown
+      bottom-right on every web page (opens in a new tab).
+    - ``install_guide_url``: target of the navbar "Install Guide" link — the
+      step-by-step Claude Code tools installation page.
+    """
+    _check_auto_reload()
+    return {key: str(APP_CONFIG.get(key) or "").strip() for key in _SITE_LINK_KEYS}
+
+
+def set_site_links(support_bot_url: str, install_guide_url: str) -> None:
+    """Persist site link URLs to config.toml [app] and reload."""
+    _save_app_keys({
+        "support_bot_url": support_bot_url.strip(),
+        "install_guide_url": install_guide_url.strip(),
+    })
+
+
+def _save_app_keys(values: dict[str, Any]) -> None:
+    """Merge ``values`` into the [app] section of config.toml and reload."""
     raw = _load_toml()
     app_section = raw.get("app") or {}
-    app_section["default_daily_limit_usd"] = float(value)
+    app_section.update(values)
     raw["app"] = app_section
 
     dir_path = _CONFIG_PATH.parent
