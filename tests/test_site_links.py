@@ -88,17 +88,14 @@ class TestUpdateSiteLinks:
 class TestSiteLinksRendering:
     """base.html renders the support-bot FAB / Install Guide link only when set."""
 
-    def test_dashboard_shows_links_when_configured(self, client, db_session, test_user):
+    def test_dashboard_shows_support_bot_when_configured(self, client, db_session, test_user):
         with patch.dict("app.core.config.APP_CONFIG", _LINKS):
             resp = client.get("/dashboard", headers=web_auth_header(sub="testuser"))
         assert resp.status_code == 200
         assert 'href="https://chat.example.com/bot"' in resp.text
-        assert 'href="https://wiki.example.com/claude-guide"' in resp.text
-        assert "Install Guide" in resp.text
-        # Both open in a new tab
         assert 'target="_blank"' in resp.text
 
-    def test_dashboard_hides_links_when_unset(self, client, db_session, test_user):
+    def test_dashboard_hides_support_bot_when_unset(self, client, db_session, test_user):
         with patch.dict(
             "app.core.config.APP_CONFIG",
             {"support_bot_url": "", "install_guide_url": ""},
@@ -107,6 +104,21 @@ class TestSiteLinksRendering:
         assert resp.status_code == 200
         # The FAB anchor is not rendered (".gw-fab" still exists in the CSS)
         assert 'class="gw-fab' not in resp.text
+
+    def test_setup_page_shows_install_guide_when_configured(self, client, db_session, test_user):
+        with patch.dict("app.core.config.APP_CONFIG", _LINKS):
+            resp = client.get("/setup", headers=web_auth_header(sub="testuser"))
+        assert resp.status_code == 200
+        assert 'href="https://wiki.example.com/claude-guide"' in resp.text
+        assert "Install Guide" in resp.text
+
+    def test_setup_page_hides_install_guide_when_unset(self, client, db_session, test_user):
+        with patch.dict(
+            "app.core.config.APP_CONFIG",
+            {"support_bot_url": "", "install_guide_url": ""},
+        ):
+            resp = client.get("/setup", headers=web_auth_header(sub="testuser"))
+        assert resp.status_code == 200
         assert "Install Guide" not in resp.text
 
     def test_admin_panel_shows_current_values(self, client, db_session, admin_user):

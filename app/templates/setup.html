@@ -18,6 +18,26 @@
     </p>
 </div>
 
+{# ── Step-by-step install guide (admin-configured external page) ── #}
+{% set site_links = get_site_links() if get_site_links is defined else {} %}
+{% if site_links.get("install_guide_url") %}
+<div class="max-w-3xl mx-auto mb-6 gw-anim">
+    <div class="gw-card p-4 flex flex-wrap items-center gap-3"
+         style="background:rgba(77,217,232,0.04);border-color:rgba(77,217,232,0.2)">
+        <svg class="w-5 h-5 flex-shrink-0" style="color:#4dd9e8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+        <div class="text-sm flex-1 min-w-[220px]">
+            <div class="text-t2 font-semibold mb-0.5">Step-by-step Install Guide</div>
+            <div class="text-t4">Full walkthrough for installing and configuring the Claude Code tools.</div>
+        </div>
+        <a href="{{ site_links['install_guide_url'] }}" target="_blank" rel="noopener noreferrer"
+           class="gw-btn gw-btn-primary text-sm px-4 py-2">
+            Open Install Guide
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+        </a>
+    </div>
+</div>
+{% endif %}
+
 {# ── Tab Navigation ── #}
 <div class="max-w-3xl mx-auto mb-6" style="border-bottom:1px solid rgba(255,255,255,0.04)">
     <nav class="-mb-px flex space-x-6" aria-label="Setup tabs">
