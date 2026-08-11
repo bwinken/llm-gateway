@@ -146,6 +146,17 @@ class TestRequestTranslation:
         for k in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
             assert k not in out, f"{k} should have been stripped"
 
+    def test_stop_stripped(self):
+        """The Responses API has no stop-sequence parameter — Azure 400s
+        with "Unknown parameter: 'stop'" — so `stop` (which the Anthropic
+        path produces from `stop_sequences`) is dropped like the sampling
+        knobs."""
+        out = openai_chat_to_responses_request({
+            "messages": [{"role": "user", "content": "hi"}],
+            "stop": ["\n\nHuman:"],
+        })
+        assert "stop" not in out
+
     def test_reasoning_effort_still_passes_through(self):
         """`reasoning_effort` is the one knob clients can still influence;
         it's not a sampling knob and the underlying model accepts it."""
