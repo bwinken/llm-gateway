@@ -237,8 +237,9 @@ def openai_chat_to_responses_request(
         if k in body:
             out[k] = body[k]
 
-    if "stop" in body:
-        out["stop"] = body["stop"]
+    # `stop` is NOT forwarded: the Responses API has no stop-sequence
+    # parameter (Azure rejects it with 400 "Unknown parameter: 'stop'"),
+    # so it's dropped like the sampling knobs.
 
     effort = body.get("reasoning_effort")
     if effort:
