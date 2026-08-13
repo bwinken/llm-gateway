@@ -393,15 +393,28 @@
     }
 </script>
 
-{# ── Cost by Model (this month, split per backend) ── #}
+{# ── Cost by Model (this month, split per backend) ──
+   Initial render is server-side (table) + JS (chart); the Refresh button
+   re-fetches /dashboard/api/model-breakdown and re-renders both in place.
+   mbRenderTable() below must produce the same markup as this Jinja table. #}
 {% set backend_colors = {'vllm': '#3dd68c', 'azure': '#a78bfa', 'bedrock': '#ff9933'} %}
 <div class="gw-card overflow-hidden mb-8 gw-anim">
     <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid rgba(255,255,255,0.04)">
         <h3 class="text-xs font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide"
             data-tip="Where this month's cost went, per model. On-prem and cloud backends are listed separately.">Cost by Model</h3>
-        <span class="text-[11px] text-t4">This month</span>
+        <div class="flex items-center gap-3">
+            <span class="text-[11px] text-t4">This month<span id="mbUpdated"></span></span>
+            <button onclick="mbRefresh()" id="mbRefreshBtn" class="gw-btn gw-btn-ghost text-xs px-2 py-1" title="Refresh this card">
+                <svg id="mbRefreshIcon" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                Refresh
+            </button>
+        </div>
     </div>
-    <div class="overflow-x-auto">
+    <div class="flex flex-col lg:flex-row gap-6 p-5">
+    <div id="mbChartWrap" class="flex-shrink-0 mx-auto lg:mx-0" style="width:280px;{{ 'display:none' if not model_breakdown_groups }}">
+        <div style="height:280px"><canvas id="mbChart"></canvas></div>
+    </div>
+    <div class="flex-1 overflow-x-auto">
         <table class="gw-table">
             <thead><tr>
                 <th class="text-left">Model</th>
@@ -411,7 +424,7 @@
                 <th style="text-align:right">Cost</th>
                 <th class="text-left gw-tip" data-tip="Share of this month's total cost" style="min-width:120px">Share</th>
             </tr></thead>
-            <tbody>
+            <tbody id="mbBody">
                 {% for g in model_breakdown_groups %}
                 {% set bcolor = backend_colors.get(g.backend, '#868da0') %}
                 <tr style="background:rgba(255,255,255,0.015)">
@@ -451,7 +464,179 @@
             </tbody>
         </table>
     </div>
+    </div>
 </div>
+
+<div id="mbData" data-groups='{{ model_breakdown_groups | tojson }}' style="display:none;"></div>
+<script>
+    // ── Cost by Model: doughnut + refresh-in-place ──
+    // Per-backend ordinal ramps (dark → light), 4 steps each; the largest
+    // slice in a backend gets the darkest step. Matches the page's backend
+    // hues (green = on-prem, purple = Azure, orange = AWS).
+    var MB_RAMPS = {
+        vllm:    ['#0f7a49', '#2f9d68', '#3cc987', '#7fd9ae'],
+        azure:   ['#6d4fd0', '#8465e0', '#a488f2', '#c3aef8'],
+        bedrock: ['#9c520c', '#c1741c', '#f5a04a', '#f7c07e'],
+        _other:  ['#565d70', '#6e7488', '#868da0', '#a0a6b8']
+    };
+    var MB_DOT = { vllm: '#3dd68c', azure: '#a78bfa', bedrock: '#ff9933' };
+    var MB_SURFACE = '#16171e';
+    var mbGroups = JSON.parse(document.getElementById('mbData').dataset.groups || '[]');
+    var mbChart = null;
+
+    function mbEsc(s) {
+        return String(s).replace(/[&<>"']/g, function (c) {
+            return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+        });
+    }
+    function mbFmtTok(n) {
+        if (n >= 1000000) return (n / 1000000).toFixed(2) + 'M';
+        if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+        return String(n);
+    }
+
+    // One slice per model, capped at 4 per backend (ramp length): beyond
+    // that the smallest rows fold into an "Other" slice so tiny slivers
+    // don't shred the ring. The table below always lists every model.
+    function mbSlices() {
+        var slices = [];
+        mbGroups.forEach(function (g) {
+            var ramp = MB_RAMPS[g.backend] || MB_RAMPS._other;
+            var rows = g.rows;
+            var shown = rows.length <= ramp.length ? rows : rows.slice(0, ramp.length - 1);
+            shown.forEach(function (r, i) {
+                slices.push({ label: r.model + ' · ' + g.label, cost: r.cost_usd, share: r.share, color: ramp[i] });
+            });
+            if (rows.length > ramp.length) {
+                var rest = rows.slice(ramp.length - 1);
+                slices.push({
+                    label: 'Other · ' + g.label,
+                    cost: rest.reduce(function (a, r) { return a + r.cost_usd; }, 0),
+                    share: rest.reduce(function (a, r) { return a + r.share; }, 0),
+                    color: ramp[ramp.length - 1]
+                });
+            }
+        });
+        return slices;
+    }
+
+    var mbCenterPlugin = {
+        id: 'mbCenter',
+        beforeDraw: function (chart) {
+            var total = mbGroups.reduce(function (a, g) { return a + g.cost_usd; }, 0);
+            var x = (chart.chartArea.left + chart.chartArea.right) / 2;
+            var y = (chart.chartArea.top + chart.chartArea.bottom) / 2;
+            var c = chart.ctx;
+            c.save();
+            c.textAlign = 'center'; c.textBaseline = 'middle';
+            c.fillStyle = '#eef0f4'; c.font = '600 16px JetBrains Mono, monospace';
+            c.fillText('$' + total.toFixed(4), x, y - 8);
+            c.fillStyle = '#4e5569'; c.font = '11px Plus Jakarta Sans, sans-serif';
+            c.fillText('this month', x, y + 12);
+            c.restore();
+        }
+    };
+
+    function mbRenderChart() {
+        var wrap = document.getElementById('mbChartWrap');
+        if (!mbGroups.length) { wrap.style.display = 'none'; if (mbChart) { mbChart.destroy(); mbChart = null; } return; }
+        wrap.style.display = '';
+        var slices = mbSlices();
+        var data = {
+            labels: slices.map(function (s) { return s.label; }),
+            datasets: [{
+                data: slices.map(function (s) { return s.cost; }),
+                backgroundColor: slices.map(function (s) { return s.color; }),
+                borderColor: MB_SURFACE, borderWidth: 2, hoverOffset: 5
+            }]
+        };
+        if (mbChart) { mbChart.data = data; mbChart.update(); return; }
+        mbChart = new Chart(document.getElementById('mbChart').getContext('2d'), {
+            type: 'doughnut',
+            data: data,
+            options: {
+                responsive: true, maintainAspectRatio: false, cutout: '62%',
+                layout: { padding: 6 },
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: { color: '#868da0', boxWidth: 10, boxHeight: 10, padding: 8, font: { family: 'Plus Jakarta Sans', size: 11 } }
+                    },
+                    tooltip: {
+                        backgroundColor: '#1f2029', borderColor: 'rgba(255,255,255,0.06)', borderWidth: 1,
+                        titleColor: '#eef0f4', bodyColor: '#c4c9d4', padding: 12, cornerRadius: 8,
+                        bodyFont: { family: 'JetBrains Mono', size: 12 },
+                        titleFont: { family: 'Plus Jakarta Sans', size: 13, weight: '600' },
+                        callbacks: {
+                            label: function (item) {
+                                var s = mbSlices()[item.dataIndex];
+                                return ' $' + s.cost.toFixed(4) + ' (' + s.share.toFixed(1) + '%)';
+                            }
+                        }
+                    }
+                }
+            },
+            plugins: [mbCenterPlugin]
+        });
+    }
+
+    // Mirrors the server-rendered table markup above — keep the two in sync.
+    function mbRenderTable() {
+        var html = '';
+        mbGroups.forEach(function (g) {
+            var dot = MB_DOT[g.backend] || '#868da0';
+            html += '<tr style="background:rgba(255,255,255,0.015)">'
+                + '<td colspan="4" class="py-1.5"><span class="inline-flex items-center gap-1.5">'
+                + '<span class="w-2 h-2 rounded-full flex-shrink-0" style="background:' + dot + '"></span>'
+                + '<span class="text-[11px] font-bold text-t4 uppercase tracking-wider">' + mbEsc(g.label) + '</span>'
+                + '</span></td>'
+                + '<td class="py-1.5 text-right text-[11px] font-mono font-medium text-t2">$' + g.cost_usd.toFixed(4) + '</td>'
+                + '<td class="py-1.5"></td></tr>';
+            g.rows.forEach(function (m) {
+                html += '<tr><td class="whitespace-nowrap">'
+                    + '<code class="text-sm font-mono font-medium text-t1">' + mbEsc(m.model) + '</code>'
+                    + (m.type ? '<span class="text-[10px] text-t4 ml-1.5">' + mbEsc(m.type) + '</span>' : '')
+                    + '</td>'
+                    + '<td class="text-right text-sm font-mono text-t3">' + m.requests + '</td>'
+                    + '<td class="text-right text-sm font-mono text-t3">' + mbFmtTok(m.input_tokens) + '</td>'
+                    + '<td class="text-right text-sm font-mono text-t3">' + mbFmtTok(m.output_tokens) + '</td>'
+                    + '<td class="text-right text-sm font-mono text-t2">$' + m.cost_usd.toFixed(4) + '</td>'
+                    + '<td><div class="flex items-center gap-2">'
+                    + '<div class="flex-1 rounded-full h-1.5 overflow-hidden bg-n3" style="min-width:60px">'
+                    + '<div class="h-1.5 rounded-full" style="width: ' + m.share + '%; background:' + dot + '"></div></div>'
+                    + '<span class="text-[11px] font-mono text-t4 tabular-nums" style="min-width:38px;text-align:right">' + m.share + '%</span>'
+                    + '</div></td></tr>';
+            });
+        });
+        if (!mbGroups.length) {
+            html = '<tr><td colspan="6" class="text-center py-6 text-sm text-t4">No usage data yet.</td></tr>';
+        }
+        document.getElementById('mbBody').innerHTML = html;
+    }
+
+    function mbRefresh() {
+        var btn = document.getElementById('mbRefreshBtn');
+        var icon = document.getElementById('mbRefreshIcon');
+        btn.disabled = true; btn.classList.add('opacity-50'); icon.style.animation = 'spin 0.8s linear infinite';
+        fetch('/dashboard/api/model-breakdown')
+            .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+            .then(function (d) {
+                mbGroups = d.groups || [];
+                mbRenderTable();
+                mbRenderChart();
+                document.getElementById('mbUpdated').textContent = ' · updated ' + new Date().toLocaleTimeString();
+            })
+            .catch(function () {
+                document.getElementById('mbUpdated').textContent = ' · refresh failed';
+            })
+            .finally(function () {
+                btn.disabled = false; btn.classList.remove('opacity-50'); icon.style.animation = '';
+            });
+    }
+
+    mbRenderChart();
+</script>
+<style>@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }</style>
 
 {# ── Daily Breakdown Table ── #}
 <div class="gw-card overflow-hidden mb-8 gw-anim">

@@ -116,6 +116,15 @@ class TestDashboardCostByModelCard:
         assert "Cost by Model" in resp.text
         assert "No usage data yet." in resp.text
 
+    def test_chart_and_refresh_wiring_present(self, client, db_session, test_user):
+        _log(db_session, test_user.id, model="test-llm", cost=0.5)
+        db_session.commit()
+
+        body = self._get_dashboard(client, test_user.username).text
+        assert 'id="mbChart"' in body           # doughnut canvas
+        assert 'id="mbRefreshBtn"' in body      # refresh button
+        assert "/dashboard/api/model-breakdown" in body  # refresh endpoint wired
+
     def test_cloud_spend_shows_without_cloud_access(self, client, db_session):
         # Billing truth wins: Azure spend stays visible in the breakdown even
         # for a user without can_use_azure (e.g. access revoked mid-month).
@@ -128,3 +137,46 @@ class TestDashboardCostByModelCard:
 
         body = self._get_dashboard(client, "revokedmb").text
         assert "azure-gpt-4" in body
+
+
+class TestModelBreakdownApi:
+    """JSON endpoint backing the Cost by Model card's refresh button."""
+
+    def test_requires_auth(self, client):
+        resp = client.get("/dashboard/api/model-breakdown")
+        assert resp.status_code in (401, 403)
+
+    def test_returns_grouped_breakdown(self, client, db_session, test_user):
+        _log(db_session, test_user.id, model="test-llm", backend="vllm", cost=0.5)
+        _log(db_session, test_user.id, model="test-vlm", backend="vllm", cost=0.25,
+             model_type="vlm")
+        _log(db_session, test_user.id, model="azure-gpt-4", backend="azure", cost=0.25)
+        db_session.commit()
+
+        resp = client.get(
+            "/dashboard/api/model-breakdown",
+            headers=web_auth_header(sub=test_user.username, scopes=["read"]),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_cost_usd"] == 1.0
+        assert [g["backend"] for g in data["groups"]] == ["vllm", "azure"]
+
+        vllm_group = data["groups"][0]
+        assert vllm_group["label"] == "On-Prem"
+        assert vllm_group["cost_usd"] == 0.75
+        # Rows ordered by cost desc, each with its share of the monthly total
+        assert [r["model"] for r in vllm_group["rows"]] == ["test-llm", "test-vlm"]
+        assert vllm_group["rows"][0]["share"] == 50.0
+
+        azure_group = data["groups"][1]
+        assert azure_group["label"] == "Azure"
+        assert azure_group["rows"][0]["share"] == 25.0
+
+    def test_empty_breakdown(self, client, db_session, test_user):
+        resp = client.get(
+            "/dashboard/api/model-breakdown",
+            headers=web_auth_header(sub=test_user.username, scopes=["read"]),
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"groups": [], "total_cost_usd": 0.0}

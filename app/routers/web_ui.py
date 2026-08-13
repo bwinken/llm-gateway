@@ -68,6 +68,39 @@ def _price_sort_key(m: dict):
     return (m["input_price"] + m["output_price"], m.get("name") or m.get("alias") or "")
 
 
+def _build_model_breakdown(session: Session, user_id: int) -> tuple[list[dict], float]:
+    """Monthly per-model cost breakdown grouped per backend, plus the total.
+
+    Group order is fixed (on-prem first) with unknown backend values appended
+    so no spend can vanish from the breakdown. Each row gets its share of the
+    monthly total. Shared by the dashboard page render and the refresh API so
+    both always agree.
+    """
+    breakdown_rows = get_model_breakdown(session, user_id)
+    total_cost = sum(r["cost_usd"] for r in breakdown_rows)
+    backend_labels = {"vllm": "On-Prem", "azure": "Azure", "bedrock": "AWS Bedrock"}
+    backend_order = ["vllm", "azure", "bedrock"]
+    extra_backends = sorted({
+        r["backend"] for r in breakdown_rows if r["backend"] not in backend_order
+    })
+    groups = []
+    for backend_key in backend_order + extra_backends:
+        rows = [r for r in breakdown_rows if r["backend"] == backend_key]
+        if not rows:
+            continue
+        for r in rows:
+            r["share"] = round(
+                (r["cost_usd"] / total_cost) * 100 if total_cost > 0 else 0.0, 1
+            )
+        groups.append({
+            "backend": backend_key,
+            "label": backend_labels.get(backend_key, backend_key),
+            "cost_usd": round(sum(r["cost_usd"] for r in rows), 6),
+            "rows": rows,
+        })
+    return groups, round(total_cost, 6)
+
+
 def _common_ctx(request: Request, **extra) -> dict:
     """Base context shared by all pages."""
     # Build gateway base URL from Host header (reliable behind reverse proxy)
@@ -147,31 +180,8 @@ async def dashboard(
     owned_apps = get_owned_apps_summary(session, user.id)
 
     # Monthly cost split by model alias, grouped per backend so on-prem and
-    # cloud spend read separately. Each row gets its share of the monthly
-    # total; group order is fixed (on-prem first) with unknown backend values
-    # appended so no spend can vanish from the breakdown.
-    breakdown_rows = get_model_breakdown(session, user.id)
-    monthly_total = summary["total_cost_usd"]
-    _backend_labels = {"vllm": "On-Prem", "azure": "Azure", "bedrock": "AWS Bedrock"}
-    _backend_order = ["vllm", "azure", "bedrock"]
-    _extra_backends = sorted({
-        r["backend"] for r in breakdown_rows if r["backend"] not in _backend_order
-    })
-    model_breakdown_groups = []
-    for backend_key in _backend_order + _extra_backends:
-        rows = [r for r in breakdown_rows if r["backend"] == backend_key]
-        if not rows:
-            continue
-        for r in rows:
-            r["share"] = round(
-                (r["cost_usd"] / monthly_total) * 100 if monthly_total > 0 else 0.0, 1
-            )
-        model_breakdown_groups.append({
-            "backend": backend_key,
-            "label": _backend_labels.get(backend_key, backend_key),
-            "cost_usd": round(sum(r["cost_usd"] for r in rows), 6),
-            "rows": rows,
-        })
+    # cloud spend read separately (same data the refresh API serves).
+    model_breakdown_groups, _ = _build_model_breakdown(session, user.id)
 
     # Build grouped server status keyed by raw type (skip hidden models).
     # Each entry carries optional metadata for capability badges next to the
@@ -305,6 +315,18 @@ async def dashboard(
             bedrock_groups=bedrock_groups,
         ),
     )
+
+
+@router.get("/dashboard/api/model-breakdown")
+async def model_breakdown_api(
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """Fresh monthly per-model cost breakdown for the dashboard's refresh
+    button — lets the Cost by Model card update in place without a full
+    page reload."""
+    groups, total_cost = _build_model_breakdown(session, user.id)
+    return JSONResponse({"groups": groups, "total_cost_usd": total_cost})
 
 
 @router.post("/dashboard/refresh-key")
