@@ -393,6 +393,66 @@
     }
 </script>
 
+{# ── Cost by Model (this month, split per backend) ── #}
+{% set backend_colors = {'vllm': '#3dd68c', 'azure': '#a78bfa', 'bedrock': '#ff9933'} %}
+<div class="gw-card overflow-hidden mb-8 gw-anim">
+    <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid rgba(255,255,255,0.04)">
+        <h3 class="text-xs font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide"
+            data-tip="Where this month's cost went, per model. On-prem and cloud backends are listed separately.">Cost by Model</h3>
+        <span class="text-[11px] text-t4">This month</span>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="gw-table">
+            <thead><tr>
+                <th class="text-left">Model</th>
+                <th style="text-align:right">Requests</th>
+                <th style="text-align:right">Input</th>
+                <th style="text-align:right">Output</th>
+                <th style="text-align:right">Cost</th>
+                <th class="text-left gw-tip" data-tip="Share of this month's total cost" style="min-width:120px">Share</th>
+            </tr></thead>
+            <tbody>
+                {% for g in model_breakdown_groups %}
+                {% set bcolor = backend_colors.get(g.backend, '#868da0') %}
+                <tr style="background:rgba(255,255,255,0.015)">
+                    <td colspan="4" class="py-1.5">
+                        <span class="inline-flex items-center gap-1.5">
+                            <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:{{ bcolor }}"></span>
+                            <span class="text-[11px] font-bold text-t4 uppercase tracking-wider">{{ g.label }}</span>
+                        </span>
+                    </td>
+                    <td class="py-1.5 text-right text-[11px] font-mono font-medium text-t2">${{ "%.4f"|format(g.cost_usd) }}</td>
+                    <td class="py-1.5"></td>
+                </tr>
+                {% for m in g.rows %}
+                <tr>
+                    <td class="whitespace-nowrap">
+                        <code class="text-sm font-mono font-medium text-t1">{{ m.model }}</code>
+                        {% if m.type %}<span class="text-[10px] text-t4 ml-1.5">{{ m.type }}</span>{% endif %}
+                    </td>
+                    <td class="text-right text-sm font-mono text-t3">{{ m.requests }}</td>
+                    <td class="text-right text-sm font-mono text-t3">{{ format_token(m.input_tokens) }}</td>
+                    <td class="text-right text-sm font-mono text-t3">{{ format_token(m.output_tokens) }}</td>
+                    <td class="text-right text-sm font-mono text-t2">${{ "%.4f"|format(m.cost_usd) }}</td>
+                    <td>
+                        <div class="flex items-center gap-2">
+                            <div class="flex-1 rounded-full h-1.5 overflow-hidden bg-n3" style="min-width:60px">
+                                <div class="h-1.5 rounded-full" style="width: {{ m.share }}%; background:{{ bcolor }}"></div>
+                            </div>
+                            <span class="text-[11px] font-mono text-t4 tabular-nums" style="min-width:38px;text-align:right">{{ m.share }}%</span>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% endfor %}
+                {% if not model_breakdown_groups %}
+                <tr><td colspan="6" class="text-center py-6 text-sm text-t4">No usage data yet.</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
 {# ── Daily Breakdown Table ── #}
 <div class="gw-card overflow-hidden mb-8 gw-anim">
     <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid rgba(255,255,255,0.04)">

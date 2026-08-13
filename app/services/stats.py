@@ -343,7 +343,14 @@ def get_department_usage(session: Session) -> list[dict]:
 
 
 def get_model_breakdown(session: Session, user_id: int) -> list[dict]:
-    """Per-model usage breakdown for the current month."""
+    """Per-model usage breakdown for the current month, split by backend.
+
+    Grouped by (model alias, backend) so the dashboard can show which models
+    the user's spend went to, with on-prem (vLLM) and cloud (Azure / Bedrock)
+    portions kept separate. Month boundary is UTC month start — the same
+    window as ``get_user_monthly_summary`` so the per-model costs sum to the
+    Monthly Cost card.
+    """
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -351,6 +358,7 @@ def get_model_breakdown(session: Session, user_id: int) -> list[dict]:
         select(
             UsageLog.model,
             UsageLog.model_type,
+            UsageLog.backend,
             func.count(UsageLog.id).label("requests"),
             func.coalesce(func.sum(UsageLog.input_tokens), 0),
             func.coalesce(func.sum(UsageLog.output_tokens), 0),
@@ -358,7 +366,7 @@ def get_model_breakdown(session: Session, user_id: int) -> list[dict]:
         )
         .where(UsageLog.user_id == user_id)
         .where(UsageLog.created_at >= month_start)
-        .group_by(UsageLog.model, UsageLog.model_type)
+        .group_by(UsageLog.model, UsageLog.model_type, UsageLog.backend)
         .order_by(func.sum(UsageLog.cost_usd).desc())
     )
     rows = session.exec(stmt).all()
@@ -366,10 +374,11 @@ def get_model_breakdown(session: Session, user_id: int) -> list[dict]:
         {
             "model": row[0],
             "type": row[1],
-            "requests": int(row[2]),
-            "input_tokens": int(row[3]),
-            "output_tokens": int(row[4]),
-            "cost_usd": round(float(row[5]), 6),
+            "backend": row[2] or "vllm",
+            "requests": int(row[3]),
+            "input_tokens": int(row[4]),
+            "output_tokens": int(row[5]),
+            "cost_usd": round(float(row[6]), 6),
         }
         for row in rows
     ]

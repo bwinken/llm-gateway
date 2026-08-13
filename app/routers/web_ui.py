@@ -27,7 +27,13 @@ from app.core.config import (
 from app.core.database import get_session
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ
-from app.services.stats import get_daily_trends, get_owned_apps_summary, get_user_daily_summary, get_user_monthly_summary
+from app.services.stats import (
+    get_daily_trends,
+    get_model_breakdown,
+    get_owned_apps_summary,
+    get_user_daily_summary,
+    get_user_monthly_summary,
+)
 
 router = APIRouter()
 _templates_dir = Path(__file__).resolve().parent.parent / "templates"
@@ -139,6 +145,33 @@ async def dashboard(
     summary = get_user_monthly_summary(session, user.id)
     trend_data = get_daily_trends(session, user.id)
     owned_apps = get_owned_apps_summary(session, user.id)
+
+    # Monthly cost split by model alias, grouped per backend so on-prem and
+    # cloud spend read separately. Each row gets its share of the monthly
+    # total; group order is fixed (on-prem first) with unknown backend values
+    # appended so no spend can vanish from the breakdown.
+    breakdown_rows = get_model_breakdown(session, user.id)
+    monthly_total = summary["total_cost_usd"]
+    _backend_labels = {"vllm": "On-Prem", "azure": "Azure", "bedrock": "AWS Bedrock"}
+    _backend_order = ["vllm", "azure", "bedrock"]
+    _extra_backends = sorted({
+        r["backend"] for r in breakdown_rows if r["backend"] not in _backend_order
+    })
+    model_breakdown_groups = []
+    for backend_key in _backend_order + _extra_backends:
+        rows = [r for r in breakdown_rows if r["backend"] == backend_key]
+        if not rows:
+            continue
+        for r in rows:
+            r["share"] = round(
+                (r["cost_usd"] / monthly_total) * 100 if monthly_total > 0 else 0.0, 1
+            )
+        model_breakdown_groups.append({
+            "backend": backend_key,
+            "label": _backend_labels.get(backend_key, backend_key),
+            "cost_usd": round(sum(r["cost_usd"] for r in rows), 6),
+            "rows": rows,
+        })
 
     # Build grouped server status keyed by raw type (skip hidden models).
     # Each entry carries optional metadata for capability badges next to the
@@ -261,6 +294,7 @@ async def dashboard(
             bedrock_limit=bedrock_limit,
             bedrock_usage_percent=round(bedrock_usage_percent, 1),
             trend_data=trend_data,
+            model_breakdown_groups=model_breakdown_groups,
             today_str=datetime.now(LOCAL_TZ).strftime("%Y-%m-%d"),
             owned_apps=owned_apps,
             server_groups=server_groups,
