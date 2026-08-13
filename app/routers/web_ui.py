@@ -68,15 +68,17 @@ def _price_sort_key(m: dict):
     return (m["input_price"] + m["output_price"], m.get("name") or m.get("alias") or "")
 
 
-def _build_model_breakdown(session: Session, user_id: int) -> tuple[list[dict], float]:
-    """Monthly per-model cost breakdown grouped per backend, plus the total.
+def _build_model_breakdown(
+    session: Session, user_id: int, period: str = "month",
+) -> tuple[list[dict], float]:
+    """Per-model cost breakdown grouped per backend, plus the period total.
 
     Group order is fixed (on-prem first) with unknown backend values appended
     so no spend can vanish from the breakdown. Each row gets its share of the
-    monthly total. Shared by the dashboard page render and the refresh API so
+    period total. Shared by the dashboard page render and the refresh API so
     both always agree.
     """
-    breakdown_rows = get_model_breakdown(session, user_id)
+    breakdown_rows = get_model_breakdown(session, user_id, period=period)
     total_cost = sum(r["cost_usd"] for r in breakdown_rows)
     backend_labels = {"vllm": "On-Prem", "azure": "Azure", "bedrock": "AWS Bedrock"}
     backend_order = ["vllm", "azure", "bedrock"]
@@ -319,14 +321,21 @@ async def dashboard(
 
 @router.get("/dashboard/api/model-breakdown")
 async def model_breakdown_api(
+    period: str = "month",
     user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
 ):
-    """Fresh monthly per-model cost breakdown for the dashboard's refresh
-    button — lets the Cost by Model card update in place without a full
-    page reload."""
-    groups, total_cost = _build_model_breakdown(session, user.id)
-    return JSONResponse({"groups": groups, "total_cost_usd": total_cost})
+    """Fresh per-model cost breakdown for the dashboard's Cost by Model
+    card — backs both the Month/Today toggle and the refresh button, so the
+    card updates in place without a full page reload."""
+    if period not in ("month", "day"):
+        raise HTTPException(status_code=400, detail="period must be 'month' or 'day'.")
+    groups, total_cost = _build_model_breakdown(session, user.id, period=period)
+    return JSONResponse({
+        "period": period,
+        "groups": groups,
+        "total_cost_usd": total_cost,
+    })
 
 
 @router.post("/dashboard/refresh-key")

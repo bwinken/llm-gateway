@@ -342,17 +342,24 @@ def get_department_usage(session: Session) -> list[dict]:
     ]
 
 
-def get_model_breakdown(session: Session, user_id: int) -> list[dict]:
-    """Per-model usage breakdown for the current month, split by backend.
+def get_model_breakdown(
+    session: Session, user_id: int, period: str = "month",
+) -> list[dict]:
+    """Per-model usage breakdown, split by backend.
 
     Grouped by (model alias, backend) so the dashboard can show which models
     the user's spend went to, with on-prem (vLLM) and cloud (Azure / Bedrock)
-    portions kept separate. Month boundary is UTC month start — the same
-    window as ``get_user_monthly_summary`` so the per-model costs sum to the
-    Monthly Cost card.
+    portions kept separate. ``period`` picks the window: ``"month"`` is UTC
+    month start — the same window as ``get_user_monthly_summary`` so the
+    per-model costs sum to the Monthly Cost card; ``"day"`` is the local
+    (Asia/Taipei) day start — the same window as ``get_user_daily_summary``
+    and the Today's Cost card.
     """
-    now = datetime.now(timezone.utc)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if period == "day":
+        since = local_day_start_utc()
+    else:
+        now = datetime.now(timezone.utc)
+        since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     stmt = (
         select(
@@ -365,7 +372,7 @@ def get_model_breakdown(session: Session, user_id: int) -> list[dict]:
             func.coalesce(func.sum(UsageLog.cost_usd), 0),
         )
         .where(UsageLog.user_id == user_id)
-        .where(UsageLog.created_at >= month_start)
+        .where(UsageLog.created_at >= since)
         .group_by(UsageLog.model, UsageLog.model_type, UsageLog.backend)
         .order_by(func.sum(UsageLog.cost_usd).desc())
     )

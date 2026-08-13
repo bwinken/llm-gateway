@@ -70,6 +70,18 @@ class TestGetModelBreakdown:
         rows = get_model_breakdown(db_session, test_user.id)
         assert [r["model"] for r in rows] == ["this-month"]
 
+    def test_day_period_only_counts_today(self, db_session, test_user):
+        _log(db_session, test_user.id, model="today-model", cost=0.3)
+        _log(db_session, test_user.id, model="yesterday-model", cost=0.9,
+             created_at=datetime.now(timezone.utc) - timedelta(days=1))
+        db_session.commit()
+
+        day_rows = get_model_breakdown(db_session, test_user.id, period="day")
+        assert [r["model"] for r in day_rows] == ["today-model"]
+        # Month window still includes both
+        month_rows = get_model_breakdown(db_session, test_user.id)
+        assert {r["model"] for r in month_rows} == {"today-model", "yesterday-model"}
+
     def test_same_alias_split_across_backends(self, db_session, test_user):
         # A renamed/reused alias must not merge across backends.
         _log(db_session, test_user.id, model="shared-name", backend="vllm", cost=0.1)
@@ -179,4 +191,29 @@ class TestModelBreakdownApi:
             headers=web_auth_header(sub=test_user.username, scopes=["read"]),
         )
         assert resp.status_code == 200
-        assert resp.json() == {"groups": [], "total_cost_usd": 0.0}
+        assert resp.json() == {"period": "month", "groups": [], "total_cost_usd": 0.0}
+
+    def test_day_period(self, client, db_session, test_user):
+        _log(db_session, test_user.id, model="today-model", cost=0.3)
+        _log(db_session, test_user.id, model="yesterday-model", cost=0.9,
+             created_at=datetime.now(timezone.utc) - timedelta(days=1))
+        db_session.commit()
+
+        resp = client.get(
+            "/dashboard/api/model-breakdown?period=day",
+            headers=web_auth_header(sub=test_user.username, scopes=["read"]),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["period"] == "day"
+        assert data["total_cost_usd"] == 0.3
+        assert [r["model"] for g in data["groups"] for r in g["rows"]] == ["today-model"]
+        # Today's share is relative to today's total, not the month's
+        assert data["groups"][0]["rows"][0]["share"] == 100.0
+
+    def test_invalid_period_rejected(self, client, db_session, test_user):
+        resp = client.get(
+            "/dashboard/api/model-breakdown?period=year",
+            headers=web_auth_header(sub=test_user.username, scopes=["read"]),
+        )
+        assert resp.status_code == 400
