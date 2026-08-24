@@ -542,7 +542,7 @@ function anomalyAction(id, action) {
                             </div>
                         </td>
                         <td class="whitespace-nowrap">
-                            <button data-username="{{ u.username }}" data-apikey="{{ u.api_key }}" data-uid="{{ u.id }}"
+                            <button data-username="{{ u.username }}" data-uid="{{ u.id }}"
                                     onclick="showKeyModal(this)"
                                     class="gw-btn gw-btn-ghost text-xs font-mono px-3 py-1.5">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
@@ -662,7 +662,7 @@ function anomalyAction(id, action) {
                             </div>
                         </td>
                         <td class="whitespace-nowrap">
-                            <button data-username="{{ u.username }}" data-apikey="{{ u.api_key }}" data-uid="{{ u.id }}"
+                            <button data-username="{{ u.username }}" data-uid="{{ u.id }}"
                                     onclick="showKeyModal(this)"
                                     class="gw-btn gw-btn-ghost text-xs font-mono px-3 py-1.5">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
@@ -829,12 +829,24 @@ function anomalyAction(id, action) {
     }
 
     let currentUserId = null;
+    // The listings carry masked keys only, so the real one is fetched per
+    // account when the modal opens.
     function showKeyModal(el) {
-        currentUserId = el.dataset.uid;
+        var uid = el.dataset.uid;
+        currentUserId = uid;
         document.getElementById('modalUsername').textContent = el.dataset.username;
-        document.getElementById('modalKeyValue').value = el.dataset.apikey;
+        var field = document.getElementById('modalKeyValue');
+        field.value = 'Loading\u2026';
         document.getElementById('modalCopyFeedback').textContent = '';
         document.getElementById('keyModal').classList.remove('hidden');
+        fetch('/admin/users/' + uid + '/api-key')
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                // A slow response must not overwrite a modal reopened on someone else.
+                if (currentUserId !== uid) return;
+                field.value = d.ok ? d.api_key : 'Failed to load key';
+            })
+            .catch(function() { if (currentUserId === uid) field.value = 'Failed to load key'; });
     }
     function closeKeyModal() { document.getElementById('keyModal').classList.add('hidden'); currentUserId = null; }
 

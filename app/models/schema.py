@@ -15,6 +15,22 @@ def _generate_api_key() -> str:
     return f"sk-internal-{ts}-{short_hex}"
 
 
+def mask_api_key(key: str) -> str:
+    """Render a key for display: enough to identify it, not enough to use it.
+
+    Admin listings show every account at once, so shipping full keys there
+    hands whoever loads the page (or the JSON behind it) every credential in
+    the org. The last four characters are enough to match against what a
+    user reports; the full key is fetched one account at a time from
+    `GET /admin/users/{id}/api-key`.
+    """
+    if not key:
+        return ""
+    if len(key) <= 12:
+        return "\u2026"
+    return f"{key[:11]}\u2026{key[-4:]}"
+
+
 class User(SQLModel, table=True):
     __tablename__ = "users"
 
