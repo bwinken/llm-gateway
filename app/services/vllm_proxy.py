@@ -451,6 +451,27 @@ def _log_error(
         logger.warning("observability error-hook failed: {}", exc)
 
 
+def _submit_usage_write(fn: Any, *args: Any) -> None:
+    """Dispatch the usage-log DB write off the event loop, fire-and-forget.
+
+    Billing must not add latency to the response, so the write is handed to
+    the default thread executor and never awaited — the request returns
+    before the row lands. With no running loop (sync context, scripts) the
+    write happens inline instead.
+
+    This is a seam on purpose: tests patch it to run the write inline, so an
+    assertion on `usage_logs` right after a request is deterministic instead
+    of racing the executor thread. The dispatch itself is covered by
+    tests/test_usage_write_dispatch.py.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        fn(*args)
+        return
+    loop.run_in_executor(None, fn, *args)
+
+
 def _log_usage(
     user: User,
     model: str,
@@ -482,8 +503,6 @@ def _log_usage(
     generation only when LANGFUSE_CAPTURE_IO is on (Phase 2); input is read
     from the request-meta contextvar set by the forward_* function.
     """
-    import asyncio
-
     if route is None:
         route = MODEL_ROUTING.get(model, {})
     breakdown = _calc_cost_breakdown(route, model_type, input_tokens, output_tokens, cached_tokens)
@@ -499,22 +518,12 @@ def _log_usage(
     except Exception as exc:  # defensive — must never break logging/billing
         logger.warning("observability hook failed: {}", exc)
 
-    try:
-        loop = asyncio.get_running_loop()
-        loop.run_in_executor(
-            None,
-            _log_usage_sync,
-            user.id, user.username, user.daily_limit_usd,
-            model, model_type, input_tokens, output_tokens, cost, endpoint,
-            backend,
-        )
-    except RuntimeError:
-        # No running loop (e.g. during testing) — run synchronously
-        _log_usage_sync(
-            user.id, user.username, user.daily_limit_usd,  # type: ignore[arg-type]
-            model, model_type, input_tokens, output_tokens, cost, endpoint,
-            backend,
-        )
+    _submit_usage_write(
+        _log_usage_sync,
+        user.id, user.username, user.daily_limit_usd,
+        model, model_type, input_tokens, output_tokens, cost, endpoint,
+        backend,
+    )
 
 
 # ---------------------------------------------------------------------------

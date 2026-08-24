@@ -290,6 +290,20 @@ TEST_BEDROCK_MODELS: dict[str, dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 
 _mock_httpx_client = AsyncMock(spec=httpx.AsyncClient)
+def _inline_usage_write(fn, *args):
+    """Run the usage-log DB write inline instead of on the thread executor.
+
+    Production dispatches it fire-and-forget (`_submit_usage_write`) so
+    billing never adds latency to a response — which means the row may land
+    *after* the client gets its answer. Under TestClient that is a race: a
+    test asserting on `usage_logs` immediately after a request would pass or
+    fail depending on whether the executor thread won. Running it inline
+    makes those assertions deterministic; the dispatch mechanism itself is
+    covered separately in tests/test_usage_write_dispatch.py.
+    """
+    fn(*args)
+
+
 
 
 def _build_test_app() -> FastAPI:
@@ -342,6 +356,7 @@ _ALL_PATCHES = [
     lambda: patch("app.services.vllm_proxy.FALLBACK_MAP", TEST_FALLBACK_MAP),
     lambda: patch("app.services.vllm_proxy.get_client", return_value=_mock_httpx_client),
     lambda: patch("app.services.vllm_proxy.engine", _test_engine),
+    lambda: patch("app.services.vllm_proxy._submit_usage_write", _inline_usage_write),
     # ensure_azure_budget / ensure_bedrock_budget (unified /v1 dispatch) open
     # their own session on this module-level engine — point it at the test DB.
     lambda: patch("app.core.deps.engine", _test_engine),
