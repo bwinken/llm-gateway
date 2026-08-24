@@ -28,7 +28,7 @@ from app.core.config import (
     set_site_links,
 )
 from app.core.database import get_session
-from app.models.schema import AnomalyEvent, AppOwner, User, UsageLog
+from app.models.schema import AnomalyEvent, AppOwner, User, UsageLog, mask_api_key
 from app.services.analytics import build_monthly_report, iter_months, parse_ym
 from app.services.stats import (
     get_all_users_usage,
@@ -135,7 +135,9 @@ async def admin_page(
         return {
             "id": u.id,
             "username": u.username,
-            "api_key": u.api_key,
+            # Masked: a bulk listing must not carry usable credentials.
+            # The modal fetches the real key from /users/{id}/api-key.
+            "api_key": mask_api_key(u.api_key),
             "daily_limit_usd": u.daily_limit_usd,
             "azure_daily_limit_usd": u.azure_daily_limit_usd,
             "bedrock_daily_limit_usd": u.bedrock_daily_limit_usd,
@@ -539,6 +541,28 @@ async def delete_user(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.get("/users/{user_id}/api-key")
+async def reveal_user_key(
+    user_id: int,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Return one account's full API key, one deliberate request at a time.
+
+    The user/app listings only carry masked keys, so this is the single way
+    an admin gets a usable credential out of the panel — one account per
+    call, logged with who asked for whose key.
+    """
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    logger.warning(
+        "API key revealed | admin={} target={}", admin_user.username, target.username
+    )
+    return JSONResponse({"ok": True, "api_key": target.api_key})
+
+
 @router.post("/users/{user_id}/refresh-key")
 async def refresh_user_key(
     user_id: int,
@@ -576,7 +600,9 @@ async def list_users_api(
         {
             "id": u.id,
             "username": u.username,
-            "api_key": u.api_key,
+            # Masked: a bulk listing must not carry usable credentials.
+            # The modal fetches the real key from /users/{id}/api-key.
+            "api_key": mask_api_key(u.api_key),
             "daily_limit_usd": u.daily_limit_usd,
             "azure_daily_limit_usd": u.azure_daily_limit_usd,
             "bedrock_daily_limit_usd": u.bedrock_daily_limit_usd,

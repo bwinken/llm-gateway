@@ -40,6 +40,7 @@ from app.services.anthropic_adapter import (
     openai_message_to_anthropic,
     openai_to_anthropic_response,
 )
+from app.services.redact import summarize_body
 from app.services.responses_adapter import (
     ResponsesToChatStreamTranslator,
     openai_chat_to_responses_request,
@@ -214,13 +215,10 @@ def _ensure_input(
         [m.get("role") for m in msgs if isinstance(m, dict)]
         if isinstance(msgs, list) else None
     )
-    try:
-        in_snippet = json.dumps(incoming_body, ensure_ascii=False)[:4000]
-    except Exception:
-        in_snippet = repr(incoming_body)[:4000]
+    in_snippet = summarize_body(incoming_body)
     logger.warning(
         "Empty Responses input after translation — injecting probe placeholder | "
-        "endpoint={} model={} message_count={} roles={} incoming_body={}",
+        "endpoint={} model={} message_count={} roles={} incoming_shape={}",
         endpoint, alias,
         len(role_summary) if role_summary is not None else None,
         role_summary, in_snippet,
@@ -280,16 +278,13 @@ def _log_azure_error(
     """Surface Azure 4xx/5xx responses with both halves of the conversation
     so an operator can see what the client asked, what the gateway
     translated to, and how Azure objected."""
-    try:
-        sent_snippet = json.dumps(sent_body, ensure_ascii=False)[:8000]
-        in_snippet = json.dumps(incoming_body, ensure_ascii=False)[:8000]
-    except Exception:
-        sent_snippet = repr(sent_body)[:8000]
-        in_snippet = repr(incoming_body)[:8000]
+    # Shape only — the bodies are the user's prompt. See services/redact.py.
+    sent_snippet = summarize_body(sent_body)
+    in_snippet = summarize_body(incoming_body)
     input_summary = _summarize_input_items(sent_body.get("input")) if isinstance(sent_body, dict) else ""
     logger.warning(
         "Azure returned {} | endpoint={} model={} resp={} | input_summary={} | "
-        "sent_body={} | incoming_body={}",
+        "sent_shape={} | incoming_shape={}",
         status, endpoint, alias, resp_text[:1000], input_summary,
         sent_snippet, in_snippet,
     )

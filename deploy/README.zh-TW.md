@@ -120,6 +120,20 @@ curl -s localhost:8050/readyz
 範例 nginx 設定已讓這兩個路徑不經 `auth_request`，外部監控可以直接輪詢；
 本機的探針則建議直接打 `127.0.0.1:8050`，不必繞 nginx。
 
+## 日誌隱私
+
+有兩個設定決定使用者的 prompt 會不會落到永久儲存：
+
+| 設定 | 預設 | 開啟時的效果 |
+|---|---|---|
+| `LANGFUSE_CAPTURE_IO` | 關 | 每個請求的 prompt / 回應內容都會送到 Langfuse |
+| `LOG_REQUEST_BODIES` | 關 | Azure / Bedrock 回 4xx/5xx 時，原始請求內容會寫進 `LOG_DIR` |
+
+兩者都關閉時，失敗的請求只會記錄請求的**結構** —— 有哪些欄位、訊息的 role
+順序、content block 型別、各字串長度 —— 這些足以診斷下游的 400，但不包含
+內容本身。要追特定問題時再開 `LOG_REQUEST_BODIES`，追完關掉；它寫下的東西
+會保留 `LOG_RETENTION`（預設 14 天），且任何有主機存取權的人都讀得到。
+
 ## PostgreSQL 資料遷移（更換 Volume）
 
 當需要將 PG 資料搬移到其他 volume（例如掛錯磁碟、擴容）時，使用 `pg_dumpall` 邏輯備份最安全，不受檔案系統或權限差異影響。

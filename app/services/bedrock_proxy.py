@@ -63,6 +63,7 @@ from app.services.observability import (
     capture_io_enabled,
     set_io_input,
 )
+from app.services.redact import summarize_body
 from app.services.vllm_proxy import (
     _SSE_MAX_IDLE,
     _ANTHROPIC_PING_EVENT,
@@ -194,15 +195,11 @@ def _log_bedrock_error(
 ) -> None:
     """Surface Bedrock 4xx/5xx with both halves of the conversation (what the
     client asked / what the gateway translated to / how Bedrock objected)."""
-    try:
-        sent_snippet = json.dumps(sent_body, ensure_ascii=False)[:8000]
-        in_snippet = json.dumps(incoming_body, ensure_ascii=False)[:8000]
-    except Exception:
-        sent_snippet = repr(sent_body)[:8000]
-        in_snippet = repr(incoming_body)[:8000]
+    # Shape only — the bodies are the user's prompt. See services/redact.py.
     logger.warning(
-        "Bedrock returned {} | endpoint={} model={} resp={} | sent_body={} | incoming_body={}",
-        status, endpoint, alias, resp_text[:1000], sent_snippet, in_snippet,
+        "Bedrock returned {} | endpoint={} model={} resp={} | sent_shape={} | incoming_shape={}",
+        status, endpoint, alias, resp_text[:1000],
+        summarize_body(sent_body), summarize_body(incoming_body),
     )
 
 
