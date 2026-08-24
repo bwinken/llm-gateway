@@ -123,6 +123,22 @@ The example nginx config exposes both paths without `auth_request`, so an
 external monitor can poll them; probes local to the host should hit
 `127.0.0.1:8050` directly and skip nginx entirely.
 
+## Log Privacy
+
+Two settings decide whether user prompts reach durable storage:
+
+| Setting | Default | Effect when on |
+|---|---|---|
+| `LANGFUSE_CAPTURE_IO` | off | Prompt/response content is sent to Langfuse per request |
+| `LOG_REQUEST_BODIES` | off | An Azure/Bedrock 4xx/5xx logs the raw request body under `LOG_DIR` |
+
+With both off, a failed request logs the **shape** of the body — fields
+present, message roles, content-block types, string lengths — which is what
+diagnoses a downstream 400, without the prose. Turn `LOG_REQUEST_BODIES` on
+to chase a specific bug and turn it back off; anything it writes stays for
+`LOG_RETENTION` (14 days by default) and is readable by anyone with host
+access.
+
 ## PostgreSQL Data Migration (Volume Change)
 
 When moving PG data to a different volume (e.g., wrong disk mount, capacity expansion), using `pg_dumpall` logical backup is safest — unaffected by filesystem or permission differences.
