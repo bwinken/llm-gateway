@@ -42,7 +42,7 @@ OpenAI-compatible reverse proxy gateway for vLLM clusters. Routes API requests t
 
 ### CI & Lint
 
-`.github/workflows/ci.yml` runs `uv sync --frozen --dev` → `ruff check .` → `pytest tests/ -q` on every push to `main` and every PR (ubuntu-latest, Python 3.11). `--frozen` means a PR that edits `pyproject.toml` without re-locking fails CI instead of silently re-resolving.
+`.github/workflows/ci.yml` runs `uv sync --locked --dev` → `ruff check .` → `pytest tests/ -q` on every push to `main` and every PR (ubuntu-latest, Python 3.11). `--locked` (not `--frozen` — that one installs from the lock but skips the check) means a PR that edits `pyproject.toml` without re-running `uv lock` fails CI instead of drifting silently.
 
 Ruff's rule set is deliberately narrow (`select = ["E4", "E7", "E9", "F"]` in `pyproject.toml`): pyflakes plus the pycodestyle rules that flag real errors. The wider default set fights this codebase's intentional patterns — blind `except Exception` (the observability and billing hooks must never break a request), FastAPI's `Depends()` in argument defaults, `datetime.timezone.utc` — so widening it means either a repo-wide rewrite or a carpet of `noqa`. Per-file ignores: `scripts/*.py` waives `E402` (they extend `sys.path` and load `.env` before importing anything under `app/`), `tests/conftest.py` waives `F401`.
 

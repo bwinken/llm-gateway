@@ -467,7 +467,7 @@ uv run ruff check . --fix    # Lint 並自動修正
 
 ### CI
 
-`.github/workflows/ci.yml` 會在每次推送到 `main` 與每個 pull request 上跑 lint 與完整測試（GitHub 託管的 `ubuntu-latest`、Python 3.11，依賴由 `uv sync --frozen` 從 `uv.lock` 安裝）。若 PR 讓 `uv.lock` 與 `pyproject.toml` 失去同步，會在 CI 直接失敗而不是悄悄漂移。
+`.github/workflows/ci.yml` 會在每次推送到 `main` 與每個 pull request 上跑 lint 與完整測試（GitHub 託管的 `ubuntu-latest`、Python 3.11，依賴由 `uv sync --locked` 從 `uv.lock` 安裝）。若 PR 讓 `uv.lock` 與 `pyproject.toml` 失去同步，會在 CI 直接失敗而不是悄悄漂移。
 
 ---
 

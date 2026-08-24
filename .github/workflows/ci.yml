@@ -32,10 +32,11 @@ jobs:
       - name: Install Python
         run: uv python install 3.11
 
-      # --frozen: fail if uv.lock is out of sync with pyproject.toml rather
-      # than silently re-resolving, so a forgotten `uv lock` shows up here.
+      # --locked: install exactly what uv.lock pins AND fail if that lock is
+      # out of sync with pyproject.toml, so a forgotten `uv lock` shows up
+      # here. (--frozen would install from the lock but skip that check.)
       - name: Sync dependencies
-        run: uv sync --frozen --dev
+        run: uv sync --locked --dev
 
       - name: Lint
         run: uv run ruff check .
