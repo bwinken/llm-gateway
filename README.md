@@ -467,7 +467,7 @@ Tests use in-memory SQLite and mock all downstream calls. No PostgreSQL or vLLM 
 
 ### CI
 
-`.github/workflows/ci.yml` runs the linter and the full test suite on every push to `main` and on every pull request (GitHub-hosted `ubuntu-latest`, Python 3.11, dependencies from `uv.lock` via `uv sync --frozen`). A pull request that leaves `uv.lock` out of sync with `pyproject.toml` fails there rather than drifting silently.
+`.github/workflows/ci.yml` runs the linter and the full test suite on every push to `main` and on every pull request (GitHub-hosted `ubuntu-latest`, Python 3.11, dependencies from `uv.lock` via `uv sync --locked`). A pull request that leaves `uv.lock` out of sync with `pyproject.toml` fails there rather than drifting silently.
 
 ---
 
