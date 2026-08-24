@@ -54,7 +54,6 @@ from app.services.vllm_proxy import (
     _ANTHROPIC_PING_EVENT,
     _NON_STREAM_TIMEOUT,
     _approx_token_count,
-    _calc_cost,
     _error_response,
     _log_error,
     _log_usage,

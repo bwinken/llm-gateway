@@ -10,7 +10,8 @@ class TestApiKeyDisabledRejection:
 
     def test_disabled_user_blocked_on_v1(self, client, db_session, test_user):
         test_user.is_disabled = True
-        db_session.add(test_user); db_session.commit()
+        db_session.add(test_user)
+        db_session.commit()
         resp = client.post(
             "/v1/chat/completions",
             json={"model": "test-llm", "messages": []},
@@ -21,12 +22,14 @@ class TestApiKeyDisabledRejection:
     def test_enabled_again_works(self, client, db_session, test_user):
         # Disable then re-enable: should still be 200/4xx (not 403)
         test_user.is_disabled = True
-        db_session.add(test_user); db_session.commit()
+        db_session.add(test_user)
+        db_session.commit()
         resp = client.get("/v1/models", headers=auth_header())
         assert resp.status_code == 403
 
         test_user.is_disabled = False
-        db_session.add(test_user); db_session.commit()
+        db_session.add(test_user)
+        db_session.commit()
         resp = client.get("/v1/models", headers=auth_header())
         assert resp.status_code == 200
 
@@ -36,7 +39,8 @@ class TestDisabledHTMLRendering:
 
     def test_browser_gets_html(self, client, db_session, test_user):
         test_user.is_disabled = True
-        db_session.add(test_user); db_session.commit()
+        db_session.add(test_user)
+        db_session.commit()
         resp = client.post(
             "/v1/chat/completions",
             json={"model": "test-llm", "messages": []},
@@ -52,7 +56,8 @@ class TestDisabledHTMLRendering:
 
     def test_api_client_gets_json(self, client, db_session, test_user):
         test_user.is_disabled = True
-        db_session.add(test_user); db_session.commit()
+        db_session.add(test_user)
+        db_session.commit()
         resp = client.post(
             "/v1/chat/completions",
             json={"model": "test-llm", "messages": []},

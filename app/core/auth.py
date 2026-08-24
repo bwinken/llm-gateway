@@ -14,11 +14,14 @@ import os
 from pathlib import Path
 
 import jwt
-from fastapi import Depends, HTTPException, Request, Security
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, SecurityScopes
 from sqlmodel import Session, select
 
 from app.core.config import AUTH_BASE_URL, AUTH_CENTER_APP_ID, AUTH_CENTER_PUBLIC_KEY_PATH, get_default_daily_limit
+from app.core.database import get_session
+from app.core.logger import logger
+from app.models.schema import User
 
 
 class AccountDisabledError(Exception):
@@ -30,9 +33,6 @@ class AccountDisabledError(Exception):
     def __init__(self, username: str = ""):
         self.username = username
         super().__init__(f"Account '{username}' is disabled.")
-from app.core.database import get_session
-from app.core.logger import logger
-from app.models.schema import User
 
 _ALGORITHM = "RS256"
 _bearer = HTTPBearer(auto_error=False)

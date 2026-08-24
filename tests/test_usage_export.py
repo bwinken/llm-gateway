@@ -73,8 +73,8 @@ def seeded(db_session):
         UsageLog(user_id=carol.id, input_tokens=300, output_tokens=150,
                  cost_usd=Decimal("3.00"), created_at=_dt(2026, 3, 4)),
     ]
-    for l in logs:
-        db_session.add(l)
+    for log in logs:
+        db_session.add(log)
     db_session.commit()
     return {
         "alice": alice, "bob": bob, "carol": carol, "app_backend": app_backend,

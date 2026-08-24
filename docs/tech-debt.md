@@ -30,15 +30,3 @@ Pick items off as time allows. New entries go to the top.
 Backward-compat consideration: existing `[azure_models.<alias>]` entries with `api_version = "..."` should still load (silently ignored is fine; loud rejection would break running configs).
 
 ---
-
-## `_pump_anthropic_lines` is misnamed (2026-05-22)
-
-**What.** The SSE pump in `app/services/vllm_proxy.py` is called `_pump_anthropic_lines` but is used by **all** stream paths (chat completions, Anthropic messages, Responses pass-through) and is not Anthropic-specific.
-
-**Context.** It was introduced to support Anthropic Messages streaming (ping events, idle-timeout-to-error) and reused as-is when other stream paths needed the same heartbeat behaviour. The name never got updated.
-
-**Impact.** Readability only — newcomers grep for the function and reasonably assume Anthropic-only relevance.
-
-**Suggested fix.** Rename to something like `_pump_sse_lines` or `_pump_stream_with_heartbeat`. Pure mechanical refactor: rename the function and update the four call sites (two each in `vllm_proxy.py` and `azure_proxy.py`).
-
----

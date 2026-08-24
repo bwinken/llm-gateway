@@ -20,9 +20,17 @@ from typing import Any
 import toml
 from dotenv import load_dotenv
 
+from app.core.logger import logger
+
 load_dotenv()
 
-_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config.toml"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_CONFIG_PATH = _PROJECT_ROOT / "config.toml"
+# Shipped sample config, used as a read-only fallback when config.toml is
+# absent (fresh clone, CI checkout). config.toml is gitignored — it holds
+# real downstream URLs and API keys — so without this fallback importing
+# this module explodes before any test or tooling gets to run.
+_EXAMPLE_CONFIG_PATH = _PROJECT_ROOT / "config.toml.example"
 
 APP_TITLE: str = os.getenv("APP_TITLE", "LLM Gateway")
 DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://llm_gateway:password@localhost:5432/llm_gateway")
@@ -72,8 +80,40 @@ _MODEL_INTERNAL_KEYS: tuple[str, ...] = (
 )
 
 
+def _active_config_path() -> Path:
+    """Return the config file to read: config.toml, else the example.
+
+    Writes (``save_config``) always target ``_CONFIG_PATH`` — falling back
+    to the example is a read-only convenience so a fresh checkout can boot,
+    never a path that gets written back to.
+    """
+    if _CONFIG_PATH.exists():
+        return _CONFIG_PATH
+    return _EXAMPLE_CONFIG_PATH
+
+
+def _config_mtime_now() -> float:
+    """Current mtime of the active config file, or 0.0 when it's gone."""
+    try:
+        return _active_config_path().stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+_warned_example_fallback = False
+
+
 def _load_toml() -> dict[str, Any]:
-    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+    global _warned_example_fallback
+    path = _active_config_path()
+    if path == _EXAMPLE_CONFIG_PATH and not _warned_example_fallback:
+        _warned_example_fallback = True
+        logger.warning(
+            "config.toml not found — falling back to {}. Copy it to "
+            "config.toml before serving real traffic.",
+            path.name,
+        )
+    with open(path, "r", encoding="utf-8") as f:
         return toml.load(f)
 
 
@@ -258,15 +298,14 @@ _raw = _load_toml()
 ) = _build_config(_raw)
 
 _config_lock = threading.Lock()
-_config_mtime: float = _CONFIG_PATH.stat().st_mtime
+_config_mtime: float = _config_mtime_now()
 
 
 def _check_auto_reload() -> None:
     """Reload config if the file has been modified (handles multi-worker sync)."""
     global _config_mtime
-    try:
-        mtime = _CONFIG_PATH.stat().st_mtime
-    except OSError:
+    mtime = _config_mtime_now()
+    if mtime == 0.0:
         return
     if mtime != _config_mtime:
         _config_mtime = mtime
@@ -292,10 +331,7 @@ def reload_config() -> None:
     """
     global _config_mtime
     raw = _load_toml()
-    try:
-        _config_mtime = _CONFIG_PATH.stat().st_mtime
-    except OSError:
-        pass
+    _config_mtime = _config_mtime_now()
     (
         new_app_config, new_routing, new_pricing, new_fallback,
         new_azure, new_azure_fallback, new_bedrock, new_bedrock_fallback,

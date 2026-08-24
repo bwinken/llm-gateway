@@ -180,7 +180,7 @@ class TestUsersWithoutAzureAccess:
         assert resp.status_code == 200
         # Served by vLLM, logged as vllm.
         logs = db_session.exec(select(UsageLog).where(UsageLog.endpoint == "/v1/chat/completions")).all()
-        assert logs and all(l.backend == "vllm" for l in logs)
+        assert logs and all(log.backend == "vllm" for log in logs)
 
     def test_vllm_requests_unaffected(self, client, db_session, test_user):
         self._revoke_azure(db_session, test_user)

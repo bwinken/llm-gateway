@@ -4,12 +4,11 @@ Web dashboard endpoints (Jinja2 HTML pages).
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Security
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 

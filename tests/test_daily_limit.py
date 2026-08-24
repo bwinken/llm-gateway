@@ -9,7 +9,6 @@ Both preserve the default (strict) behavior when unused.
 
 from __future__ import annotations
 
-import os
 from decimal import Decimal
 
 from sqlmodel import Session

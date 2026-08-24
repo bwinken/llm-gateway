@@ -14,6 +14,10 @@ uv run fastapi dev app/main.py
 # Run all tests
 uv run pytest tests/ -v
 
+# Lint (ruff; CI runs the same command)
+uv run ruff check .
+uv run ruff check . --fix
+
 # Run a single test file
 uv run pytest tests/test_chat_completions.py -v
 
@@ -35,6 +39,25 @@ uv add <package>
 ## Architecture
 
 OpenAI-compatible reverse proxy gateway for vLLM clusters. Routes API requests to downstream LLM/VLM/Embedding/Reranker servers with usage tracking and per-user billing.
+
+### CI & Lint
+
+`.github/workflows/ci.yml` runs `uv sync --frozen --dev` → `ruff check .` → `pytest tests/ -q` on every push to `main` and every PR (ubuntu-latest, Python 3.11). `--frozen` means a PR that edits `pyproject.toml` without re-locking fails CI instead of silently re-resolving.
+
+Ruff's rule set is deliberately narrow (`select = ["E4", "E7", "E9", "F"]` in `pyproject.toml`): pyflakes plus the pycodestyle rules that flag real errors. The wider default set fights this codebase's intentional patterns — blind `except Exception` (the observability and billing hooks must never break a request), FastAPI's `Depends()` in argument defaults, `datetime.timezone.utc` — so widening it means either a repo-wide rewrite or a carpet of `noqa`. Per-file ignores: `scripts/*.py` waives `E402` (they extend `sys.path` and load `.env` before importing anything under `app/`), `tests/conftest.py` waives `F401`.
+
+CI checks out the repo **without** `config.toml` (it is gitignored — it holds real downstream URLs and API keys). `app/core/config.py:_active_config_path()` falls back to `config.toml.example` for reads; writes (`save_config`) always target `config.toml`. `tests/test_config_fallback.py` covers the fallback and validates that the example still parses through `_build_config`, so the shipped example can't rot.
+
+### Health Probes (`app/routers/health_api.py`)
+
+Two unauthenticated routes (`include_in_schema=False`), mounted first in `app/main.py`:
+
+| Path | Meaning | Codes |
+|---|---|---|
+| `/healthz` | Liveness — process up, event loop turning. Zero I/O. | always `200` |
+| `/readyz` | Readiness — `SELECT 1` against the DB via `run_in_threadpool`; also reports `all_health()` alive/total counts as information. | `200` / `503` |
+
+`/readyz` gates on the **database only**, deliberately. The vLLM health cache is per-worker and empty for the first ~30 s after boot (a fresh worker would report itself unready), and failing the probe on a fleet-wide downstream outage would pull every gateway instance out of the load balancer at once — turning a degraded service (Azure/Bedrock still route) into a total one. The example nginx config exposes both paths via a regex `location` that outranks the `auth_request`-protected `location /`.
 
 ### Request Flow
 
@@ -232,6 +255,8 @@ Tests use in-memory SQLite with `StaticPool` (all connections share one DB). Key
 - `client` fixture builds a test app with noop lifespan (no health checks, no real DB init)
 - `FakeStreamResponse` simulates SSE streaming for stream tests
 - Mock httpx client accessible via `client.__httpx_mock__`
+
+The `client` fixture's app mounts `health_api` alongside the other routers, so probe tests go through the same fixture as everything else.
 
 When adding new tests, always use the existing `client` fixture and `auth_header()` helper (for `/v1/*` API key auth) or `web_auth_header()` helper (for JWT web/admin auth). Set mock responses on `client.__httpx_mock__.post` (non-stream) or `client.__httpx_mock__.send` (stream).
 

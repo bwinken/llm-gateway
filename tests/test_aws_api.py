@@ -391,7 +391,8 @@ class TestBedrockModelsListing:
 
     def test_blocked_without_can_use_bedrock(self, client, db_session, test_user):
         test_user.can_use_bedrock = False
-        db_session.add(test_user); db_session.commit()
+        db_session.add(test_user)
+        db_session.commit()
         resp = client.get("/aws/v1/models", headers=auth_header())
         assert resp.status_code == 403
 
@@ -574,7 +575,8 @@ class TestUnifiedDispatchToBedrock:
 
     def test_v1_models_hides_bedrock_without_permission(self, client, db_session, test_user):
         test_user.can_use_bedrock = False
-        db_session.add(test_user); db_session.commit()
+        db_session.add(test_user)
+        db_session.commit()
         resp = client.get("/v1/models", headers=auth_header())
         ids = [m["id"] for m in resp.json()["data"]]
         assert "bedrock-claude" not in ids
@@ -613,7 +615,8 @@ class TestUnifiedDispatchToBedrock:
         # Same "be liberal with unknown aliases" stance as Azure: the alias
         # quietly falls through _resolve_model to the vLLM default.
         test_user.can_use_bedrock = False
-        db_session.add(test_user); db_session.commit()
+        db_session.add(test_user)
+        db_session.commit()
         client.__httpx_mock__.post = AsyncMock(
             return_value=make_httpx_response(200, {
                 "id": "x", "object": "chat.completion",

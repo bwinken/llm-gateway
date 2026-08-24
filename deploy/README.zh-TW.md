@@ -95,6 +95,31 @@ docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml restart
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 ```
 
+## 健康檢查
+
+Gateway 自身提供兩個免認證端點：
+
+| 路徑 | 意義 | 狀態碼 |
+|---|---|---|
+| `/healthz` | Liveness — process 還活著、event loop 還在轉。不做任何 I/O。 | 永遠 `200` |
+| `/readyz` | Readiness — 資料庫能回應 `SELECT 1`。同時附上 vLLM 健康快取的統計供人閱讀。 | `200` / `503` |
+
+```bash
+curl -s localhost:8050/healthz
+# {"status":"ok","app":"LLM Gateway"}
+
+curl -s localhost:8050/readyz
+# {"status":"ok","database":"ok","downstreams":{"alive":3,"total":4}}
+```
+
+`/readyz` 刻意**不會**因為下游 vLLM 全掛而失敗。健康快取是每個 worker 各自持有、
+開機後約 30 秒內還是空的（剛啟動的 worker 會把自己判成 not ready）；而且下游全域
+故障時，這樣會一次把所有 Gateway 實例踢出負載平衡 —— 把「降級」（Azure/Bedrock
+仍可路由、client 至少拿得到真正的錯誤訊息）變成「全斷」。
+
+範例 nginx 設定已讓這兩個路徑不經 `auth_request`，外部監控可以直接輪詢；
+本機的探針則建議直接打 `127.0.0.1:8050`，不必繞 nginx。
+
 ## PostgreSQL 資料遷移（更換 Volume）
 
 當需要將 PG 資料搬移到其他 volume（例如掛錯磁碟、擴容）時，使用 `pg_dumpall` 邏輯備份最安全，不受檔案系統或權限差異影響。
