@@ -6,7 +6,6 @@ Covers: non-streaming, streaming, model routing, error handling.
 
 from __future__ import annotations
 
-import json
 
 import httpx
 from sqlmodel import select

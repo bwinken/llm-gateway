@@ -1,5 +1,7 @@
 # LLM Gateway
 
+[![CI](https://github.com/bwinken/llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/bwinken/llm-gateway/actions/workflows/ci.yml)
+
 [中文版](README.zh-TW.md)
 
 OpenAI-compatible reverse proxy gateway for [vLLM](https://github.com/vllm-project/vllm) serving clusters and Azure OpenAI deployments.
@@ -45,6 +47,7 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 - **Cost export by backend** — Admin xlsx report includes a **Cost by Backend** sheet, and `GET /admin/api/export/user-backend-costs.csv` exports one row per (month × account) with separate On-prem (vLLM) / Azure / AWS Bedrock cost columns for billing/chargeback
 - **Web dashboard** — Usage stats, remaining-quota indicator, Chart.js trend charts, grouped server health status with admin-set model metadata badges (context window, tools, vision, cache) and live per-vLLM-server load (`running N · waiting M`, amber when requests queue, red overload warning); separate Azure access card listing configured Azure aliases when granted
 - **Admin panel** — User management with per-row Disable / Enable, Azure, Monitor, and Delete buttons; leaderboards, runtime-adjustable default daily limit, model config UI (routing/pricing/fallback)
+- **Health probes** — Unauthenticated `/healthz` (liveness, zero I/O) and `/readyz` (readiness, gated on the database) for load balancers and monitoring
 - **Background health checks** — Periodic pings to all downstream vLLM servers, plus a Prometheus `/metrics` scrape of each alive server for live running/waiting request counts shown on the dashboard
 
 ## Tech Stack
@@ -454,10 +457,17 @@ uv run alembic current
 ## Testing
 
 ```bash
-uv run pytest tests/ -v
+uv run pytest tests/ -v      # tests
+uv run ruff check .          # lint
+uv run ruff check . --fix    # lint + autofix
 ```
 
 Tests use in-memory SQLite and mock all downstream calls. No PostgreSQL or vLLM servers required.
+`config.toml` is not required either — when it is absent (fresh clone, CI checkout) `app/core/config.py` falls back to `config.toml.example`.
+
+### CI
+
+`.github/workflows/ci.yml` runs the linter and the full test suite on every push to `main` and on every pull request (GitHub-hosted `ubuntu-latest`, Python 3.11, dependencies from `uv.lock` via `uv sync --frozen`). A pull request that leaves `uv.lock` out of sync with `pyproject.toml` fails there rather than drifting silently.
 
 ---
 
@@ -467,9 +477,10 @@ Tests use in-memory SQLite and mock all downstream calls. No PostgreSQL or vLLM 
 llm-gateway/
 ├── config.toml.example        # Model routing + pricing template
 ├── .env.example                # Environment variables template
-├── pyproject.toml              # Dependencies and project config (uv)
+├── pyproject.toml              # Dependencies, ruff config (uv)
 ├── uv.lock                     # Locked dependency versions
 ├── alembic.ini                 # Alembic migration config
+├── .github/workflows/ci.yml    # CI: ruff + pytest on push / PR
 ├── alembic/
 │   ├── env.py                  # Migration environment (reads DATABASE_URL)
 │   └── versions/               # Migration scripts
@@ -495,6 +506,7 @@ llm-gateway/
 │   ├── routers/
 │   │   ├── v1_api.py           # /v1/* unified public API (vLLM default + Azure dispatch)
 │   │   ├── azure_api.py        # /azure/v1/* Azure-only API
+│   │   ├── health_api.py       # /healthz + /readyz probes (no auth)
 │   │   ├── web_ui.py           # Dashboard (Jinja2)
 │   │   └── admin.py            # Admin panel + API
 │   ├── services/

@@ -1,5 +1,7 @@
 # LLM Gateway
 
+[![CI](https://github.com/bwinken/llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/bwinken/llm-gateway/actions/workflows/ci.yml)
+
 [English](README.md)
 
 OpenAI 相容的反向代理閘道，可同時整合 [vLLM](https://github.com/vllm-project/vllm) 叢集與 Azure OpenAI 部署。
@@ -45,6 +47,7 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 - **依後端拆分的費用匯出** — 管理員 xlsx 報表含 **Cost by Backend** 分頁;`GET /admin/api/export/user-backend-costs.csv` 每 (月 × 帳號) 一列,分開列出 On-prem (vLLM) / Azure / AWS Bedrock 費用欄位,方便對接帳務/分攤系統
 - **Web 儀表板** — 用量統計、剩餘額度顯示、Chart.js 趨勢圖、分組的伺服器健康狀態,模型旁顯示管理員設定的 metadata badge(context window、tools、vision、cache),並即時顯示每台 vLLM 伺服器的負載(`running N · waiting M`,有請求排隊時轉琥珀色,過載時轉紅色警示);授權 Azure 存取後另有獨立的 Azure 存取卡片列出可用 Azure 別名
 - **管理面板** — 使用者管理(每列有 Disable / Enable、Azure、Monitor、Delete 四顆按鈕)、排行榜、可在執行期調整的預設每日額度、模型設定 UI(路由/計價/容錯)
+- **健康檢查端點** — 免認證的 `/healthz`(liveness，零 I/O)與 `/readyz`(readiness，以資料庫為判準)，供負載平衡器與監控輪詢
 - **背景健康檢查** — 定期 ping 所有下游 vLLM 伺服器,並抓取每台存活伺服器的 Prometheus `/metrics`,取得即時的 running/waiting 請求數顯示於儀表板
 
 ## 技術堆疊
@@ -454,10 +457,17 @@ uv run alembic current
 ## 測試
 
 ```bash
-uv run pytest tests/ -v
+uv run pytest tests/ -v      # 測試
+uv run ruff check .          # Lint
+uv run ruff check . --fix    # Lint 並自動修正
 ```
 
 測試使用記憶體內 SQLite 並模擬所有下游呼叫，不需要 PostgreSQL 或 vLLM 伺服器。
+也不需要 `config.toml` — 檔案不存在時（全新 clone、CI checkout）`app/core/config.py` 會退回讀取 `config.toml.example`。
+
+### CI
+
+`.github/workflows/ci.yml` 會在每次推送到 `main` 與每個 pull request 上跑 lint 與完整測試（GitHub 託管的 `ubuntu-latest`、Python 3.11，依賴由 `uv sync --frozen` 從 `uv.lock` 安裝）。若 PR 讓 `uv.lock` 與 `pyproject.toml` 失去同步，會在 CI 直接失敗而不是悄悄漂移。
 
 ---
 
@@ -467,9 +477,10 @@ uv run pytest tests/ -v
 llm-gateway/
 ├── config.toml.example        # 模型路由 + 計價範本
 ├── .env.example                # 環境變數範本
-├── pyproject.toml              # 依賴與專案設定 (uv)
+├── pyproject.toml              # 依賴、ruff 設定 (uv)
 ├── uv.lock                     # 鎖定的依賴版本
 ├── alembic.ini                 # Alembic 遷移設定
+├── .github/workflows/ci.yml    # CI：push / PR 時跑 ruff + pytest
 ├── alembic/
 │   ├── env.py                  # 遷移環境（讀取 DATABASE_URL）
 │   └── versions/               # 遷移腳本
@@ -495,6 +506,7 @@ llm-gateway/
 │   ├── routers/
 │   │   ├── v1_api.py           # /v1/* 統一公開 API(vLLM 預設 + Azure 分派)
 │   │   ├── azure_api.py        # /azure/v1/* Azure-only API
+│   │   ├── health_api.py       # /healthz + /readyz 探針（免認證）
 │   │   ├── web_ui.py           # 儀表板 (Jinja2)
 │   │   └── admin.py            # 管理面板 + API
 │   ├── services/

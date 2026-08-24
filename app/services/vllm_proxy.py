@@ -908,9 +908,7 @@ async def vllm_forward_simple_request(
 
     real_model = route["real_model"]
     body["model"] = real_model
-    base_url = route["base_url"]
     model_type = route["type"]
-    downstream_headers = _get_downstream_headers(route)
     extra_headers = _fallback_headers(fallback_reason)
 
     client = get_client()
@@ -965,7 +963,6 @@ async def vllm_forward_responses(
 
     model_name = body_json.get("model", "")
     resolved_alias, route, fallback_reason = _resolve_model(model_name, allowed_types)
-    base_url = route["base_url"]
     model_type = route["type"]
     downstream_headers = _get_downstream_headers(route)
     extra_headers = _fallback_headers(fallback_reason)

@@ -33,7 +33,8 @@ class TestAzureModelsListing:
 
     def test_azure_blocked_without_can_use_azure(self, client, db_session, test_user):
         test_user.can_use_azure = False
-        db_session.add(test_user); db_session.commit()
+        db_session.add(test_user)
+        db_session.commit()
         resp = client.get("/azure/v1/models", headers=auth_header())
         assert resp.status_code == 403
 

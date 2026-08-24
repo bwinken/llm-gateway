@@ -27,4 +27,26 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
+    "ruff>=0.6",
 ]
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["alembic/versions"]
+
+# Deliberately narrow: pyflakes (F) plus the pycodestyle rules that flag real
+# errors rather than formatting taste. The wider default set fights this
+# codebase's intentional patterns — blind `except Exception` (observability and
+# billing hooks must never break a request), FastAPI's `Depends()` in argument
+# defaults, and `datetime.timezone.utc` — so enabling them would mean either a
+# repo-wide rewrite or a carpet of noqa comments. What is on here is signal:
+# unused imports, undefined names, dead locals, syntax errors.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test modules import fixtures for their side effects.
+"tests/conftest.py" = ["F401"]
+# Standalone maintenance scripts must extend sys.path and load .env before
+# they can import anything under app/ — the late imports are the point.
+"scripts/*.py" = ["E402"]

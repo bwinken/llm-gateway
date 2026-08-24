@@ -7,9 +7,7 @@ Covers: base64 image, image_url, multi-image, and VLM model routing.
 from __future__ import annotations
 
 import base64
-import json
 
-import httpx
 
 from tests.conftest import auth_header, make_httpx_response
 

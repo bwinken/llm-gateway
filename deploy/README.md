@@ -95,6 +95,34 @@ docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml restart
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 ```
 
+## Health Probes
+
+Two unauthenticated endpoints, served by the Gateway itself:
+
+| Path | Meaning | Codes |
+|---|---|---|
+| `/healthz` | Liveness — the process is up and the event loop is turning. Does no I/O. | always `200` |
+| `/readyz` | Readiness — the database answers `SELECT 1`. Also reports the vLLM health-cache counts for humans to read. | `200` / `503` |
+
+```bash
+curl -s localhost:8050/healthz
+# {"status":"ok","app":"LLM Gateway"}
+
+curl -s localhost:8050/readyz
+# {"status":"ok","database":"ok","downstreams":{"alive":3,"total":4}}
+```
+
+`/readyz` deliberately does **not** fail when downstream vLLM servers are
+down. The health cache is per-worker and empty for the first ~30 s after
+boot (a fresh worker would report itself unready), and a fleet-wide
+downstream outage would otherwise pull every Gateway instance out of the
+load balancer at once — turning a degraded service (Azure/Bedrock still
+route, clients still get a real error) into a total outage.
+
+The example nginx config exposes both paths without `auth_request`, so an
+external monitor can poll them; probes local to the host should hit
+`127.0.0.1:8050` directly and skip nginx entirely.
+
 ## PostgreSQL Data Migration (Volume Change)
 
 When moving PG data to a different volume (e.g., wrong disk mount, capacity expansion), using `pg_dumpall` logical backup is safest — unaffected by filesystem or permission differences.

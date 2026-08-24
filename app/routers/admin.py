@@ -106,7 +106,6 @@ async def admin_page(
     ).all()
 
     # Usage maps for paginated users only
-    paged_ids = [u.id for u in paged_users] + [u.id for u in paged_apps]
     usage_map = get_all_users_usage(session)
     monthly_map = get_monthly_all_users_usage(session)
 
@@ -569,7 +568,6 @@ async def list_users_api(
 
     # Build owner lookup
     all_app_owners = session.exec(select(AppOwner)).all()
-    user_lookup = {u.id: u.username for u in users}
     app_owners_map: dict[int, list[int]] = {}
     for ao in all_app_owners:
         app_owners_map.setdefault(ao.app_id, []).append(ao.owner_id)

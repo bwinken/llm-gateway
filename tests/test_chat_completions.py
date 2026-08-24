@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 
 import httpx
-import pytest
 
 from tests.conftest import FakeStreamResponse, auth_header, make_httpx_response
 

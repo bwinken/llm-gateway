@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-定義 FastAPI 路由，分為四個模組：統一 `/v1/*` 公開 API、Azure-only `/azure/v1/*` API、Web UI 頁面、Admin 管理。
+定義 FastAPI 路由：統一 `/v1/*` 公開 API、Azure-only `/azure/v1/*` API、Bedrock-only `/aws/v1/*` API、Web UI 頁面、Admin 管理，以及免認證的健康檢查探針。
 
 ## 模組總覽
 
@@ -17,6 +17,7 @@ graph LR
         v1_api["v1_api.py<br/>/v1/*<br/>(unified: vLLM default + Azure dispatch)"]
         azure_api["azure_api.py<br/>/azure/v1/*<br/>(Azure-only)"]
         web_ui["web_ui.py<br/>/dashboard"]
+        health_api["health_api.py<br/>/healthz • /readyz<br/>(免認證)"]
         admin["admin.py<br/>/admin"]
     end
 
@@ -176,6 +177,24 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 ---
 
+## `health_api.py` — Liveness 與 Readiness 探針
+
+**認證**：刻意沒有。探針來自 nginx、外部負載平衡器或容器 runtime，它們都不會帶
+API key 或 SSO session。這兩個端點也不會洩漏任何「服務有回應」以外的資訊。
+
+| Method | 路徑 | 說明 | 狀態碼 |
+|---|---|---|---|
+| `GET` | `/healthz` | Liveness。零 I/O — 只要 process 活著、event loop 還在轉就會回應。 | 永遠 `200` |
+| `GET` | `/readyz` | Readiness。對資料庫跑一次 `SELECT 1`；另附上 vLLM 健康快取統計供閱讀。 | `200` / `503` |
+
+`/readyz` **只以資料庫為判準**。vLLM 健康快取會回報但不會讓探針失敗：它由背景迴圈
+填入，開機後約 30 秒內還是空的（剛啟動的 worker 會把自己判成 not ready）；而下游
+全域故障時，這樣會一次把所有 Gateway 實例踢出負載平衡 —— 把「降級」變成「全斷」。
+
+兩條路由都設 `include_in_schema=False`，不會出現在 OpenAPI 文件裡。
+
+---
+
 ## 路由與認證對照
 
 ```mermaid
@@ -183,6 +202,10 @@ graph TD
     subgraph "API Key 認證 (deps.py)"
         V1["/v1/models<br/>/v1/chat/completions<br/>/v1/embeddings<br/>/v1/rerank • /v1/score<br/>/v1/responses<br/>/v1/messages • /v1/messages/count_tokens<br/>/v1/tokenize"]
         Azure["/azure/v1/models<br/>/azure/v1/chat/completions<br/>/azure/v1/embeddings<br/>/azure/v1/messages • /azure/messages<br/>/azure/v1/messages/count_tokens"]
+    end
+
+    subgraph "免認證 (health_api.py)"
+        Probes["/healthz • /readyz<br/>(liveness • readiness)"]
     end
 
     subgraph "JWT 認證 (auth.py via oauth2-proxy)"

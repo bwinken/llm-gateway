@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch supersedes the previous run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint & test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python
+        run: uv python install 3.11
+
+      # --frozen: fail if uv.lock is out of sync with pyproject.toml rather
+      # than silently re-resolving, so a forgotten `uv lock` shows up here.
+      - name: Sync dependencies
+        run: uv sync --frozen --dev
+
+      - name: Lint
+        run: uv run ruff check .
+
+      # No config.toml in the checkout (it is gitignored — it holds real
+      # downstream URLs and API keys). app/core/config.py falls back to
+      # config.toml.example, which tests/test_config_fallback.py validates.
+      - name: Test
+        run: uv run pytest tests/ -q

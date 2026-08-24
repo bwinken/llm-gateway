@@ -2,7 +2,7 @@
 
 [中文版](README.zh-TW.md)
 
-Defines FastAPI routes, split into four modules: the unified `/v1/*` public API, the Azure-only `/azure/v1/*` API, Web UI pages, and Admin management.
+Defines FastAPI routes: the unified `/v1/*` public API, the Azure-only `/azure/v1/*` API, the Bedrock-only `/aws/v1/*` API, Web UI pages, Admin management, and the unauthenticated health probes.
 
 ## Module Overview
 
@@ -17,6 +17,7 @@ graph LR
         v1_api["v1_api.py<br/>/v1/*<br/>(unified: vLLM default + Azure dispatch)"]
         azure_api["azure_api.py<br/>/azure/v1/*<br/>(Azure-only)"]
         web_ui["web_ui.py<br/>/dashboard"]
+        health_api["health_api.py<br/>/healthz • /readyz<br/>(no auth)"]
         admin["admin.py<br/>/admin"]
     end
 
@@ -176,6 +177,30 @@ There is intentionally **no** `/azure/v1/embeddings` — the Responses API doesn
 
 ---
 
+## `health_api.py` — Liveness & Readiness Probes
+
+**Auth**: none — deliberately. Probes come from nginx, an external load
+balancer, or a container runtime, none of which carry an API key or an SSO
+session. Neither endpoint reveals anything an unauthenticated caller could
+not learn by watching the service respond at all.
+
+| Method | Path | Description | Codes |
+|---|---|---|---|
+| `GET` | `/healthz` | Liveness. Zero I/O — answers as long as the process is up and the event loop is turning. | always `200` |
+| `GET` | `/readyz` | Readiness. Round-trips `SELECT 1` against the database; reports the vLLM health-cache counts as information. | `200` / `503` |
+
+`/readyz` gates on the **database only**. The vLLM health cache is reported
+but never fails the probe: it is filled by a background loop that has not
+run yet during the first ~30 s after boot (a fresh worker would report
+itself unready), and a fleet-wide downstream outage would pull every
+Gateway instance out of the load balancer at once — turning a degraded
+service into a total one.
+
+Both routes are `include_in_schema=False`, so they stay out of the OpenAPI
+document.
+
+---
+
 ## Route & Auth Reference
 
 ```mermaid
@@ -183,6 +208,10 @@ graph TD
     subgraph "API Key Auth (deps.py)"
         V1["/v1/* (+ no-/v1 aliases)<br/>models • chat/completions • embeddings<br/>rerank • score • responses<br/>messages • messages/count_tokens • tokenize<br/>(vLLM default + Azure dispatch on can_use_azure)"]
         Azure["/azure/v1/* (+ /azure/* aliases)<br/>models • chat/completions • responses<br/>messages • messages/count_tokens<br/>(Azure-only, require_azure_access)"]
+    end
+
+    subgraph "No Auth (health_api.py)"
+        Probes["/healthz • /readyz<br/>(liveness • readiness)"]
     end
 
     subgraph "JWT Auth (auth.py via oauth2-proxy)"

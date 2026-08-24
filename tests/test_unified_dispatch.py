@@ -14,13 +14,10 @@ not a 404.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
 
 import pytest
 
 from tests.conftest import (
-    TEST_AZURE_MODELS,
-    TEST_MODEL_ROUTING,
     auth_header,
     make_httpx_response,
 )
