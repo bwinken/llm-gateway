@@ -50,7 +50,7 @@ graph LR
 | `POST` | `/v1/messages`, `/messages` | Anthropic Messages (translates to OpenAI; streams `reasoning_content` as `thinking` blocks; emits SSE `ping` every 10 s of downstream silence) | `vllm_forward_messages` (vLLM) / `azure_forward_messages` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/messages/count_tokens`, `/messages/count_tokens` | Anthropic token counting (forwards to vLLM `/tokenize`, falls back to chars/4; Azure path uses chars/4 estimate) | `vllm_forward_count_tokens` (vLLM) / `azure_forward_count_tokens` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/tokenize`, `/tokenize` | vLLM-native pass-through tokenize (no Azure path — Azure has no tokenize endpoint) | `vllm_forward_tokenize` | `llm`, `vlm` |
-| `POST` | `/v1/chat/completions/render`, `/chat/completions/render` | vLLM-native pass-through render — chat template applied, nothing generated (debug aid; on-prem vLLM only, no Azure/Bedrock path) | `vllm_forward_render` | `llm`, `vlm` |
+| `POST` | `/v1/chat/completions/render`, `/chat/completions/render` | vLLM-native pass-through render — chat template applied, nothing generated (debug aid; on-prem vLLM only, no Azure/Bedrock path). The only route carrying a documented request body in `/docs`, declared via `openapi_extra` so nothing is validated away | `vllm_forward_render` | `llm`, `vlm` |
 
 ### Dispatch logic
 

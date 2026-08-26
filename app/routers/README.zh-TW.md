@@ -50,7 +50,7 @@ graph LR
 | `POST` | `/v1/messages`、`/messages` | Anthropic Messages(轉譯為 OpenAI;`reasoning_content` 串流成 `thinking` block;下游靜默時每 10 秒送 SSE `ping`) | `vllm_forward_messages`(vLLM) / `azure_forward_messages`(Azure) | `llm`, `vlm` |
 | `POST` | `/v1/messages/count_tokens`、`/messages/count_tokens` | Anthropic token 計數(vLLM 走 `/tokenize`,失敗時 fallback chars/4;Azure 路徑用 chars/4 估算) | `vllm_forward_count_tokens`(vLLM) / `azure_forward_count_tokens`(Azure) | `llm`, `vlm` |
 | `POST` | `/v1/tokenize`、`/tokenize` | vLLM 原生 pass-through tokenize(無 Azure 路徑 — Azure 沒有 tokenize 端點) | `vllm_forward_tokenize` | `llm`, `vlm` |
-| `POST` | `/v1/chat/completions/render`、`/chat/completions/render` | vLLM 原生 pass-through render — 只套 chat template 不生成(debug 用;僅地端 vLLM,無 Azure/Bedrock 路徑) | `vllm_forward_render` | `llm`, `vlm` |
+| `POST` | `/v1/chat/completions/render`、`/chat/completions/render` | vLLM 原生 pass-through render — 只套 chat template 不生成(debug 用;僅地端 vLLM,無 Azure/Bedrock 路徑)。唯一在 `/docs` 有 request body 文件的路由,以 `openapi_extra` 宣告,不會驗掉任何欄位 | `vllm_forward_render` | `llm`, `vlm` |
 
 ### 分派邏輯
 

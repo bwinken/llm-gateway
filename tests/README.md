@@ -178,7 +178,11 @@ reasoning / `reasoning_content` alignment that mirrors `/v1/chat/completions`,
 `x-api-key` auth, missing auth, malformed JSON, downstream 502, a 404 from a
 vLLM too old to serve the endpoint, unknown-alias fallback, and that an
 Azure-configured alias stays on the vLLM path (on-prem-only endpoint) even for
-a user with `can_use_azure`.
+a user with `can_use_azure`. Two further tests pin the documentation contract:
+`/openapi.json` carries a request-body schema for both paths (the handler takes
+a raw `Request`, so it comes from `openapi_extra`), and fields the schema never
+names (`vllm_xargs`, `structured_outputs`, …) still reach the downstream
+verbatim — the guard against a future Pydantic body model validating them away.
 
 ### `test_models_endpoint.py` — `/v1/models`
 

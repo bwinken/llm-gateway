@@ -236,8 +236,146 @@ async def chat_completions(request: Request, user: User = Depends(get_current_us
     return await vllm_forward_chat_completions(request, user, allowed_types=["llm", "vlm"])
 
 
-@router.post("/v1/chat/completions/render")
-@router.post("/chat/completions/render")
+# OpenAPI documentation for the render endpoint.
+#
+# Every handler in this router takes a raw ``Request`` (the gateway is a
+# pass-through — binding a Pydantic body model would make FastAPI validate
+# and silently DROP vLLM's long tail of extra fields: chat_template_kwargs,
+# vllm_xargs, structured_outputs, …), so FastAPI has no body schema to infer
+# and ``/docs`` renders these operations with no request body at all. That is
+# tolerable for the generation endpoints, whose shape every OpenAI client
+# already knows — but this one is a debug aid whose whole audience is a human
+# poking at Swagger UI's "Try it out", and an empty body box is useless there.
+#
+# ``openapi_extra`` documents the body without binding it: the schema below is
+# descriptive only, nothing here is enforced. It names the fields that actually
+# change what gets rendered rather than mirroring vLLM's full
+# ChatCompletionRequest (which drifts per vLLM release — copying it would be a
+# promise this gateway can't keep). ``additionalProperties: true`` is the honest
+# statement of the contract: anything else you send is forwarded verbatim.
+_RENDER_REQUEST_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "required": ["model", "messages"],
+    "additionalProperties": True,
+    "description": (
+        "A standard OpenAI chat completions body. Only the fields that affect "
+        "rendering are documented here; any other field (sampling knobs, "
+        "vLLM extensions such as `vllm_xargs` or `structured_outputs`, …) is "
+        "forwarded to the downstream verbatim and shows up in the resolved "
+        "`sampling_params` of the response."
+    ),
+    "properties": {
+        "model": {
+            "type": "string",
+            "description": "Model alias as listed by `GET /v1/models`.",
+        },
+        "messages": {
+            "type": "array",
+            "description": "Chat messages, exactly as for `/v1/chat/completions`.",
+            "items": {"type": "object", "additionalProperties": True},
+        },
+        "tools": {
+            "type": "array",
+            "description": (
+                "Tool definitions. Included in the render because the chat "
+                "template is what turns them into prompt text."
+            ),
+            "items": {"type": "object", "additionalProperties": True},
+        },
+        "tool_choice": {"description": "`none` | `auto` | `required` | a tool object."},
+        "documents": {
+            "type": "array",
+            "description": "RAG documents, for templates that render them.",
+            "items": {"type": "object", "additionalProperties": True},
+        },
+        "chat_template": {
+            "type": "string",
+            "description": "Override the model's chat template for this render.",
+        },
+        "chat_template_kwargs": {
+            "type": "object",
+            "additionalProperties": True,
+            "description": (
+                "Extra variables passed to the chat template — e.g. "
+                "`{\"enable_thinking\": false}` on Qwen3."
+            ),
+        },
+        "mm_processor_kwargs": {
+            "type": "object",
+            "additionalProperties": True,
+            "description": "Multi-modal processor options (VLM routes).",
+        },
+        "add_generation_prompt": {
+            "type": "boolean",
+            "default": True,
+            "description": "Append the assistant generation prefix, as generation would.",
+        },
+        "continue_final_message": {
+            "type": "boolean",
+            "default": False,
+            "description": "Continue the last assistant message instead of starting a new turn.",
+        },
+        "temperature": {"type": "number"},
+        "top_p": {"type": "number"},
+        "max_tokens": {"type": "integer"},
+        "stop": {"description": "String or array of stop sequences."},
+        "reasoning_effort": {
+            "type": "string",
+            "description": "Passed through; visible in the resolved sampling_params.",
+        },
+    },
+    "example": {
+        "model": "your-model-alias",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello!"},
+        ],
+        "add_generation_prompt": True,
+        "temperature": 0.7,
+    },
+}
+
+_RENDER_OPENAPI: dict[str, object] = {
+    "requestBody": {
+        "required": True,
+        "content": {"application/json": {"schema": _RENDER_REQUEST_SCHEMA}},
+    },
+    "responses": {
+        "200": {
+            "description": (
+                "The rendered request. Shape is whatever the downstream vLLM "
+                "returns — typically `token_ids` plus the resolved "
+                "`sampling_params` — with `model` swapped back to the alias "
+                "you asked for."
+            ),
+            "content": {
+                "application/json": {
+                    "example": {
+                        "request_id": "chatcmpl-b1f0c2e4",
+                        "model": "your-model-alias",
+                        "token_ids": [151644, 8948, 198, 2610, 525],
+                        "sampling_params": {
+                            "temperature": 0.7,
+                            "top_p": 1.0,
+                            "max_tokens": 4096,
+                        },
+                    }
+                }
+            },
+        },
+        "404": {
+            "description": (
+                "Propagated from a downstream vLLM too old to serve "
+                "`/chat/completions/render` (added in vLLM 0.11)."
+            )
+        },
+        "502": {"description": "Downstream unreachable."},
+    },
+}
+
+
+@router.post("/v1/chat/completions/render", openapi_extra=_RENDER_OPENAPI)
+@router.post("/chat/completions/render", openapi_extra=_RENDER_OPENAPI)
 async def chat_completions_render(
     request: Request, user: User = Depends(get_current_user)
 ):

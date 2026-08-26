@@ -204,6 +204,51 @@ class TestChatCompletionsRender:
         assert "X-Model-Fallback" in resp.headers
         assert captured["body"]["model"] in ("real-llm-v1", "real-vlm-v1")
 
+    def test_undocumented_fields_forwarded_verbatim(self, client, test_user):
+        """The OpenAPI schema documents a handful of render-relevant fields,
+        but the endpoint is a pass-through: anything else — vLLM extensions the
+        schema never names — must reach the downstream untouched. This is the
+        guard against someone later "tidying up" the docs by binding a Pydantic
+        body model, which would validate these away silently."""
+        post_coro, captured = _make_post_coro_capture(
+            make_httpx_response(200, {"token_ids": [1]})
+        )
+        client.__httpx_mock__.post = post_coro
+
+        resp = client.post(
+            "/v1/chat/completions/render",
+            json={
+                "model": "test-llm",
+                "messages": [{"role": "user", "content": "hi"}],
+                "chat_template_kwargs": {"enable_thinking": False},
+                "vllm_xargs": {"custom": "value"},
+                "structured_outputs": {"json_object": True},
+                "some_field_no_schema_knows_about": 42,
+            },
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+        assert captured["body"]["vllm_xargs"] == {"custom": "value"}
+        assert captured["body"]["structured_outputs"] == {"json_object": True}
+        assert captured["body"]["some_field_no_schema_knows_about"] == 42
+
+    def test_openapi_documents_the_request_body(self, client):
+        """`/docs` must show a usable body for this endpoint — it exists to be
+        poked at by hand. The handler takes a raw Request (so the pass-through
+        keeps working), so the schema comes from `openapi_extra`."""
+        spec = client.get("/openapi.json").json()
+        for path in ("/v1/chat/completions/render", "/chat/completions/render"):
+            op = spec["paths"][path]["post"]
+            schema = op["requestBody"]["content"]["application/json"]["schema"]
+            assert schema["required"] == ["model", "messages"]
+            assert "messages" in schema["properties"]
+            assert "chat_template_kwargs" in schema["properties"]
+            # Descriptive, never restrictive — extra fields are forwarded.
+            assert schema["additionalProperties"] is True
+            assert schema["example"]["messages"]
+            assert "token_ids" in str(op["responses"]["200"])
+
     def test_azure_alias_stays_on_vllm(self, client, test_user):
         """On-prem only: an Azure-configured alias is not dispatched to Azure
         here — it falls back through _resolve_model to a vLLM route, exactly
