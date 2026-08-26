@@ -343,10 +343,14 @@ _RENDER_OPENAPI: dict[str, object] = {
     "responses": {
         "200": {
             "description": (
-                "The rendered request. Shape is whatever the downstream vLLM "
-                "returns — typically `token_ids` plus the resolved "
-                "`sampling_params` — with `model` swapped back to the alias "
-                "you asked for."
+                "The rendered request, as a single object — whatever the "
+                "downstream vLLM returns, with `model` swapped back to the "
+                "alias you asked for. `token_ids` is a list of token **IDs** "
+                "(integers), not decoded text: to read the prompt as a string "
+                "you have to detokenize them yourself "
+                "(vllm-project/vllm#39819 tracks adding the rendered text). "
+                "`sampling_params` is what the engine would actually have "
+                "been given, defaults filled in."
             ),
             "content": {
                 "application/json": {
@@ -366,7 +370,8 @@ _RENDER_OPENAPI: dict[str, object] = {
         "404": {
             "description": (
                 "Propagated from a downstream vLLM too old to serve "
-                "`/chat/completions/render` (added in vLLM 0.11)."
+                "`/chat/completions/render` (the endpoint arrived with the "
+                "disaggregated-serving render server, vllm-project/vllm#36166)."
             )
         },
         "502": {"description": "Downstream unreachable."},

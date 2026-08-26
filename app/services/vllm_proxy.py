@@ -1741,12 +1741,17 @@ async def vllm_forward_render(
 ) -> JSONResponse:
     """Pass-through to the downstream vLLM ``/chat/completions/render`` endpoint.
 
-    vLLM ≥ 0.11 can render a chat completions request without running it:
-    the response carries the rendered ``token_ids``, resolved
-    ``sampling_params`` and the rest of the engine-level request. Exposing it
-    here lets developers see exactly what the gateway sends downstream and how
-    the model's chat template turns it into a prompt — the usual answer to
-    "why did the model see something different from what I sent".
+    vLLM can render a chat completions request without running it (the
+    endpoint arrived with the disaggregated-serving render server,
+    vllm-project/vllm#36166, so it is absent from older downstreams — they
+    answer 404 and the gateway propagates it). The response is a single
+    engine-level request object: the rendered ``token_ids`` (a list of token
+    **IDs**, not decoded text — vllm-project/vllm#39819 tracks adding the
+    prompt string), the resolved ``sampling_params``, and the rest of what
+    the engine would have been handed. Exposing it here lets developers see
+    exactly what the gateway sends downstream and how the model's chat
+    template turns it into a prompt — the usual answer to "why did the model
+    see something different from what I sent".
 
     Deliberately **vLLM-only**: the request body is forwarded verbatim to the
     on-prem server (only ``model`` is rewritten, alias → ``real_model``, and
