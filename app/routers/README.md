@@ -50,6 +50,7 @@ graph LR
 | `POST` | `/v1/messages`, `/messages` | Anthropic Messages (translates to OpenAI; streams `reasoning_content` as `thinking` blocks; emits SSE `ping` every 10 s of downstream silence) | `vllm_forward_messages` (vLLM) / `azure_forward_messages` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/messages/count_tokens`, `/messages/count_tokens` | Anthropic token counting (forwards to vLLM `/tokenize`, falls back to chars/4; Azure path uses chars/4 estimate) | `vllm_forward_count_tokens` (vLLM) / `azure_forward_count_tokens` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/tokenize`, `/tokenize` | vLLM-native pass-through tokenize (no Azure path — Azure has no tokenize endpoint) | `vllm_forward_tokenize` | `llm`, `vlm` |
+| `POST` | `/v1/chat/completions/render`, `/chat/completions/render` | vLLM-native pass-through render — chat template applied, nothing generated (debug aid; on-prem vLLM only, no Azure/Bedrock path) | `vllm_forward_render` | `llm`, `vlm` |
 
 ### Dispatch logic
 
@@ -73,6 +74,7 @@ The "Azure alias from non-Azure user → vLLM fallback" branch matches the gatew
 | `vllm_forward_messages` | stream + non-stream | Anthropic Messages | Anthropic→OpenAI request, OpenAI→Anthropic response (uses `services/anthropic_adapter.py`) |
 | `vllm_forward_count_tokens` | non-stream | `count_tokens` | Forwards to vLLM `/tokenize`; falls back to chars/4 if downstream tokenizer unavailable; not billed |
 | `vllm_forward_tokenize` | non-stream | `/tokenize` | vLLM-native pass-through; not billed |
+| `vllm_forward_render` | non-stream | `/chat/completions/render` | vLLM-native pass-through; applies the same reasoning-dialect alignment as chat completions, swaps the alias back onto the echoed `model`; not billed |
 
 ### Common Behavior
 
@@ -206,7 +208,7 @@ document.
 ```mermaid
 graph TD
     subgraph "API Key Auth (deps.py)"
-        V1["/v1/* (+ no-/v1 aliases)<br/>models • chat/completions • embeddings<br/>rerank • score • responses<br/>messages • messages/count_tokens • tokenize<br/>(vLLM default + Azure dispatch on can_use_azure)"]
+        V1["/v1/* (+ no-/v1 aliases)<br/>models • chat/completions • embeddings<br/>rerank • score • responses<br/>messages • messages/count_tokens • tokenize<br/>chat/completions/render<br/>(vLLM default + Azure dispatch on can_use_azure)"]
         Azure["/azure/v1/* (+ /azure/* aliases)<br/>models • chat/completions • responses<br/>messages • messages/count_tokens<br/>(Azure-only, require_azure_access)"]
     end
 

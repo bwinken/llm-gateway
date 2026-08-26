@@ -33,7 +33,7 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 
 ## 功能特色
 
-- **統一 `/v1/*` 介面** — 同一個 base URL 同時暴露兩個後端。`/v1/chat/completions`、`/v1/messages`、`/v1/messages/count_tokens` 依 `model` alias 分派:預設走 vLLM,當 alias 配置在 `[azure_models.*]` 且 caller 有 `can_use_azure` 時轉向 Azure。`/v1/models` 對有權限的使用者會把 Azure alias 一併列出,讓 Claude Code 之類的 model picker 同時看到兩個後端。所有路由都另外註冊不含 `/v1` 前綴的別名(`/chat/completions`、`/messages`、…)
+- **統一 `/v1/*` 介面** — 同一個 base URL 同時暴露兩個後端。`/v1/chat/completions`、`/v1/messages`、`/v1/messages/count_tokens` 依 `model` alias 分派:預設走 vLLM,當 alias 配置在 `[azure_models.*]` 且 caller 有 `can_use_azure` 時轉向 Azure。`/v1/models` 對有權限的使用者會把 Azure alias 一併列出,讓 Claude Code 之類的 model picker 同時看到兩個後端。所有路由都另外註冊不含 `/v1` 前綴的別名(`/chat/completions`、`/messages`、…)。`/v1/chat/completions/render`(僅地端 vLLM)會把請求套過模型的 chat template 後回傳 `token_ids` 與解析後的 `sampling_params`,**但不做生成** — 讓開發者直接看到模型實際收到什麼,方便 debug
 - **Anthropic Messages API** — `/v1/messages` 與 `/v1/messages/count_tokens`,可直接搭配 Anthropic Python SDK 與 Claude Code(後端可接任何 vLLM LLM/VLM;有 Azure 權限時也涵蓋 Azure 部署)。下游 `reasoning_content`(vLLM `--enable-reasoning`、DeepSeek、Qwen3-thinking)會轉成 Anthropic `thinking` content block;下游靜默時每 10 秒送一次 SSE `ping`,避免 Claude Code 在 reasoning prefill 太長時把連線視為斷線;串流中途下游斷線時會回傳可重試的 `overloaded_error`,而非謊稱該輪已完成
 - **Azure OpenAI 後端** — 同一支客戶端、同一把 API key、同一套計費。可透過上面的統一 `/v1/*`(需 `can_use_azure`)或專屬的 `/azure/v1/*` 介面存取(chat completions、responses、Anthropic Messages、count_tokens;刻意不提供 embeddings,那是 vLLM 專責)
 - **多模型路由** — LLM、VLM、Embedding、Vision Embedding、Reranker、Vision Reranker
