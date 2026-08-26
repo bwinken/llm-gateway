@@ -706,15 +706,25 @@ def _merge_failover_header(
     return merged
 
 
-def _tokenize_url(base_url: str) -> str:
-    """vLLM exposes /tokenize at the server root, not under /v1, but the
+def _server_root(base_url: str) -> str:
+    """The downstream's server root.
+
+    vLLM serves /tokenize and /detokenize at the root, not under /v1, but the
     configured base_url usually ends in /v1 (so chat/completions etc. resolve
-    correctly). Strip a trailing /v1 before appending /tokenize.
+    correctly). Strip a trailing /v1 so root-level endpoints can be appended.
     """
     root = base_url.rstrip("/")
     if root.endswith("/v1"):
         root = root[:-3]
-    return f"{root}/tokenize"
+    return root
+
+
+def _tokenize_url(base_url: str) -> str:
+    return f"{_server_root(base_url)}/tokenize"
+
+
+def _detokenize_url(base_url: str) -> str:
+    return f"{_server_root(base_url)}/detokenize"
 
 
 def _align_reasoning_fields(messages: Any) -> None:
@@ -1734,10 +1744,85 @@ async def vllm_forward_tokenize(
 _RENDER_TIMEOUT = 60.0
 
 
+# Keys the gateway adds to the render response when ?decode=true. Namespaced
+# away from anything vLLM returns today, and from the `prompt`/`text` field
+# upstream may eventually add itself (vllm-project/vllm#39819).
+_DECODED_KEY = "decoded_prompt"
+_DECODE_ERROR_KEY = "decode_error"
+
+
+def _render_token_ids(data: dict) -> list[int] | None:
+    """The rendered token ids out of a render response, or None if the
+    downstream didn't return any in a shape we recognise."""
+    for key in ("token_ids", "prompt_token_ids"):
+        value = data.get(key)
+        if isinstance(value, list) and all(isinstance(t, int) for t in value):
+            return value
+    return None
+
+
+async def _decode_render(data: dict, route: dict[str, Any]) -> None:
+    """Add the detokenized prompt to a render response, in place.
+
+    The render endpoint returns token **ids** only, which answers "what did
+    the model see" in a form no human reads (vllm-project/vllm#39819 tracks
+    fixing that upstream). ``?decode=true`` closes the gap here: one extra
+    call to the same server's ``/detokenize`` — the same server that rendered,
+    so the tokenizer is guaranteed to match — and the text lands under
+    ``decoded_prompt``.
+
+    Best-effort by construction: this is a debug convenience layered on top of
+    a pass-through, so a failure must not cost the caller the render they
+    already have. Any failure leaves the render body intact and records why
+    under ``decode_error`` — silently omitting the text would leave the caller
+    unable to tell "the decode failed" from "there was nothing to decode".
+    """
+    token_ids = _render_token_ids(data)
+    if token_ids is None:
+        data[_DECODE_ERROR_KEY] = "no token_ids in the downstream render response"
+        return
+    if _DECODED_KEY in data:
+        # Downstream already returned it (a newer vLLM closing #39819) —
+        # leave its own answer alone.
+        return
+
+    try:
+        resp = await get_client().post(
+            _detokenize_url(route["base_url"]),
+            json={"model": route["real_model"], "tokens": token_ids},
+            headers=_get_downstream_headers(route),
+            timeout=30.0,
+        )
+    except Exception as exc:
+        logger.warning(
+            "render decode failed: {}: {} — returning render without text",
+            type(exc).__name__, exc,
+        )
+        data[_DECODE_ERROR_KEY] = f"detokenize request failed: {type(exc).__name__}"
+        return
+
+    if resp.status_code != 200:
+        logger.warning(
+            "render decode failed: /detokenize returned {} — returning render "
+            "without text", resp.status_code,
+        )
+        data[_DECODE_ERROR_KEY] = f"detokenize returned HTTP {resp.status_code}"
+        return
+
+    try:
+        prompt = resp.json()["prompt"]
+    except Exception:
+        data[_DECODE_ERROR_KEY] = "detokenize returned an unexpected body"
+        return
+
+    data[_DECODED_KEY] = prompt
+
+
 async def vllm_forward_render(
     request: Request,
     user: User,
     allowed_types: list[str],
+    decode: bool = False,
 ) -> JSONResponse:
     """Pass-through to the downstream vLLM ``/chat/completions/render`` endpoint.
 
@@ -1762,6 +1847,11 @@ async def vllm_forward_render(
 
     The reasoning-dialect alignment ``/v1/chat/completions`` applies is applied
     here too, so what gets rendered is what would actually be generated from.
+
+    With ``decode=True`` the token ids are run back through the same server's
+    ``/detokenize`` and the resulting text is added as ``decoded_prompt`` —
+    see ``_decode_render``. This is the one place the endpoint stops being a
+    pure pass-through, and it is opt-in for exactly that reason.
 
     Not billed — rendering runs the tokenizer and chat template, not the
     model — so no row is written to ``usage_logs``. Auth and daily-limit
@@ -1811,6 +1901,9 @@ async def vllm_forward_render(
     # other surface).
     if isinstance(data, dict) and data.get("model") == route["real_model"]:
         data["model"] = resolved_alias
+
+    if decode and isinstance(data, dict):
+        await _decode_render(data, route)
 
     return JSONResponse(content=data, headers=extra_headers)
 

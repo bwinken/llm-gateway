@@ -34,6 +34,25 @@ def _make_post_coro_capture(response):
     return _post, captured
 
 
+def _make_post_router(routes: dict, raises: dict | None = None):
+    """Dispatch the mocked POST by URL suffix — the decode path makes two
+    downstream calls (/chat/completions/render then /detokenize)."""
+    calls: list[dict] = []
+
+    async def _post(*args, **kwargs):
+        url = args[0] if args else kwargs.get("url")
+        calls.append({"url": url, "body": kwargs.get("json")})
+        for suffix, exc in (raises or {}).items():
+            if url.endswith(suffix):
+                raise exc
+        for suffix, response in routes.items():
+            if url.endswith(suffix):
+                return response
+        raise AssertionError(f"unexpected downstream URL: {url}")
+
+    return _post, calls
+
+
 def _make_post_coro_raise(exc):
     async def _post(*args, **kwargs):
         raise exc
@@ -268,3 +287,140 @@ class TestChatCompletionsRender:
         )
         assert resp.status_code == 200
         assert captured["body"]["model"] in ("real-llm-v1", "real-vlm-v1")
+
+
+class TestRenderDecode:
+    """``?decode=true`` — the gateway detokenizes the rendered token ids so a
+    human can read the prompt (vLLM itself returns ids only)."""
+
+    _RENDER_BODY = {
+        "request_id": "chatcmpl-1",
+        "model": "real-llm-v1",
+        "token_ids": [151644, 8948, 198],
+        "sampling_params": {"temperature": 0.7},
+    }
+    _REQUEST = {
+        "model": "test-llm",
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+    def test_decode_adds_prompt_text(self, client, test_user, db_session: Session):
+        post, calls = _make_post_router({
+            "/chat/completions/render": make_httpx_response(200, dict(self._RENDER_BODY)),
+            "/detokenize": make_httpx_response(200, {"prompt": "<|im_start|>user\nhi"}),
+        })
+        client.__httpx_mock__.post = post
+
+        resp = client.post(
+            "/v1/chat/completions/render?decode=true",
+            json=self._REQUEST, headers=auth_header(),
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["decoded_prompt"] == "<|im_start|>user\nhi"
+        assert "decode_error" not in data
+        # The render body is otherwise untouched, alias still swapped back
+        assert data["token_ids"] == [151644, 8948, 198]
+        assert data["model"] == "test-llm"
+
+        # Detokenize goes to the SAME server that rendered (tokenizer must
+        # match), at the server root, with the real model and those ids
+        assert len(calls) == 2
+        detok = calls[1]
+        assert detok["url"] == "http://mock-llm:8000/detokenize"
+        assert detok["body"] == {"model": "real-llm-v1", "tokens": [151644, 8948, 198]}
+
+        # Still not billable — decoding is two tokenizer calls, no inference
+        rows = db_session.exec(
+            select(UsageLog).where(UsageLog.user_id == test_user.id)
+        ).all()
+        assert rows == []
+
+    def test_no_decode_by_default(self, client, test_user):
+        """Opt-in: without the flag the endpoint stays a pure pass-through and
+        makes exactly one downstream call."""
+        post, calls = _make_post_router({
+            "/chat/completions/render": make_httpx_response(200, dict(self._RENDER_BODY)),
+        })
+        client.__httpx_mock__.post = post
+
+        resp = client.post(
+            "/v1/chat/completions/render",
+            json=self._REQUEST, headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert "decoded_prompt" not in resp.json()
+        assert len(calls) == 1
+
+    def test_decode_failure_keeps_the_render(self, client, test_user):
+        """A downstream without /detokenize must not cost the caller the render
+        they already have — the reason is reported instead."""
+        post, _calls = _make_post_router(
+            {"/chat/completions/render": make_httpx_response(200, dict(self._RENDER_BODY))},
+            raises={"/detokenize": Exception("connection refused")},
+        )
+        client.__httpx_mock__.post = post
+
+        resp = client.post(
+            "/v1/chat/completions/render?decode=true",
+            json=self._REQUEST, headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["token_ids"] == [151644, 8948, 198]
+        assert "decoded_prompt" not in data
+        assert "detokenize request failed" in data["decode_error"]
+
+    def test_decode_non_200_reported(self, client, test_user):
+        post, _calls = _make_post_router({
+            "/chat/completions/render": make_httpx_response(200, dict(self._RENDER_BODY)),
+            "/detokenize": make_httpx_response(404, {"detail": "Not Found"}),
+        })
+        client.__httpx_mock__.post = post
+
+        resp = client.post(
+            "/v1/chat/completions/render?decode=true",
+            json=self._REQUEST, headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["decode_error"] == "detokenize returned HTTP 404"
+
+    def test_decode_without_token_ids(self, client, test_user):
+        post, calls = _make_post_router({
+            "/chat/completions/render": make_httpx_response(200, {"request_id": "x"}),
+        })
+        client.__httpx_mock__.post = post
+
+        resp = client.post(
+            "/v1/chat/completions/render?decode=true",
+            json=self._REQUEST, headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert "no token_ids" in resp.json()["decode_error"]
+        # Nothing to detokenize — no second call is made
+        assert len(calls) == 1
+
+    def test_downstream_own_decoded_prompt_wins(self, client, test_user):
+        """A newer vLLM that closes vllm#39819 itself keeps its own answer —
+        the gateway does not second-guess it or make a redundant call."""
+        body = dict(self._RENDER_BODY, decoded_prompt="from downstream")
+        post, calls = _make_post_router({
+            "/chat/completions/render": make_httpx_response(200, body),
+        })
+        client.__httpx_mock__.post = post
+
+        resp = client.post(
+            "/v1/chat/completions/render?decode=true",
+            json=self._REQUEST, headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["decoded_prompt"] == "from downstream"
+        assert len(calls) == 1
+
+    def test_decode_documented_as_query_param(self, client):
+        spec = client.get("/openapi.json").json()
+        for path in ("/v1/chat/completions/render", "/chat/completions/render"):
+            params = {p["name"]: p for p in spec["paths"][path]["post"]["parameters"]}
+            assert params["decode"]["in"] == "query"
+            assert params["decode"]["schema"]["default"] is False

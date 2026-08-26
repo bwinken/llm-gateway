@@ -28,7 +28,7 @@ misconfiguration that previously surfaced as a silent 404.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import (
@@ -350,7 +350,9 @@ _RENDER_OPENAPI: dict[str, object] = {
                 "you have to detokenize them yourself "
                 "(vllm-project/vllm#39819 tracks adding the rendered text). "
                 "`sampling_params` is what the engine would actually have "
-                "been given, defaults filled in."
+                "been given, defaults filled in. With `?decode=true` the "
+                "gateway adds `decoded_prompt` (the detokenized text), or "
+                "`decode_error` if that extra step failed."
             ),
             "content": {
                 "application/json": {
@@ -363,6 +365,11 @@ _RENDER_OPENAPI: dict[str, object] = {
                             "top_p": 1.0,
                             "max_tokens": 4096,
                         },
+                        "decoded_prompt": (
+                            "<|im_start|>system\nYou are a helpful "
+                            "assistant.<|im_end|>\n<|im_start|>user\n"
+                            "Hello!<|im_end|>\n<|im_start|>assistant\n"
+                        ),
                     }
                 }
             },
@@ -382,7 +389,17 @@ _RENDER_OPENAPI: dict[str, object] = {
 @router.post("/v1/chat/completions/render", openapi_extra=_RENDER_OPENAPI)
 @router.post("/chat/completions/render", openapi_extra=_RENDER_OPENAPI)
 async def chat_completions_render(
-    request: Request, user: User = Depends(get_current_user)
+    request: Request,
+    decode: bool = Query(
+        False,
+        description=(
+            "Also return the rendered prompt as text under `decoded_prompt`. "
+            "Costs one extra call to the same server's `/detokenize`; on "
+            "failure the render is still returned, with the reason under "
+            "`decode_error`."
+        ),
+    ),
+    user: User = Depends(get_current_user),
 ):
     """vLLM-native ``/chat/completions/render`` pass-through (debug aid).
 
@@ -391,13 +408,17 @@ async def chat_completions_render(
     resolved ``sampling_params``, which is what you want when the model appears
     to have seen something other than what you sent.
 
+    ``token_ids`` comes back as token **IDs**, not text; pass
+    ``?decode=true`` to have the gateway detokenize them for you and add the
+    prompt string under ``decoded_prompt``.
+
     **On-prem vLLM only** — no Azure / Bedrock dispatch, because neither
     managed API exposes a rendering surface. An alias the vLLM side doesn't
     know falls back through ``_resolve_model`` exactly like on ``/v1/tokenize``.
     Not billed; a downstream too old to serve the endpoint answers 404.
     """
     return await vllm_forward_render(
-        request, user, allowed_types=["llm", "vlm"]
+        request, user, allowed_types=["llm", "vlm"], decode=decode
     )
 
 
