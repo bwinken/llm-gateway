@@ -183,12 +183,15 @@ a user with `can_use_azure`. Two further tests pin the documentation contract:
 a raw `Request`, so it comes from `openapi_extra`), and fields the schema never
 names (`vllm_xargs`, `structured_outputs`, …) still reach the downstream
 verbatim — the guard against a future Pydantic body model validating them away.
-`TestRenderDecode` covers `?decode=true`: the detokenize call goes to the same
+`TestRenderDecode` covers the decode step (on by default): the detokenize call goes to the same
 server that rendered (root `/detokenize`, real_model, the returned ids) and its
-text lands in `decoded_prompt`; without the flag no second call is made at all;
+text lands in `decoded_prompt`; `?decode=false` makes no second call at all;
 a detokenize failure, a non-200, and a render with no `token_ids` each keep the
 render and report `decode_error`; a downstream that already returned
 `decoded_prompt` keeps its own; and the flag is documented as a query param.
+`TestRenderIsNotObserved` pins that the endpoint stays outside billing and
+observability on both the success and the error path — no `usage_logs` row and
+no Langfuse generation, since a render is a debug query rather than inference.
 
 ### `test_models_endpoint.py` — `/v1/models`
 

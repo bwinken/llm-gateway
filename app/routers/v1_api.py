@@ -336,51 +336,140 @@ _RENDER_REQUEST_SCHEMA: dict[str, object] = {
 }
 
 _RENDER_OPENAPI: dict[str, object] = {
+    "summary": "Render a chat request without generating (debug)",
     "requestBody": {
         "required": True,
-        "content": {"application/json": {"schema": _RENDER_REQUEST_SCHEMA}},
+        "content": {
+            "application/json": {
+                "schema": _RENDER_REQUEST_SCHEMA,
+                # Named examples become a dropdown in Swagger UI — the three
+                # questions this endpoint actually gets asked.
+                "examples": {
+                    "minimal": {
+                        "summary": "What does the template do to my messages?",
+                        "value": {
+                            "model": "your-model-alias",
+                            "messages": [
+                                {"role": "system", "content": "You are a helpful assistant."},
+                                {"role": "user", "content": "Hello!"},
+                            ],
+                        },
+                    },
+                    "with_tools": {
+                        "summary": "How are my tools rendered into the prompt?",
+                        "description": (
+                            "Tool definitions are prompt text after the chat "
+                            "template runs — this is how you see what the model "
+                            "is actually told about them."
+                        ),
+                        "value": {
+                            "model": "your-model-alias",
+                            "messages": [{"role": "user", "content": "What is the weather?"}],
+                            "tools": [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": "get_weather",
+                                        "description": "Get the weather for a city.",
+                                        "parameters": {
+                                            "type": "object",
+                                            "properties": {"city": {"type": "string"}},
+                                            "required": ["city"],
+                                        },
+                                    },
+                                }
+                            ],
+                        },
+                    },
+                    "template_kwargs": {
+                        "summary": "Did my chat_template_kwargs take effect?",
+                        "description": (
+                            "Template switches such as Qwen3's `enable_thinking` "
+                            "only show up in the rendered prompt — compare two "
+                            "renders to confirm the flag did anything."
+                        ),
+                        "value": {
+                            "model": "your-model-alias",
+                            "messages": [{"role": "user", "content": "Hello!"}],
+                            "chat_template_kwargs": {"enable_thinking": False},
+                        },
+                    },
+                },
+            }
+        },
     },
     "responses": {
         "200": {
             "description": (
                 "The rendered request, as a single object — whatever the "
-                "downstream vLLM returns, with `model` swapped back to the "
-                "alias you asked for. `token_ids` is a list of token **IDs** "
-                "(integers), not decoded text: to read the prompt as a string "
-                "you have to detokenize them yourself "
-                "(vllm-project/vllm#39819 tracks adding the rendered text). "
-                "`sampling_params` is what the engine would actually have "
-                "been given, defaults filled in. With `?decode=true` the "
-                "gateway adds `decoded_prompt` (the detokenized text), or "
-                "`decode_error` if that extra step failed."
+                "downstream vLLM returned, with `model` swapped back to the "
+                "alias you asked for.\n\n"
+                "| field | meaning |\n"
+                "|---|---|\n"
+                "| `decoded_prompt` | The prompt as **text**. Added by the "
+                "gateway (vLLM does not return it); omitted when "
+                "`?decode=false`. This is the field you usually want. |\n"
+                "| `token_ids` | The prompt as token **IDs** — integers, not "
+                "text. What the engine is actually handed. |\n"
+                "| `sampling_params` | The parameters the engine would run "
+                "with, defaults filled in — so you can see what your request "
+                "resolved to. |\n"
+                "| `decode_error` | Present only when `decode` was asked for "
+                "and failed; the render itself is still returned. |\n"
             ),
             "content": {
                 "application/json": {
-                    "example": {
-                        "request_id": "chatcmpl-b1f0c2e4",
-                        "model": "your-model-alias",
-                        "token_ids": [151644, 8948, 198, 2610, 525],
-                        "sampling_params": {
-                            "temperature": 0.7,
-                            "top_p": 1.0,
-                            "max_tokens": 4096,
+                    "examples": {
+                        "default": {
+                            "summary": "Default (decode on)",
+                            "value": {
+                                "request_id": "chatcmpl-b1f0c2e4",
+                                "model": "your-model-alias",
+                                "decoded_prompt": (
+                                    "<|im_start|>system\nYou are a helpful "
+                                    "assistant.<|im_end|>\n<|im_start|>user\n"
+                                    "Hello!<|im_end|>\n<|im_start|>assistant\n"
+                                ),
+                                "token_ids": [151644, 8948, 198, 2610, 525],
+                                "sampling_params": {
+                                    "temperature": 0.7,
+                                    "top_p": 1.0,
+                                    "max_tokens": 4096,
+                                },
+                            },
                         },
-                        "decoded_prompt": (
-                            "<|im_start|>system\nYou are a helpful "
-                            "assistant.<|im_end|>\n<|im_start|>user\n"
-                            "Hello!<|im_end|>\n<|im_start|>assistant\n"
-                        ),
+                        "decode_false": {
+                            "summary": "?decode=false — exactly what vLLM sent",
+                            "value": {
+                                "request_id": "chatcmpl-b1f0c2e4",
+                                "model": "your-model-alias",
+                                "token_ids": [151644, 8948, 198, 2610, 525],
+                                "sampling_params": {"temperature": 0.7},
+                            },
+                        },
+                        "decode_failed": {
+                            "summary": "Detokenize failed — render still returned",
+                            "value": {
+                                "request_id": "chatcmpl-b1f0c2e4",
+                                "model": "your-model-alias",
+                                "token_ids": [151644, 8948, 198, 2610, 525],
+                                "decode_error": "detokenize returned HTTP 404",
+                            },
+                        },
                     }
                 }
             },
         },
         "404": {
             "description": (
-                "Propagated from a downstream vLLM too old to serve "
-                "`/chat/completions/render` (the endpoint arrived with the "
-                "disaggregated-serving render server, vllm-project/vllm#36166)."
+                "Propagated from the downstream. Most likely its vLLM is too "
+                "old to serve `/chat/completions/render` — the endpoint "
+                "arrived with the disaggregated-serving render server "
+                "(vllm-project/vllm#36166). Nothing to configure on the "
+                "gateway; the model has to be on a newer vLLM."
             )
         },
+        "429": {"description": "Daily spend limit exceeded (this call is not itself billed)."},
         "502": {"description": "Downstream unreachable."},
     },
 }
@@ -391,32 +480,71 @@ _RENDER_OPENAPI: dict[str, object] = {
 async def chat_completions_render(
     request: Request,
     decode: bool = Query(
-        False,
+        True,
         description=(
-            "Also return the rendered prompt as text under `decoded_prompt`. "
-            "Costs one extra call to the same server's `/detokenize`; on "
-            "failure the render is still returned, with the reason under "
-            "`decode_error`."
+            "Return the rendered prompt as text under `decoded_prompt` "
+            "(default). Costs one extra call to the same server's "
+            "`/detokenize`; on failure the render is still returned, with the "
+            "reason under `decode_error`. Pass `false` for a pure "
+            "pass-through of what vLLM returned."
         ),
     ),
     user: User = Depends(get_current_user),
 ):
-    """vLLM-native ``/chat/completions/render`` pass-through (debug aid).
+    """See exactly what the model receives — the chat template applied to your
+request, **without generating anything**.
 
-    Renders a chat completions request through the downstream's chat template
-    without generating: the response carries the rendered ``token_ids`` and the
-    resolved ``sampling_params``, which is what you want when the model appears
-    to have seen something other than what you sent.
+Post the same body you would post to `/v1/chat/completions`; you get back the
+prompt that request renders into, plus the sampling parameters it resolves to.
+Nothing is generated, so it is fast and **not billed**.
 
-    ``token_ids`` comes back as token **IDs**, not text; pass
-    ``?decode=true`` to have the gateway detokenize them for you and add the
-    prompt string under ``decoded_prompt``.
+### Use it when
 
-    **On-prem vLLM only** — no Azure / Bedrock dispatch, because neither
-    managed API exposes a rendering surface. An alias the vLLM side doesn't
-    know falls back through ``_resolve_model`` exactly like on ``/v1/tokenize``.
-    Not billed; a downstream too old to serve the endpoint answers 404.
-    """
+* the model behaves as if it saw something other than what you sent
+* you want to check how your `tools` are turned into prompt text
+* you are tuning `chat_template_kwargs` (e.g. Qwen3's `enable_thinking`) and
+  need to confirm the switch actually changed the prompt
+* you want the resolved `sampling_params` — the defaults your request inherits
+
+### Reading the response
+
+`decoded_prompt` is the prompt as text and is usually the only field you need.
+vLLM itself returns token IDs only, so the gateway detokenizes them for you;
+pass `?decode=false` to skip that and get exactly what vLLM sent. If the
+detokenize step fails the render is still returned, with the reason in
+`decode_error`.
+
+### Try it
+
+```bash
+curl -s "$GATEWAY/v1/chat/completions/render" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "your-model-alias",
+       "messages": [{"role": "user", "content": "Hello!"}]}' \
+  | jq -r .decoded_prompt
+```
+
+With the OpenAI SDK there is no typed method for this endpoint — use the raw
+request escape hatch, which keeps your existing base URL and key:
+
+```python
+import httpx
+resp = client.post("/chat/completions/render", cast_to=httpx.Response,
+                   body={"model": "your-model-alias",
+                         "messages": [{"role": "user", "content": "Hello!"}]})
+print(resp.json()["decoded_prompt"])
+```
+
+### Limits
+
+* **On-prem vLLM only.** Azure and Bedrock have no rendering surface, so a
+  cloud alias posted here is not dispatched to them — it falls back to a vLLM
+  model like any alias the vLLM side doesn't know (same as `/v1/tokenize`).
+* Any field not listed in the schema below is **forwarded verbatim**; this is
+  a pass-through, not a validated API.
+* A downstream on an older vLLM answers 404 — see the response below.
+"""
     return await vllm_forward_render(
         request, user, allowed_types=["llm", "vlm"], decode=decode
     )

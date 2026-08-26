@@ -1766,10 +1766,10 @@ async def _decode_render(data: dict, route: dict[str, Any]) -> None:
 
     The render endpoint returns token **ids** only, which answers "what did
     the model see" in a form no human reads (vllm-project/vllm#39819 tracks
-    fixing that upstream). ``?decode=true`` closes the gap here: one extra
+    fixing that upstream). The gateway closes the gap by default: one extra
     call to the same server's ``/detokenize`` — the same server that rendered,
     so the tokenizer is guaranteed to match — and the text lands under
-    ``decoded_prompt``.
+    ``decoded_prompt``. ``?decode=false`` skips it for a pure pass-through.
 
     Best-effort by construction: this is a debug convenience layered on top of
     a pass-through, so a failure must not cost the caller the render they
@@ -1822,7 +1822,7 @@ async def vllm_forward_render(
     request: Request,
     user: User,
     allowed_types: list[str],
-    decode: bool = False,
+    decode: bool = True,
 ) -> JSONResponse:
     """Pass-through to the downstream vLLM ``/chat/completions/render`` endpoint.
 
@@ -1848,10 +1848,10 @@ async def vllm_forward_render(
     The reasoning-dialect alignment ``/v1/chat/completions`` applies is applied
     here too, so what gets rendered is what would actually be generated from.
 
-    With ``decode=True`` the token ids are run back through the same server's
+    By default the token ids are run back through the same server's
     ``/detokenize`` and the resulting text is added as ``decoded_prompt`` —
     see ``_decode_render``. This is the one place the endpoint stops being a
-    pure pass-through, and it is opt-in for exactly that reason.
+    pure pass-through; ``decode=False`` returns exactly what vLLM sent.
 
     Not billed — rendering runs the tokenizer and chat template, not the
     model — so no row is written to ``usage_logs``. Auth and daily-limit

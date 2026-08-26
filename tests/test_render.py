@@ -10,6 +10,8 @@ way up. Rendering is not billable — no row is written to ``usage_logs``.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from sqlmodel import Session, select
 
 from app.models.schema import UsageLog
@@ -18,15 +20,24 @@ from tests.conftest import auth_header, make_httpx_response
 
 def _make_post_coro(response):
     async def _post(*args, **kwargs):
+        url = args[0] if args else kwargs.get("url")
+        if url.endswith("/detokenize"):
+            return make_httpx_response(200, {"prompt": "rendered text"})
         return response
     return _post
 
 
-def _make_post_coro_capture(response):
+def _make_post_coro_capture(response, detokenized: str = "rendered text"):
+    """Capture the *render* call while still answering the detokenize call that
+    ``decode`` (on by default) makes afterwards. ``captured`` therefore always
+    describes the render request, whichever calls follow it."""
     captured: dict = {}
 
     async def _post(*args, **kwargs):
-        captured["url"] = args[0] if args else kwargs.get("url")
+        url = args[0] if args else kwargs.get("url")
+        if url.endswith("/detokenize"):
+            return make_httpx_response(200, {"prompt": detokenized})
+        captured["url"] = url
         captured["body"] = kwargs.get("json")
         captured["headers"] = kwargs.get("headers")
         return response
@@ -90,6 +101,8 @@ class TestChatCompletionsRender:
         assert data["sampling_params"]["temperature"] == 0.7
         # real_model is swapped back to the user-facing alias
         assert data["model"] == "test-llm"
+        # decode is on by default, so the readable prompt comes for free
+        assert data["decoded_prompt"] == "rendered text"
 
         # Downstream got the real model and the verbatim body
         assert captured["body"]["model"] == "real-llm-v1"
@@ -337,11 +350,12 @@ class TestRenderDecode:
         ).all()
         assert rows == []
 
-    def test_no_decode_by_default(self, client, test_user):
-        """Opt-in: without the flag the endpoint stays a pure pass-through and
-        makes exactly one downstream call."""
+    def test_decode_is_on_by_default(self, client, test_user):
+        """No flag at all still yields readable text — token ids alone would
+        leave the endpoint one step short of its own purpose."""
         post, calls = _make_post_router({
             "/chat/completions/render": make_httpx_response(200, dict(self._RENDER_BODY)),
+            "/detokenize": make_httpx_response(200, {"prompt": "the prompt"}),
         })
         client.__httpx_mock__.post = post
 
@@ -350,7 +364,23 @@ class TestRenderDecode:
             json=self._REQUEST, headers=auth_header(),
         )
         assert resp.status_code == 200
+        assert resp.json()["decoded_prompt"] == "the prompt"
+        assert len(calls) == 2
+
+    def test_decode_false_is_pure_passthrough(self, client, test_user):
+        """The opt-out: exactly what vLLM returned, in exactly one call."""
+        post, calls = _make_post_router({
+            "/chat/completions/render": make_httpx_response(200, dict(self._RENDER_BODY)),
+        })
+        client.__httpx_mock__.post = post
+
+        resp = client.post(
+            "/v1/chat/completions/render?decode=false",
+            json=self._REQUEST, headers=auth_header(),
+        )
+        assert resp.status_code == 200
         assert "decoded_prompt" not in resp.json()
+        assert "decode_error" not in resp.json()
         assert len(calls) == 1
 
     def test_decode_failure_keeps_the_render(self, client, test_user):
@@ -423,4 +453,52 @@ class TestRenderDecode:
         for path in ("/v1/chat/completions/render", "/chat/completions/render"):
             params = {p["name"]: p for p in spec["paths"][path]["post"]["parameters"]}
             assert params["decode"]["in"] == "query"
-            assert params["decode"]["schema"]["default"] is False
+            assert params["decode"]["schema"]["default"] is True
+
+
+class TestRenderIsNotObserved:
+    """Rendering is a debug query, not inference: it must stay outside both the
+    billing ledger and Langfuse. `_log_usage` is the single seam for both, and
+    this path deliberately never reaches it — pinned here so a later refactor
+    that "helpfully" routes every forward through it fails loudly."""
+
+    def test_no_usage_row_and_no_langfuse_generation(
+        self, client, test_user, db_session: Session
+    ):
+        client.__httpx_mock__.post = _make_post_coro(
+            make_httpx_response(200, {"token_ids": [1, 2, 3], "model": "real-llm-v1"})
+        )
+
+        with patch("app.services.vllm_proxy.record_generation") as rec, \
+                patch("app.services.vllm_proxy._log_usage") as log_usage:
+            resp = client.post(
+                "/v1/chat/completions/render",
+                json={"model": "test-llm",
+                      "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+
+        assert resp.status_code == 200
+        rec.assert_not_called()
+        log_usage.assert_not_called()
+        assert db_session.exec(
+            select(UsageLog).where(UsageLog.user_id == test_user.id)
+        ).all() == []
+
+    def test_downstream_error_is_not_observed(self, client, test_user):
+        """Not even the error path — a failed render is not a failed
+        generation, so it must not show up as one in Langfuse."""
+        client.__httpx_mock__.post = _make_post_coro_raise(Exception("boom"))
+
+        with patch("app.services.vllm_proxy.record_generation") as rec, \
+                patch("app.services.vllm_proxy._log_error") as log_error:
+            resp = client.post(
+                "/v1/chat/completions/render",
+                json={"model": "test-llm",
+                      "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+
+        assert resp.status_code == 502
+        rec.assert_not_called()
+        log_error.assert_not_called()
