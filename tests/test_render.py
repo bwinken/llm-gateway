@@ -78,7 +78,11 @@ class TestChatCompletionsRender:
             {"role": "user", "content": "hello world"}
         ]
         assert captured["body"]["temperature"] == 0.7
-        assert captured["url"].endswith("/chat/completions/render")
+        # Routed to the downstream's own /v1/chat/completions/render — the
+        # render endpoint lives under vLLM's /v1 prefix (unlike /tokenize,
+        # which sits at the server root), so the configured base_url is used
+        # as-is with the suffix appended.
+        assert captured["url"] == "http://mock-llm:8000/v1/chat/completions/render"
 
         # Rendering is a debug/metadata call — never billed
         rows = db_session.exec(
@@ -87,9 +91,14 @@ class TestChatCompletionsRender:
         assert rows == []
 
     def test_alias_without_v1_prefix(self, client, test_user):
-        client.__httpx_mock__.post = _make_post_coro(
+        """``/chat/completions/render`` and ``/v1/chat/completions/render``
+        are the same handler and hit the same downstream URL — the gateway's
+        own prefix has no bearing on where the request lands."""
+        post_coro, captured = _make_post_coro_capture(
             make_httpx_response(200, {"token_ids": [7, 8]})
         )
+        client.__httpx_mock__.post = post_coro
+
         resp = client.post(
             "/chat/completions/render",
             json={"model": "test-llm", "messages": [{"role": "user", "content": "hi"}]},
@@ -97,6 +106,7 @@ class TestChatCompletionsRender:
         )
         assert resp.status_code == 200
         assert resp.json()["token_ids"] == [7, 8]
+        assert captured["url"] == "http://mock-llm:8000/v1/chat/completions/render"
 
     def test_reasoning_dialect_aligned(self, client, test_user):
         """Render must reflect what /chat/completions would actually send, so
