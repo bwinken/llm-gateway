@@ -10,8 +10,9 @@ unambiguous at call sites that also import from ``azure_proxy``:
   - vllm_forward_messages          — Anthropic Messages translation
   - vllm_forward_count_tokens      — Anthropic count_tokens (forwards to /tokenize)
   - vllm_forward_tokenize          — vLLM-native /tokenize pass-through
+  - vllm_forward_render            — vLLM-native /chat/completions/render pass-through
 
-All six share ``_resolve_model`` for health-aware type-checked fallback;
+All seven share ``_resolve_model`` for health-aware type-checked fallback;
 billing goes through ``_log_usage`` (decoupled from any specific route map).
 """
 
@@ -1722,6 +1723,89 @@ async def vllm_forward_tokenize(
             content={"error": "Downstream returned non-JSON response"},
             status_code=502,
         )
+
+    return JSONResponse(content=data, headers=extra_headers)
+
+
+# ---------------------------------------------------------------------------
+# 7. vllm_forward_render - vLLM-native /chat/completions/render pass-through
+# ---------------------------------------------------------------------------
+
+_RENDER_TIMEOUT = 60.0
+
+
+async def vllm_forward_render(
+    request: Request,
+    user: User,
+    allowed_types: list[str],
+) -> JSONResponse:
+    """Pass-through to the downstream vLLM ``/chat/completions/render`` endpoint.
+
+    vLLM ≥ 0.11 can render a chat completions request without running it:
+    the response carries the rendered ``token_ids``, resolved
+    ``sampling_params`` and the rest of the engine-level request. Exposing it
+    here lets developers see exactly what the gateway sends downstream and how
+    the model's chat template turns it into a prompt — the usual answer to
+    "why did the model see something different from what I sent".
+
+    Deliberately **vLLM-only**: the request body is forwarded verbatim to the
+    on-prem server (only ``model`` is rewritten, alias → ``real_model``, and
+    the serving alias is put back on the response). There is no Azure or
+    Bedrock dispatch — those are managed APIs with no rendering surface to
+    expose — so a cloud alias posted here falls back through ``_resolve_model``
+    to a vLLM route like any other unknown alias, same as ``/v1/tokenize``.
+
+    The reasoning-dialect alignment ``/v1/chat/completions`` applies is applied
+    here too, so what gets rendered is what would actually be generated from.
+
+    Not billed — rendering runs the tokenizer and chat template, not the
+    model — so no row is written to ``usage_logs``. Auth and daily-limit
+    checks still apply via ``get_current_user``. A downstream too old to serve
+    the endpoint answers 404, which is propagated as-is.
+    """
+    try:
+        body_json = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+    if not isinstance(body_json, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    model_name = body_json.get("model", "")
+    resolved_alias, route, fallback_reason = _resolve_model(model_name, allowed_types)
+    model_type = route["type"]
+    extra_headers = _fallback_headers(fallback_reason)
+
+    # Same dialect alignment as chat completions — render must reflect the
+    # body the generating call would send, not the one the client typed.
+    _align_reasoning_fields(body_json.get("messages"))
+
+    client = get_client()
+    try:
+        resp, resolved_alias, route, failover_note = await _post_with_failover(
+            client, "/chat/completions/render", body_json, resolved_alias,
+            model_type, route, timeout=_RENDER_TIMEOUT,
+        )
+    except Exception as exc:
+        logger.error("render downstream error: {}: {}", type(exc).__name__, exc)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    extra_headers = _merge_failover_header(extra_headers, failover_note)
+
+    if resp.status_code != 200:
+        return _error_response(resp)
+
+    try:
+        data = resp.json()
+    except Exception:
+        return JSONResponse(
+            content={"error": "Downstream returned non-JSON response"},
+            status_code=502,
+        )
+
+    # Put the user-facing alias back on the echoed request so the response
+    # never leaks the downstream's real model name (same contract as every
+    # other surface).
+    if isinstance(data, dict) and data.get("model") == route["real_model"]:
+        data["model"] = resolved_alias
 
     return JSONResponse(content=data, headers=extra_headers)
 

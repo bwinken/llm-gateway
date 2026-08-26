@@ -106,7 +106,7 @@ Implementation lives in `v1_api.py:_peek_model_alias` + `_route_to_azure` + `_ro
 
 ### vLLM Proxy Layer (`app/services/vllm_proxy.py`)
 
-Six forwarding methods, all sharing `_resolve_model()` for health-aware routing:
+Seven forwarding methods, all sharing `_resolve_model()` for health-aware routing:
 
 | Method | Used by | Behavior |
 |---|---|---|
@@ -116,6 +116,7 @@ Six forwarding methods, all sharing `_resolve_model()` for health-aware routing:
 | `vllm_forward_messages` | `/v1/messages` | Anthropic→OpenAI translation, OpenAI→Anthropic response, stream + non-stream. Routes with `native_messages = true` bypass translation entirely — see below. |
 | `vllm_forward_count_tokens` | `/v1/messages/count_tokens` | Forwards to vLLM `/tokenize`, returns `{input_tokens}`; not billed. `native_messages` routes try the downstream's native `/v1/messages/count_tokens` first, falling back to `/tokenize` on any failure. |
 | `vllm_forward_tokenize` | `/v1/tokenize`, `/tokenize` | vLLM-native pass-through to downstream `/tokenize`; only mutates model field; not billed |
+| `vllm_forward_render` | `/v1/chat/completions/render`, `/chat/completions/render` | vLLM-native pass-through to downstream `/chat/completions/render` (vLLM ≥ 0.11 renders the chat template and returns `token_ids` + resolved `sampling_params` without generating — a developer debug aid for "what did the model actually see"). Applies the same `_align_reasoning_fields` alignment as chat completions so the render matches what generation would send, swaps the alias back onto the echoed `model`, and is **on-prem vLLM only**: no Azure/Bedrock dispatch (neither managed API exposes a rendering surface), so a cloud alias posted here falls back through `_resolve_model` like any unknown alias, same as `/v1/tokenize`. A downstream too old to serve the endpoint answers 404, propagated as-is. Not billed |
 
 `_resolve_model()` priority: exact match + alive server → alive fallback of same type → best-effort any server of compatible type. Returns `X-Model-Fallback` response header when fallback occurs.
 

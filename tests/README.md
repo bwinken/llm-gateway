@@ -168,6 +168,18 @@ only rewriting the `model` alias. Covers both shapes, alias without `/v1`
 prefix, `x-api-key` auth, missing auth, malformed JSON, downstream errors,
 unknown alias falls back to "any alive LLM".
 
+### `test_render.py` — `/v1/chat/completions/render` (vLLM-native pass-through)
+
+The debug endpoint that renders a chat request through the model's chat
+template without generating from it. Covers the happy path (body forwarded
+verbatim, alias → `real_model` down and back to the alias on the echoed
+`model`, no `usage_logs` row), the alias without the `/v1` prefix, the
+reasoning / `reasoning_content` alignment that mirrors `/v1/chat/completions`,
+`x-api-key` auth, missing auth, malformed JSON, downstream 502, a 404 from a
+vLLM too old to serve the endpoint, unknown-alias fallback, and that an
+Azure-configured alias stays on the vLLM path (on-prem-only endpoint) even for
+a user with `can_use_azure`.
+
 ### `test_models_endpoint.py` — `/v1/models`
 
 | Test class | What it covers |

@@ -50,6 +50,7 @@ graph LR
 | `POST` | `/v1/messages`、`/messages` | Anthropic Messages(轉譯為 OpenAI;`reasoning_content` 串流成 `thinking` block;下游靜默時每 10 秒送 SSE `ping`) | `vllm_forward_messages`(vLLM) / `azure_forward_messages`(Azure) | `llm`, `vlm` |
 | `POST` | `/v1/messages/count_tokens`、`/messages/count_tokens` | Anthropic token 計數(vLLM 走 `/tokenize`,失敗時 fallback chars/4;Azure 路徑用 chars/4 估算) | `vllm_forward_count_tokens`(vLLM) / `azure_forward_count_tokens`(Azure) | `llm`, `vlm` |
 | `POST` | `/v1/tokenize`、`/tokenize` | vLLM 原生 pass-through tokenize(無 Azure 路徑 — Azure 沒有 tokenize 端點) | `vllm_forward_tokenize` | `llm`, `vlm` |
+| `POST` | `/v1/chat/completions/render`、`/chat/completions/render` | vLLM 原生 pass-through render — 只套 chat template 不生成(debug 用;僅地端 vLLM,無 Azure/Bedrock 路徑) | `vllm_forward_render` | `llm`, `vlm` |
 
 ### 分派邏輯
 
@@ -73,6 +74,7 @@ alias 不在 AZURE_MODELS                              → vLLM 路徑
 | `vllm_forward_messages` | stream + non-stream | Anthropic Messages | Anthropic→OpenAI 請求、OpenAI→Anthropic 回應(使用 `services/anthropic_adapter.py`) |
 | `vllm_forward_count_tokens` | non-stream | `count_tokens` | 轉送至 vLLM `/tokenize`,失敗時 fallback 為 chars/4;不計費 |
 | `vllm_forward_tokenize` | non-stream | `/tokenize` | vLLM 原生 pass-through;不計費 |
+| `vllm_forward_render` | non-stream | `/chat/completions/render` | vLLM 原生 pass-through;套用與 chat completions 相同的 reasoning 方言對齊,回應的 `model` 換回 alias;不計費 |
 
 ### 共通行為
 
@@ -200,7 +202,7 @@ API key 或 SSO session。這兩個端點也不會洩漏任何「服務有回應
 ```mermaid
 graph TD
     subgraph "API Key 認證 (deps.py)"
-        V1["/v1/models<br/>/v1/chat/completions<br/>/v1/embeddings<br/>/v1/rerank • /v1/score<br/>/v1/responses<br/>/v1/messages • /v1/messages/count_tokens<br/>/v1/tokenize"]
+        V1["/v1/models<br/>/v1/chat/completions<br/>/v1/embeddings<br/>/v1/rerank • /v1/score<br/>/v1/responses<br/>/v1/messages • /v1/messages/count_tokens<br/>/v1/tokenize<br/>/v1/chat/completions/render"]
         Azure["/azure/v1/models<br/>/azure/v1/chat/completions<br/>/azure/v1/embeddings<br/>/azure/v1/messages • /azure/messages<br/>/azure/v1/messages/count_tokens"]
     end
 

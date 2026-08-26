@@ -19,9 +19,9 @@ permissions the user happens to lack — which matches the "be liberal with
 unknown aliases" stance the gateway has always taken.
 
 Every route is also exposed without the ``/v1`` prefix (``/chat/completions``,
-``/models``, ``/embeddings``, ``/rerank``, ``/score`` alongside the canonical
-``/v1/...`` paths; the Anthropic-shaped ``/messages``, ``/messages/count_tokens``,
-``/responses``, ``/tokenize`` already had this alias). Clients whose base URL
+``/models``, ``/embeddings``, ``/rerank``, ``/score``, ``/chat/completions/render``
+alongside the canonical ``/v1/...`` paths; the Anthropic-shaped ``/messages``,
+``/messages/count_tokens``, ``/responses``, ``/tokenize`` already had this alias). Clients whose base URL
 omits ``/v1`` reach the same handler — a common Roo Code / Cline / Cursor
 misconfiguration that previously surfaced as a silent 404.
 """
@@ -55,6 +55,7 @@ from app.services.vllm_proxy import (
     vllm_forward_chat_completions,
     vllm_forward_count_tokens,
     vllm_forward_messages,
+    vllm_forward_render,
     vllm_forward_responses,
     vllm_forward_simple_request,
     vllm_forward_tokenize,
@@ -233,6 +234,28 @@ async def chat_completions(request: Request, user: User = Depends(get_current_us
         await run_in_threadpool(ensure_bedrock_budget, user)
         return await bedrock_forward_chat_completions(request, user)
     return await vllm_forward_chat_completions(request, user, allowed_types=["llm", "vlm"])
+
+
+@router.post("/v1/chat/completions/render")
+@router.post("/chat/completions/render")
+async def chat_completions_render(
+    request: Request, user: User = Depends(get_current_user)
+):
+    """vLLM-native ``/chat/completions/render`` pass-through (debug aid).
+
+    Renders a chat completions request through the downstream's chat template
+    without generating: the response carries the rendered ``token_ids`` and the
+    resolved ``sampling_params``, which is what you want when the model appears
+    to have seen something other than what you sent.
+
+    **On-prem vLLM only** — no Azure / Bedrock dispatch, because neither
+    managed API exposes a rendering surface. An alias the vLLM side doesn't
+    know falls back through ``_resolve_model`` exactly like on ``/v1/tokenize``.
+    Not billed; a downstream too old to serve the endpoint answers 404.
+    """
+    return await vllm_forward_render(
+        request, user, allowed_types=["llm", "vlm"]
+    )
 
 
 @router.post("/v1/responses")
