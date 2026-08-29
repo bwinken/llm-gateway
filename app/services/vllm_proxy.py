@@ -54,6 +54,7 @@ from app.services.observability import (
     request_latency_ms,
     set_io_input,
 )
+from app.services.reasoning_effort import apply_to_openai_body
 
 
 # Streaming reads can stall arbitrarily long between chunks (long prefill,
@@ -778,6 +779,9 @@ async def vllm_forward_chat_completions(
     # Absorb the reasoning / reasoning_content dialect split so neither the
     # client's nor the downstream's version matters (see _align_reasoning_fields).
     _align_reasoning_fields(body.get("messages"))
+    # Keep a client's `reasoning_effort` inside what this model accepts —
+    # a no-op unless the route declares `reasoning_efforts`.
+    apply_to_openai_body(body, route, resolved_alias, "/v1/chat/completions")
     base_url = route["base_url"]
     model_type = route["type"]
     downstream_headers = _get_downstream_headers(route)
@@ -1372,6 +1376,7 @@ async def vllm_forward_messages(
     openai_body = anthropic_to_openai_request(
         anthropic_body, is_reasoning=bool(route.get("is_reasoning")),
     )
+    apply_to_openai_body(openai_body, route, resolved_alias, "/v1/messages")
     openai_body["model"] = real_model
     is_stream = bool(anthropic_body.get("stream", False))
 
@@ -1873,6 +1878,9 @@ async def vllm_forward_render(
     # Same dialect alignment as chat completions — render must reflect the
     # body the generating call would send, not the one the client typed.
     _align_reasoning_fields(body_json.get("messages"))
+    apply_to_openai_body(
+        body_json, route, resolved_alias, "/v1/chat/completions/render",
+    )
 
     client = get_client()
     try:

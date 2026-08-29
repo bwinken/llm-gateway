@@ -40,6 +40,10 @@ from app.services.anthropic_adapter import (
     openai_message_to_anthropic,
     openai_to_anthropic_response,
 )
+from app.services.reasoning_effort import (
+    apply_to_openai_body,
+    apply_to_responses_body,
+)
 from app.services.redact import summarize_body
 from app.services.responses_adapter import (
     ResponsesToChatStreamTranslator,
@@ -355,6 +359,9 @@ async def azure_forward_chat_completions(
     deployment = entry["deployment"]
 
     is_stream = bool(body.get("stream", False))
+    # Reconcile the requested effort with what this deployment accepts before
+    # translation — a no-op unless the entry declares `reasoning_efforts`.
+    apply_to_openai_body(body, entry, resolved_alias, "/azure/v1/chat/completions")
     responses_body = openai_chat_to_responses_request(body, model=deployment)
     if is_stream:
         responses_body["stream"] = True
@@ -564,6 +571,7 @@ async def azure_forward_messages(
     openai_body = anthropic_to_openai_request(
         anthropic_body, is_reasoning=bool(entry.get("is_reasoning")),
     )
+    apply_to_openai_body(openai_body, entry, resolved_alias, "/azure/v1/messages")
     is_stream = bool(anthropic_body.get("stream", False))
     responses_body = openai_chat_to_responses_request(openai_body, model=deployment)
     if is_stream:
@@ -857,6 +865,10 @@ async def azure_forward_responses(
     # is deliberately NOT applied here: a client speaking Responses API
     # natively presumably knows which params its target model accepts.
     body["model"] = deployment
+    # The one exception to "the client owns its params": an effort level the
+    # deployment is declared not to accept would 400, so it is remapped (and
+    # only then — without `reasoning_efforts` this stays a pure pass-through).
+    apply_to_responses_body(body, entry, resolved_alias, "/azure/v1/responses")
 
     is_stream = bool(body.get("stream", False))
     target_url = _build_responses_url(entry)

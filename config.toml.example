@@ -90,6 +90,15 @@ api_key = "your-api-key"
 # supports_vision = false
 # supports_prompt_caching = false
 # is_reasoning = false    # Set true for thinking / chain-of-thought models (o1/QwQ/DeepSeek-R1 etc.)
+# Reasoning-effort compatibility (optional, only meaningful with is_reasoning):
+# declare the effort levels THIS downstream accepts, and the gateway rewrites
+# requests that ask for anything else — so a model upgrade that dropped a level
+# doesn't 400 the clients still pinned to it. Omit = forward whatever was asked.
+# reasoning_efforts = ["none", "low", "medium", "xhigh"]   # e.g. no "high" any more
+# An unsupported level lands on the nearest supported one, stepping DOWN first
+# (never buy more reasoning than the caller asked for); [] = the model takes no
+# effort knob at all, so the field is dropped. To override one level explicitly:
+# reasoning_effort_map = { high = "xhigh" }   # "" as the target drops it instead
 # hidden = false          # Hide from user-facing pages and /v1/models (still usable via API)
 # native_messages = false # Set true when the downstream vLLM (>= 0.11.1) serves the native
 #                         # Anthropic /v1/messages endpoint: Anthropic requests (Claude Code)

@@ -147,6 +147,17 @@ api_key = "your-key"                # vLLM --api-key（若無則留空）
 
 支援的模型類型：`llm`、`vlm`、`embedding`、`vision_embedding`、`reranker`、`vision_reranker`。
 
+推理模型還可以宣告下游實際接受哪些 reasoning effort 等級，這樣模型升級後少掉某個等級（最常見的情況：不再支援 `high`）時，仍沿用舊等級的 client 不會突然收到 400：
+
+```toml
+[models.llm."model-alias"]
+is_reasoning      = true
+reasoning_efforts = ["none", "low", "medium", "xhigh"]   # 這版沒有 "high"
+# reasoning_effort_map = { high = "xhigh" }              # 選填：指定某個等級要落在哪裡
+```
+
+模型不接受的等級會被改寫成最接近的可用等級，且**優先往下**取，讓自動改寫永遠不會買到比呼叫端要求更多的推理量（與費用）；`reasoning_effort_map` 可逐級覆寫此規則，`reasoning_efforts = []` 代表整個參數直接拿掉，不設這個 key 則維持原本「照送」的行為。三種 backend、OpenAI 與 Anthropic 兩種介面都適用；`[azure_models.*]` 與 `[bedrock_models.*]` 項目也接受同樣的欄位。
+
 各類型計價（USD / 每百萬 token）：
 
 ```toml

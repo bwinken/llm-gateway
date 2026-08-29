@@ -697,6 +697,36 @@ async def update_user_api(
     return {"ok": True, "user_id": target.id}
 
 
+def _validate_reasoning_keys(label: str, alias: str, info: dict) -> None:
+    """Type-check the per-model reasoning-effort compatibility declaration.
+
+    `reasoning_efforts` is a list of effort names, `reasoning_effort_map` a
+    table of name -> name (an empty target means "drop the field"). Both are
+    rewrite policy, so a typo here would silently mangle every request the
+    model serves — reject it at save time instead.
+    """
+    efforts = info.get("reasoning_efforts")
+    if efforts is not None:
+        if not isinstance(efforts, list) or not all(isinstance(v, str) for v in efforts):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{label} '{alias}' field 'reasoning_efforts' must be a list of strings.",
+            )
+    mapping = info.get("reasoning_effort_map")
+    if mapping is not None:
+        if not isinstance(mapping, dict) or not all(
+            isinstance(k, str) and (v is None or isinstance(v, str))
+            for k, v in mapping.items()
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{label} '{alias}' field 'reasoning_effort_map' must be a "
+                    "table of effort name -> effort name."
+                ),
+            )
+
+
 # ── Model Configuration ──
 
 @router.get("/models", response_class=HTMLResponse)
@@ -794,6 +824,7 @@ async def save_config_api(
                     status_code=400,
                     detail=f"Model '{alias}' field '{key}' has wrong type.",
                 )
+        _validate_reasoning_keys("Model", alias, info)
         for key in _MODEL_PRICING_KEYS:
             if key not in info:
                 continue
@@ -867,6 +898,7 @@ async def save_config_api(
                         status_code=400,
                         detail=f"Azure model '{alias}' field '{key}' must be non-negative.",
                     )
+            _validate_reasoning_keys("Azure model", alias, info)
             for key in _MODEL_INTERNAL_KEYS:
                 if key not in info:
                     continue

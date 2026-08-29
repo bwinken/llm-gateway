@@ -63,6 +63,7 @@ from app.services.observability import (
     capture_io_enabled,
     set_io_input,
 )
+from app.services.reasoning_effort import apply_to_openai_body
 from app.services.redact import summarize_body
 from app.services.vllm_proxy import (
     _SSE_MAX_IDLE,
@@ -301,6 +302,9 @@ async def bedrock_forward_chat_completions(
     model_type = entry.get("type", "llm")
 
     is_stream = bool(body.get("stream", False))
+    # Reconcile the requested effort with what this model accepts — a no-op
+    # unless the entry declares `reasoning_efforts`.
+    apply_to_openai_body(body, entry, resolved_alias, "/aws/v1/chat/completions")
     converse_body = openai_chat_to_converse_request(body, model_id=entry.get("model_id", ""))
 
     if capture_io_enabled():
@@ -487,6 +491,7 @@ async def bedrock_forward_messages(
     openai_body = anthropic_to_openai_request(
         anthropic_body, is_reasoning=bool(entry.get("is_reasoning")),
     )
+    apply_to_openai_body(openai_body, entry, resolved_alias, "/aws/v1/messages")
     is_stream = bool(anthropic_body.get("stream", False))
     converse_body = openai_chat_to_converse_request(
         openai_body, model_id=entry.get("model_id", ""),
