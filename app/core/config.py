@@ -68,6 +68,19 @@ _MODEL_PRICING_KEYS: tuple[str, ...] = (
     "cached_input_price_per_1m",
 )
 
+# Optional per-model reasoning-effort compatibility declaration.
+# `reasoning_efforts` lists the effort levels the downstream model actually
+# accepts (e.g. a model upgrade that dropped "high"); `reasoning_effort_map`
+# overrides where a specific unsupported level should land. Both are read by
+# app.services.reasoning_effort, which rewrites outgoing requests so a client
+# pinned to the previous model's levels doesn't get a downstream 400. Absent
+# = today's faithful pass-through. Not surfaced via GET /v1/models: they
+# describe the gateway's rewrite policy, not the model's own capability.
+_MODEL_REASONING_KEYS: tuple[str, ...] = (
+    "reasoning_efforts",
+    "reasoning_effort_map",
+)
+
 # Internal config keys stored in config.toml and loaded into MODEL_ROUTING
 # but NOT surfaced to API clients via GET /v1/models.
 # `native_messages`: the downstream vLLM server (>= v0.11.1) exposes the
@@ -187,6 +200,9 @@ def _build_config(raw: dict[str, Any]) -> tuple[
             for internal_key in _MODEL_INTERNAL_KEYS:
                 if internal_key in model_cfg:
                     entry[internal_key] = model_cfg[internal_key]
+            for reasoning_key in _MODEL_REASONING_KEYS:
+                if reasoning_key in model_cfg:
+                    entry[reasoning_key] = model_cfg[reasoning_key]
             for price_key in _MODEL_PRICING_KEYS:
                 if price_key in model_cfg:
                     entry[price_key] = float(model_cfg[price_key])
@@ -216,6 +232,9 @@ def _build_config(raw: dict[str, Any]) -> tuple[
         for internal_key in _MODEL_INTERNAL_KEYS:
             if internal_key in cfg:
                 entry[internal_key] = cfg[internal_key]
+        for reasoning_key in _MODEL_REASONING_KEYS:
+            if reasoning_key in cfg:
+                entry[reasoning_key] = cfg[reasoning_key]
         for price_key in _MODEL_PRICING_KEYS:
             if price_key in cfg:
                 entry[price_key] = float(cfg[price_key])
@@ -252,6 +271,9 @@ def _build_config(raw: dict[str, Any]) -> tuple[
         for internal_key in _MODEL_INTERNAL_KEYS:
             if internal_key in cfg:
                 entry[internal_key] = cfg[internal_key]
+        for reasoning_key in _MODEL_REASONING_KEYS:
+            if reasoning_key in cfg:
+                entry[reasoning_key] = cfg[reasoning_key]
         for price_key in _MODEL_PRICING_KEYS:
             if price_key in cfg:
                 entry[price_key] = float(cfg[price_key])
@@ -407,6 +429,9 @@ def save_config(
         for internal_key in _MODEL_INTERNAL_KEYS:
             if internal_key in info:
                 entry[internal_key] = info[internal_key]
+        for reasoning_key in _MODEL_REASONING_KEYS:
+            if reasoning_key in info:
+                entry[reasoning_key] = info[reasoning_key]
         for price_key in _MODEL_PRICING_KEYS:
             if price_key in info:
                 entry[price_key] = float(info[price_key])
@@ -446,6 +471,9 @@ def save_config(
             for internal_key in _MODEL_INTERNAL_KEYS:
                 if internal_key in info:
                     entry[internal_key] = info[internal_key]
+            for reasoning_key in _MODEL_REASONING_KEYS:
+                if reasoning_key in info:
+                    entry[reasoning_key] = info[reasoning_key]
             for price_key in _MODEL_PRICING_KEYS:
                 if price_key in info:
                     entry[price_key] = float(info[price_key])
@@ -483,6 +511,9 @@ def save_config(
             for internal_key in _MODEL_INTERNAL_KEYS:
                 if internal_key in info:
                     entry[internal_key] = info[internal_key]
+            for reasoning_key in _MODEL_REASONING_KEYS:
+                if reasoning_key in info:
+                    entry[reasoning_key] = info[reasoning_key]
             for price_key in _MODEL_PRICING_KEYS:
                 if price_key in info:
                     entry[price_key] = float(info[price_key])

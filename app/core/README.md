@@ -43,10 +43,11 @@ Parses `config.toml` and `.env`, producing global configuration objects.
 | `FALLBACK_MAP` | `dict[str, str]` | `config.toml` | Fallback table: type → preferred fallback model alias (vLLM only) |
 | `AZURE_MODELS` | `dict[str, dict]` | `config.toml` `[azure_models.*]` | Azure routing: alias → `{type, endpoint, deployment, api_key, api_version, ...}` |
 
-**Optional per-model fields** (handled by `_MODEL_METADATA_KEYS`, `_MODEL_INTERNAL_KEYS`, `_MODEL_PRICING_KEYS`):
+**Optional per-model fields** (handled by `_MODEL_METADATA_KEYS`, `_MODEL_INTERNAL_KEYS`, `_MODEL_REASONING_KEYS`, `_MODEL_PRICING_KEYS`):
 
 - Metadata surfaced via `GET /v1/models` / `/azure/v1/models`: `display_name`, `context_window`, `max_output_tokens`, `supports_tools`, `supports_vision`, `supports_prompt_caching`, `is_reasoning`
 - Internal flags: `hidden` (not surfaced to clients)
+- Reasoning-effort compatibility (`_MODEL_REASONING_KEYS`, not surfaced to clients): `reasoning_efforts` — the effort levels this downstream accepts, so a model upgrade that dropped one doesn't 400 clients still asking for it — and `reasoning_effort_map` for an explicit per-level override. Consumed by `app/services/reasoning_effort.py`; omitting them forwards whatever was requested.
 - Pricing overrides: `input_price_per_1m`, `output_price_per_1m`. When present on a model entry they take priority over `[pricing.<type>]`, which in turn falls back to `[pricing]` defaults (`_default`).
 
 **Key functions:**

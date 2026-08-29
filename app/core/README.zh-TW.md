@@ -43,10 +43,11 @@ graph TD
 | `FALLBACK_MAP` | `dict[str, str]` | `config.toml` | Fallback 表:type → 偏好的 fallback model alias(僅 vLLM) |
 | `AZURE_MODELS` | `dict[str, dict]` | `config.toml` `[azure_models.*]` | Azure 路由:alias → `{type, endpoint, deployment, api_key, api_version, ...}` |
 
-**Per-model 可選欄位**(由 `_MODEL_METADATA_KEYS`、`_MODEL_INTERNAL_KEYS`、`_MODEL_PRICING_KEYS` 控制):
+**Per-model 可選欄位**(由 `_MODEL_METADATA_KEYS`、`_MODEL_INTERNAL_KEYS`、`_MODEL_REASONING_KEYS`、`_MODEL_PRICING_KEYS` 控制):
 
 - 透過 `GET /v1/models` / `/azure/v1/models` 對外揭露的 metadata:`display_name`、`context_window`、`max_output_tokens`、`supports_tools`、`supports_vision`、`supports_prompt_caching`、`is_reasoning`
 - 內部旗標:`hidden`(不對 client 揭露)
+- Reasoning effort 相容性(`_MODEL_REASONING_KEYS`,不對 client 揭露):`reasoning_efforts` — 此下游實際接受的 effort 等級,讓模型升級後少掉某個等級時,仍在用舊等級的 client 不會被 400 — 以及 `reasoning_effort_map`,可逐級指定改寫目標。由 `app/services/reasoning_effort.py` 消費;不設定則照原樣轉送。
 - 計價覆寫:`input_price_per_1m`、`output_price_per_1m`。模型項目上有設定時優先於 `[pricing.<type>]`,後者再 fallback 到 `[pricing]` 預設值(`_default`)。
 
 **關鍵函式：**

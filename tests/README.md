@@ -251,6 +251,25 @@ translating via the OpenAI pivot.
 | `TestNormalizeAnthropicMessages` | `normalize_anthropic_messages` pure-function behavior: schema-clean requests returned as the same object (pure pass-through); leading system-role entries hoisted into the top-level `system` field (existing `cache_control` blocks preserved verbatim); mid-conversation system entries merged into the adjacent user message as `<system-reminder>` text (append to previous user / prepend to next / trailing orphan becomes its own user message); plus an end-to-end check that the native path applies it before forwarding |
 | `TestFlagOff` | Without the flag the translation path is used unchanged |
 
+### `test_reasoning_effort.py` — per-model reasoning-effort compatibility
+
+A model entry declaring `reasoning_efforts` gets outgoing requests reconciled
+with what that model actually accepts (the case it exists for: an upgrade that
+dropped `high`) — remapped where `reasoning_effort_map` says so, stripped
+otherwise; a route declaring nothing keeps the faithful pass-through.
+
+| Test class | What it covers |
+|---|---|
+| `TestNormalizeAndDeclare` | `normalize_effort` spelling variants (`MAX`/`extra-high` → `xhigh`, unknown spellings verbatim); `declared_efforts` normalizes + dedupes, treats `[]` as meaningful ("no effort knob") and a malformed declaration as undeclared |
+| `TestAdaptEffort` | Accepted level untouched; unaccepted + unmapped is dropped; `reasoning_effort_map` sends the operator's target (including one outside the declared list, and for an unknown spelling), blank target = drop, malformed map = drop; a map entry never touches an accepted level; undeclared route passes through |
+| `TestApplyHelpers` | In-place rewrite/strip of OpenAI `reasoning_effort` and Azure Responses `reasoning.effort` (emptied `reasoning` object removed); bodies without the field, and undeclared routes, untouched |
+| `TestVllmChatCompletions` | `/v1/chat/completions` strips an unaccepted effort, sends the mapped one, forwards an accepted one unchanged, and leaves an undeclared route's request alone |
+| `TestVllmMessages` | `/v1/messages` reconciles the translated level, including one bucketed from `thinking.budget_tokens`; the `native_messages` path carries no `effort` to adapt (the sanitizer strips it) and forwards `thinking` untouched |
+| `TestAzureAdaptation` | `/azure/v1/chat/completions` adapts before the Responses translation; the `/azure/v1/responses` pass-through adapts `reasoning.effort` only for a deployment that declares its levels |
+| `TestBedrockAdaptation` | The mapped level is resolved before Converse expands it into a Claude thinking budget (`xhigh` → mapped `medium` → 8192); an unmapped level leaves `additionalModelRequestFields` off entirely |
+| `TestConfigPlumbing` | `_build_config` carries both keys onto vLLM / Azure / Bedrock entries (including an empty list) and leaves them absent when undeclared |
+| `TestAdminConfigValidation` | `PUT /admin/api/config` 400s on a non-list `reasoning_efforts` / non-table `reasoning_effort_map`, and passes a valid policy through to `save_config` — the admin UI edits these keys outside the `META_KEYS` collect path, so the server must keep what it is sent |
+
 ### `test_admin.py` — Admin REST API
 
 | Test class | What it covers |

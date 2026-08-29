@@ -18,6 +18,8 @@ import json
 import uuid
 from typing import Any, Iterator
 
+from app.services.reasoning_effort import EFFORT_ALIASES
+
 
 # ---------------------------------------------------------------------------
 # stop_reason mapping
@@ -48,18 +50,8 @@ def _map_stop_reason(openai_finish: str | None) -> str | None:
 # (e.g. newer OpenAI-family models with `xhigh` / `minimal` / `none`) gives
 # the user the effort response they actually asked for. Only spelling
 # variants are normalized here.
-_EFFORT_ALIASES: dict[str, str] = {
-    "minimal": "minimal",
-    "none": "none",
-    "low": "low",
-    "medium": "medium",
-    "high": "high",
-    "xhigh": "xhigh",
-    "x-high": "xhigh",
-    "extra-high": "xhigh",
-    "extra_high": "xhigh",
-    "max": "xhigh",
-}
+# The spelling table itself lives in app.services.reasoning_effort, next to
+# the per-model compatibility policy that consumes the normalized levels.
 
 
 def _map_reasoning_effort(body: dict[str, Any]) -> str | None:
@@ -74,7 +66,7 @@ def _map_reasoning_effort(body: dict[str, Any]) -> str | None:
     effort = body.get("effort")
     if isinstance(effort, str) and effort.strip():
         normalized = effort.strip().lower()
-        return _EFFORT_ALIASES.get(normalized, normalized)
+        return EFFORT_ALIASES.get(normalized, normalized)
 
     thinking = body.get("thinking")
     if isinstance(thinking, dict) and thinking.get("type") == "enabled":

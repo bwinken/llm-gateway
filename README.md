@@ -147,6 +147,17 @@ api_key = "your-key"                # vLLM --api-key (leave empty if none)
 
 Supported model types: `llm`, `vlm`, `embedding`, `vision_embedding`, `reranker`, `vision_reranker`.
 
+A reasoning model can also declare which effort levels its downstream actually accepts, so a model upgrade that dropped one (the usual case: no more `high`) doesn't start returning 400s to clients pinned to the old set:
+
+```toml
+[models.llm."model-alias"]
+is_reasoning      = true
+reasoning_efforts = ["none", "low", "medium", "xhigh"]   # no "high" on this build
+reasoning_effort_map = { high = "xhigh" }                # where "high" should land instead
+```
+
+An accepted level is forwarded untouched. Anything else is sent as whatever `reasoning_effort_map` names for it, and a level the map doesn't name is **stripped** — the parameter is removed and the model uses its own default. There is no nearest-level guessing: the gateway sends what was asked for, what you wrote down, or nothing. `reasoning_efforts = []` strips every level; omitting the key keeps the previous behavior of forwarding whatever was requested. Works on all three backends and on both the OpenAI and Anthropic surfaces. The same keys are accepted on `[azure_models.*]` and `[bedrock_models.*]` entries. vLLM and Azure entries can be edited from **Admin Panel → Model Config → Advanced**, which shows each level as a chip and spells out what happens to a rejected one.
+
 Per-type pricing (USD per 1M tokens):
 
 ```toml
