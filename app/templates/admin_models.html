@@ -171,6 +171,55 @@ const PRICING_KEYS = [
     'cached_input_price_per_1m',
 ];
 
+// Reasoning-effort compatibility (_MODEL_REASONING_KEYS in app/core/config.py):
+// which effort levels this model's downstream actually accepts, and where an
+// unsupported one should land. Deliberately NOT in META_KEYS — collectFromDOM
+// wipes those before re-reading the DOM, and these two are edited straight on
+// `config` by the handlers below rather than through data-field inputs.
+// EFFORT_LADDER mirrors the ladder in app/services/reasoning_effort.py: order
+// is what makes "nearest level" mean anything.
+const EFFORT_LADDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+const EFFORT_DROP = '__drop__';   // UI value for a mapping target of "" (drop)
+
+// Per-level one-liners so an admin doesn't have to know the ladder by heart.
+const EFFORT_TIPS = {
+    none: 'Thinking off entirely.',
+    minimal: 'Barely any reasoning — newer OpenAI-family models only.',
+    low: 'Short reasoning pass.',
+    medium: 'The usual default for thinking models.',
+    high: 'Long reasoning pass.',
+    xhigh: 'Maximum reasoning. Claude Code also spells this max / extra-high.',
+};
+
+function modelsFor(kind) {
+    return kind === 'azalias' ? config.azure_models : config.models;
+}
+
+function hasReasoning(info) {
+    return Array.isArray(info.reasoning_efforts)
+        || Object.keys(info.reasoning_effort_map || {}).length > 0;
+}
+
+// Mirrors _nearest_supported() in app/services/reasoning_effort.py: closest
+// accepted level, preferring the next one DOWN, rounding up only when the
+// model accepts nothing weaker. Kept in sync so the "Auto" option can show
+// the admin exactly where a level will actually land.
+function nearestSupported(level, supported) {
+    const ranked = EFFORT_LADDER.filter(l => supported.includes(l));
+    if (!ranked.length) return null;
+    const idx = EFFORT_LADDER.indexOf(level);
+    if (idx < 0) return null;
+    const lower = ranked.filter(l => EFFORT_LADDER.indexOf(l) < idx);
+    return lower.length ? lower[lower.length - 1] : ranked[0];
+}
+
+// Declared levels, ladder-ordered, with any non-standard ones an operator
+// hand-wrote in config.toml kept at the end instead of being silently eaten.
+function orderedEfforts(list) {
+    const known = EFFORT_LADDER.filter(l => list.includes(l));
+    return known.concat(list.filter(l => !EFFORT_LADDER.includes(l)));
+}
+
 function hasMeta(info) {
     return META_KEYS.some(k => info[k] !== undefined && info[k] !== '');
 }
@@ -179,10 +228,10 @@ function hasPricing(info) {
     return PRICING_KEYS.some(k => info[k] !== undefined && info[k] !== '');
 }
 
-// Advanced row is auto-expanded (and flagged with a dot) when either
-// pricing overrides or metadata are set on the model.
+// Advanced row is auto-expanded (and flagged with a dot) when pricing
+// overrides, metadata, or a reasoning-effort policy are set on the model.
 function hasAdvanced(info) {
-    return hasMeta(info) || hasPricing(info);
+    return hasMeta(info) || hasPricing(info) || hasReasoning(info);
 }
 
 function typeDefaultPrice(type, field) {
@@ -226,10 +275,214 @@ function renderPricingFields(alias, info, kind) {
         </div>`;
 }
 
-function renderModelRow(alias, info, type) {
-    const dot = hasAdvanced(info)
-        ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-ag ml-1" title="Pricing or metadata set"></span>'
+// Renders the per-model reasoning block shown inside the Advanced row:
+// the `is_reasoning` flag plus the effort-compatibility policy. `kind` is
+// 'alias' for vLLM models or 'azalias' for Azure deployments, same
+// convention as renderPricingFields.
+//
+// Three states an admin can express, matching the backend:
+//   * "Anything the client asks" — no `reasoning_efforts` key (the default,
+//     and the gateway's pre-existing pass-through behavior);
+//   * some levels selected — anything else is rewritten;
+//   * none selected — the parameter is dropped from every request.
+function renderReasoningFields(alias, info, kind) {
+    const a = escAttr(alias);
+    const handler = kind === 'azalias' ? 'updateAzureField(this)' : 'updateField(this)';
+    const attr = kind === 'azalias' ? 'azalias' : 'alias';
+    const declared = Array.isArray(info.reasoning_efforts) ? info.reasoning_efforts : null;
+    const supported = declared ? orderedEfforts(declared) : [];
+    const mapping = info.reasoning_effort_map || {};
+    const isReasoning = info.is_reasoning === true;
+    const reasoningTip = 'Marks this as a thinking model. Gates the Anthropic '
+        + '/v1/messages effort translation (an `effort` string or a `thinking` '
+        + 'budget becomes reasoning_effort); non-reasoning models never get the '
+        + 'parameter. Also surfaced to clients via GET /v1/models.';
+    const modeTip = 'Declare which effort levels this downstream accepts. Set '
+        + 'this after a model upgrade drops a level: requests asking for it are '
+        + 'rewritten instead of failing with a downstream 400.';
+
+    const modeBtn = (mode, label, tip) => {
+        const active = (declared ? 'list' : 'any') === mode;
+        return `<button type="button" onclick="setEffortMode('${kind}', '${a}', '${mode}')"
+            aria-pressed="${active}"
+            class="px-3 py-1 text-xs font-medium transition-colors ${active
+                ? 'bg-[rgba(99,152,255,0.14)] text-ab'
+                : 'text-t4 hover:text-t2'}"
+            title="${escAttr(tip)}">${label}</button>`;
+    };
+
+    const chips = supportedChipsHtml(alias, supported, kind);
+
+    // One row per level this model does NOT accept — the only place a
+    // mapping changes anything — so the admin sees exactly what happens to
+    // each incompatible level instead of guessing at a rule.
+    const unsupported = EFFORT_LADDER.filter(l => !supported.includes(l));
+    const mapRows = unsupported.map(level => {
+        const current = Object.prototype.hasOwnProperty.call(mapping, level)
+            ? (mapping[level] === '' ? EFFORT_DROP : mapping[level])
+            : '';
+        const auto = nearestSupported(level, supported);
+        const autoLabel = auto
+            ? `Auto — nearest accepted (${auto})`
+            : 'Auto — dropped (nothing accepted)';
+        const opts = [`<option value="" ${current === '' ? 'selected' : ''}>${escHtml(autoLabel)}</option>`]
+            .concat(supported.map(l =>
+                `<option value="${escAttr(l)}" ${current === l ? 'selected' : ''}>Send ${escHtml(l)}</option>`))
+            .concat([`<option value="${EFFORT_DROP}" ${current === EFFORT_DROP ? 'selected' : ''}>Drop — use the model's own default</option>`])
+            .join('');
+        return `
+            <div class="flex items-center gap-2">
+                <code class="font-mono text-t3 w-16 shrink-0">${escHtml(level)}</code>
+                <span class="text-t4">&rarr;</span>
+                <select onchange="setEffortMapping('${kind}', '${a}', '${escAttr(level)}', this.value)"
+                        class="gw-input text-xs py-1 px-2 min-w-[220px]">${opts}</select>
+            </div>`;
+    }).join('');
+
+    // Under "Only selected", the block always says what actually happens:
+    // some levels rewritten / every level accepted / everything dropped.
+    let detail = '';
+    if (declared && !supported.length) {
+        detail = `<p class="text-aa">No levels accepted — <code class="font-mono">reasoning_effort</code>
+            is removed from every request to this model, so the downstream uses its own default.</p>`;
+    } else if (declared && !unsupported.length) {
+        detail = `<p class="text-t4">Every level is accepted, so nothing is rewritten. Untick the one your
+            model upgrade took away.</p>`;
+    } else if (declared) {
+        detail = `<div class="space-y-1.5">
+            <span class="text-t4">A client asking for an unaccepted level gets:</span>
+            ${mapRows}
+        </div>`;
+    }
+
+    const body = !declared
+        ? `<p class="text-t4">Whatever a client asks for is forwarded unchanged — the downstream decides
+             whether it accepts the level. Switch to <span class="text-t3">Only selected</span> after an
+             upgrade drops a level.</p>`
+        : `
+            <div class="flex flex-wrap items-center gap-1.5">${chips}</div>
+            ${detail}`;
+
+    return `
+        <div id="reason-${kind}-${a}">
+            <div class="flex items-center gap-3 flex-wrap">
+                <span class="text-[11px] font-bold text-t3 uppercase tracking-wider">Reasoning</span>
+                <label class="flex items-center gap-2 text-xs">
+                    <input type="checkbox" ${isReasoning ? 'checked' : ''} data-${attr}="${a}"
+                           data-field="is_reasoning" data-meta="1" onchange="${handler}" class="gw-checkbox">
+                    <span class="text-t3 gw-tip gw-tip-wide" data-tip="${escAttr(reasoningTip)}">is_reasoning</span>
+                </label>
+            </div>
+            <div class="grid grid-cols-1 gap-3 text-xs mt-2">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-t4 font-semibold uppercase gw-tip gw-tip-wide" data-tip="${escAttr(modeTip)}">Accepted effort levels</span>
+                    <span class="inline-flex rounded-lg overflow-hidden" style="border:1px solid rgba(255,255,255,0.08)">
+                        ${modeBtn('any', 'Anything', 'Forward whatever the client sends (default).')}
+                        ${modeBtn('list', 'Only selected', 'Rewrite anything this model does not accept.')}
+                    </span>
+                </div>
+                ${body}
+            </div>
+        </div>`;
+}
+
+// The level chips themselves — click to add/remove a level from the
+// accepted set. Non-standard levels an operator hand-wrote in config.toml
+// render too (marked), so editing here never silently drops them.
+function supportedChipsHtml(alias, supported, kind) {
+    const a = escAttr(alias);
+    const extras = supported.filter(l => !EFFORT_LADDER.includes(l));
+    const chip = (level, on, custom) => {
+        const tip = custom
+            ? 'Not a standard level: the gateway can only pass it through verbatim, never land another level on it.'
+            : EFFORT_TIPS[level];
+        return `<button type="button" onclick="toggleEffortLevel('${kind}', '${a}', '${escAttr(level)}')"
+            aria-pressed="${on}"
+            class="px-2.5 py-1 rounded-full font-mono text-[11px] transition-colors gw-tip gw-tip-wide ${on
+                ? 'bg-[rgba(61,214,140,0.12)] text-ag'
+                : 'text-t4 hover:text-t2 line-through'}"
+            style="border:1px solid ${on ? 'rgba(61,214,140,0.3)' : 'rgba(255,255,255,0.08)'}"
+            data-tip="${escAttr((on ? 'Accepted — click to remove. ' : 'Not accepted — click to add. ') + (tip || ''))}">${escHtml(level)}</button>`;
+    };
+    return EFFORT_LADDER.map(l => chip(l, supported.includes(l), false))
+        .concat(extras.map(l => chip(l, true, true)))
+        .join('');
+}
+
+function setEffortMode(kind, alias, mode) {
+    const info = modelsFor(kind)[alias];
+    if (!info) return;
+    if (mode === 'any') {
+        delete info.reasoning_efforts;
+        delete info.reasoning_effort_map;
+    } else if (!Array.isArray(info.reasoning_efforts)) {
+        // Start from "accepts everything" so the admin's job is to untick
+        // the level the upgrade took away, not to re-enter the whole set.
+        info.reasoning_efforts = EFFORT_LADDER.slice();
+    }
+    refreshReasoning(kind, alias);
+}
+
+function toggleEffortLevel(kind, alias, level) {
+    const info = modelsFor(kind)[alias];
+    if (!info || !Array.isArray(info.reasoning_efforts)) return;
+    const list = info.reasoning_efforts.slice();
+    const at = list.indexOf(level);
+    if (at >= 0) {
+        list.splice(at, 1);
+    } else {
+        list.push(level);
+        // A mapping for a level the model now accepts would shadow it
+        // (the backend consults the map first), so drop the stale rule.
+        clearEffortMapping(info, level);
+    }
+    info.reasoning_efforts = orderedEfforts(list);
+    refreshReasoning(kind, alias);
+}
+
+function setEffortMapping(kind, alias, level, value) {
+    const info = modelsFor(kind)[alias];
+    if (!info) return;
+    if (value === '') {
+        clearEffortMapping(info, level);     // back to the nearest-level rule
+    } else {
+        if (!info.reasoning_effort_map) info.reasoning_effort_map = {};
+        info.reasoning_effort_map[level] = (value === EFFORT_DROP) ? '' : value;
+    }
+    refreshReasoning(kind, alias);
+}
+
+function clearEffortMapping(info, level) {
+    if (!info.reasoning_effort_map) return;
+    delete info.reasoning_effort_map[level];
+    if (!Object.keys(info.reasoning_effort_map).length) delete info.reasoning_effort_map;
+}
+
+// Re-render just this model's reasoning block (and its Advanced dot) rather
+// than the whole page, so editing one model doesn't collapse every other
+// open row or lose the cursor in a field being typed into.
+function refreshReasoning(kind, alias) {
+    const info = modelsFor(kind)[alias];
+    if (!info) return;
+    const block = document.getElementById('reason-' + kind + '-' + alias);
+    if (block) block.outerHTML = renderReasoningFields(alias, info, kind);
+    const dot = document.getElementById('advdot-' + kind + '-' + alias);
+    if (dot) dot.innerHTML = advDotInner(info);
+}
+
+// The little green dot on the Advanced button: something non-default is set.
+function advDotInner(info) {
+    return hasAdvanced(info)
+        ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-ag" title="Pricing, metadata or reasoning policy set"></span>'
         : '';
+}
+
+function advDot(kind, alias, info) {
+    return `<span id="advdot-${kind}-${escAttr(alias)}" class="inline-block ml-1">${advDotInner(info)}</span>`;
+}
+
+function renderModelRow(alias, info, type) {
+    const dot = advDot('alias', alias, info);
     const isHidden = info.hidden === true;
     return `
         <tr id="row-${alias}" class="${isHidden ? 'opacity-50' : ''}">
@@ -246,7 +499,7 @@ function renderModelRow(alias, info, type) {
                 </button>
             </td>
             <td class="text-right whitespace-nowrap">
-                <button onclick="toggleMeta('${escAttr(alias)}')" id="meta-btn-${escAttr(alias)}" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Per-model pricing overrides and optional metadata">Advanced${dot}</button>
+                <button onclick="toggleMeta('${escAttr(alias)}')" id="meta-btn-${escAttr(alias)}" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Per-model pricing overrides, metadata, and reasoning-effort policy">Advanced${dot}</button>
                 <button onclick="deleteModel('${escAttr(alias)}')" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
             </td>
         </tr>
@@ -263,7 +516,6 @@ function renderMetaRow(alias, info) {
     const sTools = info.supports_tools === true;
     const sVis = info.supports_vision === true;
     const sCache = info.supports_prompt_caching === true;
-    const sReason = info.is_reasoning === true;
     const sNative = info.native_messages === true;
     const nativeTip = 'Forward Anthropic /v1/messages requests as-is to the native '
         + 'vLLM endpoint (vLLM >= 0.11.1) instead of translating via the OpenAI '
@@ -273,6 +525,7 @@ function renderMetaRow(alias, info) {
         <tr id="meta-${a}" class="${visible ? '' : 'hidden'}" style="background:rgba(255,255,255,0.015)">
             <td colspan="6" class="px-5 py-4 space-y-4">
                 ${renderPricingFields(alias, info, 'alias')}
+                ${renderReasoningFields(alias, info, 'alias')}
                 <div>
                 <span class="text-[11px] font-bold text-t3 uppercase tracking-wider">Metadata</span>
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs mt-2">
@@ -299,10 +552,6 @@ function renderMetaRow(alias, info) {
                     <label class="flex items-center gap-2 pt-5">
                         <input type="checkbox" ${sCache ? 'checked' : ''} data-alias="${a}" data-field="supports_prompt_caching" data-meta="1" onchange="updateField(this)" class="gw-checkbox">
                         <span class="text-t3">supports_prompt_caching</span>
-                    </label>
-                    <label class="flex items-center gap-2 pt-5">
-                        <input type="checkbox" ${sReason ? 'checked' : ''} data-alias="${a}" data-field="is_reasoning" data-meta="1" onchange="updateField(this)" class="gw-checkbox">
-                        <span class="text-t3">is_reasoning</span>
                     </label>
                     <label class="flex items-center gap-2 pt-5">
                         <input type="checkbox" ${sNative ? 'checked' : ''} data-alias="${a}" data-field="native_messages" data-meta="1" onchange="updateField(this)" class="gw-checkbox">
@@ -453,9 +702,7 @@ function renderAzureFallback(entries) {
 }
 
 function renderAzureRow(alias, info) {
-    const dot = hasAdvanced(info)
-        ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-ag ml-1" title="Pricing or metadata set"></span>'
-        : '';
+    const dot = advDot('azalias', alias, info);
     const isHidden = info.hidden === true;
     const typeOpts = MODEL_TYPES.map(t =>
         `<option value="${t}" ${t === info.type ? 'selected' : ''}>${t}</option>`
@@ -477,7 +724,7 @@ function renderAzureRow(alias, info) {
                 </button>
             </td>
             <td class="text-right whitespace-nowrap">
-                <button onclick="toggleAzureMeta('${escAttr(alias)}')" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Per-model pricing overrides and optional metadata">Advanced${dot}</button>
+                <button onclick="toggleAzureMeta('${escAttr(alias)}')" class="gw-btn gw-btn-ghost text-xs px-3 py-1 gw-tip" data-tip="Per-model pricing overrides, metadata, and reasoning-effort policy">Advanced${dot}</button>
                 <button onclick="deleteAzureModel('${escAttr(alias)}')" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
             </td>
         </tr>
@@ -494,11 +741,11 @@ function renderAzureMetaRow(alias, info) {
     const sTools = info.supports_tools === true;
     const sVis = info.supports_vision === true;
     const sCache = info.supports_prompt_caching === true;
-    const sReason = info.is_reasoning === true;
     return `
         <tr id="azmeta-${a}" class="${visible ? '' : 'hidden'}" style="background:rgba(255,255,255,0.015)">
             <td colspan="8" class="px-5 py-4 space-y-4">
                 ${renderPricingFields(alias, info, 'azalias')}
+                ${renderReasoningFields(alias, info, 'azalias')}
                 <div>
                 <span class="text-[11px] font-bold text-t3 uppercase tracking-wider">Metadata</span>
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs mt-2">
@@ -525,10 +772,6 @@ function renderAzureMetaRow(alias, info) {
                     <label class="flex items-center gap-2 pt-5">
                         <input type="checkbox" ${sCache ? 'checked' : ''} data-azalias="${a}" data-field="supports_prompt_caching" data-meta="1" onchange="updateAzureField(this)" class="gw-checkbox">
                         <span class="text-t3">supports_prompt_caching</span>
-                    </label>
-                    <label class="flex items-center gap-2 pt-5">
-                        <input type="checkbox" ${sReason ? 'checked' : ''} data-azalias="${a}" data-field="is_reasoning" data-meta="1" onchange="updateAzureField(this)" class="gw-checkbox">
-                        <span class="text-t3">is_reasoning</span>
                     </label>
                 </div>
                 </div>

@@ -392,6 +392,44 @@ class TestBedrockAdaptation:
         assert thinking["budget_tokens"] == 8192
 
 
+class TestConfigPlumbing:
+    """The two keys must survive the config loader on all three backends —
+    they are policy the proxies read off the resolved route entry."""
+
+    def _build(self, raw):
+        from app.core import config as cfg
+
+        return cfg._build_config(raw)
+
+    def test_declared_on_every_backend(self):
+        raw = {
+            "models": {"llm": {"local": {
+                "real_model": "m", "base_url": "http://x/v1",
+                "reasoning_efforts": ["low", "medium"],
+                "reasoning_effort_map": {"high": "medium"},
+            }}},
+            "azure_models": {"az": {
+                "type": "llm", "endpoint": "https://e", "deployment": "d", "api_key": "k",
+                "reasoning_efforts": ["medium"],
+            }},
+            "bedrock_models": {"br": {
+                "type": "llm", "model_id": "anthropic.x", "api_key": "k",
+                "reasoning_efforts": [],
+            }},
+        }
+        _, models, _, _, azure, _, bedrock, _ = self._build(raw)
+        assert models["local"]["reasoning_efforts"] == ["low", "medium"]
+        assert models["local"]["reasoning_effort_map"] == {"high": "medium"}
+        assert azure["az"]["reasoning_efforts"] == ["medium"]
+        assert bedrock["br"]["reasoning_efforts"] == []
+
+    def test_absent_keys_stay_absent(self):
+        raw = {"models": {"llm": {"local": {"real_model": "m", "base_url": "http://x/v1"}}}}
+        _, models, _, _, _, _, _, _ = self._build(raw)
+        assert "reasoning_efforts" not in models["local"]
+        assert "reasoning_effort_map" not in models["local"]
+
+
 class TestAdminConfigValidation:
     def test_rejects_non_list_reasoning_efforts(self, client, admin_user):
         from tests.conftest import web_auth_header
@@ -426,3 +464,28 @@ class TestAdminConfigValidation:
         )
         assert resp.status_code == 400
         assert "reasoning_effort_map" in resp.json()["detail"]
+
+    def test_valid_reasoning_policy_reaches_save_config(self, client, admin_user):
+        from unittest.mock import patch
+
+        from tests.conftest import web_auth_header
+
+        payload = {
+            "models": {
+                "m": {"type": "llm", "base_url": "http://x/v1", "real_model": "m",
+                      "reasoning_efforts": ["none", "low", "medium", "xhigh"],
+                      "reasoning_effort_map": {"high": ""}},
+            },
+            "pricing": {},
+        }
+        with patch("app.routers.admin.save_config") as saved:
+            resp = client.put(
+                "/admin/api/config", json=payload,
+                headers=web_auth_header(scopes=["admin"]),
+            )
+        assert resp.status_code == 200
+        # The admin UI edits these keys directly on the config object rather
+        # than through data-field inputs — this pins that the server keeps them.
+        entry = saved.call_args[0][0]["m"]
+        assert entry["reasoning_efforts"] == ["none", "low", "medium", "xhigh"]
+        assert entry["reasoning_effort_map"] == {"high": ""}

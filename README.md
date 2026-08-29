@@ -156,7 +156,7 @@ reasoning_efforts = ["none", "low", "medium", "xhigh"]   # no "high" on this bui
 # reasoning_effort_map = { high = "xhigh" }              # optional explicit landing spot
 ```
 
-Anything the model doesn't accept is rewritten to the nearest level it does, stepping **down** first so an automatic rewrite never buys more reasoning (or cost) than the caller asked for; `reasoning_effort_map` overrides that per level, `reasoning_efforts = []` drops the parameter entirely, and omitting the key keeps the previous behavior of forwarding whatever was requested. Works on all three backends and on both the OpenAI and Anthropic surfaces. The same keys are accepted on `[azure_models.*]` and `[bedrock_models.*]` entries.
+Anything the model doesn't accept is rewritten to the nearest level it does, stepping **down** first so an automatic rewrite never buys more reasoning (or cost) than the caller asked for; `reasoning_effort_map` overrides that per level, `reasoning_efforts = []` drops the parameter entirely, and omitting the key keeps the previous behavior of forwarding whatever was requested. Works on all three backends and on both the OpenAI and Anthropic surfaces. The same keys are accepted on `[azure_models.*]` and `[bedrock_models.*]` entries. vLLM and Azure entries can be edited from **Admin Panel → Model Config → Advanced**, which shows each level as a chip and spells out where a rejected one lands.
 
 Per-type pricing (USD per 1M tokens):
 

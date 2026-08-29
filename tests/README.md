@@ -267,7 +267,8 @@ pass-through.
 | `TestVllmMessages` | `/v1/messages` adapts the translated level, including one bucketed from `thinking.budget_tokens`; the `native_messages` path carries no `effort` to adapt (the sanitizer strips it) and forwards `thinking` untouched |
 | `TestAzureAdaptation` | `/azure/v1/chat/completions` adapts before the Responses translation; the `/azure/v1/responses` pass-through adapts `reasoning.effort` only for a deployment that declares its levels |
 | `TestBedrockAdaptation` | The declared level is resolved before Converse expands it into a Claude thinking budget (`xhigh` → declared `medium` → 8192) |
-| `TestAdminConfigValidation` | `PUT /admin/api/config` 400s on a non-list `reasoning_efforts` / non-table `reasoning_effort_map` |
+| `TestConfigPlumbing` | `_build_config` carries both keys onto vLLM / Azure / Bedrock entries (including an empty list) and leaves them absent when undeclared |
+| `TestAdminConfigValidation` | `PUT /admin/api/config` 400s on a non-list `reasoning_efforts` / non-table `reasoning_effort_map`, and passes a valid policy through to `save_config` — the admin UI edits these keys outside the `META_KEYS` collect path, so the server must keep what it is sent |
 
 ### `test_admin.py` — Admin REST API
 
