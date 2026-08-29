@@ -13,20 +13,22 @@ This module is the one place that reconciles the two. A model entry in
     [models.llm."my-llm"]
     is_reasoning = true
     reasoning_efforts = ["none", "low", "medium", "xhigh"]   # no "high"
-    # optional, wins over the nearest-level rule below:
-    # reasoning_effort_map = { high = "xhigh" }
+    # where a level this model dropped should land instead:
+    reasoning_effort_map = { high = "xhigh" }
 
 Policy, applied only when ``reasoning_efforts`` is declared (absent = the
 gateway's longstanding faithful pass-through, unchanged):
 
-* a supported level passes through untouched;
-* an unsupported one is remapped — ``reasoning_effort_map`` first, else the
-  nearest level on the ladder, **preferring the next one down** so a
-  compatibility rewrite never silently buys more reasoning (and more cost)
-  than the caller asked for; only when nothing lower exists does it round up;
-* an empty list (``reasoning_efforts = []``) or an unknown spelling drops
-  the field, leaving the downstream on its own default rather than sending
-  a value it is known to reject.
+* an accepted level passes through untouched;
+* anything else goes to ``reasoning_effort_map``, which is the only place a
+  level is ever rewritten into another one;
+* a level the map does not name is **dropped** — the field is removed and
+  the downstream applies its own default.
+
+Nothing is guessed at: the gateway either sends what the caller asked for,
+sends what the operator said to send instead, or sends nothing. There is
+deliberately no "nearest level" rule — a rewrite the operator did not write
+down would quietly change how much reasoning (and money) a request buys.
 
 Adaptation happens on the way out, after the route is resolved, so it
 covers both shapes an effort level can travel in: OpenAI
@@ -45,10 +47,10 @@ from typing import Any
 
 from app.core.logger import logger
 
-# Ordered weakest -> strongest. Membership also decides whether a spelling
-# can be placed at all: a level that isn't here can't be remapped by
-# distance, so it's dropped instead of guessed at.
-EFFORT_LADDER: tuple[str, ...] = (
+# The level vocabulary, weakest -> strongest. Nothing here decides policy —
+# the gateway never reasons about distance between levels — but it is the
+# set the admin UI offers and the order it lists them in.
+EFFORT_LEVELS: tuple[str, ...] = (
     "none", "minimal", "low", "medium", "high", "xhigh",
 )
 
@@ -134,26 +136,6 @@ def _declared_map(route: dict[str, Any] | None) -> dict[str, str]:
     return out
 
 
-def _nearest_supported(level: str, supported: list[str]) -> str | None:
-    """Closest supported level to `level`, preferring the next one DOWN.
-
-    Downgrading is the safe direction for an automatic rewrite: less
-    reasoning costs the caller less than they budgeted, where an automatic
-    upgrade spends tokens (and money) they never asked for. Rounding up
-    only happens when the model supports nothing weaker.
-    """
-    if level not in EFFORT_LADDER:
-        return None
-    ranked = [lv for lv in EFFORT_LADDER if lv in supported]
-    if not ranked:
-        return None
-    idx = EFFORT_LADDER.index(level)
-    lower = [lv for lv in ranked if EFFORT_LADDER.index(lv) < idx]
-    if lower:
-        return lower[-1]
-    return ranked[0]
-
-
 def adapt_effort(
     effort: Any, route: dict[str, Any] | None,
 ) -> tuple[str | None, str | None]:
@@ -163,6 +145,9 @@ def adapt_effort(
     field), ``note`` is a short "high -> medium" description when the value
     changed, for logging. A route with no declaration returns the request
     untouched and no note.
+
+    Order matters: an accepted level is never touched, so a map entry only
+    ever applies to a level this model does not accept.
     """
     requested = normalize_effort(effort)
     if requested is None:
@@ -172,23 +157,20 @@ def adapt_effort(
     if supported is None:
         # Nothing declared — faithful pass-through, as before this feature.
         return requested, None
-
-    override = _declared_map(route)
-    if requested in override:
-        target = override[requested] or None
-        if target == requested:
-            return requested, None
-        return target, f"{requested} -> {target or 'dropped'} (reasoning_effort_map)"
-
-    if not supported:
-        return None, f"{requested} -> dropped (model takes no reasoning_effort)"
     if requested in supported:
         return requested, None
 
-    target = _nearest_supported(requested, supported)
-    if target is None:
-        return None, f"{requested} -> dropped (unknown level, supported={supported})"
-    return target, f"{requested} -> {target} (supported={supported})"
+    # Not accepted: the operator's map is the only thing that can turn it
+    # into another level. A target outside `reasoning_efforts` is honored as
+    # written — the operator is the authority on their own downstream.
+    override = _declared_map(route)
+    if requested in override:
+        target = override[requested] or None
+        if target is None:
+            return None, f"{requested} -> dropped (reasoning_effort_map)"
+        return target, f"{requested} -> {target} (reasoning_effort_map)"
+
+    return None, f"{requested} -> dropped (not accepted, unmapped)"
 
 
 def _log(alias: str, endpoint: str, note: str | None) -> None:

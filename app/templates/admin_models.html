@@ -173,15 +173,15 @@ const PRICING_KEYS = [
 
 // Reasoning-effort compatibility (_MODEL_REASONING_KEYS in app/core/config.py):
 // which effort levels this model's downstream actually accepts, and where an
-// unsupported one should land. Deliberately NOT in META_KEYS — collectFromDOM
+// unaccepted one should land. Deliberately NOT in META_KEYS — collectFromDOM
 // wipes those before re-reading the DOM, and these two are edited straight on
 // `config` by the handlers below rather than through data-field inputs.
-// EFFORT_LADDER mirrors the ladder in app/services/reasoning_effort.py: order
-// is what makes "nearest level" mean anything.
-const EFFORT_LADDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
-const EFFORT_DROP = '__drop__';   // UI value for a mapping target of "" (drop)
+// EFFORT_LEVELS mirrors the vocabulary in app/services/reasoning_effort.py
+// (weakest first); the gateway never reasons about distance between levels,
+// so the order here is only the order they are offered in.
+const EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
-// Per-level one-liners so an admin doesn't have to know the ladder by heart.
+// Per-level one-liners so an admin doesn't have to know the vocabulary by heart.
 const EFFORT_TIPS = {
     none: 'Thinking off entirely.',
     minimal: 'Barely any reasoning — newer OpenAI-family models only.',
@@ -200,24 +200,11 @@ function hasReasoning(info) {
         || Object.keys(info.reasoning_effort_map || {}).length > 0;
 }
 
-// Mirrors _nearest_supported() in app/services/reasoning_effort.py: closest
-// accepted level, preferring the next one DOWN, rounding up only when the
-// model accepts nothing weaker. Kept in sync so the "Auto" option can show
-// the admin exactly where a level will actually land.
-function nearestSupported(level, supported) {
-    const ranked = EFFORT_LADDER.filter(l => supported.includes(l));
-    if (!ranked.length) return null;
-    const idx = EFFORT_LADDER.indexOf(level);
-    if (idx < 0) return null;
-    const lower = ranked.filter(l => EFFORT_LADDER.indexOf(l) < idx);
-    return lower.length ? lower[lower.length - 1] : ranked[0];
-}
-
-// Declared levels, ladder-ordered, with any non-standard ones an operator
-// hand-wrote in config.toml kept at the end instead of being silently eaten.
+// Declared levels in EFFORT_LEVELS order, with any non-standard ones an
+// operator hand-wrote in config.toml kept at the end instead of being eaten.
 function orderedEfforts(list) {
-    const known = EFFORT_LADDER.filter(l => list.includes(l));
-    return known.concat(list.filter(l => !EFFORT_LADDER.includes(l)));
+    const known = EFFORT_LEVELS.filter(l => list.includes(l));
+    return known.concat(list.filter(l => !EFFORT_LEVELS.includes(l)));
 }
 
 function hasMeta(info) {
@@ -283,8 +270,9 @@ function renderPricingFields(alias, info, kind) {
 // Three states an admin can express, matching the backend:
 //   * "Anything the client asks" — no `reasoning_efforts` key (the default,
 //     and the gateway's pre-existing pass-through behavior);
-//   * some levels selected — anything else is rewritten;
-//   * none selected — the parameter is dropped from every request.
+//   * some levels accepted — an unaccepted level is sent as whatever the
+//     mapping names, or stripped when the mapping doesn't name it;
+//   * none accepted — the parameter is stripped from every request.
 function renderReasoningFields(alias, info, kind) {
     const a = escAttr(alias);
     const handler = kind === 'azalias' ? 'updateAzureField(this)' : 'updateField(this)';
@@ -298,8 +286,9 @@ function renderReasoningFields(alias, info, kind) {
         + 'budget becomes reasoning_effort); non-reasoning models never get the '
         + 'parameter. Also surfaced to clients via GET /v1/models.';
     const modeTip = 'Declare which effort levels this downstream accepts. Set '
-        + 'this after a model upgrade drops a level: requests asking for it are '
-        + 'rewritten instead of failing with a downstream 400.';
+        + 'this after a model upgrade drops a level: a request asking for it is '
+        + 'sent as whatever you map it to — or stripped — instead of failing '
+        + 'with a downstream 400.';
 
     const modeBtn = (mode, label, tip) => {
         const active = (declared ? 'list' : 'any') === mode;
@@ -313,22 +302,22 @@ function renderReasoningFields(alias, info, kind) {
 
     const chips = supportedChipsHtml(alias, supported, kind);
 
-    // One row per level this model does NOT accept — the only place a
-    // mapping changes anything — so the admin sees exactly what happens to
-    // each incompatible level instead of guessing at a rule.
-    const unsupported = EFFORT_LADDER.filter(l => !supported.includes(l));
-    const mapRows = unsupported.map(level => {
-        const current = Object.prototype.hasOwnProperty.call(mapping, level)
-            ? (mapping[level] === '' ? EFFORT_DROP : mapping[level])
-            : '';
-        const auto = nearestSupported(level, supported);
-        const autoLabel = auto
-            ? `Auto — nearest accepted (${auto})`
-            : 'Auto — dropped (nothing accepted)';
-        const opts = [`<option value="" ${current === '' ? 'selected' : ''}>${escHtml(autoLabel)}</option>`]
-            .concat(supported.map(l =>
+    // One row per level this model does NOT accept — the only place a mapping
+    // does anything — so the admin reads what happens to each incompatible
+    // level instead of inferring it. No mapping = the level is stripped; the
+    // gateway never picks a substitute on its own.
+    const unaccepted = EFFORT_LEVELS.filter(l => !supported.includes(l));
+    const mapRows = unaccepted.map(level => {
+        // A blank target in config.toml means the same thing as no rule.
+        const current = mapping[level] || '';
+        // A target that isn't (or is no longer) an accepted level stays
+        // selectable, so re-rendering never silently rewrites the config.
+        const targets = (!current || supported.includes(current))
+            ? supported
+            : supported.concat([current]);
+        const opts = [`<option value="" ${current ? '' : 'selected'}>Strip — send no reasoning_effort</option>`]
+            .concat(targets.map(l =>
                 `<option value="${escAttr(l)}" ${current === l ? 'selected' : ''}>Send ${escHtml(l)}</option>`))
-            .concat([`<option value="${EFFORT_DROP}" ${current === EFFORT_DROP ? 'selected' : ''}>Drop — use the model's own default</option>`])
             .join('');
         return `
             <div class="flex items-center gap-2">
@@ -340,12 +329,15 @@ function renderReasoningFields(alias, info, kind) {
     }).join('');
 
     // Under "Only selected", the block always says what actually happens:
-    // some levels rewritten / every level accepted / everything dropped.
+    // some levels remapped or stripped / every level accepted / all stripped.
     let detail = '';
     if (declared && !supported.length) {
+        // A mapping still applies here (the operator's target wins even when
+        // it is not an accepted level), so show the rows if any rule exists.
         detail = `<p class="text-aa">No levels accepted — <code class="font-mono">reasoning_effort</code>
-            is removed from every request to this model, so the downstream uses its own default.</p>`;
-    } else if (declared && !unsupported.length) {
+            is removed from every request to this model, so the downstream uses its own default.</p>`
+            + (Object.keys(mapping).length ? `<div class="space-y-1.5 mt-2">${mapRows}</div>` : '');
+    } else if (declared && !unaccepted.length) {
         detail = `<p class="text-t4">Every level is accepted, so nothing is rewritten. Untick the one your
             model upgrade took away.</p>`;
     } else if (declared) {
@@ -391,7 +383,7 @@ function renderReasoningFields(alias, info, kind) {
 // render too (marked), so editing here never silently drops them.
 function supportedChipsHtml(alias, supported, kind) {
     const a = escAttr(alias);
-    const extras = supported.filter(l => !EFFORT_LADDER.includes(l));
+    const extras = supported.filter(l => !EFFORT_LEVELS.includes(l));
     const chip = (level, on, custom) => {
         const tip = custom
             ? 'Not a standard level: the gateway can only pass it through verbatim, never land another level on it.'
@@ -404,7 +396,7 @@ function supportedChipsHtml(alias, supported, kind) {
             style="border:1px solid ${on ? 'rgba(61,214,140,0.3)' : 'rgba(255,255,255,0.08)'}"
             data-tip="${escAttr((on ? 'Accepted — click to remove. ' : 'Not accepted — click to add. ') + (tip || ''))}">${escHtml(level)}</button>`;
     };
-    return EFFORT_LADDER.map(l => chip(l, supported.includes(l), false))
+    return EFFORT_LEVELS.map(l => chip(l, supported.includes(l), false))
         .concat(extras.map(l => chip(l, true, true)))
         .join('');
 }
@@ -418,7 +410,7 @@ function setEffortMode(kind, alias, mode) {
     } else if (!Array.isArray(info.reasoning_efforts)) {
         // Start from "accepts everything" so the admin's job is to untick
         // the level the upgrade took away, not to re-enter the whole set.
-        info.reasoning_efforts = EFFORT_LADDER.slice();
+        info.reasoning_efforts = EFFORT_LEVELS.slice();
     }
     refreshReasoning(kind, alias);
 }
@@ -444,10 +436,10 @@ function setEffortMapping(kind, alias, level, value) {
     const info = modelsFor(kind)[alias];
     if (!info) return;
     if (value === '') {
-        clearEffortMapping(info, level);     // back to the nearest-level rule
+        clearEffortMapping(info, level);     // no rule = the level is stripped
     } else {
         if (!info.reasoning_effort_map) info.reasoning_effort_map = {};
-        info.reasoning_effort_map[level] = (value === EFFORT_DROP) ? '' : value;
+        info.reasoning_effort_map[level] = value;
     }
     refreshReasoning(kind, alias);
 }

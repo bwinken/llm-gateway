@@ -1,10 +1,11 @@
 """Per-model reasoning-effort compatibility (app/services/reasoning_effort.py).
 
-A model upgrade can drop an effort level the previous build accepted (the
-canonical case: no more "high"), while clients keep sending the old one and
-the downstream 400s. A route that declares `reasoning_efforts` gets its
-outgoing requests rewritten to a level that model actually takes; a route
-that declares nothing keeps the gateway's faithful pass-through.
+A model entry declaring `reasoning_efforts` gets outgoing requests reconciled
+with what that model actually accepts (the case it exists for: an upgrade that
+dropped `high`). Policy is deliberately explicit: an accepted level is
+forwarded, an unaccepted one is rewritten only where `reasoning_effort_map`
+says so, and anything else is dropped. A route declaring nothing keeps the
+faithful pass-through.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ from tests.conftest import (
 # The upgrade this feature exists for: the new build serves everything but
 # "high", which is exactly what the pinned clients still send.
 UPGRADED = {"reasoning_efforts": ["none", "low", "medium", "xhigh"]}
+# The same model, with the operator saying where "high" should land instead.
+MAPPED = {**UPGRADED, "reasoning_effort_map": {"high": "xhigh"}}
 
 
 @pytest.fixture
@@ -83,56 +86,70 @@ class TestAdaptEffort:
     def test_undeclared_route_passes_through(self):
         assert adapt_effort("high", {"type": "llm"}) == ("high", None)
 
-    def test_supported_level_untouched(self):
+    def test_accepted_level_untouched(self):
         value, note = adapt_effort("medium", UPGRADED)
         assert (value, note) == ("medium", None)
 
-    def test_unsupported_level_steps_down(self):
-        """high -> medium, not xhigh: an automatic rewrite must never spend
-        more reasoning (and more money) than the caller asked for."""
+    def test_unaccepted_and_unmapped_is_dropped(self):
+        """Nothing is guessed at: without a rule the field just goes away and
+        the downstream applies its own default."""
         value, note = adapt_effort("high", UPGRADED)
-        assert value == "medium"
-        assert "high -> medium" in note
-
-    def test_rounds_up_only_when_nothing_lower_exists(self):
-        value, _ = adapt_effort("low", {"reasoning_efforts": ["high", "xhigh"]})
-        assert value == "high"
-
-    def test_empty_declaration_drops_the_field(self):
-        value, note = adapt_effort("high", {"reasoning_efforts": []})
         assert value is None
         assert "dropped" in note
 
-    def test_unknown_spelling_dropped_when_declared(self):
-        """An off-ladder level can't be placed by distance; the downstream's
-        own default beats sending a value it is known not to accept."""
-        value, note = adapt_effort("ultra", UPGRADED)
-        assert value is None
-        assert "dropped" in note
-
-    def test_explicit_map_wins_over_nearest(self):
-        route = {**UPGRADED, "reasoning_effort_map": {"high": "XHIGH"}}
-        value, note = adapt_effort("high", route)
+    def test_map_sends_the_operators_target(self):
+        value, note = adapt_effort("high", MAPPED)
         assert value == "xhigh"
         assert "reasoning_effort_map" in note
+
+    def test_map_target_outside_the_declared_list_is_honored(self):
+        """The operator is the authority on their own downstream."""
+        route = {**UPGRADED, "reasoning_effort_map": {"high": "high"}}
+        assert adapt_effort("high", route)[0] == "high"
+
+    def test_map_never_touches_an_accepted_level(self):
+        """A rule for a level the model accepts is dead config, not a knob for
+        rewriting perfectly valid requests."""
+        route = {**UPGRADED, "reasoning_effort_map": {"medium": "low"}}
+        assert adapt_effort("medium", route) == ("medium", None)
 
     def test_map_to_blank_drops_the_field(self):
         route = {**UPGRADED, "reasoning_effort_map": {"high": ""}}
         assert adapt_effort("high", route)[0] is None
 
+    def test_map_normalizes_spellings_on_both_sides(self):
+        route = {**UPGRADED, "reasoning_efforts": ["low"],
+                 "reasoning_effort_map": {"MAX": "Low"}}
+        assert adapt_effort("xhigh", route)[0] == "low"
+
+    def test_empty_declaration_drops_everything_unmapped(self):
+        value, note = adapt_effort("high", {"reasoning_efforts": []})
+        assert value is None
+        assert "dropped" in note
+
+    def test_unknown_spelling_dropped_unless_mapped(self):
+        assert adapt_effort("ultra", UPGRADED)[0] is None
+        route = {**UPGRADED, "reasoning_effort_map": {"ultra": "medium"}}
+        assert adapt_effort("ultra", route)[0] == "medium"
+
     def test_malformed_map_ignored(self):
         route = {**UPGRADED, "reasoning_effort_map": ["high"]}
-        assert adapt_effort("high", route)[0] == "medium"
+        assert adapt_effort("high", route)[0] is None
 
     def test_no_request_no_value(self):
         assert adapt_effort(None, UPGRADED) == (None, None)
 
 
 class TestApplyHelpers:
-    def test_openai_body_rewritten(self):
+    def test_openai_body_mapped(self):
         body = {"reasoning_effort": "high"}
+        apply_to_openai_body(body, MAPPED)
+        assert body["reasoning_effort"] == "xhigh"
+
+    def test_openai_body_stripped_when_unmapped(self):
+        body = {"model": "m", "reasoning_effort": "high"}
         apply_to_openai_body(body, UPGRADED)
-        assert body["reasoning_effort"] == "medium"
+        assert body == {"model": "m"}
 
     def test_undeclared_route_leaves_even_an_odd_value_alone(self):
         body = {"reasoning_effort": None}
@@ -144,14 +161,14 @@ class TestApplyHelpers:
         apply_to_openai_body(body, {"reasoning_efforts": []})
         assert body == {"messages": []}
 
-    def test_responses_body_rewritten(self):
+    def test_responses_body_mapped(self):
         body = {"reasoning": {"effort": "high", "summary": "auto"}}
-        apply_to_responses_body(body, UPGRADED)
-        assert body["reasoning"] == {"effort": "medium", "summary": "auto"}
+        apply_to_responses_body(body, MAPPED)
+        assert body["reasoning"] == {"effort": "xhigh", "summary": "auto"}
 
     def test_responses_body_drops_empty_reasoning_object(self):
         body = {"reasoning": {"effort": "high"}}
-        apply_to_responses_body(body, {"reasoning_efforts": []})
+        apply_to_responses_body(body, UPGRADED)
         assert "reasoning" not in body
 
 
@@ -171,45 +188,38 @@ class TestVllmChatCompletions:
         client.__httpx_mock__.post = fake_post
         return captured
 
-    def test_unsupported_effort_adapted(self, client, test_user, reasoning_llm):
-        captured = self._capture(client)
-        resp = client.post(
+    def _post(self, client, effort):
+        return client.post(
             "/v1/chat/completions",
             json={
                 "model": "test-llm",
                 "messages": [{"role": "user", "content": "hi"}],
-                "reasoning_effort": "high",
+                "reasoning_effort": effort,
             },
             headers=auth_header(),
         )
-        assert resp.status_code == 200
-        assert captured["json"]["reasoning_effort"] == "medium"
 
-    def test_supported_effort_forwarded_unchanged(self, client, test_user, reasoning_llm):
+    def test_unaccepted_effort_stripped(self, client, test_user, reasoning_llm):
         captured = self._capture(client)
-        client.post(
-            "/v1/chat/completions",
-            json={
-                "model": "test-llm",
-                "messages": [{"role": "user", "content": "hi"}],
-                "reasoning_effort": "low",
-            },
-            headers=auth_header(),
-        )
+        resp = self._post(client, "high")
+        assert resp.status_code == 200
+        assert "reasoning_effort" not in captured["json"]
+
+    def test_mapped_effort_rewritten(self, client, test_user, reasoning_llm):
+        reasoning_llm["reasoning_effort_map"] = {"high": "xhigh"}
+        captured = self._capture(client)
+        self._post(client, "high")
+        assert captured["json"]["reasoning_effort"] == "xhigh"
+
+    def test_accepted_effort_forwarded_unchanged(self, client, test_user, reasoning_llm):
+        captured = self._capture(client)
+        self._post(client, "low")
         assert captured["json"]["reasoning_effort"] == "low"
 
     def test_undeclared_route_still_passes_effort_through(self, client, test_user):
         """No `reasoning_efforts` on the route = pre-feature behavior."""
         captured = self._capture(client)
-        client.post(
-            "/v1/chat/completions",
-            json={
-                "model": "test-llm",
-                "messages": [{"role": "user", "content": "hi"}],
-                "reasoning_effort": "high",
-            },
-            headers=auth_header(),
-        )
+        self._post(client, "high")
         assert captured["json"]["reasoning_effort"] == "high"
 
 
@@ -238,7 +248,8 @@ class TestVllmMessages:
         client.__httpx_mock__.post = fake_post
         return captured
 
-    def test_translated_path_adapts_effort(self, client, test_user, reasoning_llm):
+    def test_translated_path_maps_effort(self, client, test_user, reasoning_llm):
+        reasoning_llm["reasoning_effort_map"] = {"high": "xhigh"}
         captured = self._capture(client)
         resp = client.post(
             "/v1/messages",
@@ -250,9 +261,9 @@ class TestVllmMessages:
             headers=auth_header(),
         )
         assert resp.status_code == 200
-        assert captured["json"]["reasoning_effort"] == "medium"
+        assert captured["json"]["reasoning_effort"] == "xhigh"
 
-    def test_thinking_budget_bucket_also_adapted(self, client, test_user, reasoning_llm):
+    def test_thinking_budget_bucket_also_reconciled(self, client, test_user, reasoning_llm):
         """A 32k budget buckets to "high", which this model no longer takes —
         the compatibility pass catches it after the bucketing."""
         captured = self._capture(client)
@@ -265,7 +276,7 @@ class TestVllmMessages:
             },
             headers=auth_header(),
         )
-        assert captured["json"]["reasoning_effort"] == "medium"
+        assert "reasoning_effort" not in captured["json"]
 
     def test_native_path_carries_no_effort_to_adapt(self, client, test_user, reasoning_llm):
         """The native Anthropic pass-through needs no compatibility pass: the
@@ -294,10 +305,11 @@ class TestAzureAdaptation:
     def azure_upgraded(self):
         entry = TEST_AZURE_MODELS["azure-gpt-4"]
         entry["is_reasoning"] = True
-        entry.update(UPGRADED)
+        entry.update(MAPPED)
         yield entry
         entry.pop("is_reasoning", None)
         entry.pop("reasoning_efforts", None)
+        entry.pop("reasoning_effort_map", None)
 
     def _capture(self, client):
         captured: dict = {}
@@ -314,7 +326,7 @@ class TestAzureAdaptation:
         client.__httpx_mock__.post = fake_post
         return captured
 
-    def test_chat_completions_effort_adapted(self, client, azure_upgraded):
+    def test_chat_completions_effort_mapped(self, client, azure_upgraded):
         captured = self._capture(client)
         resp = client.post(
             "/azure/v1/chat/completions",
@@ -326,7 +338,7 @@ class TestAzureAdaptation:
             headers=auth_header(),
         )
         assert resp.status_code == 200
-        assert captured["json"]["reasoning"]["effort"] == "medium"
+        assert captured["json"]["reasoning"]["effort"] == "xhigh"
 
     def test_responses_passthrough_adapted_only_when_declared(self, client, azure_upgraded):
         captured = self._capture(client)
@@ -339,7 +351,7 @@ class TestAzureAdaptation:
             },
             headers=auth_header(),
         )
-        assert captured["json"]["reasoning"]["effort"] == "medium"
+        assert captured["json"]["reasoning"]["effort"] == "xhigh"
 
     def test_responses_passthrough_untouched_without_declaration(self, client):
         captured = self._capture(client)
@@ -361,11 +373,13 @@ class TestBedrockAdaptation:
         entry = TEST_BEDROCK_MODELS["bedrock-claude"]
         entry["is_reasoning"] = True
         entry["reasoning_efforts"] = ["low", "medium"]
+        entry["reasoning_effort_map"] = {"xhigh": "medium"}
         yield entry
         entry.pop("is_reasoning", None)
         entry.pop("reasoning_efforts", None)
+        entry.pop("reasoning_effort_map", None)
 
-    def test_effort_adapted_before_thinking_budget_expansion(self, client, bedrock_upgraded):
+    def _capture(self, client):
         captured: dict = {}
 
         async def fake_post(url, **kwargs):
@@ -377,19 +391,31 @@ class TestBedrockAdaptation:
             })
 
         client.__httpx_mock__.post = fake_post
-        resp = client.post(
+        return captured
+
+    def _post(self, client, effort):
+        return client.post(
             "/aws/v1/chat/completions",
             json={
                 "model": "bedrock-claude",
                 "messages": [{"role": "user", "content": "hi"}],
-                "reasoning_effort": "xhigh",
+                "reasoning_effort": effort,
             },
             headers=auth_header(),
         )
+
+    def test_mapped_before_thinking_budget_expansion(self, client, bedrock_upgraded):
+        captured = self._capture(client)
+        resp = self._post(client, "xhigh")
         assert resp.status_code == 200
         thinking = captured["json"]["additionalModelRequestFields"]["thinking"]
-        # xhigh (32768 budget) clamped to the declared medium (8192).
+        # xhigh (32768 budget) mapped to medium, which Converse expands to 8192.
         assert thinking["budget_tokens"] == 8192
+
+    def test_unmapped_level_leaves_thinking_to_the_model(self, client, bedrock_upgraded):
+        captured = self._capture(client)
+        self._post(client, "high")
+        assert "additionalModelRequestFields" not in captured["json"]
 
 
 class TestConfigPlumbing:
@@ -474,7 +500,7 @@ class TestAdminConfigValidation:
             "models": {
                 "m": {"type": "llm", "base_url": "http://x/v1", "real_model": "m",
                       "reasoning_efforts": ["none", "low", "medium", "xhigh"],
-                      "reasoning_effort_map": {"high": ""}},
+                      "reasoning_effort_map": {"high": "xhigh"}},
             },
             "pricing": {},
         }
@@ -488,4 +514,4 @@ class TestAdminConfigValidation:
         # than through data-field inputs — this pins that the server keeps them.
         entry = saved.call_args[0][0]["m"]
         assert entry["reasoning_efforts"] == ["none", "low", "medium", "xhigh"]
-        assert entry["reasoning_effort_map"] == {"high": ""}
+        assert entry["reasoning_effort_map"] == {"high": "xhigh"}
