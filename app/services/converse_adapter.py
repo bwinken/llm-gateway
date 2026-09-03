@@ -57,12 +57,18 @@ _DATA_URL_PREFIX = "data:image/"
 # reasoning_effort -> Claude thinking budget_tokens (Bedrock
 # additionalModelRequestFields). Buckets mirror the Anthropic adapter's
 # budget->effort mapping so a Claude Code round trip lands near its origin.
-# "minimal" maps to Anthropic's floor (1024); "xhigh" (Claude Code's
-# extra-high / max, folded to the canonical spelling before the lookup so
-# those spellings don't fall through to the default) gets a genuinely larger
-# budget so the higher setting is felt rather than silently clamped. "none"
-# is handled at the call site — it means thinking OFF, not a tiny budget.
-_EFFORT_TO_BUDGET = {"minimal": 1024, "low": 2048, "medium": 8192, "high": 16384, "xhigh": 32768}
+# "minimal" maps to Anthropic's floor (1024); the top levels get a
+# genuinely larger budget so a higher setting is felt rather than silently
+# clamped. "none" is handled at the call site — it means thinking OFF, not
+# a tiny budget. "max" and "xhigh" deliberately share the ceiling: Claude
+# has no effort ladder on Converse, only a budget, and budget_tokens has to
+# stay under the request's own max_tokens (Claude Code routinely sends
+# 32000), so inventing a bigger number for "max" would buy 400s rather than
+# more thinking. Every other backend keeps the two levels distinct.
+_EFFORT_TO_BUDGET = {
+    "minimal": 1024, "low": 2048, "medium": 8192,
+    "high": 16384, "xhigh": 32768, "max": 32768,
+}
 
 
 def _image_part_to_converse(part: dict[str, Any]) -> dict[str, Any] | None:
@@ -263,9 +269,9 @@ def openai_chat_to_converse_request(
     if stop:
         inference["stopSequences"] = [stop] if isinstance(stop, str) else list(stop)
 
-    # Fold Claude Code's xhigh spellings before the bucket lookup: an
-    # unrecognized level lands on the medium budget below, so "max" used to
-    # buy *less* thinking than "xhigh" on this path.
+    # Fold the xhigh spellings before the bucket lookup: an unrecognized
+    # level lands on the medium budget below, so "extra-high" would buy
+    # *less* thinking than "xhigh" on this path.
     effort = canonical_effort(body.get("reasoning_effort"))
     if effort:
         mid = (model_id or "").lower()
@@ -287,7 +293,7 @@ def openai_chat_to_converse_request(
         elif "openai" in mid:
             # Verbatim pass-through — the model is the authority on which
             # effort levels it supports (gpt-oss knows low/medium/high;
-            # newer OpenAI-family models add minimal/none/xhigh).
+            # newer OpenAI-family models add minimal/none/xhigh/max).
             out["additionalModelRequestFields"] = {"reasoning_effort": effort}
         # Other families: no portable reasoning knob — rely on model defaults.
 

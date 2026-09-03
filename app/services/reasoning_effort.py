@@ -51,10 +51,16 @@ from app.core.logger import logger
 # the gateway never reasons about distance between levels — but it is the
 # set the admin UI offers and the order it lists them in.
 EFFORT_LEVELS: tuple[str, ...] = (
-    "none", "minimal", "low", "medium", "high", "xhigh",
+    "none", "minimal", "low", "medium", "high", "xhigh", "max",
 )
 
-# Spelling variants seen in the wild (Claude Code sends xhigh three ways).
+# Spelling variants seen in the wild. `xhigh` is written three ways; `max`
+# is NOT one of them — it is a level of its own, one step above xhigh, on
+# both ladders the gateway sits between (Claude Code offers low / medium /
+# high / xhigh / max, and GPT-5.6 accepts none / low / medium / high /
+# xhigh / max on the Responses API). Folding it onto xhigh would silently
+# sell the caller the second-strongest setting when they paid for the
+# strongest — exactly the substitution this module exists to refuse.
 # Only spellings are normalized here — levels are never clamped at parse
 # time; that is this module's job, per-model.
 EFFORT_ALIASES: dict[str, str] = {
@@ -67,7 +73,7 @@ EFFORT_ALIASES: dict[str, str] = {
     "x-high": "xhigh",
     "extra-high": "xhigh",
     "extra_high": "xhigh",
-    "max": "xhigh",
+    "max": "max",
 }
 
 
@@ -88,16 +94,16 @@ def normalize_effort(value: Any) -> str | None:
 def canonical_effort(value: Any) -> Any:
     """Fold a known spelling variant onto its canonical name; else verbatim.
 
-    ``max`` / ``extra-high`` / ``x-high`` are Claude Code's spellings of
-    ``xhigh``. The Anthropic surface folds them while translating, so the
-    OpenAI-shaped surfaces have to fold them too — otherwise the same
-    request means different things depending on which door it came in: the
-    Bedrock adapter buckets a level it doesn't recognize to the *medium*
-    thinking budget, so ``reasoning_effort: "max"`` on /v1/chat/completions
-    quietly bought less thinking than ``"xhigh"`` did.
+    ``extra-high`` / ``x-high`` / ``extra_high`` are all ``xhigh``. The
+    Anthropic surface folds them while translating, so the OpenAI-shaped
+    surfaces fold them too — otherwise the same request means different
+    things depending on which door it came in: the Bedrock adapter buckets
+    a level it doesn't recognize to the *medium* thinking budget, so a
+    spelling it had never seen quietly bought less thinking than ``xhigh``.
 
-    Only spellings this module knows are touched. An unknown level (or a
-    non-string) comes back exactly as it arrived — the downstream is the
+    Only spellings this module knows are touched, and ``max`` is a level,
+    not a spelling of one (see EFFORT_ALIASES). An unknown level, or a
+    non-string, comes back exactly as it arrived — the downstream is the
     authority on what it means, and folding is not clamping: no level is
     ever traded for a different one here.
     """

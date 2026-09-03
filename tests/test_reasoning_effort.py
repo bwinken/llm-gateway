@@ -56,8 +56,14 @@ def reasoning_llm():
 class TestNormalizeAndDeclare:
     def test_spelling_variants_normalize(self):
         assert normalize_effort("  HIGH ") == "high"
-        assert normalize_effort("MAX") == "xhigh"
         assert normalize_effort("extra-high") == "xhigh"
+        assert normalize_effort("X-High") == "xhigh"
+
+    def test_max_is_a_level_not_a_spelling_of_xhigh(self):
+        """Claude Code offers low/medium/high/xhigh/max and GPT-5.6 accepts
+        the same top two — folding max onto xhigh would sell the caller the
+        second-strongest setting when they asked for the strongest."""
+        assert normalize_effort("MAX") == "max"
 
     def test_unknown_spelling_kept_verbatim(self):
         assert normalize_effort("Ultra") == "ultra"
@@ -72,7 +78,7 @@ class TestNormalizeAndDeclare:
         assert declared_efforts(None) is None
 
     def test_declaration_is_normalized_and_deduped(self):
-        route = {"reasoning_efforts": ["MAX", "xhigh", "Low", 7]}
+        route = {"reasoning_efforts": ["Extra-High", "xhigh", "Low", 7]}
         assert declared_efforts(route) == ["xhigh", "low"]
 
     def test_empty_declaration_is_meaningful(self):
@@ -86,9 +92,12 @@ class TestNormalizeAndDeclare:
 class TestCanonicalSpelling:
     """Spelling folding is unconditional; level substitution never is."""
 
-    def test_claude_code_xhigh_spellings_fold(self):
-        for spelling in ("max", "MAX", " Extra-High ", "x-high", "extra_high"):
+    def test_xhigh_spellings_fold(self):
+        for spelling in (" Extra-High ", "x-high", "extra_high", "XHIGH"):
             assert canonical_effort(spelling) == "xhigh"
+
+    def test_max_survives_the_fold(self):
+        assert canonical_effort("MAX") == "max"
 
     def test_known_level_gets_the_canonical_casing(self):
         assert canonical_effort("  HIGH ") == "high"
@@ -136,8 +145,16 @@ class TestAdaptEffort:
 
     def test_map_normalizes_spellings_on_both_sides(self):
         route = {**UPGRADED, "reasoning_efforts": ["low"],
-                 "reasoning_effort_map": {"MAX": "Low"}}
+                 "reasoning_effort_map": {"Extra-High": "Low"}}
         assert adapt_effort("xhigh", route)[0] == "low"
+
+    def test_max_is_declared_and_mapped_on_its_own(self):
+        """A deployment that stops at xhigh (Azure gpt-5.1, say) needs its own
+        rule for max; accepting xhigh says nothing about max."""
+        route = {"reasoning_efforts": ["low", "medium", "high", "xhigh"]}
+        assert adapt_effort("max", route)[0] is None
+        assert adapt_effort("max", {**route, "reasoning_effort_map": {"max": "xhigh"}})[0] == "xhigh"
+        assert adapt_effort("max", {"reasoning_efforts": ["xhigh", "max"]})[0] == "max"
 
     def test_empty_declaration_drops_everything_unmapped(self):
         value, note = adapt_effort("high", {"reasoning_efforts": []})
@@ -174,11 +191,16 @@ class TestApplyHelpers:
         assert body == {"reasoning_effort": None}
 
     def test_undeclared_route_still_folds_the_spelling(self):
-        """"max" and "xhigh" must mean one thing on every surface: the
-        Anthropic path folds them in translation, so this one does too."""
-        body = {"reasoning_effort": "max"}
+        """A spelling must mean one thing on every surface: the Anthropic
+        path folds it in translation, so this one does too."""
+        body = {"reasoning_effort": "extra-high"}
         apply_to_openai_body(body, {"type": "llm"})
         assert body["reasoning_effort"] == "xhigh"
+
+    def test_max_is_forwarded_as_max(self):
+        body = {"reasoning_effort": "max"}
+        apply_to_openai_body(body, {"type": "llm"})
+        assert body["reasoning_effort"] == "max"
 
     def test_undeclared_route_leaves_an_unknown_level_alone(self):
         body = {"reasoning_effort": "Ultra"}
@@ -186,9 +208,9 @@ class TestApplyHelpers:
         assert body == {"reasoning_effort": "Ultra"}
 
     def test_declared_route_accepts_a_variant_spelling(self):
-        """UPGRADED declares "xhigh"; a client spelling it "max" is asking
-        for a level this model accepts, not for one to strip."""
-        body = {"reasoning_effort": "max"}
+        """UPGRADED declares "xhigh"; a client spelling it "extra-high" is
+        asking for a level this model accepts, not for one to strip."""
+        body = {"reasoning_effort": "extra-high"}
         apply_to_openai_body(body, UPGRADED)
         assert body["reasoning_effort"] == "xhigh"
 
@@ -258,11 +280,18 @@ class TestVllmChatCompletions:
         assert captured["json"]["reasoning_effort"] == "low"
 
     def test_variant_spelling_forwarded_canonically(self, client, test_user):
-        """No declaration needed: the spelling fold is what makes "max" the
+        """No declaration needed: the fold is what makes "extra-high" the
         same request as "xhigh" for every downstream."""
         captured = self._capture(client)
-        self._post(client, "max")
+        self._post(client, "extra-high")
         assert captured["json"]["reasoning_effort"] == "xhigh"
+
+    def test_max_reaches_the_downstream_as_max(self, client, test_user):
+        """The strongest level is the caller's to ask for — the gateway does
+        not spend it down to xhigh on the way out."""
+        captured = self._capture(client)
+        self._post(client, "max")
+        assert captured["json"]["reasoning_effort"] == "max"
 
     def test_undeclared_route_still_passes_effort_through(self, client, test_user):
         """No `reasoning_efforts` on the route = pre-feature behavior."""
@@ -461,11 +490,11 @@ class TestBedrockAdaptation:
         assert thinking["budget_tokens"] == 8192
 
     def test_variant_spelling_buys_the_xhigh_budget(self, client, test_user):
-        """Without the fold "max" missed the bucket table and landed on the
-        medium default (8192) — quietly less thinking than "xhigh" asked for.
-        No declaration on the entry, so this is the fold alone."""
+        """Without the fold "extra-high" missed the bucket table and landed
+        on the medium default (8192) — quietly less thinking than the caller
+        asked for. No declaration on the entry, so this is the fold alone."""
         captured = self._capture(client)
-        resp = self._post(client, "max")
+        resp = self._post(client, "extra-high")
         assert resp.status_code == 200
         thinking = captured["json"]["additionalModelRequestFields"]["thinking"]
         assert thinking["budget_tokens"] == 32768

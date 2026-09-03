@@ -205,9 +205,11 @@ class TestConverseRequestTranslation:
         }, model_id="anthropic.claude-sonnet-4-20250514-v1:0")
         assert out["additionalModelRequestFields"]["thinking"]["budget_tokens"] == 32768
 
-    def test_max_spelling_gets_the_same_budget_as_xhigh(self):
-        """Claude Code spells xhigh three ways; an unfolded spelling used to
-        miss the bucket table and fall through to the medium default."""
+    def test_top_levels_and_xhigh_spellings_get_the_top_budget(self):
+        """Claude has no effort ladder on Converse, only a budget, so "max"
+        shares xhigh's ceiling (a bigger number would exceed the request's
+        own max_tokens). The xhigh spellings must not fall through to the
+        medium default the way an unrecognized level does."""
         for spelling in ("max", "extra-high", "x-high"):
             out = self._xlate({
                 "messages": [{"role": "user", "content": "hi"}],

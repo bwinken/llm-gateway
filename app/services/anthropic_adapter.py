@@ -41,8 +41,8 @@ def _map_stop_reason(openai_finish: str | None) -> str | None:
 
 
 # Anthropic clients express reasoning depth two ways:
-#   - a top-level `effort` string (minimal/low/medium/high, plus Claude
-#     Code's xhigh / extra-high / max spellings)
+#   - a top-level `effort` string (Claude Code's ladder is low / medium /
+#     high / xhigh / max; xhigh is also spelled extra-high / x-high)
 #   - `thinking: {"type": "enabled", "budget_tokens": N}` — a token budget
 #     we bucket into effort levels.
 # Policy: translate FAITHFULLY, never clamp. A downstream that doesn't know
@@ -79,6 +79,10 @@ def _map_reasoning_effort(body: dict[str, Any]) -> str | None:
                 return "medium"
             if budget <= 32768:
                 return "high"
+            # Deliberately stops at xhigh: a budget, however large, is not
+            # the caller naming the top level, and "max" costs real money.
+            # An operator who wants big budgets to reach it says so with
+            # `reasoning_effort_map = { xhigh = "max" }`.
             return "xhigh"
     return None
 
