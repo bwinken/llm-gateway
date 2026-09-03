@@ -205,6 +205,16 @@ class TestConverseRequestTranslation:
         }, model_id="anthropic.claude-sonnet-4-20250514-v1:0")
         assert out["additionalModelRequestFields"]["thinking"]["budget_tokens"] == 32768
 
+    def test_max_spelling_gets_the_same_budget_as_xhigh(self):
+        """Claude Code spells xhigh three ways; an unfolded spelling used to
+        miss the bucket table and fall through to the medium default."""
+        for spelling in ("max", "extra-high", "x-high"):
+            out = self._xlate({
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": spelling,
+            }, model_id="anthropic.claude-sonnet-4-20250514-v1:0")
+            assert out["additionalModelRequestFields"]["thinking"]["budget_tokens"] == 32768
+
     def test_none_effort_disables_claude_thinking(self):
         out = self._xlate({
             "messages": [{"role": "user", "content": "hi"}],

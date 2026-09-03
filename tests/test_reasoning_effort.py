@@ -14,6 +14,7 @@ import pytest
 
 from app.services.reasoning_effort import (
     adapt_effort,
+    canonical_effort,
     apply_to_openai_body,
     apply_to_responses_body,
     declared_efforts,
@@ -80,6 +81,22 @@ class TestNormalizeAndDeclare:
 
     def test_malformed_declaration_degrades_to_passthrough(self):
         assert declared_efforts({"reasoning_efforts": "high"}) is None
+
+
+class TestCanonicalSpelling:
+    """Spelling folding is unconditional; level substitution never is."""
+
+    def test_claude_code_xhigh_spellings_fold(self):
+        for spelling in ("max", "MAX", " Extra-High ", "x-high", "extra_high"):
+            assert canonical_effort(spelling) == "xhigh"
+
+    def test_known_level_gets_the_canonical_casing(self):
+        assert canonical_effort("  HIGH ") == "high"
+
+    def test_unknown_level_and_non_strings_come_back_verbatim(self):
+        assert canonical_effort("Ultra") == "Ultra"
+        assert canonical_effort(None) is None
+        assert canonical_effort(3) == 3
 
 
 class TestAdaptEffort:
@@ -156,6 +173,30 @@ class TestApplyHelpers:
         apply_to_openai_body(body, {"type": "llm"})
         assert body == {"reasoning_effort": None}
 
+    def test_undeclared_route_still_folds_the_spelling(self):
+        """"max" and "xhigh" must mean one thing on every surface: the
+        Anthropic path folds them in translation, so this one does too."""
+        body = {"reasoning_effort": "max"}
+        apply_to_openai_body(body, {"type": "llm"})
+        assert body["reasoning_effort"] == "xhigh"
+
+    def test_undeclared_route_leaves_an_unknown_level_alone(self):
+        body = {"reasoning_effort": "Ultra"}
+        apply_to_openai_body(body, {"type": "llm"})
+        assert body == {"reasoning_effort": "Ultra"}
+
+    def test_declared_route_accepts_a_variant_spelling(self):
+        """UPGRADED declares "xhigh"; a client spelling it "max" is asking
+        for a level this model accepts, not for one to strip."""
+        body = {"reasoning_effort": "max"}
+        apply_to_openai_body(body, UPGRADED)
+        assert body["reasoning_effort"] == "xhigh"
+
+    def test_responses_body_folds_without_a_declaration(self):
+        body = {"reasoning": {"effort": "extra-high"}}
+        apply_to_responses_body(body, {"type": "llm"})
+        assert body["reasoning"] == {"effort": "xhigh"}
+
     def test_openai_body_without_the_field_untouched(self):
         body = {"messages": []}
         apply_to_openai_body(body, {"reasoning_efforts": []})
@@ -215,6 +256,13 @@ class TestVllmChatCompletions:
         captured = self._capture(client)
         self._post(client, "low")
         assert captured["json"]["reasoning_effort"] == "low"
+
+    def test_variant_spelling_forwarded_canonically(self, client, test_user):
+        """No declaration needed: the spelling fold is what makes "max" the
+        same request as "xhigh" for every downstream."""
+        captured = self._capture(client)
+        self._post(client, "max")
+        assert captured["json"]["reasoning_effort"] == "xhigh"
 
     def test_undeclared_route_still_passes_effort_through(self, client, test_user):
         """No `reasoning_efforts` on the route = pre-feature behavior."""
@@ -411,6 +459,16 @@ class TestBedrockAdaptation:
         thinking = captured["json"]["additionalModelRequestFields"]["thinking"]
         # xhigh (32768 budget) mapped to medium, which Converse expands to 8192.
         assert thinking["budget_tokens"] == 8192
+
+    def test_variant_spelling_buys_the_xhigh_budget(self, client, test_user):
+        """Without the fold "max" missed the bucket table and landed on the
+        medium default (8192) — quietly less thinking than "xhigh" asked for.
+        No declaration on the entry, so this is the fold alone."""
+        captured = self._capture(client)
+        resp = self._post(client, "max")
+        assert resp.status_code == 200
+        thinking = captured["json"]["additionalModelRequestFields"]["thinking"]
+        assert thinking["budget_tokens"] == 32768
 
     def test_unmapped_level_leaves_thinking_to_the_model(self, client, bedrock_upgraded):
         captured = self._capture(client)

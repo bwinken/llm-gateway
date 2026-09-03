@@ -85,6 +85,27 @@ def normalize_effort(value: Any) -> str | None:
     return EFFORT_ALIASES.get(text, text)
 
 
+def canonical_effort(value: Any) -> Any:
+    """Fold a known spelling variant onto its canonical name; else verbatim.
+
+    ``max`` / ``extra-high`` / ``x-high`` are Claude Code's spellings of
+    ``xhigh``. The Anthropic surface folds them while translating, so the
+    OpenAI-shaped surfaces have to fold them too — otherwise the same
+    request means different things depending on which door it came in: the
+    Bedrock adapter buckets a level it doesn't recognize to the *medium*
+    thinking budget, so ``reasoning_effort: "max"`` on /v1/chat/completions
+    quietly bought less thinking than ``"xhigh"`` did.
+
+    Only spellings this module knows are touched. An unknown level (or a
+    non-string) comes back exactly as it arrived — the downstream is the
+    authority on what it means, and folding is not clamping: no level is
+    ever traded for a different one here.
+    """
+    if not isinstance(value, str):
+        return value
+    return EFFORT_ALIASES.get(value.strip().lower(), value)
+
+
 def declared_efforts(route: dict[str, Any] | None) -> list[str] | None:
     """Return the route's supported effort levels, or None when undeclared.
 
@@ -186,11 +207,14 @@ def apply_to_openai_body(
 ) -> None:
     """Adapt ``body["reasoning_effort"]`` in place (OpenAI chat shape).
 
-    A route with no declaration is left strictly alone — including a value
-    this module wouldn't recognize, which stays the downstream's business.
+    Spelling is canonicalized either way (``max`` -> ``xhigh``) so one level
+    means one thing on every backend; a route with no declaration is
+    otherwise left strictly alone — including a level this module wouldn't
+    recognize, which stays the downstream's business.
     """
     if not isinstance(body, dict) or "reasoning_effort" not in body:
         return
+    body["reasoning_effort"] = canonical_effort(body["reasoning_effort"])
     if declared_efforts(route) is None:
         return
     value, note = adapt_effort(body.get("reasoning_effort"), route)
@@ -208,14 +232,18 @@ def apply_to_responses_body(
     """Adapt ``body["reasoning"]["effort"]`` in place (Azure Responses shape).
 
     The ``/azure/v1/responses`` pass-through otherwise leaves parameters to
-    the client; this stays a no-op unless the model declares
-    ``reasoning_efforts``, so that contract only bends where an operator has
-    said the deployment rejects a level.
+    the client; beyond canonicalizing the spelling (a level Azure has no
+    name for is a 400 either way) this stays a no-op unless the model
+    declares ``reasoning_efforts``, so that contract only bends where an
+    operator has said the deployment rejects a level.
     """
-    if not isinstance(body, dict) or declared_efforts(route) is None:
+    if not isinstance(body, dict):
         return
     reasoning = body.get("reasoning")
     if not isinstance(reasoning, dict) or "effort" not in reasoning:
+        return
+    reasoning["effort"] = canonical_effort(reasoning["effort"])
+    if declared_efforts(route) is None:
         return
     value, note = adapt_effort(reasoning.get("effort"), route)
     if value is None:

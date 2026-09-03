@@ -45,6 +45,7 @@ import uuid
 from typing import Any, Iterator
 
 from app.core.logger import logger
+from app.services.reasoning_effort import canonical_effort
 
 
 # ---------------------------------------------------------------------------
@@ -57,9 +58,10 @@ _DATA_URL_PREFIX = "data:image/"
 # additionalModelRequestFields). Buckets mirror the Anthropic adapter's
 # budget->effort mapping so a Claude Code round trip lands near its origin.
 # "minimal" maps to Anthropic's floor (1024); "xhigh" (Claude Code's
-# extra-high / max) gets a genuinely larger budget so the higher setting is
-# felt rather than silently clamped. "none" is handled at the call site —
-# it means thinking OFF, not a tiny budget.
+# extra-high / max, folded to the canonical spelling before the lookup so
+# those spellings don't fall through to the default) gets a genuinely larger
+# budget so the higher setting is felt rather than silently clamped. "none"
+# is handled at the call site — it means thinking OFF, not a tiny budget.
 _EFFORT_TO_BUDGET = {"minimal": 1024, "low": 2048, "medium": 8192, "high": 16384, "xhigh": 32768}
 
 
@@ -261,7 +263,10 @@ def openai_chat_to_converse_request(
     if stop:
         inference["stopSequences"] = [stop] if isinstance(stop, str) else list(stop)
 
-    effort = body.get("reasoning_effort")
+    # Fold Claude Code's xhigh spellings before the bucket lookup: an
+    # unrecognized level lands on the medium budget below, so "max" used to
+    # buy *less* thinking than "xhigh" on this path.
+    effort = canonical_effort(body.get("reasoning_effort"))
     if effort:
         mid = (model_id or "").lower()
         if "anthropic" in mid:
