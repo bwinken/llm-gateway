@@ -94,12 +94,13 @@ def normalize_effort(value: Any) -> str | None:
 def canonical_effort(value: Any) -> Any:
     """Fold a known spelling variant onto its canonical name; else verbatim.
 
-    ``extra-high`` / ``x-high`` / ``extra_high`` are all ``xhigh``. The
-    Anthropic surface folds them while translating, so the OpenAI-shaped
-    surfaces fold them too — otherwise the same request means different
-    things depending on which door it came in: the Bedrock adapter buckets
-    a level it doesn't recognize to the *medium* thinking budget, so a
-    spelling it had never seen quietly bought less thinking than ``xhigh``.
+    ``extra-high`` / ``x-high`` / ``extra_high`` are all ``xhigh``. For
+    translators that have to *interpret* the level rather than forward it —
+    Converse expands it into a Claude thinking budget, so a spelling its
+    bucket table has never seen would land on the *medium* default and
+    quietly buy less thinking than ``xhigh``. Forwarding paths do not call
+    this: on a route that declares nothing the gateway sends the client's
+    string as it arrived.
 
     Only spellings this module knows are touched, and ``max`` is a level,
     not a spelling of one (see EFFORT_ALIASES). An unknown level, or a
@@ -213,14 +214,16 @@ def apply_to_openai_body(
 ) -> None:
     """Adapt ``body["reasoning_effort"]`` in place (OpenAI chat shape).
 
-    Spelling is canonicalized either way (``max`` -> ``xhigh``) so one level
-    means one thing on every backend; a route with no declaration is
-    otherwise left strictly alone — including a level this module wouldn't
-    recognize, which stays the downstream's business.
+    A route with no declaration is left strictly alone — the spelling
+    included, and including a level this module wouldn't recognize. What a
+    downstream accepts is the operator's to write down, so an undeclared
+    route is byte-faithful: the only rewrites are the ones config asked
+    for. (Once a declaration exists, the operator's own vocabulary is
+    normalized against the request's — ``adapt_effort`` de-aliases both
+    sides, so accepting ``xhigh`` accepts ``extra-high`` too.)
     """
     if not isinstance(body, dict) or "reasoning_effort" not in body:
         return
-    body["reasoning_effort"] = canonical_effort(body["reasoning_effort"])
     if declared_efforts(route) is None:
         return
     value, note = adapt_effort(body.get("reasoning_effort"), route)
@@ -238,18 +241,14 @@ def apply_to_responses_body(
     """Adapt ``body["reasoning"]["effort"]`` in place (Azure Responses shape).
 
     The ``/azure/v1/responses`` pass-through otherwise leaves parameters to
-    the client; beyond canonicalizing the spelling (a level Azure has no
-    name for is a 400 either way) this stays a no-op unless the model
-    declares ``reasoning_efforts``, so that contract only bends where an
-    operator has said the deployment rejects a level.
+    the client; this stays a no-op unless the model declares
+    ``reasoning_efforts``, so that contract only bends where an operator has
+    said the deployment rejects a level.
     """
-    if not isinstance(body, dict):
+    if not isinstance(body, dict) or declared_efforts(route) is None:
         return
     reasoning = body.get("reasoning")
     if not isinstance(reasoning, dict) or "effort" not in reasoning:
-        return
-    reasoning["effort"] = canonical_effort(reasoning["effort"])
-    if declared_efforts(route) is None:
         return
     value, note = adapt_effort(reasoning.get("effort"), route)
     if value is None:

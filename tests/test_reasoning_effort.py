@@ -190,22 +190,14 @@ class TestApplyHelpers:
         apply_to_openai_body(body, {"type": "llm"})
         assert body == {"reasoning_effort": None}
 
-    def test_undeclared_route_still_folds_the_spelling(self):
-        """A spelling must mean one thing on every surface: the Anthropic
-        path folds it in translation, so this one does too."""
-        body = {"reasoning_effort": "extra-high"}
-        apply_to_openai_body(body, {"type": "llm"})
-        assert body["reasoning_effort"] == "xhigh"
-
-    def test_max_is_forwarded_as_max(self):
-        body = {"reasoning_effort": "max"}
-        apply_to_openai_body(body, {"type": "llm"})
-        assert body["reasoning_effort"] == "max"
-
-    def test_undeclared_route_leaves_an_unknown_level_alone(self):
-        body = {"reasoning_effort": "Ultra"}
-        apply_to_openai_body(body, {"type": "llm"})
-        assert body == {"reasoning_effort": "Ultra"}
+    def test_undeclared_route_is_byte_faithful(self):
+        """What a downstream accepts is the operator's to write down, so an
+        undeclared route forwards the client's string as it arrived —
+        spelling, casing and unknown levels included."""
+        for value in ("extra-high", "MAX", "Ultra", "X-High"):
+            body = {"reasoning_effort": value}
+            apply_to_openai_body(body, {"type": "llm"})
+            assert body == {"reasoning_effort": value}
 
     def test_declared_route_accepts_a_variant_spelling(self):
         """UPGRADED declares "xhigh"; a client spelling it "extra-high" is
@@ -214,10 +206,10 @@ class TestApplyHelpers:
         apply_to_openai_body(body, UPGRADED)
         assert body["reasoning_effort"] == "xhigh"
 
-    def test_responses_body_folds_without_a_declaration(self):
+    def test_responses_body_untouched_without_a_declaration(self):
         body = {"reasoning": {"effort": "extra-high"}}
         apply_to_responses_body(body, {"type": "llm"})
-        assert body["reasoning"] == {"effort": "xhigh"}
+        assert body["reasoning"] == {"effort": "extra-high"}
 
     def test_openai_body_without_the_field_untouched(self):
         body = {"messages": []}
@@ -279,12 +271,11 @@ class TestVllmChatCompletions:
         self._post(client, "low")
         assert captured["json"]["reasoning_effort"] == "low"
 
-    def test_variant_spelling_forwarded_canonically(self, client, test_user):
-        """No declaration needed: the fold is what makes "extra-high" the
-        same request as "xhigh" for every downstream."""
+    def test_undeclared_route_forwards_the_spelling_verbatim(self, client, test_user):
+        """No declaration = no rewriting, not even of the spelling."""
         captured = self._capture(client)
         self._post(client, "extra-high")
-        assert captured["json"]["reasoning_effort"] == "xhigh"
+        assert captured["json"]["reasoning_effort"] == "extra-high"
 
     def test_max_reaches_the_downstream_as_max(self, client, test_user):
         """The strongest level is the caller's to ask for — the gateway does
@@ -292,6 +283,14 @@ class TestVllmChatCompletions:
         captured = self._capture(client)
         self._post(client, "max")
         assert captured["json"]["reasoning_effort"] == "max"
+
+    def test_declared_route_accepts_a_variant_spelling(self, client, test_user, reasoning_llm):
+        """Once the operator has written the vocabulary down, both sides are
+        de-aliased against it: this model accepts xhigh, so a client asking
+        for "extra-high" is asking for a level it accepts."""
+        captured = self._capture(client)
+        self._post(client, "extra-high")
+        assert captured["json"]["reasoning_effort"] == "xhigh"
 
     def test_undeclared_route_still_passes_effort_through(self, client, test_user):
         """No `reasoning_efforts` on the route = pre-feature behavior."""
@@ -490,9 +489,10 @@ class TestBedrockAdaptation:
         assert thinking["budget_tokens"] == 8192
 
     def test_variant_spelling_buys_the_xhigh_budget(self, client, test_user):
-        """Without the fold "extra-high" missed the bucket table and landed
-        on the medium default (8192) — quietly less thinking than the caller
-        asked for. No declaration on the entry, so this is the fold alone."""
+        """Converse has to interpret the level (it expands to a thinking
+        budget), so the spelling is folded there even though the entry
+        declares nothing — otherwise "extra-high" misses the bucket table and
+        lands on the medium default (8192)."""
         captured = self._capture(client)
         resp = self._post(client, "extra-high")
         assert resp.status_code == 200
