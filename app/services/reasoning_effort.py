@@ -51,10 +51,16 @@ from app.core.logger import logger
 # the gateway never reasons about distance between levels — but it is the
 # set the admin UI offers and the order it lists them in.
 EFFORT_LEVELS: tuple[str, ...] = (
-    "none", "minimal", "low", "medium", "high", "xhigh",
+    "none", "minimal", "low", "medium", "high", "xhigh", "max",
 )
 
-# Spelling variants seen in the wild (Claude Code sends xhigh three ways).
+# Spelling variants seen in the wild. `xhigh` is written three ways; `max`
+# is NOT one of them — it is a level of its own, one step above xhigh, on
+# both ladders the gateway sits between (Claude Code offers low / medium /
+# high / xhigh / max, and GPT-5.6 accepts none / low / medium / high /
+# xhigh / max on the Responses API). Folding it onto xhigh would silently
+# sell the caller the second-strongest setting when they paid for the
+# strongest — exactly the substitution this module exists to refuse.
 # Only spellings are normalized here — levels are never clamped at parse
 # time; that is this module's job, per-model.
 EFFORT_ALIASES: dict[str, str] = {
@@ -67,7 +73,7 @@ EFFORT_ALIASES: dict[str, str] = {
     "x-high": "xhigh",
     "extra-high": "xhigh",
     "extra_high": "xhigh",
-    "max": "xhigh",
+    "max": "max",
 }
 
 
@@ -83,6 +89,28 @@ def normalize_effort(value: Any) -> str | None:
     if not text:
         return None
     return EFFORT_ALIASES.get(text, text)
+
+
+def canonical_effort(value: Any) -> Any:
+    """Fold a known spelling variant onto its canonical name; else verbatim.
+
+    ``extra-high`` / ``x-high`` / ``extra_high`` are all ``xhigh``. For
+    translators that have to *interpret* the level rather than forward it —
+    Converse expands it into a Claude thinking budget, so a spelling its
+    bucket table has never seen would land on the *medium* default and
+    quietly buy less thinking than ``xhigh``. Forwarding paths do not call
+    this: on a route that declares nothing the gateway sends the client's
+    string as it arrived.
+
+    Only spellings this module knows are touched, and ``max`` is a level,
+    not a spelling of one (see EFFORT_ALIASES). An unknown level, or a
+    non-string, comes back exactly as it arrived — the downstream is the
+    authority on what it means, and folding is not clamping: no level is
+    ever traded for a different one here.
+    """
+    if not isinstance(value, str):
+        return value
+    return EFFORT_ALIASES.get(value.strip().lower(), value)
 
 
 def declared_efforts(route: dict[str, Any] | None) -> list[str] | None:
@@ -186,8 +214,13 @@ def apply_to_openai_body(
 ) -> None:
     """Adapt ``body["reasoning_effort"]`` in place (OpenAI chat shape).
 
-    A route with no declaration is left strictly alone — including a value
-    this module wouldn't recognize, which stays the downstream's business.
+    A route with no declaration is left strictly alone — the spelling
+    included, and including a level this module wouldn't recognize. What a
+    downstream accepts is the operator's to write down, so an undeclared
+    route is byte-faithful: the only rewrites are the ones config asked
+    for. (Once a declaration exists, the operator's own vocabulary is
+    normalized against the request's — ``adapt_effort`` de-aliases both
+    sides, so accepting ``xhigh`` accepts ``extra-high`` too.)
     """
     if not isinstance(body, dict) or "reasoning_effort" not in body:
         return

@@ -394,14 +394,17 @@ class TestRequestTranslation:
     def test_effort_string_mapped(self):
         """Faithful translation — every level survives, no clamping.
 
-        Spelling variants normalize (max / extra-high → xhigh) but the level
-        itself is preserved; downstreams that don't know a level ignore or
-        reject it visibly, downstreams that do give the user what they set.
+        Spelling variants normalize (extra-high / x-high → xhigh) but the
+        level itself is preserved; downstreams that don't know a level ignore
+        or reject it visibly, downstreams that do give the user what they set.
+        "max" is a level of its own — Claude Code's top setting, and GPT-5.6's
+        — so it is never folded down onto xhigh.
         """
         for eff, expected in [
             ("minimal", "minimal"), ("none", "none"),
             ("low", "low"), ("medium", "medium"), ("high", "high"),
-            ("xhigh", "xhigh"), ("max", "xhigh"), ("extra-high", "xhigh"),
+            ("xhigh", "xhigh"), ("extra-high", "xhigh"), ("x-high", "xhigh"),
+            ("max", "max"), ("MAX", "max"),
         ]:
             body = {
                 "model": "x",

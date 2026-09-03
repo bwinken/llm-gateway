@@ -14,6 +14,7 @@ import pytest
 
 from app.services.reasoning_effort import (
     adapt_effort,
+    canonical_effort,
     apply_to_openai_body,
     apply_to_responses_body,
     declared_efforts,
@@ -55,8 +56,14 @@ def reasoning_llm():
 class TestNormalizeAndDeclare:
     def test_spelling_variants_normalize(self):
         assert normalize_effort("  HIGH ") == "high"
-        assert normalize_effort("MAX") == "xhigh"
         assert normalize_effort("extra-high") == "xhigh"
+        assert normalize_effort("X-High") == "xhigh"
+
+    def test_max_is_a_level_not_a_spelling_of_xhigh(self):
+        """Claude Code offers low/medium/high/xhigh/max and GPT-5.6 accepts
+        the same top two — folding max onto xhigh would sell the caller the
+        second-strongest setting when they asked for the strongest."""
+        assert normalize_effort("MAX") == "max"
 
     def test_unknown_spelling_kept_verbatim(self):
         assert normalize_effort("Ultra") == "ultra"
@@ -71,7 +78,7 @@ class TestNormalizeAndDeclare:
         assert declared_efforts(None) is None
 
     def test_declaration_is_normalized_and_deduped(self):
-        route = {"reasoning_efforts": ["MAX", "xhigh", "Low", 7]}
+        route = {"reasoning_efforts": ["Extra-High", "xhigh", "Low", 7]}
         assert declared_efforts(route) == ["xhigh", "low"]
 
     def test_empty_declaration_is_meaningful(self):
@@ -80,6 +87,25 @@ class TestNormalizeAndDeclare:
 
     def test_malformed_declaration_degrades_to_passthrough(self):
         assert declared_efforts({"reasoning_efforts": "high"}) is None
+
+
+class TestCanonicalSpelling:
+    """Spelling folding is unconditional; level substitution never is."""
+
+    def test_xhigh_spellings_fold(self):
+        for spelling in (" Extra-High ", "x-high", "extra_high", "XHIGH"):
+            assert canonical_effort(spelling) == "xhigh"
+
+    def test_max_survives_the_fold(self):
+        assert canonical_effort("MAX") == "max"
+
+    def test_known_level_gets_the_canonical_casing(self):
+        assert canonical_effort("  HIGH ") == "high"
+
+    def test_unknown_level_and_non_strings_come_back_verbatim(self):
+        assert canonical_effort("Ultra") == "Ultra"
+        assert canonical_effort(None) is None
+        assert canonical_effort(3) == 3
 
 
 class TestAdaptEffort:
@@ -119,8 +145,16 @@ class TestAdaptEffort:
 
     def test_map_normalizes_spellings_on_both_sides(self):
         route = {**UPGRADED, "reasoning_efforts": ["low"],
-                 "reasoning_effort_map": {"MAX": "Low"}}
+                 "reasoning_effort_map": {"Extra-High": "Low"}}
         assert adapt_effort("xhigh", route)[0] == "low"
+
+    def test_max_is_declared_and_mapped_on_its_own(self):
+        """A deployment that stops at xhigh (Azure gpt-5.1, say) needs its own
+        rule for max; accepting xhigh says nothing about max."""
+        route = {"reasoning_efforts": ["low", "medium", "high", "xhigh"]}
+        assert adapt_effort("max", route)[0] is None
+        assert adapt_effort("max", {**route, "reasoning_effort_map": {"max": "xhigh"}})[0] == "xhigh"
+        assert adapt_effort("max", {"reasoning_efforts": ["xhigh", "max"]})[0] == "max"
 
     def test_empty_declaration_drops_everything_unmapped(self):
         value, note = adapt_effort("high", {"reasoning_efforts": []})
@@ -155,6 +189,27 @@ class TestApplyHelpers:
         body = {"reasoning_effort": None}
         apply_to_openai_body(body, {"type": "llm"})
         assert body == {"reasoning_effort": None}
+
+    def test_undeclared_route_is_byte_faithful(self):
+        """What a downstream accepts is the operator's to write down, so an
+        undeclared route forwards the client's string as it arrived —
+        spelling, casing and unknown levels included."""
+        for value in ("extra-high", "MAX", "Ultra", "X-High"):
+            body = {"reasoning_effort": value}
+            apply_to_openai_body(body, {"type": "llm"})
+            assert body == {"reasoning_effort": value}
+
+    def test_declared_route_accepts_a_variant_spelling(self):
+        """UPGRADED declares "xhigh"; a client spelling it "extra-high" is
+        asking for a level this model accepts, not for one to strip."""
+        body = {"reasoning_effort": "extra-high"}
+        apply_to_openai_body(body, UPGRADED)
+        assert body["reasoning_effort"] == "xhigh"
+
+    def test_responses_body_untouched_without_a_declaration(self):
+        body = {"reasoning": {"effort": "extra-high"}}
+        apply_to_responses_body(body, {"type": "llm"})
+        assert body["reasoning"] == {"effort": "extra-high"}
 
     def test_openai_body_without_the_field_untouched(self):
         body = {"messages": []}
@@ -215,6 +270,27 @@ class TestVllmChatCompletions:
         captured = self._capture(client)
         self._post(client, "low")
         assert captured["json"]["reasoning_effort"] == "low"
+
+    def test_undeclared_route_forwards_the_spelling_verbatim(self, client, test_user):
+        """No declaration = no rewriting, not even of the spelling."""
+        captured = self._capture(client)
+        self._post(client, "extra-high")
+        assert captured["json"]["reasoning_effort"] == "extra-high"
+
+    def test_max_reaches_the_downstream_as_max(self, client, test_user):
+        """The strongest level is the caller's to ask for — the gateway does
+        not spend it down to xhigh on the way out."""
+        captured = self._capture(client)
+        self._post(client, "max")
+        assert captured["json"]["reasoning_effort"] == "max"
+
+    def test_declared_route_accepts_a_variant_spelling(self, client, test_user, reasoning_llm):
+        """Once the operator has written the vocabulary down, both sides are
+        de-aliased against it: this model accepts xhigh, so a client asking
+        for "extra-high" is asking for a level it accepts."""
+        captured = self._capture(client)
+        self._post(client, "extra-high")
+        assert captured["json"]["reasoning_effort"] == "xhigh"
 
     def test_undeclared_route_still_passes_effort_through(self, client, test_user):
         """No `reasoning_efforts` on the route = pre-feature behavior."""
@@ -411,6 +487,17 @@ class TestBedrockAdaptation:
         thinking = captured["json"]["additionalModelRequestFields"]["thinking"]
         # xhigh (32768 budget) mapped to medium, which Converse expands to 8192.
         assert thinking["budget_tokens"] == 8192
+
+    def test_variant_spelling_buys_the_xhigh_budget(self, client, test_user):
+        """Converse has to interpret the level (it expands to a thinking
+        budget), so the spelling is folded there even though the entry
+        declares nothing — otherwise "extra-high" misses the bucket table and
+        lands on the medium default (8192)."""
+        captured = self._capture(client)
+        resp = self._post(client, "extra-high")
+        assert resp.status_code == 200
+        thinking = captured["json"]["additionalModelRequestFields"]["thinking"]
+        assert thinking["budget_tokens"] == 32768
 
     def test_unmapped_level_leaves_thinking_to_the_model(self, client, bedrock_upgraded):
         captured = self._capture(client)
