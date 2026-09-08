@@ -58,10 +58,12 @@ from app.services.observability import (
 from app.services.vllm_proxy import (
     _ANTHROPIC_PING_EVENT,
     _NON_STREAM_TIMEOUT,
+    _STREAM_TIMEOUT,
     _approx_token_count,
     _error_response,
     _log_error,
     _log_usage,
+    _warn_if_slow_headers,
     _pump_sse_lines,
 )
 
@@ -402,7 +404,7 @@ async def _non_stream_chat(
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
-        logger.error("Azure downstream error: {}", exc)
+        logger.error("Azure downstream error | user={} model={} endpoint=/azure/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
@@ -436,14 +438,15 @@ async def _stream_chat(
     # SSE pump. Without this an Azure 4xx is returned as a JSON error body
     # whose lines don't begin with `data: ` and get silently dropped, making
     # the client see an empty-but-successful stream.
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
+    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     try:
         resp = await client.send(req, stream=True)
     except Exception as exc:
-        logger.error("Azure stream connect error: {}", exc)
+        logger.error("Azure stream connect error | user={} model={} endpoint=/azure/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    _warn_if_slow_headers(user, alias, "/azure/v1/chat/completions", "azure")
 
     if resp.status_code != 200:
         err_bytes = await resp.aread()
@@ -511,7 +514,7 @@ async def _stream_chat(
                 )
             yield "data: [DONE]\n\n"
         except Exception as exc:
-            logger.error("Azure chat stream error: {}", exc)
+            logger.error("Azure chat stream error | user={} model={} endpoint=/azure/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
         input_tk = translator.input_tokens
@@ -613,7 +616,7 @@ async def _non_stream_messages(
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
-        logger.error("Azure messages downstream error: {}", exc)
+        logger.error("Azure messages downstream error | user={} model={} endpoint=/azure/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
@@ -648,14 +651,15 @@ async def _stream_messages(
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight to surface 4xx before opening the SSE channel — same
     # rationale as _stream_chat.
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
+    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     try:
         resp = await client.send(req, stream=True)
     except Exception as exc:
-        logger.error("Azure messages stream connect error: {}", exc)
+        logger.error("Azure messages stream connect error | user={} model={} endpoint=/azure/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    _warn_if_slow_headers(user, alias, "/azure/v1/messages", "azure")
 
     if resp.status_code != 200:
         err_bytes = await resp.aread()
@@ -752,7 +756,7 @@ async def _stream_messages(
                 for event in anthropic_xlat.finish():
                     yield event
         except Exception as exc:
-            logger.error("Azure messages stream error: {}", exc)
+            logger.error("Azure messages stream error | user={} model={} endpoint=/azure/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
             err_payload = json.dumps({"type": "error", "error": {"type": "api_error", "message": str(exc)}})
             yield f"event: error\ndata: {err_payload}\n\n"
 
@@ -899,7 +903,7 @@ async def _non_stream_responses(
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
-        logger.error("Azure responses downstream error: {}", exc)
+        logger.error("Azure responses downstream error | user={} model={} endpoint=/azure/v1/responses error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/responses", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
@@ -929,14 +933,15 @@ async def _stream_responses(
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight to surface 4xx before opening the SSE channel — same
     # rationale as _stream_chat / _stream_messages.
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
+    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     try:
         resp = await client.send(req, stream=True)
     except Exception as exc:
-        logger.error("Azure responses stream connect error: {}", exc)
+        logger.error("Azure responses stream connect error | user={} model={} endpoint=/azure/v1/responses error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/responses", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    _warn_if_slow_headers(user, alias, "/azure/v1/responses", "azure")
 
     if resp.status_code != 200:
         err_bytes = await resp.aread()
@@ -1004,7 +1009,7 @@ async def _stream_responses(
                     output_tk = u.get("output_tokens", output_tk) or output_tk
                     cached_tk = _cached_tokens_from_responses(u) or cached_tk
         except Exception as exc:
-            logger.error("Azure responses stream error: {}", exc)
+            logger.error("Azure responses stream error | user={} model={} endpoint=/azure/v1/responses error={}: {}", user.username, alias, type(exc).__name__, exc)
             yield (
                 "data: "
                 + json.dumps({"error": {"message": str(exc), "type": "api_error"}})

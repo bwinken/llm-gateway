@@ -58,15 +58,33 @@ from app.services.observability import (
 from app.services.reasoning_effort import apply_to_openai_body
 
 
-# Streaming reads can stall arbitrarily long between chunks (long prefill,
-# reasoning models, queued vLLM batches); let the downstream decide when to
-# stop and rely on client disconnect to unwind stuck requests. Non-stream
-# paths keep a bounded timeout (_NON_STREAM_TIMEOUT).
-_STREAM_TIMEOUT = httpx.Timeout(connect=30.0, read=None, write=30.0, pool=30.0)
 # Kept just below the nginx `proxy_read_timeout` (300s) so the gateway's own
 # httpx timeout fires first and returns a clean 502, rather than nginx
 # severing the connection mid-flight and the client seeing a raw 504.
 _NON_STREAM_TIMEOUT = 280.0
+# Streaming requests, all three backends. Every phase is bounded:
+#
+#   connect / pool  — the pre-flight must fail fast when the pool is starved
+#                     or the downstream is unreachable;
+#   write           — per socket write while uploading the request body
+#                     (agentic clients send multi-MB histories);
+#   read            — the wait for RESPONSE HEADERS, and afterwards each gap
+#                     between body reads.
+#
+# `read` used to be None: the wait for headers had no ceiling at all. The SSE
+# pump's `_SSE_MAX_IDLE` guard and its client pings only start once headers
+# have arrived, so a downstream that accepted the upload and then never
+# answered left the coroutine parked forever — no ping, no log, no 502, the
+# pool connection held, and SIGTERM unable to finish (uvicorn waits for
+# in-flight requests, so the service had to be SIGKILLed). Bounding `read` at
+# _NON_STREAM_TIMEOUT caps time-to-headers at the same figure the non-stream
+# paths use, still under nginx's 300s so the gateway answers first. After
+# headers the pump's idle guard (300s) is the documented ceiling; this read
+# timeout is 20s tighter and fires first, which is fine — both surface as an
+# error event on the stream after ~5 minutes of downstream silence.
+_STREAM_TIMEOUT = httpx.Timeout(
+    connect=30.0, read=_NON_STREAM_TIMEOUT, write=30.0, pool=30.0,
+)
 
 # Hard ceiling on total downstream silence for a streaming request. The
 # per-chunk read timeout is unbounded (reasoning models stall legitimately),
@@ -502,6 +520,35 @@ def _warn_if_slow(
     )
 
 
+def _warn_if_slow_headers(user: User, model: str, endpoint: str, backend: str) -> None:
+    """WARNING when a streaming pre-flight took at least ``SLOW_REQUEST_WARN_S``
+    to get response headers back from the downstream.
+
+    ``_warn_if_slow`` only fires when a request *finishes*; a stream whose
+    downstream is slow to even answer shows nothing until then. This line is
+    emitted the moment headers arrive, so a slow backend is visible while it
+    is happening, and its ``waited=`` names the phase — everything before the
+    first byte of the response — as opposed to a slow generation.
+    """
+    try:
+        latency_ms = request_latency_ms()
+        if latency_ms is None:
+            return
+        threshold = _slow_request_threshold_s()
+        if threshold <= 0:
+            return
+        seconds = latency_ms / 1000.0
+        if seconds < threshold:
+            return
+        logger.warning(
+            "Slow response headers | user={} model={} endpoint={} backend={} "
+            "waited={:.1f}s threshold={:.0f}s",
+            user.username, model, endpoint, backend, seconds, threshold,
+        )
+    except Exception as exc:  # a log line must never break the request
+        logger.warning("slow-headers hook failed: {}", exc)
+
+
 def _submit_usage_write(fn: Any, *args: Any) -> None:
     """Dispatch the usage-log DB write off the event loop, fire-and-forget.
 
@@ -920,6 +967,7 @@ async def _stream_chat(
         _log_error(user, monitor_body or body, str(exc), 502, model, "/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
     extra_headers = _merge_failover_header(extra_headers, failover_note)
+    _warn_if_slow_headers(user, model, "/v1/chat/completions", "vllm")
     _capture_io = capture_io_enabled()
 
     async def event_generator():
@@ -1261,6 +1309,7 @@ async def _forward_messages_native(
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         _log_error(user, anthropic_body, str(exc), 502, model_alias, "/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    _warn_if_slow_headers(user, model_alias, "/v1/messages", "vllm")
 
     if resp.status_code in (404, 405):
         await resp.aclose()
@@ -1539,6 +1588,7 @@ async def _stream_messages(
         _log_error(user, monitor_body or body, str(exc), 502, model_alias, "/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
     extra_headers = _merge_failover_header(extra_headers, failover_note)
+    _warn_if_slow_headers(user, model_alias, "/v1/messages", "vllm")
     _capture_io = capture_io_enabled()
 
     async def event_generator():
@@ -2009,6 +2059,7 @@ async def _passthrough_stream(
         _log_error(user, body_json, str(exc), 502, model, path_suffix, model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
     extra_headers = _merge_failover_header(extra_headers, failover_note)
+    _warn_if_slow_headers(user, model, path_suffix, "vllm")
     _capture_io = capture_io_enabled()
 
     async def event_generator():
