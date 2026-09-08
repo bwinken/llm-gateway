@@ -339,7 +339,7 @@ async def _non_stream_chat(
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
-        logger.error("Bedrock downstream error: {}", exc)
+        logger.error("Bedrock downstream error | user={} model={} endpoint=/aws/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
                           "/aws/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
@@ -376,7 +376,7 @@ async def _stream_chat(
     try:
         resp = await client.send(req, stream=True)
     except Exception as exc:
-        logger.error("Bedrock stream connect error: {}", exc)
+        logger.error("Bedrock stream connect error | user={} model={} endpoint=/aws/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
                           "/aws/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
@@ -434,10 +434,10 @@ async def _stream_chat(
                 )
             yield "data: [DONE]\n\n"
         except EventStreamError as exc:
-            logger.error("Bedrock chat stream frame error: {}", exc)
+            logger.error("Bedrock chat stream frame error | user={} model={} endpoint=/aws/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
         except Exception as exc:
-            logger.error("Bedrock chat stream error: {}", exc)
+            logger.error("Bedrock chat stream error | user={} model={} endpoint=/aws/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
         input_tk = translator.input_tokens
@@ -532,7 +532,7 @@ async def _non_stream_messages(
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
-        logger.error("Bedrock messages downstream error: {}", exc)
+        logger.error("Bedrock messages downstream error | user={} model={} endpoint=/aws/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
                           "/aws/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
@@ -571,7 +571,7 @@ async def _stream_messages(
     try:
         resp = await client.send(req, stream=True)
     except Exception as exc:
-        logger.error("Bedrock messages stream connect error: {}", exc)
+        logger.error("Bedrock messages stream connect error | user={} model={} endpoint=/aws/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
                           "/aws/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
@@ -659,7 +659,7 @@ async def _stream_messages(
                 for event in anthropic_xlat.finish():
                     yield event
         except Exception as exc:
-            logger.error("Bedrock messages stream error: {}", exc)
+            logger.error("Bedrock messages stream error | user={} model={} endpoint=/aws/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
             err_payload = json.dumps({"type": "error", "error": {"type": "api_error", "message": str(exc)}})
             yield f"event: error\ndata: {err_payload}\n\n"
 
