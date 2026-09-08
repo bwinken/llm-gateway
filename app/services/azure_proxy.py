@@ -63,6 +63,7 @@ from app.services.vllm_proxy import (
     _error_response,
     _log_error,
     _log_usage,
+    _warn_if_slow_headers,
     _pump_sse_lines,
 )
 
@@ -445,6 +446,7 @@ async def _stream_chat(
         _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    _warn_if_slow_headers(user, alias, "/azure/v1/chat/completions", "azure")
 
     if resp.status_code != 200:
         err_bytes = await resp.aread()
@@ -657,6 +659,7 @@ async def _stream_messages(
         _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    _warn_if_slow_headers(user, alias, "/azure/v1/messages", "azure")
 
     if resp.status_code != 200:
         err_bytes = await resp.aread()
@@ -938,6 +941,7 @@ async def _stream_responses(
         _log_error(user, monitor_body, str(exc), 502, alias,
                           "/azure/v1/responses", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    _warn_if_slow_headers(user, alias, "/azure/v1/responses", "azure")
 
     if resp.status_code != 200:
         err_bytes = await resp.aread()

@@ -520,6 +520,35 @@ def _warn_if_slow(
     )
 
 
+def _warn_if_slow_headers(user: User, model: str, endpoint: str, backend: str) -> None:
+    """WARNING when a streaming pre-flight took at least ``SLOW_REQUEST_WARN_S``
+    to get response headers back from the downstream.
+
+    ``_warn_if_slow`` only fires when a request *finishes*; a stream whose
+    downstream is slow to even answer shows nothing until then. This line is
+    emitted the moment headers arrive, so a slow backend is visible while it
+    is happening, and its ``waited=`` names the phase — everything before the
+    first byte of the response — as opposed to a slow generation.
+    """
+    try:
+        latency_ms = request_latency_ms()
+        if latency_ms is None:
+            return
+        threshold = _slow_request_threshold_s()
+        if threshold <= 0:
+            return
+        seconds = latency_ms / 1000.0
+        if seconds < threshold:
+            return
+        logger.warning(
+            "Slow response headers | user={} model={} endpoint={} backend={} "
+            "waited={:.1f}s threshold={:.0f}s",
+            user.username, model, endpoint, backend, seconds, threshold,
+        )
+    except Exception as exc:  # a log line must never break the request
+        logger.warning("slow-headers hook failed: {}", exc)
+
+
 def _submit_usage_write(fn: Any, *args: Any) -> None:
     """Dispatch the usage-log DB write off the event loop, fire-and-forget.
 
@@ -938,6 +967,7 @@ async def _stream_chat(
         _log_error(user, monitor_body or body, str(exc), 502, model, "/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
     extra_headers = _merge_failover_header(extra_headers, failover_note)
+    _warn_if_slow_headers(user, model, "/v1/chat/completions", "vllm")
     _capture_io = capture_io_enabled()
 
     async def event_generator():
@@ -1279,6 +1309,7 @@ async def _forward_messages_native(
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
         _log_error(user, anthropic_body, str(exc), 502, model_alias, "/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    _warn_if_slow_headers(user, model_alias, "/v1/messages", "vllm")
 
     if resp.status_code in (404, 405):
         await resp.aclose()
@@ -1557,6 +1588,7 @@ async def _stream_messages(
         _log_error(user, monitor_body or body, str(exc), 502, model_alias, "/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
     extra_headers = _merge_failover_header(extra_headers, failover_note)
+    _warn_if_slow_headers(user, model_alias, "/v1/messages", "vllm")
     _capture_io = capture_io_enabled()
 
     async def event_generator():
@@ -2027,6 +2059,7 @@ async def _passthrough_stream(
         _log_error(user, body_json, str(exc), 502, model, path_suffix, model_type)
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
     extra_headers = _merge_failover_header(extra_headers, failover_note)
+    _warn_if_slow_headers(user, model, path_suffix, "vllm")
     _capture_io = capture_io_enabled()
 
     async def event_generator():
