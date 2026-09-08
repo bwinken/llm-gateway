@@ -58,6 +58,7 @@ from app.services.observability import (
 from app.services.vllm_proxy import (
     _ANTHROPIC_PING_EVENT,
     _NON_STREAM_TIMEOUT,
+    _STREAM_TIMEOUT,
     _approx_token_count,
     _error_response,
     _log_error,
@@ -436,7 +437,7 @@ async def _stream_chat(
     # SSE pump. Without this an Azure 4xx is returned as a JSON error body
     # whose lines don't begin with `data: ` and get silently dropped, making
     # the client see an empty-but-successful stream.
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
+    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     try:
         resp = await client.send(req, stream=True)
     except Exception as exc:
@@ -648,7 +649,7 @@ async def _stream_messages(
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight to surface 4xx before opening the SSE channel — same
     # rationale as _stream_chat.
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
+    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     try:
         resp = await client.send(req, stream=True)
     except Exception as exc:
@@ -929,7 +930,7 @@ async def _stream_responses(
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight to surface 4xx before opening the SSE channel — same
     # rationale as _stream_chat / _stream_messages.
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
+    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     try:
         resp = await client.send(req, stream=True)
     except Exception as exc:

@@ -58,15 +58,33 @@ from app.services.observability import (
 from app.services.reasoning_effort import apply_to_openai_body
 
 
-# Streaming reads can stall arbitrarily long between chunks (long prefill,
-# reasoning models, queued vLLM batches); let the downstream decide when to
-# stop and rely on client disconnect to unwind stuck requests. Non-stream
-# paths keep a bounded timeout (_NON_STREAM_TIMEOUT).
-_STREAM_TIMEOUT = httpx.Timeout(connect=30.0, read=None, write=30.0, pool=30.0)
 # Kept just below the nginx `proxy_read_timeout` (300s) so the gateway's own
 # httpx timeout fires first and returns a clean 502, rather than nginx
 # severing the connection mid-flight and the client seeing a raw 504.
 _NON_STREAM_TIMEOUT = 280.0
+# Streaming requests, all three backends. Every phase is bounded:
+#
+#   connect / pool  — the pre-flight must fail fast when the pool is starved
+#                     or the downstream is unreachable;
+#   write           — per socket write while uploading the request body
+#                     (agentic clients send multi-MB histories);
+#   read            — the wait for RESPONSE HEADERS, and afterwards each gap
+#                     between body reads.
+#
+# `read` used to be None: the wait for headers had no ceiling at all. The SSE
+# pump's `_SSE_MAX_IDLE` guard and its client pings only start once headers
+# have arrived, so a downstream that accepted the upload and then never
+# answered left the coroutine parked forever — no ping, no log, no 502, the
+# pool connection held, and SIGTERM unable to finish (uvicorn waits for
+# in-flight requests, so the service had to be SIGKILLed). Bounding `read` at
+# _NON_STREAM_TIMEOUT caps time-to-headers at the same figure the non-stream
+# paths use, still under nginx's 300s so the gateway answers first. After
+# headers the pump's idle guard (300s) is the documented ceiling; this read
+# timeout is 20s tighter and fires first, which is fine — both surface as an
+# error event on the stream after ~5 minutes of downstream silence.
+_STREAM_TIMEOUT = httpx.Timeout(
+    connect=30.0, read=_NON_STREAM_TIMEOUT, write=30.0, pool=30.0,
+)
 
 # Hard ceiling on total downstream silence for a streaming request. The
 # per-chunk read timeout is unbounded (reasoning models stall legitimately),

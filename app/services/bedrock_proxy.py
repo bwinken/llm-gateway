@@ -70,6 +70,7 @@ from app.services.vllm_proxy import (
     _ANTHROPIC_PING_EVENT,
     _SSE_PING_INTERVAL,
     _NON_STREAM_TIMEOUT,
+    _STREAM_TIMEOUT,
     _approx_token_count,
     _error_response,
     _log_error,
@@ -371,7 +372,7 @@ async def _stream_chat(
     # Pre-flight: open the stream and check status BEFORE handing it to the
     # event pump — a Bedrock 4xx arrives as a plain JSON body, not an
     # event-stream frame, and would otherwise be dropped silently.
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
+    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     try:
         resp = await client.send(req, stream=True)
     except Exception as exc:
@@ -566,7 +567,7 @@ async def _stream_messages(
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight to surface 4xx before opening the stream — same rationale
     # as _stream_chat.
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=None)
+    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
     try:
         resp = await client.send(req, stream=True)
     except Exception as exc:
