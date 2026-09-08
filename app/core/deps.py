@@ -11,7 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session, func, select
 
 from app.core.auth import AccountDisabledError
-from app.core.database import engine, get_session
+from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
 from app.models.schema import UsageLog, User
@@ -190,11 +190,21 @@ def ensure_bedrock_budget(user: User) -> None:
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
-    session: Session = Depends(get_session),
 ) -> User:
     # NOTE: request-header capture for observability lives in
     # RequestMetaMiddleware (pure ASGI), NOT here — a contextvar written in this
     # sync dependency runs in a threadpool copy and is lost at the _log_usage seam.
+    #
+    # This dependency deliberately opens its OWN short-lived session instead of
+    # taking ``Depends(get_session)``. A ``yield`` dependency's exit code runs
+    # only after the response has been sent (FastAPI >= 0.118 restored that
+    # ordering, streaming responses included), so a request-scoped session
+    # would keep its pooled PostgreSQL connection checked out — idle in
+    # transaction — for the whole lifetime of a streaming completion. With
+    # many concurrent Claude Code streams that exhausted the QueuePool
+    # (``QueuePool limit of size 20 overflow 15 reached``) and every new
+    # request then failed at auth. The session below is closed before this
+    # function returns, so a stream never holds a DB connection.
     # Support both `Authorization: Bearer <key>` (OpenAI-style) and
     # `x-api-key: <key>` (Anthropic-style) for client compatibility.
     #
@@ -219,60 +229,66 @@ def get_current_user(
             detail="Missing API key. Provide Authorization: Bearer <key> or x-api-key header.",
         )
 
-    user: User | None = None
-    for key in candidates:
-        user = session.exec(select(User).where(User.api_key == key)).first()
-        if user is not None:
-            break
+    with Session(engine) as session:
+        user: User | None = None
+        for key in candidates:
+            user = session.exec(select(User).where(User.api_key == key)).first()
+            if user is not None:
+                break
 
-    if user is None:
-        # Log a masked preview of every credential the client sent so
-        # operators can tell "wrong key" from "no key" from "mangled key"
-        # without leaking the full secret to the log file.
-        previews = ", ".join(_mask(k) for k in candidates)
-        logger.warning("Auth rejected: no user found for candidates [{}]", previews)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key.",
-        )
-    if user.is_disabled and not user.is_admin:
-        # Admin bypass mirrors get_web_user — if an admin row is somehow
-        # flagged disabled (only possible via direct DB edit; the toggle
-        # endpoint blocks self-disable), they can still call the API to
-        # fix the situation. Non-admins always get rejected.
-        logger.warning("Auth rejected: user '{}' is disabled", user.username)
-        raise AccountDisabledError(user.username)
-    _check_daily_limit(session, user)
+        if user is None:
+            # Log a masked preview of every credential the client sent so
+            # operators can tell "wrong key" from "no key" from "mangled key"
+            # without leaking the full secret to the log file.
+            previews = ", ".join(_mask(k) for k in candidates)
+            logger.warning("Auth rejected: no user found for candidates [{}]", previews)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid API key.",
+            )
+        if user.is_disabled and not user.is_admin:
+            # Admin bypass mirrors get_web_user — if an admin row is somehow
+            # flagged disabled (only possible via direct DB edit; the toggle
+            # endpoint blocks self-disable), they can still call the API to
+            # fix the situation. Non-admins always get rejected.
+            logger.warning("Auth rejected: user '{}' is disabled", user.username)
+            raise AccountDisabledError(user.username)
+        _check_daily_limit(session, user)
+    # ``user`` is now detached: its columns are loaded (SQLModel does not
+    # expire on close) and downstream code only ever reads them.
     return user
 
 
 def require_azure_access(
     user: User = Depends(get_current_user),
-    session: Session = Depends(get_session),
 ) -> User:
     """Dependency for /azure/v1/* endpoints — additionally checks the Azure
-    access flag and the per-user Azure daily sub-limit."""
+    access flag and the per-user Azure daily sub-limit.
+
+    Uses ``ensure_azure_budget`` (short-lived session) rather than a
+    request-scoped ``Depends(get_session)`` for the same reason as
+    ``get_current_user``: the connection must not outlive the auth step."""
     if not user.can_use_azure and not user.is_admin:
         logger.warning("Azure access denied for user '{}'", user.username)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Azure access not granted. Contact your administrator.",
         )
-    _check_azure_daily_limit(session, user)
+    ensure_azure_budget(user)
     return user
 
 
 def require_bedrock_access(
     user: User = Depends(get_current_user),
-    session: Session = Depends(get_session),
 ) -> User:
     """Dependency for /aws/v1/* endpoints — additionally checks the Bedrock
-    access flag and the per-user Bedrock daily sub-limit."""
+    access flag and the per-user Bedrock daily sub-limit (short-lived
+    session via ``ensure_bedrock_budget``, see ``get_current_user``)."""
     if not user.can_use_bedrock and not user.is_admin:
         logger.warning("Bedrock access denied for user '{}'", user.username)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Bedrock access not granted. Contact your administrator.",
         )
-    _check_bedrock_daily_limit(session, user)
+    ensure_bedrock_budget(user)
     return user
