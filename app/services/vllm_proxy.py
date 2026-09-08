@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from decimal import Decimal
 from typing import Any
 
@@ -453,6 +454,54 @@ def _log_error(
         logger.warning("observability error-hook failed: {}", exc)
 
 
+_SLOW_REQUEST_WARN_DEFAULT_S = 120.0
+
+
+def _slow_request_threshold_s() -> float:
+    """Seconds after which a completed request is logged as a WARNING.
+
+    ``SLOW_REQUEST_WARN_S`` in the gateway env; default 120. ``0`` (or any
+    non-positive / unparsable value) disables the line. Read at call time so
+    the knob can be turned without touching code.
+    """
+    raw = os.getenv("SLOW_REQUEST_WARN_S", "").strip()
+    if not raw:
+        return _SLOW_REQUEST_WARN_DEFAULT_S
+    try:
+        return float(raw)
+    except ValueError:
+        return _SLOW_REQUEST_WARN_DEFAULT_S
+
+
+def _warn_if_slow(
+    user: User, model: str, model_type: str, endpoint: str, backend: str,
+    input_tokens: int, output_tokens: int, latency_ms: float | None,
+) -> None:
+    """Emit one WARNING line for a request that took longer than the threshold.
+
+    The file sink only records WARNING and above (LOG_LEVEL default), and a
+    request that merely took a long time to *succeed* used to leave no trace
+    there at all — the ``_log_usage`` INFO line never reaches the file and
+    ``usage_logs`` stores no duration. Diagnosing "is the cloud backend slow
+    today" therefore needed Langfuse or nginx logs. This line makes slow
+    requests greppable (``Slow request``) without enabling INFO logging.
+    """
+    if latency_ms is None:
+        return
+    threshold = _slow_request_threshold_s()
+    if threshold <= 0:
+        return
+    seconds = latency_ms / 1000.0
+    if seconds < threshold:
+        return
+    logger.warning(
+        "Slow request | user={} model={} type={} endpoint={} backend={} "
+        "duration={:.1f}s input_tokens={} output_tokens={} threshold={:.0f}s",
+        user.username, model, model_type, endpoint, backend,
+        seconds, input_tokens, output_tokens, threshold,
+    )
+
+
 def _submit_usage_write(fn: Any, *args: Any) -> None:
     """Dispatch the usage-log DB write off the event loop, fire-and-forget.
 
@@ -519,6 +568,17 @@ def _log_usage(
         )
     except Exception as exc:  # defensive — must never break logging/billing
         logger.warning("observability hook failed: {}", exc)
+
+    # Slow-request WARNING (file-visible without INFO logging). Must be read
+    # here, on the request's own task — the contextvar holding the request
+    # start time is not visible from the usage-write executor thread.
+    try:
+        _warn_if_slow(
+            user, model, model_type, endpoint, backend,
+            input_tokens, output_tokens, request_latency_ms(),
+        )
+    except Exception as exc:  # defensive — a log line must never break billing
+        logger.warning("slow-request hook failed: {}", exc)
 
     _submit_usage_write(
         _log_usage_sync,
