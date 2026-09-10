@@ -160,6 +160,38 @@ async def _pump_sse_lines(
             if kind in ("done", "err"):
                 return
     finally:
+        await _release_stream(task, resp_holder)
+
+
+# Strong references to in-flight cleanup tasks: asyncio only holds tasks
+# weakly, and a cleanup that outlives its pump (see _release_stream) must not
+# be garbage-collected mid-close.
+_pending_releases: set[asyncio.Task] = set()
+
+
+async def _release_stream(task: asyncio.Task, resp_holder: list) -> None:
+    """Stop the pump's reader task and close the downstream response.
+
+    Runs the actual cleanup in a DETACHED task and only *waits* for it here,
+    so the caller's own cancellation can never reach the close sequence.
+
+    That matters because the pump is consumed from a Starlette
+    ``StreamingResponse``, which runs inside an anyio task group that is
+    cancelled the moment the client disconnects — and anyio keeps
+    re-delivering that cancellation at every ``await`` until the task leaves
+    the scope. With the cleanup inline, ``await task`` forwarded the *second*
+    cancellation into the reader (asyncio cancels the future a cancelled task
+    is awaiting), and it landed inside httpcore's shielded connection-close:
+    httpcore had already marked the pool request done, so the HTTP/1.1
+    socket was never closed and the pool slot stayed "in use" forever. Every
+    stream a client abandoned mid-flight leaked one downstream connection;
+    on a 200-slot cloud client that was ~a day of Claude Code usage before
+    every new request failed with ``PoolTimeout``.
+
+    Reproduced by ``tests/test_stream_disconnect_cleanup.py``.
+    """
+
+    async def _cleanup() -> None:
         if not task.done():
             task.cancel()
             try:
@@ -171,6 +203,16 @@ async def _pump_sse_lines(
                 await resp.aclose()
             except Exception:
                 pass
+
+    cleanup = asyncio.create_task(_cleanup())
+    _pending_releases.add(cleanup)
+    cleanup.add_done_callback(_pending_releases.discard)
+    try:
+        await asyncio.shield(cleanup)
+    except asyncio.CancelledError:
+        # The consumer is being cancelled (client gone). The cleanup task
+        # carries on by itself; re-raise so the generator still unwinds.
+        raise
 
 
 # ---------------------------------------------------------------------------

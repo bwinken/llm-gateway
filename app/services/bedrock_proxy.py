@@ -75,6 +75,7 @@ from app.services.vllm_proxy import (
     _error_response,
     _log_error,
     _log_usage,
+    _release_stream,
     _warn_if_slow_headers,
 )
 
@@ -271,17 +272,8 @@ async def _pump_bedrock_events(
             if kind in ("done", "err"):
                 return
     finally:
-        if not task.done():
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-        for resp in resp_holder:
-            try:
-                await resp.aclose()
-            except Exception:
-                pass
+        # Detached, cancellation-proof cleanup — see vllm_proxy._release_stream.
+        await _release_stream(task, resp_holder)
 
 
 # ---------------------------------------------------------------------------
