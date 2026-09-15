@@ -11,7 +11,7 @@ All pages are protected by oauth2-proxy + nginx `auth_request` — users must co
 /dashboard           → User Dashboard (requires read or admin scope)
 /admin               → Admin Panel (requires admin scope)
 /admin/models        → Model Config (requires admin scope)
-/setup               → CA cert install page (requires read or admin scope; SSO-protected)
+/setup               → Claude Code installer page (requires read or admin scope; SSO-protected)
 disabled.html        → Rendered by AccountDisabledError handler when a disabled user hits any HTML route
 /oauth2/sign_out     → Logout (handled by oauth2-proxy)
 ```
@@ -125,25 +125,14 @@ disabled.html        → Rendered by AccountDisabledError handler when a disable
 
 ---
 
-## `/setup` — CA Certificate Install Page
+## `/setup` — Claude Code Installer Page
 
 **File**: `setup.html` ← `web_ui.py`
-**Permission**: JWT scope includes `read` or `admin` (SSO-protected; nginx no longer bypasses oauth2-proxy for `/setup`)
+**Permission**: JWT scope includes `read` or `admin` (SSO-protected; nginx does not bypass oauth2-proxy for `/setup`)
 
-This page is for **Claude desktop / Office** users who need the gateway's internal CA certificate trusted on Windows. The page is intentionally separate from the dashboard's Claude Code installer, and the on-page copy makes the distinction explicit:
+Single-purpose page that walks the user through installing the Claude Code CLI: download the personalised installer (`GET /dashboard/install-claude-code.bat`, which inlines the requesting user's API key), run it, then a `~/.claude/settings.json` reference table. When the admin has set `install_guide_url` (Admin → Site Links), a highlighted "Step-by-step Install Guide" card is rendered above the steps.
 
-- **This page** — CA cert (so corporate browsers and Claude in Office can reach the HTTPS gateway)
-- **Not this page** — Claude Code CLI installer (download from the Dashboard instead)
-
-### Downloads
-
-The user-facing UI offers only the `.bat` installer. The `.ps1` installer (`install-cert-user.ps1`) still lives in `setup/` for ops to use manually but is **not** in the download whitelist (`_SETUP_ALLOWED` in `app/routers/web_ui.py`):
-
-| File | Whitelisted? | Purpose |
-|---|---|---|
-| `llm-gateway-ca.crt` | yes | Internal CA certificate |
-| `install-cert.bat` | yes | Windows batch installer (CurrentUser\Root, no admin required) |
-| `install-cert-user.ps1` | no | PowerShell equivalent — kept in repo for ops, not downloadable |
+The former CA-certificate tab (and its `/setup/files/<name>` download route) was removed — the gateway no longer ships a cert installer.
 
 ---
 
