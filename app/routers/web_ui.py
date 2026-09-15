@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Security
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
@@ -42,10 +42,6 @@ templates = Jinja2Templates(directory=str(_templates_dir))
 # through every render context.
 templates.env.globals["get_site_links"] = get_site_links
 _SETUP_DIR = Path(__file__).resolve().parent.parent.parent / "setup"
-_SETUP_ALLOWED = {
-    "llm-gateway-ca.crt",
-    "install-cert.bat",
-}
 
 
 def _resolve_prices(entry: dict, model_type: str, pricing_map: dict) -> tuple[float, float]:
@@ -417,36 +413,16 @@ async def setup_page(
     request: Request,
     user: User = Security(get_web_user, scopes=["read"]),
 ):
-    """Setup page with CA cert + Claude Code tabs. Requires login."""
-    available = {name: (_SETUP_DIR / name).is_file() for name in _SETUP_ALLOWED}
+    """Setup page for the Claude Code installer. Requires login."""
     claude_code_available = (_SETUP_DIR / "install-claude-code.bat").is_file()
     return templates.TemplateResponse(
         "setup.html",
         _common_ctx(
             request,
             title="Setup",
-            available=available,
             claude_code_available=claude_code_available,
             user=user,
             display_name=user.display_name or user.username,
             org_code=user.org_code,
         ),
-    )
-
-
-@router.get("/setup/files/{filename}")
-async def setup_file(
-    filename: str,
-    user: User = Security(get_web_user, scopes=["read"]),
-):
-    """Serve a file from the setup/ directory. Requires login; whitelist-only."""
-    if filename not in _SETUP_ALLOWED:
-        raise HTTPException(status_code=404, detail="Not found.")
-    filepath = _SETUP_DIR / filename
-    if not filepath.is_file():
-        raise HTTPException(status_code=404, detail="File not available.")
-    return FileResponse(
-        filepath,
-        filename=filename,
-        media_type="application/octet-stream",
     )

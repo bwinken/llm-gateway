@@ -11,7 +11,3 @@ keys/
 monitor/
 logs/
 deploy/llm-gateway.nginx.conf
-
-# Actual certs are deployment-specific; only template files are committed
-setup/*.crt
-setup/*.pem

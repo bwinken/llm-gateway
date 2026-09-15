@@ -11,7 +11,7 @@
 /dashboard           → 使用者 Dashboard（需 read 或 admin scope）
 /admin               → 管理面板（需 admin scope）
 /admin/models        → 模型設定（需 admin scope）
-/setup               → CA 憑證安裝頁(需 read 或 admin scope;改為 SSO 保護)
+/setup               → Claude Code 安裝頁(需 read 或 admin scope;SSO 保護)
 disabled.html        → 已停用使用者點擊任何 HTML 路由時,由 AccountDisabledError handler render
 /oauth2/sign_out     → 登出（由 oauth2-proxy 處理）
 ```
@@ -126,25 +126,14 @@ disabled.html        → 已停用使用者點擊任何 HTML 路由時,由 Accou
 
 ---
 
-## `/setup` — CA 憑證安裝頁
+## `/setup` — Claude Code 安裝頁
 
 **檔案**:`setup.html` ← `web_ui.py`
-**權限**:JWT scope 含 `read` 或 `admin`(改為 SSO 保護;nginx 不再對 `/setup` 跳過 oauth2-proxy)
+**權限**:JWT scope 含 `read` 或 `admin`(SSO 保護;nginx 不對 `/setup` 跳過 oauth2-proxy)
 
-此頁面是給 **Claude desktop / Office** 使用者安裝 gateway 內部 CA 憑證用的(讓公司瀏覽器和 Office 中的 Claude 能連到 HTTPS gateway)。頁面文案明確區隔兩種需求:
+單一用途頁面,引導使用者安裝 Claude Code CLI:下載個人化安裝腳本(`GET /dashboard/install-claude-code.bat`,伺服器端把使用者的 API key 填進去)、執行、再附上 `~/.claude/settings.json` 設定參考表。若 admin 有設定 `install_guide_url`(Admin → Site Links),步驟上方會多一張醒目的「Step-by-step Install Guide」卡片。
 
-- **本頁** — CA 憑證(讓 Claude in Office / 瀏覽器信任 HTTPS gateway)
-- **不是本頁** — Claude Code CLI 安裝(請從 Dashboard 下載)
-
-### 可下載檔案
-
-使用者面向的下拉只會提供 `.bat` 安裝腳本。`.ps1` 版本(`install-cert-user.ps1`)還在 `setup/` 中供 ops 手動使用,但**不**在白名單(`app/routers/web_ui.py` 的 `_SETUP_ALLOWED`):
-
-| 檔案 | 是否在白名單 | 用途 |
-|---|---|---|
-| `llm-gateway-ca.crt` | 是 | 內部 CA 憑證 |
-| `install-cert.bat` | 是 | Windows 批次安裝腳本(裝到 CurrentUser\Root,不需管理員) |
-| `install-cert-user.ps1` | 否 | PowerShell 版本 — 僅留在 repo,不開放下載 |
+原本的 CA 憑證分頁(以及 `/setup/files/<name>` 下載路由)已移除 — gateway 不再提供憑證安裝程式。
 
 ---
 
