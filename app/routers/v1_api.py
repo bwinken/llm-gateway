@@ -28,16 +28,17 @@ misconfiguration that previously surfaced as a silent 404.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import (
     _MODEL_METADATA_KEYS,
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
+    get_cloud_budget_fallback,
     get_model_routing_snapshot,
 )
-from app.core.deps import ensure_azure_budget, ensure_bedrock_budget, get_current_user
+from app.core.deps import check_cloud_budget, get_current_user
 from app.core.logger import logger
 from app.models.schema import User
 from app.services.azure_proxy import (
@@ -135,6 +136,54 @@ def _route_to_bedrock(alias: str, user: User) -> bool:
     )
     return False
 
+
+# Response header set when a cloud-bound request was served on-prem because
+# the user's Azure/Bedrock daily sub-limit was exhausted (see
+# ``_cloud_budget_gate``). Distinct from ``X-Model-Fallback`` (which the vLLM
+# resolver adds for the alias → default rewrite) so a client can tell "the
+# server you asked for was down" from "your cloud budget is spent".
+_BUDGET_FALLBACK_HEADER = "X-Budget-Fallback"
+
+
+async def _cloud_budget_gate(user: User, backend: str, alias: str, endpoint: str) -> bool:
+    """Enforce the per-user cloud daily sub-limit for a ``/v1/*`` request
+    that ``_route_to_azure`` / ``_route_to_bedrock`` has already claimed.
+
+    Returns True when the request may go to ``backend``.
+
+    When the sub-limit is exhausted, the outcome is the operator's call
+    (``[app].cloud_budget_fallback``, admin panel → Cloud Budget Fallback):
+      - off (default): HTTP 429, so the caller knows their cloud budget is
+        gone rather than silently getting a different model's output;
+      - on: returns False and the handler serves the request from the
+        on-prem vLLM path (``_resolve_model`` maps the cloud alias to the
+        configured vLLM default). The overall ``daily_limit_usd`` was already
+        enforced at auth, so once on-prem budget is gone too the request
+        never gets this far — it is refused with the usual 429.
+
+    Blocking DB read → threadpool.
+    """
+    allow = get_cloud_budget_fallback()
+    ok = await run_in_threadpool(
+        check_cloud_budget, user, backend, allow_fallback=allow
+    )
+    if not ok:
+        logger.warning(
+            "{} daily limit exhausted | user={} model={} endpoint={} "
+            "-> falling back to on-prem (cloud_budget_fallback=true)",
+            backend.capitalize(), user.username, alias, endpoint,
+        )
+    return ok
+
+
+def _tag_budget_fallback(response: Response, backend: str) -> Response:
+    """Mark a response served on-prem because the cloud sub-limit was spent."""
+    response.headers[_BUDGET_FALLBACK_HEADER] = (
+        f"{backend} daily limit exceeded; served by on-prem"
+    )
+    return response
+
+
 # Capability labels for the /v1/models response
 _TYPE_CAPABILITIES: dict[str, str] = {
     "llm": "text-generation",
@@ -222,18 +271,25 @@ async def list_models(user: User = Depends(get_current_user)):
 @router.post("/chat/completions")
 async def chat_completions(request: Request, user: User = Depends(get_current_user)):
     alias = await _peek_model_alias(request)
+    budget_fallback: str | None = None
     if alias and _route_to_azure(alias, user):
-        # Azure-bound: enforce the per-user Azure daily sub-limit (429 on
-        # exceed — deliberately NOT a silent fallback to vLLM, so the caller
-        # knows their Azure budget is exhausted rather than getting a
-        # different model's output). Blocking DB read → threadpool.
-        await run_in_threadpool(ensure_azure_budget, user)
-        return await azure_forward_chat_completions(request, user)
-    if alias and _route_to_bedrock(alias, user):
+        # Azure-bound: enforce the per-user Azure daily sub-limit. On exceed
+        # this is a 429 unless the operator enabled cloud_budget_fallback,
+        # in which case the request drops through to the vLLM path below.
+        if await _cloud_budget_gate(user, "azure", alias, "/v1/chat/completions"):
+            return await azure_forward_chat_completions(request, user)
+        budget_fallback = "azure"
+    elif alias and _route_to_bedrock(alias, user):
         # Same contract as the Azure gate above, for the Bedrock sub-limit.
-        await run_in_threadpool(ensure_bedrock_budget, user)
-        return await bedrock_forward_chat_completions(request, user)
-    return await vllm_forward_chat_completions(request, user, allowed_types=["llm", "vlm"])
+        if await _cloud_budget_gate(user, "bedrock", alias, "/v1/chat/completions"):
+            return await bedrock_forward_chat_completions(request, user)
+        budget_fallback = "bedrock"
+    response = await vllm_forward_chat_completions(
+        request, user, allowed_types=["llm", "vlm"]
+    )
+    if budget_fallback:
+        _tag_budget_fallback(response, budget_fallback)
+    return response
 
 
 # OpenAPI documentation for the render endpoint.
@@ -561,13 +617,18 @@ async def responses(request: Request, user: User = Depends(get_current_user)):
     ``/v1/chat/completions``; see ``_route_to_azure``.
     """
     alias = await _peek_model_alias(request)
+    budget_fallback: str | None = None
     if alias and _route_to_azure(alias, user):
         # Same Azure sub-limit gate as /v1/chat/completions.
-        await run_in_threadpool(ensure_azure_budget, user)
-        return await azure_forward_responses(request, user)
-    return await vllm_forward_responses(
+        if await _cloud_budget_gate(user, "azure", alias, "/v1/responses"):
+            return await azure_forward_responses(request, user)
+        budget_fallback = "azure"
+    response = await vllm_forward_responses(
         request, user, allowed_types=["llm", "vlm"], path_suffix="/responses"
     )
+    if budget_fallback:
+        _tag_budget_fallback(response, budget_fallback)
+    return response
 
 
 @router.post("/v1/messages")
@@ -588,14 +649,20 @@ async def messages(request: Request, user: User = Depends(get_current_user)):
     Azure-configured and the user has permission; see ``_route_to_azure``.
     """
     alias = await _peek_model_alias(request)
+    budget_fallback: str | None = None
     if alias and _route_to_azure(alias, user):
         # Same Azure sub-limit gate as /v1/chat/completions.
-        await run_in_threadpool(ensure_azure_budget, user)
-        return await azure_forward_messages(request, user)
-    if alias and _route_to_bedrock(alias, user):
-        await run_in_threadpool(ensure_bedrock_budget, user)
-        return await bedrock_forward_messages(request, user)
-    return await vllm_forward_messages(request, user, allowed_types=["llm", "vlm"])
+        if await _cloud_budget_gate(user, "azure", alias, "/v1/messages"):
+            return await azure_forward_messages(request, user)
+        budget_fallback = "azure"
+    elif alias and _route_to_bedrock(alias, user):
+        if await _cloud_budget_gate(user, "bedrock", alias, "/v1/messages"):
+            return await bedrock_forward_messages(request, user)
+        budget_fallback = "bedrock"
+    response = await vllm_forward_messages(request, user, allowed_types=["llm", "vlm"])
+    if budget_fallback:
+        _tag_budget_fallback(response, budget_fallback)
+    return response
 
 
 @router.post("/v1/messages/count_tokens")
@@ -618,18 +685,26 @@ async def messages_count_tokens(
     user has permission; otherwise vLLM's tokenizer-backed count is used.
     """
     alias = await _peek_model_alias(request)
+    budget_fallback: str | None = None
     if alias and _route_to_azure(alias, user):
         # Gated like the billable Azure paths for parity with
         # /azure/v1/messages/count_tokens (whose require_azure_access
-        # dependency also enforces the sub-limit).
-        await run_in_threadpool(ensure_azure_budget, user)
-        return await azure_forward_count_tokens(request, user)
-    if alias and _route_to_bedrock(alias, user):
-        await run_in_threadpool(ensure_bedrock_budget, user)
-        return await bedrock_forward_count_tokens(request, user)
-    return await vllm_forward_count_tokens(
+        # dependency also enforces the sub-limit). With the fallback on, the
+        # count comes from the on-prem tokenizer — the same server the
+        # paired /v1/messages call will be served by.
+        if await _cloud_budget_gate(user, "azure", alias, "/v1/messages/count_tokens"):
+            return await azure_forward_count_tokens(request, user)
+        budget_fallback = "azure"
+    elif alias and _route_to_bedrock(alias, user):
+        if await _cloud_budget_gate(user, "bedrock", alias, "/v1/messages/count_tokens"):
+            return await bedrock_forward_count_tokens(request, user)
+        budget_fallback = "bedrock"
+    response = await vllm_forward_count_tokens(
         request, user, allowed_types=["llm", "vlm"]
     )
+    if budget_fallback:
+        _tag_budget_fallback(response, budget_fallback)
+    return response
 
 
 @router.post("/v1/tokenize")

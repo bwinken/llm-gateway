@@ -17,6 +17,15 @@ log_level = "info"
 support_bot_url = ""
 install_guide_url = ""
 
+# Cloud-budget fallback (admin panel → "Cloud Budget Fallback" card).
+# When a user's Azure / Bedrock *daily sub-limit* is exhausted, a request for
+# a cloud alias on the unified /v1/* surface is served by the on-prem vLLM
+# default instead of being refused with 429 (the response carries an
+# X-Budget-Fallback header). The overall daily_limit_usd still applies: once
+# that is gone too, the request is refused as usual. The dedicated
+# /azure/v1/* and /aws/v1/* surfaces never fall back. Default: false.
+cloud_budget_fallback = false
+
 # ==========================================
 # Pricing (USD per 1M tokens)
 # ==========================================

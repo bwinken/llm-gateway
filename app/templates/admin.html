@@ -412,6 +412,32 @@ function anomalyAction(id, action) {
     </div>
 </div>
 
+{# ── Cloud Budget Fallback ── #}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #a78bfa">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+            <h2 class="text-sm font-bold text-t2 mb-1">Cloud Budget Fallback</h2>
+            <p class="text-xs text-t4 gw-tip gw-tip-wide"
+               data-tip="Applies to the unified /v1/* surface only. A user whose Azure or AWS daily sub-limit is spent gets the on-prem default model (response carries X-Budget-Fallback) instead of a 429. The overall daily limit still applies — once that is gone too, requests are refused. /azure/v1/* and /aws/v1/* never fall back.">
+                When a user's Azure / AWS daily sub-limit is exhausted, serve their request with the on-prem model instead of refusing it.
+                Requests are still refused once the overall daily limit is exhausted.
+            </p>
+        </div>
+        <form id="cloud-budget-fallback-form" action="/admin/cloud-budget-fallback" method="POST"
+              class="flex items-center gap-3">
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" name="enabled" value="on" {{ 'checked' if cloud_budget_fallback else '' }}
+                       class="w-4 h-4" style="accent-color:#a78bfa">
+                <span id="cloud-budget-fallback-state" class="text-sm font-semibold text-t4"
+                      style="{{ 'color:#cab9ff' if cloud_budget_fallback else '' }}">
+                    {{ 'Enabled — falls back to on-prem' if cloud_budget_fallback else 'Disabled — 429 when cloud budget is spent' }}
+                </span>
+            </label>
+            <noscript><button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button></noscript>
+        </form>
+    </div>
+</div>
+
 {# ── Site Links (support bot + install guide) ── #}
 <div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #4dd9e8">
     <div class="mb-4">
@@ -586,7 +612,8 @@ function anomalyAction(id, action) {
                         <td class="whitespace-nowrap text-right">
                             <div class="flex items-center justify-end gap-2">
                                 <form action="/admin/users/{{ u.id }}/toggle-azure" method="POST" data-username="{{ u.username }}"
-                                      onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.can_use_azure else 'false' }} ? 'Revoke' : 'Grant') + ' Azure access?');">
+                                      data-granted="{{ 'true' if u.can_use_azure else 'false' }}" data-backend="azure"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Revoke' : 'Grant') + ' Azure access?');">
                                     <button type="submit"
                                             class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.can_use_azure else 'gw-btn-ghost' }}"
                                             style="{{ 'background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.4);color:#cab9ff' if u.can_use_azure else '' }}"
@@ -595,7 +622,8 @@ function anomalyAction(id, action) {
                                     </button>
                                 </form>
                                 <form action="/admin/users/{{ u.id }}/toggle-bedrock" method="POST" data-username="{{ u.username }}"
-                                      onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.can_use_bedrock else 'false' }} ? 'Revoke' : 'Grant') + ' AWS Bedrock access?');">
+                                      data-granted="{{ 'true' if u.can_use_bedrock else 'false' }}" data-backend="bedrock"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Revoke' : 'Grant') + ' AWS Bedrock access?');">
                                     <button type="submit"
                                             class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.can_use_bedrock else 'gw-btn-ghost' }}"
                                             style="{{ 'background:rgba(255,153,51,0.15);border-color:rgba(255,153,51,0.4);color:#ffcb8a' if u.can_use_bedrock else '' }}"
@@ -713,7 +741,8 @@ function anomalyAction(id, action) {
                         <td class="whitespace-nowrap text-right">
                             <div class="flex items-center justify-end gap-2">
                                 <form action="/admin/users/{{ u.id }}/toggle-azure" method="POST" data-username="{{ u.username }}"
-                                      onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.can_use_azure else 'false' }} ? 'Revoke' : 'Grant') + ' Azure access?');">
+                                      data-granted="{{ 'true' if u.can_use_azure else 'false' }}" data-backend="azure"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Revoke' : 'Grant') + ' Azure access?');">
                                     <button type="submit"
                                             class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.can_use_azure else 'gw-btn-ghost' }}"
                                             style="{{ 'background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.4);color:#cab9ff' if u.can_use_azure else '' }}"
@@ -722,7 +751,8 @@ function anomalyAction(id, action) {
                                     </button>
                                 </form>
                                 <form action="/admin/users/{{ u.id }}/toggle-bedrock" method="POST" data-username="{{ u.username }}"
-                                      onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.can_use_bedrock else 'false' }} ? 'Revoke' : 'Grant') + ' AWS Bedrock access?');">
+                                      data-granted="{{ 'true' if u.can_use_bedrock else 'false' }}" data-backend="bedrock"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Revoke' : 'Grant') + ' AWS Bedrock access?');">
                                     <button type="submit"
                                             class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.can_use_bedrock else 'gw-btn-ghost' }}"
                                             style="{{ 'background:rgba(255,153,51,0.15);border-color:rgba(255,153,51,0.4);color:#ffcb8a' if u.can_use_bedrock else '' }}"
@@ -1007,12 +1037,99 @@ function anomalyAction(id, action) {
 </script>
 
 <script>
+    /* ── In-place Azure / AWS grant toggles + Cloud Budget Fallback ──
+       These used to be classic POST → 303 → /admin round-trips, which
+       re-rendered the whole page on every click and dumped the viewport
+       (the scroll restore below is best-effort — the tables still jumped).
+       Now the click POSTs with Accept: application/json, the endpoint
+       answers with the new flag value, and only the one button repaints. */
+    (function(){
+        var TOGGLE_ACTION = /\/admin\/users\/\d+\/toggle-(azure|bedrock)$/;
+        var GRANTED_STYLE = {
+            azure:   'background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.4);color:#cab9ff',
+            bedrock: 'background:rgba(255,153,51,0.15);border-color:rgba(255,153,51,0.4);color:#ffcb8a'
+        };
+        var TITLES = {
+            azure:   { on: 'Azure granted',       off: 'No Azure access' },
+            bedrock: { on: 'AWS Bedrock granted', off: 'No AWS Bedrock access' }
+        };
+
+        function paint(form, granted) {
+            var backend = form.dataset.backend;
+            var btn = form.querySelector('button[type="submit"]');
+            form.dataset.granted = granted ? 'true' : 'false';
+            if (!btn) return;
+            btn.classList.toggle('gw-btn-primary', granted);
+            btn.classList.toggle('gw-btn-ghost', !granted);
+            btn.setAttribute('style', granted ? GRANTED_STYLE[backend] : '');
+            btn.title = granted ? TITLES[backend].on : TITLES[backend].off;
+        }
+
+        function postJson(url, form) {
+            return fetch(url, {
+                method: 'POST',
+                headers: { 'Accept': 'application/json' },
+                body: new URLSearchParams(new FormData(form)),
+                credentials: 'same-origin'
+            }).then(function(resp){
+                if (!resp.ok) {
+                    return resp.text().then(function(t){
+                        throw new Error('HTTP ' + resp.status + (t ? ': ' + t.slice(0, 200) : ''));
+                    });
+                }
+                return resp.json();
+            });
+        }
+
+        document.addEventListener('submit', function(e){
+            var form = e.target;
+            if (!(form instanceof HTMLFormElement) || !TOGGLE_ACTION.test(form.action)) return;
+            e.preventDefault();
+            var btn = form.querySelector('button[type="submit"]');
+            var backend = form.dataset.backend;
+            if (btn) btn.disabled = true;
+            postJson(form.action, form)
+                .then(function(data){
+                    var key = backend === 'azure' ? 'can_use_azure' : 'can_use_bedrock';
+                    paint(form, !!data[key]);
+                })
+                .catch(function(err){ alert('Update failed — ' + err.message); })
+                .then(function(){ if (btn) btn.disabled = false; });
+        }, true);
+
+        var fbForm = document.getElementById('cloud-budget-fallback-form');
+        if (fbForm) {
+            var box = fbForm.querySelector('input[name="enabled"]');
+            var state = document.getElementById('cloud-budget-fallback-state');
+            function paintFallback(on) {
+                box.checked = on;
+                state.textContent = on ? 'Enabled — falls back to on-prem'
+                                       : 'Disabled — 429 when cloud budget is spent';
+                state.style.color = on ? '#cab9ff' : '';
+            }
+            box.addEventListener('change', function(){
+                var wanted = box.checked;
+                box.disabled = true;
+                postJson(fbForm.action, fbForm)
+                    .then(function(data){ paintFallback(!!data.cloud_budget_fallback); })
+                    .catch(function(err){
+                        paintFallback(!wanted);
+                        alert('Save failed — ' + err.message);
+                    })
+                    .then(function(){ box.disabled = false; });
+            });
+            fbForm.addEventListener('submit', function(e){ e.preventDefault(); });
+        }
+    })();
+</script>
+
+<script>
     /* ── Keep scroll position & active tab across full-page round-trips ──
        Actions in the user-management tables (search, pagination,
-       Azure/disable toggles, deletes) reload /admin via GET or
-       POST-redirect, which would otherwise dump the viewport back at the
-       top of the page and reset the Users/Apps tab. (Limit saves are AJAX
-       now and never leave the page.) */
+       disable toggles, deletes) reload /admin via GET or POST-redirect,
+       which would otherwise dump the viewport back at the top of the page
+       and reset the Users/Apps tab. (Limit saves and the Azure/AWS grant
+       toggles are AJAX now and never leave the page.) */
     (function(){
         var Y_KEY = 'adminScroll';
         function saveScroll(){
