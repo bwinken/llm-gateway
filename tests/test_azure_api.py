@@ -366,6 +366,30 @@ class TestAzureMessagesAnthropic:
         assert body["usage"]["input_tokens"] == 7
         assert body["usage"]["output_tokens"] == 3
 
+    def test_probe_with_max_tokens_1_is_raised_to_azure_floor(self, client):
+        """Claude Code's model-availability probe sends ``max_tokens: 1``.
+        Azure Responses 400s ``max_output_tokens`` < 16, which made every
+        Azure alias look rejected in the picker; the translator now raises
+        the value to the floor so the probe (and the model) succeed."""
+        captured: dict = {}
+
+        async def fake_post(url, **kwargs):
+            captured["json"] = kwargs.get("json", {})
+            return _fake_response(200, _responses_payload("ok", 1, 1))
+
+        client.__httpx_mock__.post = fake_post
+        resp = client.post(
+            "/azure/v1/messages",
+            json={
+                "model": "azure-gpt-4",
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            headers=auth_header(),
+        )
+        assert resp.status_code == 200
+        assert captured["json"]["max_output_tokens"] == 16
+
     def test_count_tokens_returns_estimate(self, client):
         resp = client.post(
             "/azure/v1/messages/count_tokens",

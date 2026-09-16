@@ -173,6 +173,28 @@ def _drop_orphan_function_calls(
     return cleaned, dropped
 
 
+# The Responses API rejects ``max_output_tokens`` below 16 (400
+# ``integer_below_min_value``). Claude Code and other Anthropic-SDK clients
+# probe a model's availability with ``max_tokens: 1`` — a legal Anthropic
+# request that vLLM and Bedrock accept — so without this floor every Azure
+# alias looks "rejected" to the picker while the model itself is fine. A
+# request that asks for fewer tokens than the floor is raised to it: nobody
+# wants a 1-token answer, they want to know the model responds.
+_MIN_MAX_OUTPUT_TOKENS = 16
+
+
+def _clamp_max_output_tokens(value: Any) -> Any:
+    """Raise an integer ``max_output_tokens`` below Azure's floor to the floor.
+
+    Non-integer values (a client sending a string, a float, ``True``) pass
+    through untouched so the downstream's own validation error is what the
+    caller sees, not one we manufactured.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return value
+    return max(value, _MIN_MAX_OUTPUT_TOKENS)
+
+
 def openai_chat_to_responses_request(
     body: dict[str, Any],
     model: str | None = None,
@@ -231,7 +253,7 @@ def openai_chat_to_responses_request(
     # Responses API: `max_output_tokens`.
     max_out = body.get("max_completion_tokens", body.get("max_tokens"))
     if max_out is not None:
-        out["max_output_tokens"] = max_out
+        out["max_output_tokens"] = _clamp_max_output_tokens(max_out)
 
     for k in ("stream", "user"):
         if k in body:
