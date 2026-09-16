@@ -299,6 +299,55 @@ class TestNormalizeAnthropicMessages:
         }
         assert normalize_anthropic_messages(body) is body
 
+    def test_tool_reference_in_tool_result_rewritten_to_text(self):
+        """Claude Code's MCP tool search answers with tool_reference blocks.
+        Forwarded verbatim, vLLM keeps them structured up to the chat
+        template and Qwen 3.5+ 400s with 'Unexpected item type in content'."""
+        body = {
+            "model": "x",
+            "messages": [
+                {"role": "user", "content": "find a tool"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "tool_search",
+                     "input": {"query": "weather"}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+                        {"type": "tool_reference", "tool_name": "get_weather"},
+                        {"type": "tool_reference", "tool_name": "get_forecast"},
+                    ]},
+                ]},
+            ],
+        }
+        out = normalize_anthropic_messages(body)
+        assert out is not body
+        result = out["messages"][2]["content"][0]
+        assert result["type"] == "tool_result"
+        assert all(b.get("type") != "tool_reference" for b in result["content"])
+        text = result["content"][-1]["text"]
+        assert "get_weather" in text and "get_forecast" in text
+        # Input never mutated.
+        assert body["messages"][2]["content"][0]["content"][0]["type"] == "tool_reference"
+        # Untouched messages keep their content.
+        assert out["messages"][0] == body["messages"][0]
+
+    def test_tool_result_text_blocks_alongside_reference_are_kept(self):
+        body = {
+            "model": "x",
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+                        {"type": "text", "text": "found 1"},
+                        {"type": "tool_reference", "tool_name": "get_weather"},
+                    ]},
+                ]},
+            ],
+        }
+        out = normalize_anthropic_messages(body)
+        blocks = out["messages"][0]["content"][0]["content"]
+        assert blocks[0] == {"type": "text", "text": "found 1"}
+        assert blocks[1]["type"] == "text" and "get_weather" in blocks[1]["text"]
+
     def test_leading_system_entry_hoisted_to_system_field(self):
         body = {
             "model": "x",
@@ -413,6 +462,45 @@ class TestNormalizeAnthropicMessages:
         sent = captured["json"]["messages"]
         assert [m["role"] for m in sent] == ["user", "assistant", "user"]
         assert "<system-reminder>" in json.dumps(sent[0]["content"])
+
+
+    def test_tool_reference_rewritten_on_native_path(self, client, test_user, native_llm):
+        """End to end: the body vLLM receives carries no tool_reference block."""
+        downstream = make_httpx_response(200, {
+            "id": "msg_1", "type": "message", "role": "assistant",
+            "model": "real-llm-v1",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 1},
+        })
+        post, captured = make_post_router({"/messages": downstream})
+        client.__httpx_mock__.post = post
+
+        resp = client.post(
+            "/v1/messages",
+            json={
+                "model": "test-llm",
+                "max_tokens": 100,
+                "messages": [
+                    {"role": "user", "content": "find a tool"},
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "id": "toolu_1", "name": "tool_search",
+                         "input": {"query": "weather"}},
+                    ]},
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+                            {"type": "tool_reference", "tool_name": "get_weather"},
+                        ]},
+                    ]},
+                ],
+            },
+            headers=auth_header(),
+        )
+
+        assert resp.status_code == 200
+        sent = json.dumps(captured["json"]["messages"])
+        assert "tool_reference" not in sent
+        assert "get_weather" in sent
 
 
 class TestFlagOff:

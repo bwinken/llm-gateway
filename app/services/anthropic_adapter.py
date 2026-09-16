@@ -18,6 +18,7 @@ import json
 import uuid
 from typing import Any, Iterator
 
+from app.core.logger import logger
 from app.services.reasoning_effort import EFFORT_ALIASES
 
 
@@ -115,6 +116,62 @@ def _convert_content_block_to_openai(block: dict[str, Any]) -> dict[str, Any] | 
     return None
 
 
+def _tool_reference_name(block: dict[str, Any]) -> str:
+    """Name carried by a ``tool_reference`` block (Anthropic spells it
+    ``tool_name``; vLLM's own converter also accepts ``name``)."""
+    for key in ("tool_name", "name"):
+        val = block.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return ""
+
+
+def _tool_references_as_text(names: list[str]) -> str:
+    """The text a tool-search result collapses to. Every tool is already in
+    the request's ``tools`` list in full (the gateway strips Claude Code's
+    ``defer_loading`` flag, see ``_NATIVE_TOOL_KEYS``), so the reference only
+    has to tell the model the search succeeded and which tools it named."""
+    quoted = ", ".join(names)
+    return (
+        f"Tool search found: {quoted}. "
+        "These tools are already available in your tool list; call them directly."
+    )
+
+
+def rewrite_tool_references(content: Any) -> tuple[Any, list[str]]:
+    """Replace ``tool_reference`` blocks inside a ``tool_result``'s content
+    with one text block naming the referenced tools.
+
+    Claude Code's MCP tool search (deferred tools) answers its ``tool_search``
+    call with ``tool_reference`` blocks and expects the API to expand them
+    into full tool definitions. Two things go wrong with a self-hosted
+    downstream: the translation path used to drop the blocks (an empty tool
+    result, so the model believed the search found nothing), and the native
+    vLLM path keeps them structured all the way to the chat template, where
+    Qwen 3.5+ ``render_content`` raises ``Unexpected item type in content``
+    (400) because the item has no ``text`` / ``image`` / ``video`` key.
+
+    Returns ``(content, names)``: the same object with an empty list when
+    nothing was rewritten, otherwise a new list and the tool names replaced.
+    """
+    if not isinstance(content, list):
+        return content, []
+    names = [
+        _tool_reference_name(b)
+        for b in content
+        if isinstance(b, dict) and b.get("type") == "tool_reference"
+    ]
+    if not names:
+        return content, []
+    names = [n for n in names if n] or ["(unnamed)"]
+    out: list[Any] = [
+        b for b in content
+        if not (isinstance(b, dict) and b.get("type") == "tool_reference")
+    ]
+    out.append({"type": "text", "text": _tool_references_as_text(names)})
+    return out, names
+
+
 def _content_to_openai_text(content: Any) -> str:
     """Flatten Anthropic content to a plain string (used for system prompt)."""
     if isinstance(content, str):
@@ -159,6 +216,43 @@ def _merge_text_into_message(
         msg_out["content"] = f"{existing}\n\n{text}"
 
 
+def _message_has_tool_references(msg: Any) -> bool:
+    """True when any ``tool_result`` in this message carries a
+    ``tool_reference`` block."""
+    if not isinstance(msg, dict):
+        return False
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return False
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_result":
+            continue
+        inner = block.get("content")
+        if isinstance(inner, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_reference" for b in inner
+        ):
+            return True
+    return False
+
+
+def _rewrite_message_tool_references(content: list[Any]) -> list[Any]:
+    """Copy of ``content`` with every ``tool_result``'s ``tool_reference``
+    blocks rewritten to text (``rewrite_tool_references``). Never mutates
+    the input."""
+    out: list[Any] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            inner, names = rewrite_tool_references(block.get("content"))
+            if names:
+                logger.warning(
+                    "tool_reference blocks rewritten to text | tool_use_id={} tools={}",
+                    block.get("tool_use_id", ""), ", ".join(names),
+                )
+                block = {**block, "content": inner}
+        out.append(block)
+    return out
+
+
 def normalize_anthropic_messages(body: dict[str, Any]) -> dict[str, Any]:
     """Normalize a raw Anthropic request for the native pass-through path.
 
@@ -180,15 +274,24 @@ def normalize_anthropic_messages(body: dict[str, Any]) -> dict[str, Any]:
         official API, preserving temporal order and never touching the
         index-0 content (downstream prefix cache stays valid).
 
+    Also rewrites ``tool_reference`` blocks inside ``tool_result`` content
+    into text (``rewrite_tool_references``): sent verbatim, a native vLLM
+    downstream carries them into the chat template, and Qwen 3.5+ templates
+    400 on them with ``Unexpected item type in content``.
+
     Returns the body unchanged (same object) when ``messages`` is already
     clean, so the common case stays a pure pass-through. Never mutates the
     input; dirty requests get copied message dicts.
     """
     messages = body.get("messages")
-    if not isinstance(messages, list) or not any(
+    if not isinstance(messages, list):
+        return body
+    has_system = any(
         isinstance(m, dict) and m.get("role") in ("system", "developer")
         for m in messages
-    ):
+    )
+    has_refs = any(_message_has_tool_references(m) for m in messages)
+    if not has_system and not has_refs:
         return body
 
     def _as_blocks(content: Any) -> list[dict[str, Any]]:
@@ -231,6 +334,8 @@ def normalize_anthropic_messages(body: dict[str, Any]) -> dict[str, Any]:
 
         in_conversation = True
         new_msg = dict(msg)
+        if _message_has_tool_references(new_msg):
+            new_msg["content"] = _rewrite_message_tool_references(new_msg["content"])
         if role == "user" and pending:
             blocks = _as_blocks(new_msg.get("content", ""))
             for i, reminder in enumerate(pending):
@@ -433,6 +538,16 @@ def anthropic_to_openai_request(
             elif btype == "tool_result":
                 tr_content = block.get("content", "")
                 if isinstance(tr_content, list):
+                    # tool_reference blocks (Claude Code MCP tool search)
+                    # become text instead of vanishing — see
+                    # ``rewrite_tool_references``.
+                    tr_content, refs = rewrite_tool_references(tr_content)
+                    if refs:
+                        logger.warning(
+                            "tool_reference blocks rewritten to text | "
+                            "tool_use_id={} tools={}",
+                            block.get("tool_use_id", ""), ", ".join(refs),
+                        )
                     tr_content = _content_to_openai_text(tr_content)
                 elif not isinstance(tr_content, str):
                     tr_content = json.dumps(tr_content)
