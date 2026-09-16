@@ -618,6 +618,42 @@ def set_site_links(support_bot_url: str, install_guide_url: str) -> None:
     })
 
 
+# Cloud-budget fallback: when a user's Azure / Bedrock daily sub-limit is
+# exhausted, a request on the unified ``/v1/*`` surface can be served by the
+# on-prem vLLM default instead of being refused with 429. Off by default — the
+# 429 is the longstanding contract ("you get the model you asked for, or an
+# explicit budget error"), so switching to "you get *a* model" is an operator
+# decision made once here, not something the gateway does on its own.
+_CLOUD_BUDGET_FALLBACK_KEY = "cloud_budget_fallback"
+
+
+def get_cloud_budget_fallback() -> bool:
+    """Whether an exhausted Azure/Bedrock sub-limit falls back to on-prem.
+
+    Reads ``[app].cloud_budget_fallback`` (bool; string spellings such as
+    ``"true"`` / ``"yes"`` / ``"1"`` are tolerated). Missing or invalid →
+    ``False``, i.e. the pre-feature 429. Auto-reloads on file change.
+
+    Only the sub-limit is bypassed: the overall ``daily_limit_usd`` is checked
+    at auth for every request, so a user whose whole budget is gone still gets
+    the usual 429 with or without this flag.
+    """
+    _check_auto_reload()
+    val = APP_CONFIG.get(_CLOUD_BUDGET_FALLBACK_KEY, False)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "yes", "on", "1")
+    return False
+
+
+def set_cloud_budget_fallback(enabled: bool) -> None:
+    """Persist ``[app].cloud_budget_fallback`` to config.toml and reload."""
+    _save_app_keys({_CLOUD_BUDGET_FALLBACK_KEY: bool(enabled)})
+
+
 def _save_app_keys(values: dict[str, Any]) -> None:
     """Merge ``values`` into the [app] section of config.toml and reload."""
     raw = _load_toml()

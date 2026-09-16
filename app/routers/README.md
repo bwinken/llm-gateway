@@ -62,6 +62,8 @@ alias in AZURE_MODELS AND no permission              → vLLM path (silent fallb
 alias not in AZURE_MODELS                            → vLLM path
 ```
 
+A cloud-bound request then passes `_cloud_budget_gate` (per-user Azure/Bedrock daily sub-limit). Exhausted → 429 by default; with `[app].cloud_budget_fallback = true` (admin panel → Cloud Budget Fallback) the request drops through to the vLLM path instead and the response carries `X-Budget-Fallback`. The overall daily limit is still enforced at auth, so a user with no budget left anywhere gets the usual 429 either way; `/azure/v1/*` and `/aws/v1/*` never fall back.
+
 The "Azure alias from non-Azure user → vLLM fallback" branch matches the gateway's longstanding liberal alias handling. Azure existence is hidden via the per-user `/v1/models` filter rather than a 404 at request time. `AZURE_MODELS` and `MODEL_ROUTING` must not share alias names — `_build_config` raises `ValueError` at startup if they do.
 
 ### Proxy Methods

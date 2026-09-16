@@ -88,103 +88,117 @@ def _check_daily_limit(session: Session, user: User) -> None:
     )
 
 
-def _check_azure_daily_limit(session: Session, user: User) -> None:
-    """Reject if the user has exceeded their Azure-specific daily sub-limit.
+_BACKEND_LABELS: dict[str, str] = {"azure": "Azure", "bedrock": "Bedrock"}
 
-    Azure spend always counts toward the overall ``daily_limit_usd`` (checked
-    in ``_check_daily_limit``); this additionally caps the Azure portion on
-    its own. ``azure_daily_limit_usd`` of ``None`` or ``<= 0`` means "no
-    separate Azure cap" — the default for every user, preserving pre-feature
-    behavior exactly.
+
+def _check_backend_daily_limit(
+    session: Session,
+    user: User,
+    backend: str,
+    *,
+    allow_fallback: bool = False,
+) -> bool:
+    """Enforce the user's per-backend daily sub-limit for ``backend``.
+
+    The sub-limit (``users.azure_daily_limit_usd`` / ``bedrock_daily_limit_usd``)
+    is an *additional* cap on that backend's portion of today's spend — cloud
+    spend always counts toward the overall ``daily_limit_usd`` as well (checked
+    in ``_check_daily_limit``); it is not a parallel budget. ``None`` or
+    ``<= 0`` means "no separate cap" — the default for every user, preserving
+    pre-feature behavior exactly.
+
+    Returns True when the request may proceed to the cloud backend.
+
+    When the cap is exhausted:
+      - ``allow_fallback=False`` (the dedicated ``/azure/v1/*`` / ``/aws/v1/*``
+        surfaces, and ``/v1/*`` unless the operator enabled the fallback) →
+        HTTP 429 with ``Retry-After`` set to the next local midnight.
+      - ``allow_fallback=True`` → returns False so the caller can serve the
+        request from the on-prem vLLM path instead. Nothing is raised: the
+        overall daily limit was already enforced at auth, so "on-prem is
+        exhausted too" is the ordinary 429 the caller never reaches here.
 
     Honors the same ``ENFORCE_DAILY_LIMIT`` soft-mode escape hatch as the
-    overall check.
+    overall check: in soft mode the overage is logged and the request stays
+    on the cloud backend (there is no 429 for the fallback to replace).
     """
-    limit = user.azure_daily_limit_usd
+    label = _BACKEND_LABELS.get(backend, backend)
+    if backend == "azure":
+        limit = user.azure_daily_limit_usd
+    elif backend == "bedrock":
+        limit = user.bedrock_daily_limit_usd
+    else:  # pragma: no cover - programming error, not a runtime condition
+        raise ValueError(f"unknown cloud backend {backend!r}")
     if limit is None or limit <= 0:
-        return
+        return True
 
     today_start = local_day_start_utc()
     stmt = (
         select(func.coalesce(func.sum(UsageLog.cost_usd), 0))
         .where(UsageLog.user_id == user.id)
         .where(UsageLog.created_at >= today_start)
-        .where(UsageLog.backend == "azure")
+        .where(UsageLog.backend == backend)
     )
-    azure_cost = float(session.exec(stmt).one())
-    if azure_cost < limit:
-        return
+    spent = float(session.exec(stmt).one())
+    if spent < limit:
+        return True
 
     if _enforce_daily_limit():
+        if allow_fallback:
+            return False
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=(
-                f"Azure daily spending limit (${limit}) exceeded. "
-                f"Today (Azure): ${azure_cost:.4f}."
+                f"{label} daily spending limit (${limit}) exceeded. "
+                f"Today ({label}): ${spent:.4f}."
             ),
             headers={"Retry-After": str(seconds_until_local_midnight())},
         )
     logger.warning(
-        "Azure daily limit exceeded (soft mode) | user={} limit=${} today=${:.4f}",
-        user.username, limit, azure_cost,
+        "{} daily limit exceeded (soft mode) | user={} limit=${} today=${:.4f}",
+        label, user.username, limit, spent,
     )
+    return True
 
 
-def ensure_azure_budget(user: User) -> None:
-    """Standalone Azure sub-limit check for call sites without a request-scoped
-    session — i.e. the unified ``/v1/*`` handlers, which only learn the request
-    is Azure-bound after peeking the model alias. Opens a short-lived session;
-    blocking, so async callers should wrap it in ``run_in_threadpool``.
-
-    Raises HTTP 429 when the user's Azure sub-limit is exhausted.
-    """
-    with Session(engine) as session:
-        _check_azure_daily_limit(session, user)
+def _check_azure_daily_limit(session: Session, user: User) -> None:
+    """Reject (429) if the user has exceeded their Azure daily sub-limit.
+    See ``_check_backend_daily_limit``."""
+    _check_backend_daily_limit(session, user, "azure")
 
 
 def _check_bedrock_daily_limit(session: Session, user: User) -> None:
-    """Reject if the user has exceeded their Bedrock-specific daily sub-limit.
+    """Reject (429) if the user has exceeded their Bedrock daily sub-limit.
+    See ``_check_backend_daily_limit``."""
+    _check_backend_daily_limit(session, user, "bedrock")
 
-    Bedrock spend always counts toward the overall ``daily_limit_usd``; this
-    additionally caps the Bedrock portion on its own. ``NULL`` or ``<= 0``
-    means "no separate Bedrock cap" (the default). Honors the same
-    ``ENFORCE_DAILY_LIMIT`` soft-mode escape hatch as the overall check.
+
+def check_cloud_budget(user: User, backend: str, *, allow_fallback: bool = False) -> bool:
+    """Standalone sub-limit check for call sites without a request-scoped
+    session — i.e. the unified ``/v1/*`` handlers, which only learn the request
+    is cloud-bound after peeking the model alias. Opens a short-lived session;
+    blocking, so async callers should wrap it in ``run_in_threadpool``.
+
+    Returns True to proceed to ``backend``; False (only with
+    ``allow_fallback=True``) when the sub-limit is exhausted and the request
+    should be served on-prem instead; raises HTTP 429 otherwise.
     """
-    limit = user.bedrock_daily_limit_usd
-    if limit is None or limit <= 0:
-        return
-
-    today_start = local_day_start_utc()
-    stmt = (
-        select(func.coalesce(func.sum(UsageLog.cost_usd), 0))
-        .where(UsageLog.user_id == user.id)
-        .where(UsageLog.created_at >= today_start)
-        .where(UsageLog.backend == "bedrock")
-    )
-    bedrock_cost = float(session.exec(stmt).one())
-    if bedrock_cost < limit:
-        return
-
-    if _enforce_daily_limit():
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=(
-                f"Bedrock daily spending limit (${limit}) exceeded. "
-                f"Today (Bedrock): ${bedrock_cost:.4f}."
-            ),
-            headers={"Retry-After": str(seconds_until_local_midnight())},
+    with Session(engine) as session:
+        return _check_backend_daily_limit(
+            session, user, backend, allow_fallback=allow_fallback
         )
-    logger.warning(
-        "Bedrock daily limit exceeded (soft mode) | user={} limit=${} today=${:.4f}",
-        user.username, limit, bedrock_cost,
-    )
+
+
+def ensure_azure_budget(user: User) -> None:
+    """Raise HTTP 429 when the user's Azure sub-limit is exhausted
+    (``check_cloud_budget(user, "azure")`` without fallback)."""
+    check_cloud_budget(user, "azure")
 
 
 def ensure_bedrock_budget(user: User) -> None:
-    """Standalone Bedrock sub-limit check for the unified ``/v1/*`` handlers
+    """Raise HTTP 429 when the user's Bedrock sub-limit is exhausted
     (same shape/contract as ``ensure_azure_budget``)."""
-    with Session(engine) as session:
-        _check_bedrock_daily_limit(session, user)
+    check_cloud_budget(user, "bedrock")
 
 
 def get_current_user(

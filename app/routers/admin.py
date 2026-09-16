@@ -20,10 +20,12 @@ from app.core.config import (
     _MODEL_METADATA_KEYS,
     _MODEL_PRICING_KEYS,
     APP_TITLE,
+    get_cloud_budget_fallback,
     get_config_data,
     get_default_daily_limit,
     get_site_links,
     save_config,
+    set_cloud_budget_fallback,
     set_default_daily_limit,
     set_site_links,
 )
@@ -218,6 +220,7 @@ async def admin_page(
             "dau_data": dau_data,
             "today_dau": today_dau,
             "default_daily_limit": get_default_daily_limit(),
+            "cloud_budget_fallback": get_cloud_budget_fallback(),
             "site_links": get_site_links(),
             # Pagination state
             "limit": limit,
@@ -464,6 +467,46 @@ async def update_site_links(request: Request):
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.post("/cloud-budget-fallback")
+async def update_cloud_budget_fallback(
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+):
+    """Enable/disable the cloud-budget fallback (``[app].cloud_budget_fallback``).
+
+    When on, a ``/v1/*`` request for an Azure/Bedrock alias whose per-user
+    daily sub-limit is exhausted is served by the on-prem vLLM default
+    instead of being refused with 429. The overall ``daily_limit_usd`` is
+    unaffected — once that is gone the request is refused as before.
+
+    Form field ``enabled``: ``on`` / ``true`` / ``1`` → enabled; anything
+    else (including the field being absent, as an unchecked checkbox is) →
+    disabled. Returns JSON when the client asks for it (the admin page
+    toggles in place); otherwise redirects back to ``/admin``.
+    """
+    form = await request.form()
+    raw = str(form.get("enabled") or "").strip().lower()
+    enabled = raw in ("on", "true", "1", "yes")
+    set_cloud_budget_fallback(enabled)
+    logger.info(
+        "Cloud budget fallback {} | admin={}",
+        "enabled" if enabled else "disabled", admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "cloud_budget_fallback": enabled})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+def _wants_json(request: Request) -> bool:
+    """True when the caller asked for a JSON reply (``Accept: application/json``).
+
+    The admin page's in-place toggles send this so a click updates one
+    button instead of reloading (and re-scrolling) the whole page; a plain
+    form submit keeps the classic POST → 303 → ``/admin`` round-trip.
+    """
+    return "application/json" in (request.headers.get("accept") or "").lower()
+
+
 @router.post("/users/{user_id}/toggle-disable")
 async def toggle_disable(
     user_id: int,
@@ -485,6 +528,7 @@ async def toggle_disable(
 @router.post("/users/{user_id}/toggle-azure")
 async def toggle_azure(
     user_id: int,
+    request: Request,
     admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
 ):
@@ -495,12 +539,15 @@ async def toggle_azure(
     target.can_use_azure = not target.can_use_azure
     session.add(target)
     session.commit()
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "can_use_azure": target.can_use_azure})
     return RedirectResponse(url="/admin", status_code=303)
 
 
 @router.post("/users/{user_id}/toggle-bedrock")
 async def toggle_bedrock(
     user_id: int,
+    request: Request,
     admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
 ):
@@ -511,6 +558,8 @@ async def toggle_bedrock(
     target.can_use_bedrock = not target.can_use_bedrock
     session.add(target)
     session.commit()
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "can_use_bedrock": target.can_use_bedrock})
     return RedirectResponse(url="/admin", status_code=303)
 
 
