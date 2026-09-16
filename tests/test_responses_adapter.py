@@ -61,6 +61,36 @@ class TestRequestTranslation:
         })
         assert out["max_output_tokens"] == 200
 
+    def test_max_tokens_below_floor_raised_to_16(self):
+        """Claude Code probes with max_tokens=1; Azure 400s anything < 16."""
+        out = openai_chat_to_responses_request({
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+        })
+        assert out["max_output_tokens"] == 16
+
+    def test_max_tokens_at_floor_untouched(self):
+        out = openai_chat_to_responses_request({
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 16,
+        })
+        assert out["max_output_tokens"] == 16
+
+    def test_max_completion_tokens_below_floor_raised(self):
+        out = openai_chat_to_responses_request({
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_completion_tokens": 5,
+        })
+        assert out["max_output_tokens"] == 16
+
+    def test_non_int_max_tokens_passes_through(self):
+        """Garbage stays garbage so the caller sees Azure's own error."""
+        out = openai_chat_to_responses_request({
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": "1",
+        })
+        assert out["max_output_tokens"] == "1"
+
     def test_reasoning_effort_mapping(self):
         out = openai_chat_to_responses_request({
             "messages": [{"role": "user", "content": "hi"}],
