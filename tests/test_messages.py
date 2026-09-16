@@ -466,6 +466,33 @@ class TestRequestTranslation:
         assert out["stop"] == ["\n\n"]
 
 
+    def test_tool_reference_in_tool_result_becomes_text(self):
+        """MCP tool-search results (tool_reference blocks) used to be dropped,
+        leaving an empty tool message — the model believed the search found
+        nothing. They now collapse to text naming the tools."""
+        body = {
+            "model": "test-llm",
+            "max_tokens": 10,
+            "messages": [
+                {"role": "user", "content": "find a tool"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "tool_search",
+                     "input": {"query": "weather"}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+                        {"type": "tool_reference", "tool_name": "get_weather"},
+                    ]},
+                ]},
+            ],
+        }
+        out = anthropic_to_openai_request(body)
+        tool_msg = out["messages"][-1]
+        assert tool_msg["role"] == "tool"
+        assert isinstance(tool_msg["content"], str)
+        assert "get_weather" in tool_msg["content"]
+
+
 class TestResponseTranslation:
 
     def test_basic_text_response(self):
