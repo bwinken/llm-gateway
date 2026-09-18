@@ -1065,11 +1065,16 @@ function anomalyAction(id, action) {
             btn.title = granted ? TITLES[backend].on : TITLES[backend].off;
         }
 
-        function postJson(url, form) {
+        function postJson(url, payload) {
+            // `payload` is a form (serialized as it stands right now) or a
+            // ready-made URLSearchParams body.
+            var body = payload instanceof HTMLFormElement
+                ? new URLSearchParams(new FormData(payload))
+                : payload;
             return fetch(url, {
                 method: 'POST',
                 headers: { 'Accept': 'application/json' },
-                body: new URLSearchParams(new FormData(form)),
+                body: body,
                 credentials: 'same-origin'
             }).then(function(resp){
                 if (!resp.ok) {
@@ -1109,8 +1114,15 @@ function anomalyAction(id, action) {
             }
             box.addEventListener('change', function(){
                 var wanted = box.checked;
+                // Post the checkbox state itself instead of serializing the
+                // form: the box is disabled while the save is in flight, and
+                // a disabled control is left out of FormData, so serializing
+                // after disabling sent an empty body — which the endpoint
+                // reads as "unchecked" — and every click saved the flag as
+                // off and snapped the box back.
+                var body = new URLSearchParams({ enabled: wanted ? 'on' : 'off' });
                 box.disabled = true;
-                postJson(fbForm.action, fbForm)
+                postJson(fbForm.action, body)
                     .then(function(data){ paintFallback(!!data.cloud_budget_fallback); })
                     .catch(function(err){
                         paintFallback(!wanted);
