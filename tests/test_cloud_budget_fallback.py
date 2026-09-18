@@ -317,6 +317,26 @@ class TestAdminEndpoint:
         assert resp.status_code == 303
         mock_set.assert_called_once_with(False)
 
+    def test_explicit_off_disables(self, client, db_session, admin_user):
+        """The admin page's in-place toggle posts ``enabled=off`` explicitly.
+
+        It builds the body from the checkbox state rather than serializing
+        the form: the box is disabled while the save is in flight, and a
+        disabled control is left out of ``FormData``, so a form-serialized
+        POST arrived empty and every click saved the flag as off.
+        """
+        headers = {**self._hdr(admin_user), "Accept": "application/json"}
+        with patch("app.routers.admin.set_cloud_budget_fallback") as mock_set:
+            resp = client.post(
+                "/admin/cloud-budget-fallback",
+                data={"enabled": "off"},
+                headers=headers,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "cloud_budget_fallback": False}
+        mock_set.assert_called_once_with(False)
+
     def test_json_reply_for_in_place_toggle(self, client, db_session, admin_user):
         headers = {**self._hdr(admin_user), "Accept": "application/json"}
         with patch("app.routers.admin.set_cloud_budget_fallback") as mock_set:
