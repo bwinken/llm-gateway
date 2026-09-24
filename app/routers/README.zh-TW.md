@@ -75,7 +75,7 @@ alias 不在 AZURE_MODELS                              → vLLM 路徑
 | `vllm_forward_messages` | stream + non-stream | Anthropic Messages | Anthropic→OpenAI 請求、OpenAI→Anthropic 回應(使用 `services/anthropic_adapter.py`) |
 | `vllm_forward_count_tokens` | non-stream | `count_tokens` | 轉送至 vLLM `/tokenize`,失敗時 fallback 為 chars/4;不計費 |
 | `vllm_forward_tokenize` | non-stream | `/tokenize` | vLLM 原生 pass-through;不計費 |
-| `vllm_forward_systemone` | non-stream | `/systemone` | body 原樣轉送到 `{base_url}/systemone`(只改 `model`,回應的 `model` 換成 alias);依 `input_tokens + cached_tokens` 計費(decider 把快取的 schema 前綴另外回報,不含在 `input_tokens` 內);Phase 2 擷取 `{state, questions}` → `answers` |
+| `vllm_forward_systemone` | non-stream | `/systemone` | body 原樣轉送到 `{server root}/v1/systemone`,`base_url` 有沒有 `/v1` 都可以(只改 `model`,回應的 `model` 換成 alias);依 `input_tokens + cached_tokens` 計費(decider 把快取的 schema 前綴另外回報,不含在 `input_tokens` 內);Phase 2 擷取 `{state, questions}` → `answers` |
 | `vllm_forward_render` | non-stream | `/chat/completions/render` | vLLM 原生 pass-through;套用與 chat completions 相同的 reasoning 方言對齊,回應的 `model` 換回 alias;預設會經由同一台的 `/detokenize` 補上 `decoded_prompt`(best-effort,失敗記在 `decode_error`;`?decode=false` 可關閉);不計費、不觀測 |
 
 ### 共通行為

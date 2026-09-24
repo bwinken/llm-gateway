@@ -312,7 +312,7 @@ curl http://your-gateway/v1/systemone \
        "questions": {"refund": {"type": "noul", "instructions": "Does the customer ask for a refund?"}}}'
 ```
 
-Configure the server under `[models.systemone."<alias>"]` with `base_url = "http://decider-host:8000/v1"` (see `config.toml.example`). Billed on input tokens only; nothing is generated.
+Configure the server under `[models.systemone."<alias>"]` with `base_url = "http://decider-host:8000"`, the decider server's root; a trailing `/v1` works too (see `config.toml.example`). decider is not vLLM, so the gateway checks its health on decider's own `/health` endpoint and shows it ONLINE when that reports `"ok": true`. Billed on input tokens only; nothing is generated.
 
 ### Anthropic Messages API
 

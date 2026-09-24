@@ -179,9 +179,11 @@ api_key = "your-api-key"
 # (https://huggingface.co/Mapika/decider-4b), run with its own
 # `scripts/serve.sh`, not vLLM. Clients post TypeSafe's System One format to
 # the gateway's /v1/systemone (or /systemone); the gateway forwards it to
-# {base_url}/systemone and health-probes {base_url}/models, so base_url must
-# end in /v1. A request without `model` goes to the [fallback] systemone
-# alias, else the first one listed here.
+# <server root>/v1/systemone. base_url is the decider server's root, e.g.
+# http://host:8000 (a trailing /v1 is accepted too). Health is read from
+# decider's own GET /health (`"ok": true` = UP), not vLLM's /models, and
+# there is no /metrics scrape. A request without `model` goes to the
+# [fallback] systemone alias, else the first one listed here.
 # TypeSafe SDK (pip install typesafe-sdk) clients set TYPESAFE_BASE_URL to
 # the gateway root (no /v1), TYPESAFE_API_KEY to their gateway key, and
 # TYPESAFE_DEFAULT_MODEL to an alias below — the SDK otherwise sends
@@ -193,7 +195,7 @@ api_key = "your-api-key"
 [models.systemone]
 [models.systemone."decider-4b"]
 real_model = "Mapika/decider-4b"    # decider ignores `model`; informational
-base_url = "http://your-decider-server:8000/v1"
+base_url = "http://your-decider-server:8000"
 api_key = ""                        # decider's server checks no key
 
 

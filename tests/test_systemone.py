@@ -4,7 +4,7 @@ Tests for POST /v1/systemone (and the bare /systemone alias).
 A System One model — e.g. Mapika's decider — answers typed questions about a
 state (choice / score / yes-no "noul") with calibrated probabilities from one
 forward pass. The gateway forwards TypeSafe's wire format verbatim to
-``{base_url}/systemone`` on a ``systemone``-typed route, rewrites only
+``{server root}/v1/systemone`` on a ``systemone``-typed route, rewrites only
 ``model``, and bills input tokens — including the schema-cache prefix decider
 reports as ``cached_tokens`` next to (not inside) ``input_tokens``.
 
@@ -18,12 +18,15 @@ discovery is deliberately not offered: ``GET /v1/models`` lists chat models
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlmodel import select
 
+from app.core.server_state import get_metrics, is_alive as real_is_alive, set_alive
 from app.models.schema import UsageLog, User
+from app.services import health
 from app.services.vllm_proxy import _usage_count
 from tests.conftest import (
     TEST_FALLBACK_MAP,
@@ -161,6 +164,24 @@ class TestSystemOneForwarding:
         resp = _post_decision(client)
 
         assert resp.json()["model"] == "test-systemone"
+
+    @pytest.mark.parametrize("base_url", [
+        "http://mock-systemone:8000",
+        "http://mock-systemone:8000/",
+        "http://mock-systemone:8000/v1",
+        "http://mock-systemone:8000/v1/",
+    ])
+    def test_base_url_with_or_without_v1(self, client, test_user, base_url):
+        """decider isn't vLLM, so its base_url is often the bare server root;
+        both forms reach {root}/v1/systemone."""
+        post, calls = _capturing_post(make_httpx_response(200, _decider_body()))
+        client.__httpx_mock__.post = post
+
+        with patch.dict(TEST_MODEL_ROUTING["test-systemone"], {"base_url": base_url}):
+            resp = _post_decision(client)
+
+        assert resp.status_code == 200
+        assert calls[0]["url"] == _SYSTEMONE_URL
 
     def test_no_authorization_header_when_route_has_no_key(self, client, test_user):
         post, calls = _capturing_post(make_httpx_response(200, _decider_body()))
@@ -387,6 +408,23 @@ class TestSystemOneErrors:
         assert "failover: HTTP 503" in resp.headers["X-Model-Fallback"]
         assert resp.json()["model"] == "test-systemone-b"
 
+    def test_failover_target_without_v1_gets_the_same_url_shape(self, client, test_user, second_systemone):
+        calls: list[str] = []
+
+        async def _post(url, *args, **kwargs):
+            calls.append(str(url))
+            if str(url) == _SYSTEMONE_URL:
+                return make_httpx_response(503, {"detail": "server busy"})
+            return make_httpx_response(200, _decider_body())
+
+        client.__httpx_mock__.post = _post
+
+        with patch.dict(TEST_MODEL_ROUTING["test-systemone-b"], {"base_url": "http://mock-systemone-b:8000"}):
+            resp = _post_decision(client)
+
+        assert resp.status_code == 200
+        assert calls == [_SYSTEMONE_URL, second_systemone]
+
     def test_downstream_exception_is_502(self, client, test_user):
         client.__httpx_mock__.post, _ = _capturing_post(Exception("connection reset"))
 
@@ -572,3 +610,123 @@ class TestSystemOnePages:
         body = self._page(client, db_session, "/", "welcomer")
 
         assert "/v1/systemone" in body
+
+
+# ---------------------------------------------------------------------------
+# Health probe — decider is not vLLM
+# ---------------------------------------------------------------------------
+
+
+class _ProbeClient:
+    """Health-probe client double: answers GETs from a {url: (status, body)} map
+    (anything unmapped is a 404) and records the URLs it was asked for."""
+
+    def __init__(self, responses: dict[str, tuple[int, object]]):
+        self.responses = responses
+        self.urls: list[str] = []
+
+    async def get(self, url, *args, **kwargs):
+        self.urls.append(str(url))
+        status, body = self.responses.get(str(url), (404, {"detail": "Not Found"}))
+        if isinstance(body, str):
+            return make_httpx_response(status, text=body)
+        return make_httpx_response(status, body)
+
+
+def _run_health_check(client: _ProbeClient, routing: dict) -> None:
+    with patch.object(health, "get_health_client", return_value=client), \
+         patch.object(health, "MODEL_ROUTING", routing), \
+         patch.object(health, "_check_auto_reload", lambda: None):
+        asyncio.run(health.check_all_servers())
+
+
+def _systemone_route(base_url: str) -> dict:
+    return {"m": {"base_url": base_url, "real_model": "Mapika/decider-4b", "api_key": "", "type": "systemone"}}
+
+
+@pytest.fixture
+def probe_url():
+    """A base_url that starts DOWN and leaves no health state behind."""
+    urls: list[str] = []
+
+    def _make(base_url: str) -> str:
+        urls.append(base_url)
+        health._consecutive_failures.pop(base_url, None)
+        set_alive(base_url, False)
+        return base_url
+
+    yield _make
+    for url in urls:
+        health._consecutive_failures.pop(url, None)
+        set_alive(url, False)
+
+
+class TestSystemOneHealthProbe:
+
+    @pytest.mark.parametrize("base_url", ["http://so-probe-a:8000/v1", "http://so-probe-a:8000"])
+    def test_decider_health_ok_is_up(self, probe_url, base_url):
+        """Probed on decider's own /health at the server root — with or without
+        /v1 in base_url. The vLLM probe ({base_url}/models) is what left a
+        root-form decider route permanently DOWN."""
+        url = probe_url(base_url)
+        client = _ProbeClient({"http://so-probe-a:8000/health": (200, {"ok": True, "model": "Mapika/decider-4b"})})
+
+        _run_health_check(client, _systemone_route(url))
+
+        assert real_is_alive(url) is True
+        # No vLLM /models probe and no Prometheus /metrics scrape.
+        assert client.urls == ["http://so-probe-a:8000/health"]
+        assert get_metrics(url) is None
+
+    def test_health_ok_false_is_down(self, probe_url):
+        """decider reports ok=false before its engine is sealed and after its
+        batcher dies — up at the HTTP level, unable to answer decisions."""
+        url = probe_url("http://so-probe-b:8000/v1")
+        client = _ProbeClient({"http://so-probe-b:8000/health": (200, {"ok": False})})
+
+        _run_health_check(client, _systemone_route(url))
+
+        assert real_is_alive(url) is False
+
+    def test_health_error_status_is_down(self, probe_url):
+        url = probe_url("http://so-probe-c:8000/v1")
+        client = _ProbeClient({"http://so-probe-c:8000/health": (500, {"detail": "boom"})})
+
+        _run_health_check(client, _systemone_route(url))
+
+        assert real_is_alive(url) is False
+        assert client.urls == ["http://so-probe-c:8000/health"]
+
+    def test_server_without_health_falls_back_to_v1_models(self, probe_url):
+        """Another TypeSafe-compatible server may lack decider's /health;
+        GET /v1/models is part of the TypeSafe API itself."""
+        url = probe_url("http://so-probe-d:8000")
+        client = _ProbeClient({"http://so-probe-d:8000/v1/models": (200, {"models": []})})
+
+        _run_health_check(client, _systemone_route(url))
+
+        assert real_is_alive(url) is True
+        assert client.urls == ["http://so-probe-d:8000/health", "http://so-probe-d:8000/v1/models"]
+
+    def test_non_json_health_200_is_up(self, probe_url):
+        url = probe_url("http://so-probe-e:8000/v1")
+        client = _ProbeClient({"http://so-probe-e:8000/health": (200, "OK")})
+
+        _run_health_check(client, _systemone_route(url))
+
+        assert real_is_alive(url) is True
+
+    def test_vllm_routes_keep_the_models_probe_and_metrics_scrape(self, probe_url):
+        url = probe_url("http://so-probe-vllm:8000/v1")
+        client = _ProbeClient({
+            "http://so-probe-vllm:8000/v1/models": (200, {"object": "list", "data": []}),
+            "http://so-probe-vllm:8000/metrics": (
+                200, "vllm:num_requests_running{model_name=\"m\"} 2.0\nvllm:num_requests_waiting{model_name=\"m\"} 0.0\n",
+            ),
+        })
+
+        _run_health_check(client, {"m": {"base_url": url, "api_key": "", "type": "llm"}})
+
+        assert real_is_alive(url) is True
+        assert client.urls == ["http://so-probe-vllm:8000/v1/models", "http://so-probe-vllm:8000/metrics"]
+        assert get_metrics(url) == {"running": 2, "waiting": 0}
