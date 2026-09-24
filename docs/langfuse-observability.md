@@ -100,7 +100,7 @@ class GenerationRecord:
     client: str              # derived: claude-code|roo-code|openai-compatible|other -> categorical Score
     model_alias: str         # user-facing alias  -> Langfuse `model`
     real_model: str          # downstream model/deployment -> metadata
-    model_type: str          # llm | vlm | embedding | reranker
+    model_type: str          # llm | vlm | embedding | reranker | systemone | ...
     usage: dict              # {"input": int, "output": int, "cache_read_input_tokens": int}
     cost: dict               # {"input": Decimal, "output": Decimal, "cache_read_input_tokens": Decimal, "total": Decimal}
     model_parameters: dict   # {temperature, top_p, max_tokens, reasoning_effort, stream}
@@ -250,6 +250,7 @@ LANGFUSE_SAMPLE_RATE   # float 0.0–1.0, default 1.0 — fraction of requests r
 | `/v1/chat/completions`, `/azure/v1/chat/completions` | ✅ | ✅ input (OpenAI messages) + output (stream + non-stream) |
 | `/v1/messages`, `/azure/v1/messages` | ✅ | ✅ input (original Anthropic request — `messages`, plus `system`/`tools` when present) + output (Anthropic assistant `content` blocks, stream + non-stream) |
 | `/v1/responses`, `/azure/v1/responses` | ✅ | ✅ input + output, non-stream + stream (native Responses shape — Langfuse renders it; stream output read from `response.output_text.delta` events) |
+| `/v1/systemone` | ✅ | ✅ input (`{state, questions}` as posted) + output (`answers`). A decision about one item — the same content class as a chat prompt and its reply, not a bulk corpus |
 | **`/v1/embeddings` / `/v1/rerank` / `/v1/score`** | ✅ | ❌ **metrics only — never store I/O.** Embedding output is a large vector (noise + storage); input is bulk text (PII). `rerank` query-only capture is a possible future option, never docs/scores/vectors. |
 
 Status: Phase 2 I/O capture wired for all conversational paths on both backends (vLLM + Azure), stream + non-stream. All gated on `LANGFUSE_CAPTURE_IO` (default off).

@@ -36,7 +36,7 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 - **統一 `/v1/*` 介面** — 同一個 base URL 同時暴露兩個後端。`/v1/chat/completions`、`/v1/messages`、`/v1/messages/count_tokens` 依 `model` alias 分派:預設走 vLLM,當 alias 配置在 `[azure_models.*]` 且 caller 有 `can_use_azure` 時轉向 Azure。`/v1/models` 對有權限的使用者會把 Azure alias 一併列出,讓 Claude Code 之類的 model picker 同時看到兩個後端。所有路由都另外註冊不含 `/v1` 前綴的別名(`/chat/completions`、`/messages`、…)。`/v1/chat/completions/render`(僅地端 vLLM)會把請求套過模型的 chat template 後回傳 `token_ids` 與解析後的 `sampling_params`,**但不做生成** — 讓開發者直接看到模型實際收到什麼,方便 debug。vLLM 只回 token ID 而非文字,所以 gateway 預設會幫你 detokenize,把 prompt 字串放在 `decoded_prompt`(`?decode=false` 可退回純 pass-through)。不計費也不進 Langfuse — 這是 debug 查詢不是推論。完整用法寫在 `/docs`;下游 vLLM 若沒有 render server 會回 404
 - **Anthropic Messages API** — `/v1/messages` 與 `/v1/messages/count_tokens`,可直接搭配 Anthropic Python SDK 與 Claude Code(後端可接任何 vLLM LLM/VLM;有 Azure 權限時也涵蓋 Azure 部署)。下游 `reasoning_content`(vLLM `--enable-reasoning`、DeepSeek、Qwen3-thinking)會轉成 Anthropic `thinking` content block;下游靜默時每 10 秒送一次 SSE `ping`,避免 Claude Code 在 reasoning prefill 太長時把連線視為斷線;串流中途下游斷線時會回傳可重試的 `overloaded_error`,而非謊稱該輪已完成
 - **Azure OpenAI 後端** — 同一支客戶端、同一把 API key、同一套計費。可透過上面的統一 `/v1/*`(需 `can_use_azure`)或專屬的 `/azure/v1/*` 介面存取(chat completions、responses、Anthropic Messages、count_tokens;刻意不提供 embeddings,那是 vLLM 專責)
-- **多模型路由** — LLM、VLM、Embedding、Vision Embedding、Reranker、Vision Reranker
+- **多模型路由** — LLM、VLM、Embedding、Vision Embedding、Reranker、Vision Reranker、System One(型別化決策,例如 Mapika 的 decider,走 `/v1/systemone`,可用 TypeSafe Python SDK 呼叫)
 - **SSE 串流** — 完整支援 Server-Sent Events（chat completions 和 responses）
 - **智慧容錯** — 可設定各類型的備援模型，依健康檢查自動切換；回應標頭 `X-Model-Fallback`(僅 vLLM 路徑)
 - **分級計價** — 各類型預設價格，並可在 vLLM 或 Azure 模型上加上 per-model 覆寫,包含 prompt cache 命中專用的折扣價 `cached_input_price_per_1m`(Azure 的快取 token 以較低費率計價)
@@ -145,7 +145,7 @@ base_url = "http://host:port/v1"    # vLLM 伺服器 URL
 api_key = "your-key"                # vLLM --api-key（若無則留空）
 ```
 
-支援的模型類型：`llm`、`vlm`、`embedding`、`vision_embedding`、`reranker`、`vision_reranker`。
+支援的模型類型：`llm`、`vlm`、`embedding`、`vision_embedding`、`reranker`、`vision_reranker`、`systemone`(見 [System One](#system-one型別化決策))。
 
 推理模型還可以宣告下游實際接受哪些 reasoning effort 等級，這樣模型升級後少掉某個等級（最常見的情況：不再支援 `high`）時，仍沿用舊等級的 client 不會突然收到 400：
 
@@ -225,7 +225,7 @@ is_reasoning = true           # 啟用 reasoning-effort → extended thinking �
 選填。當 `LANGFUSE_HOST` + `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` 都設齊時,gateway 會為每筆計費請求送出一筆 Langfuse **generation** —— 非阻塞、錯誤吞掉、未設定時完全 no-op。
 
 - **Metrics(永遠送,無 PII):** user、model alias、endpoint、token 用量、cost(由 gateway 自行計算,**不**讓 Langfuse 重新定價)、latency,以及 categorical scores:**client 軟體**(`claude-code` / `roo-code` / `openai-compatible` …,由 `User-Agent` + endpoint 推斷)、`empty_turn`、`fallback_used`。可做 per-user / per-model / per-client 分析(在 Users 視圖篩使用者;按 model 或 `client` score 分組;按天/月出圖)。
-- **內容(需明確開啟,含 PII):** 設 `LANGFUSE_CAPTURE_IO=true` 後,額外把請求 messages 與助理回應掛到 generation(chat / messages / responses,vLLM + Azure;embedding/rerank/score 刻意只送 metrics)。**治理:** 擷取個別使用者的 prompt 屬於個人層級監看 —— 上 production 前請限制 Langfuse project 存取權限並確認告知/同意。
+- **內容(需明確開啟,含 PII):** 設 `LANGFUSE_CAPTURE_IO=true` 後,額外把請求 messages 與助理回應掛到 generation(chat / messages / responses,vLLM + Azure,以及 `/v1/systemone` 的 state/questions 與 answers;embedding/rerank/score 刻意只送 metrics)。**治理:** 擷取個別使用者的 prompt 屬於個人層級監看 —— 上 production 前請限制 Langfuse project 存取權限並確認告知/同意。
 - **版本提醒:** 建構於 Langfuse Python SDK v4(OTel-based);上線前請確認 SDK ↔ 你的 Langfuse server 版本相容。
 
 完整設計見 [docs/langfuse-observability.md](docs/langfuse-observability.md)。
@@ -273,6 +273,46 @@ curl http://your-gateway/v1/rerank \
     "documents": ["AI is...", "Machine learning is..."]
   }'
 ```
+
+### System One（型別化決策）
+
+`systemone` 模型(例如 [Mapika 的 decider](https://huggingface.co/Mapika/decider-4b),以它自己的 `scripts/serve.sh` 啟動)針對一個 state 回答型別化的問題 —— `choice`、`score` 或是非題 `noul` —— 一次 forward pass 就回傳校準過的機率,不生成文字。gateway 在 `/v1/systemone`(以及 `/systemone`)提供 TypeSafe 的 System One wire format,所以 [TypeSafe Python SDK](https://docs.typesafe.ai/sdk/python/) 不用改就能直接呼叫:
+
+```bash
+pip install typesafe-sdk
+export TYPESAFE_BASE_URL=http://your-gateway     # gateway 根網址,不要加 /v1 —— SDK 會自己補上 /v1/systemone
+export TYPESAFE_API_KEY=sk-your-api-key          # 你的 gateway API key
+export TYPESAFE_DEFAULT_MODEL=decider-4b         # [models.systemone.*] 底下的 alias
+```
+
+```python
+from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
+
+with TypeSafeClient() as client:
+    result = client.system_one(
+        state="I was charged twice for order A-104. Please refund the duplicate.",
+        questions={
+            "department": Choice(instructions="Which team should handle this?",
+                                 criteria={"billing": "Charges, invoices", "returns": "Exchanges, refunds", "other": None}),
+            "refund_requested": Noul(instructions="Does the customer ask for a refund?"),
+            "frustration": Score(instructions="How frustrated is the customer?",
+                                 criteria=["calm", "frustrated", "very frustrated"]),
+        },
+    )
+    print(result.choices["department"].choice, result.nouls["refund_requested"].noul)
+```
+
+沒設 `TYPESAFE_DEFAULT_MODEL`(或 `TypeSafeClient(model=...)`)時,SDK 會送 TypeSafe 的 `jev-latest`。gateway 仍會用 systemone 的預設模型回答,但每次都會在回應加上 `X-Model-Fallback` 並記一筆 warning。不提供模型探索:`/v1/models` 只列 llm/vlm,所以 SDK 的 `client.models.list()` 不支援。直接打 HTTP 也可以,而且 `model` 可省略:
+
+```bash
+curl http://your-gateway/v1/systemone \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"state": "I was charged twice.",
+       "questions": {"refund": {"type": "noul", "instructions": "Does the customer ask for a refund?"}}}'
+```
+
+在 `[models.systemone."<alias>"]` 設定伺服器,`base_url = "http://decider-host:8000/v1"`(見 `config.toml.example`)。只依 input token 計費,不會生成任何 token。
 
 ### Anthropic Messages API
 
@@ -548,6 +588,7 @@ llm-gateway/
     ├── test_vlm.py
     ├── test_vision_embedding.py
     ├── test_vision_rerank_score.py
+    ├── test_systemone.py
     ├── test_admin.py
     └── test_app_ownership.py
 ```

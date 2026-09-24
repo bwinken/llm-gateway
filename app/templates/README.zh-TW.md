@@ -108,7 +108,7 @@ disabled.html        → 已停用使用者點擊任何 HTML 路由時,由 Accou
 
 | 區塊 | 說明 |
 |---|---|
-| **Tab Navigation** | 按模型類型分頁：llm、vlm、embedding、vision_embedding、reranker、vision_reranker |
+| **Tab Navigation** | 按模型類型分頁：llm、vlm、embedding、vision_embedding、reranker、vision_reranker、systemone |
 | **Model Table** | 每個類型下的模型清單，可編輯 Real Model、Base URL、API Key |
 | **Fallback 下拉** | 每個類型可指定 fallback 模型（server down 時優先使用） |
 | **Pricing Table** | Per-type 定價設定：Default + 各類型的 Input / Output Price (USD per 1M tokens) |

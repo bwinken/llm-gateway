@@ -51,9 +51,10 @@
     'embedding': 'Embedding',
     'vision_embedding': 'Vision Embedding',
     'reranker': 'Reranker',
-    'vision_reranker': 'Vision Reranker'
+    'vision_reranker': 'Vision Reranker',
+    'systemone': 'System One (Decisions)'
 } %}
-{% set type_order = ['llm', 'vlm', 'embedding', 'vision_embedding', 'reranker', 'vision_reranker'] %}
+{% set type_order = ['llm', 'vlm', 'embedding', 'vision_embedding', 'reranker', 'vision_reranker', 'systemone'] %}
 {# Capability badge macro shared by all three model sections #}
 {% macro capability_badges(m) %}
     {% if m.is_reasoning %}
@@ -748,7 +749,8 @@
             ("Chat Completions", "POST /v1/chat/completions", "ab", "OpenAI-compatible endpoint for generating chat responses."),
             ("Embeddings", "POST /v1/embeddings", "ab", "Generate vector embeddings for text inputs."),
             ("Rerank", "POST /v1/rerank", "av", "Re-order documents by relevance to a query."),
-            ("Score", "POST /v1/score", "av", "Get relevance scores for query-document pairs.")
+            ("Score", "POST /v1/score", "av", "Get relevance scores for query-document pairs."),
+            ("System One", "POST /v1/systemone", "ag", "Typed decisions with calibrated probabilities.")
         ] %}
 
         {# Chat Completions #}
@@ -839,6 +841,40 @@ resp = requests.post(
 )</pre>
             </div>
         </div>
+
+        {# System One — only when a systemone model is configured; full width,
+           the typed-questions call is wider than the other examples #}
+        {% set systemone_models = server_groups.get('systemone') or [] %}
+        {% if systemone_models %}
+        <div class="gw-card overflow-hidden lg:col-span-2">
+            <div class="px-4 py-3 flex justify-between items-center" style="border-bottom:1px solid rgba(255,255,255,0.04)">
+                <span class="font-semibold text-t2 text-sm">System One (TypeSafe SDK)</span>
+                <span class="text-[11px] font-mono text-ag bg-[rgba(61,214,140,0.08)] px-2 py-0.5 rounded border border-[rgba(61,214,140,0.15)]">POST /v1/systemone</span>
+            </div>
+            <div class="p-4">
+                <p class="text-sm text-t3 mb-3">Typed decisions in one forward pass: ask choice, score or yes/no (<code>noul</code>) questions about a state and get calibrated probabilities back instead of text. Use the TypeSafe SDK (<code>pip install typesafe-sdk</code>) with <code>base_url</code> set to the gateway root, <b>without</b> <code>/v1</code>.</p>
+                <pre class="gw-code p-3 text-xs font-mono overflow-x-auto"><span class="text-av">from</span> <span class="text-t1">typesafe_sdk</span> <span class="text-av">import</span> <span class="text-t1">Choice, Noul, Score, TypeSafeClient</span>
+
+client = TypeSafeClient(
+    base_url=<span class="text-ag">"{{ gateway_base[:-3] }}"</span>,
+    api_key=<span class="text-ag">"{{ user.api_key }}"</span>,
+    model=<span class="text-ag">"{{ systemone_models[0].name }}"</span>,
+)
+
+result = client.system_one(
+    state=<span class="text-ag">"I was charged twice for order A-104. Please refund the duplicate."</span>,
+    questions={
+        <span class="text-ag">"department"</span>: Choice(instructions=<span class="text-ag">"Which team should handle this?"</span>,
+                             criteria={<span class="text-ag">"billing"</span>: <span class="text-ag">"Charges, invoices"</span>, <span class="text-ag">"returns"</span>: <span class="text-ag">"Exchanges, refunds"</span>, <span class="text-ag">"other"</span>: None}),
+        <span class="text-ag">"refund_requested"</span>: Noul(instructions=<span class="text-ag">"Does the customer ask for a refund?"</span>),
+        <span class="text-ag">"frustration"</span>: Score(instructions=<span class="text-ag">"How frustrated is the customer?"</span>,
+                              criteria=[<span class="text-ag">"calm"</span>, <span class="text-ag">"frustrated"</span>, <span class="text-ag">"very frustrated"</span>]),
+    },
+)
+<span class="text-t4">print</span>(result.choices[<span class="text-ag">"department"</span>].choice, result.nouls[<span class="text-ag">"refund_requested"</span>].noul)</pre>
+            </div>
+        </div>
+        {% endif %}
     </div>
 </div>
 

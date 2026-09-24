@@ -19,8 +19,8 @@ permissions the user happens to lack — which matches the "be liberal with
 unknown aliases" stance the gateway has always taken.
 
 Every route is also exposed without the ``/v1`` prefix (``/chat/completions``,
-``/models``, ``/embeddings``, ``/rerank``, ``/score``, ``/chat/completions/render``
-alongside the canonical ``/v1/...`` paths; the Anthropic-shaped ``/messages``,
+``/models``, ``/embeddings``, ``/rerank``, ``/score``, ``/chat/completions/render``,
+``/systemone`` alongside the canonical ``/v1/...`` paths; the Anthropic-shaped ``/messages``,
 ``/messages/count_tokens``, ``/responses``, ``/tokenize`` already had this alias). Clients whose base URL
 omits ``/v1`` reach the same handler — a common Roo Code / Cline / Cursor
 misconfiguration that previously surfaced as a silent 404.
@@ -59,6 +59,7 @@ from app.services.vllm_proxy import (
     vllm_forward_render,
     vllm_forward_responses,
     vllm_forward_simple_request,
+    vllm_forward_systemone,
     vllm_forward_tokenize,
 )
 
@@ -745,3 +746,18 @@ async def rerank(request: Request, user: User = Depends(get_current_user)):
         path_suffix="/score",
         endpoint_label="/v1/score",
     )
+
+
+@router.post("/v1/systemone")
+@router.post("/systemone")
+async def systemone(request: Request, user: User = Depends(get_current_user)):
+    """System One typed decisions, in TypeSafe's ``/v1/systemone`` wire format.
+
+    Served by ``[models.systemone.*]`` routes (e.g. Mapika's decider): post a
+    ``state`` plus named ``questions`` — each a ``choice``, ``score`` or
+    ``noul`` — and get calibrated probabilities back under ``answers``, from
+    one forward pass. ``model`` is optional; without it the default
+    systemone model answers. On-prem only, billed on input tokens (nothing
+    is generated). See ``vllm_forward_systemone``.
+    """
+    return await vllm_forward_systemone(request, user, allowed_types=["systemone"])

@@ -138,9 +138,9 @@ classDiagram
 | `id` | `INTEGER` | PK, auto-increment | — | Primary key |
 | `user_id` | `INTEGER` | Composite index | — | Requesting user ID. No FK constraint (avoids cascade issues on user deletion) |
 | `model` | `VARCHAR` | — | `""` | Model alias requested by user (user-facing name, not real_model) |
-| `model_type` | `VARCHAR` | — | `""` | Model type: `llm`, `vlm`, `embedding`, `vision_embedding`, `reranker`, `vision_reranker` |
+| `model_type` | `VARCHAR` | — | `""` | Model type: `llm`, `vlm`, `embedding`, `vision_embedding`, `reranker`, `vision_reranker`, `systemone` |
 | `input_tokens` | `INTEGER` | — | `0` | Input token count (`prompt_tokens`) |
-| `output_tokens` | `INTEGER` | — | `0` | Output token count (`completion_tokens`). Usually 0 for Embedding/Reranker |
+| `output_tokens` | `INTEGER` | — | `0` | Output token count (`completion_tokens`). Usually 0 for Embedding/Reranker, always 0 for System One |
 | `cost_usd` | `NUMERIC(12,6)` | NOT NULL | `0` | Calculated cost (USD). 6 decimal places. Based on `PRICING_MAP` per-1M-token pricing |
 | `endpoint` | `VARCHAR` | — | `""` | API endpoint path, e.g. `/v1/chat/completions`, `/v1/embeddings`, `/v1/score`, `/responses` |
 | `created_at` | `DATETIME` | Composite index | `datetime.now(UTC)` | Request time |

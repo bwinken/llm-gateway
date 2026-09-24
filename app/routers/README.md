@@ -47,6 +47,7 @@ graph LR
 | `POST` | `/v1/embeddings`, `/embeddings` | Text embeddings | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
 | `POST` | `/v1/rerank`, `/rerank` | Document reranking | `vllm_forward_simple_request` | `reranker`, `vision_reranker` |
 | `POST` | `/v1/score`, `/score` | Relevance scoring | `vllm_forward_simple_request` | `reranker`, `vision_reranker` |
+| `POST` | `/v1/systemone`, `/systemone` | System One typed decisions (TypeSafe's wire format; the path the TypeSafe Python SDK calls). `model` optional — absent means the systemone default. On-prem only | `vllm_forward_systemone` | `systemone` |
 | `POST` | `/v1/messages`, `/messages` | Anthropic Messages (translates to OpenAI; streams `reasoning_content` as `thinking` blocks; emits SSE `ping` every 10 s of downstream silence) | `vllm_forward_messages` (vLLM) / `azure_forward_messages` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/messages/count_tokens`, `/messages/count_tokens` | Anthropic token counting (forwards to vLLM `/tokenize`, falls back to chars/4; Azure path uses chars/4 estimate) | `vllm_forward_count_tokens` (vLLM) / `azure_forward_count_tokens` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/tokenize`, `/tokenize` | vLLM-native pass-through tokenize (no Azure path — Azure has no tokenize endpoint) | `vllm_forward_tokenize` | `llm`, `vlm` |
@@ -76,6 +77,7 @@ The "Azure alias from non-Azure user → vLLM fallback" branch matches the gatew
 | `vllm_forward_messages` | stream + non-stream | Anthropic Messages | Anthropic→OpenAI request, OpenAI→Anthropic response (uses `services/anthropic_adapter.py`) |
 | `vllm_forward_count_tokens` | non-stream | `count_tokens` | Forwards to vLLM `/tokenize`; falls back to chars/4 if downstream tokenizer unavailable; not billed |
 | `vllm_forward_tokenize` | non-stream | `/tokenize` | vLLM-native pass-through; not billed |
+| `vllm_forward_systemone` | non-stream | `/systemone` | Body forwarded verbatim to `{base_url}/systemone` (only `model` rewritten; the response's `model` set to the alias); billed on `input_tokens + cached_tokens` (decider reports its cached schema prefix beside `input_tokens`); Phase 2 captures `{state, questions}` → `answers` |
 | `vllm_forward_render` | non-stream | `/chat/completions/render` | vLLM-native pass-through; applies the same reasoning-dialect alignment as chat completions, swaps the alias back onto the echoed `model`; adds `decoded_prompt` via the same server's `/detokenize` by default (best-effort — failures land in `decode_error`; `?decode=false` opts out); not billed, not observed |
 
 ### Common Behavior

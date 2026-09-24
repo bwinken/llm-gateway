@@ -107,7 +107,7 @@ disabled.html        → Rendered by AccountDisabledError handler when a disable
 
 | Section | Description |
 |---|---|
-| **Tab Navigation** | Tabs by model type: llm, vlm, embedding, vision_embedding, reranker, vision_reranker |
+| **Tab Navigation** | Tabs by model type: llm, vlm, embedding, vision_embedding, reranker, vision_reranker, systemone |
 | **Model Table** | Model list per type, editable Real Model, Base URL, API Key |
 | **Fallback Dropdown** | Per-type fallback model selection (preferred when server is down) |
 | **Pricing Table** | Per-type pricing: Default + each type's Input / Output Price (USD per 1M tokens) |

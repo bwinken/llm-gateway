@@ -91,7 +91,7 @@ Useful helpers exposed from `conftest`:
 - `test_user` (api_key `sk-testkey123`, daily limit `$100`, `can_use_azure=True`, `is_disabled=False`) and `admin_user` (`sk-adminkey456`, admin scope)
 - `auth_header(api_key=...)` for `/v1` / `/azure/v1` Bearer auth, `web_auth_header(scopes=...)` for JWT-protected web routes
 - `make_httpx_response(status, json_body)` for non-stream mocks; `FakeStreamResponse(lines)` for SSE mocks
-- `TEST_MODEL_ROUTING` / `TEST_AZURE_MODELS` — the per-test alias maps. Six vLLM aliases (`test-llm`, `test-vlm`, `test-embedding`, `test-reranker`, `test-vision-embedding`, `test-vision-reranker`) and two Azure aliases (`azure-gpt-4`, `azure-embed`).
+- `TEST_MODEL_ROUTING` / `TEST_AZURE_MODELS` — the per-test alias maps. Seven vLLM-path aliases (`test-llm`, `test-vlm`, `test-embedding`, `test-reranker`, `test-vision-embedding`, `test-vision-reranker`, and `test-systemone` — a System One decision server, no `api_key`) and two Azure aliases (`azure-gpt-4`, `azure-embed`).
 
 For non-stream HTTP mocks, set `client.__httpx_mock__.post = AsyncMock(return_value=make_httpx_response(...))`. For streams, set `client.__httpx_mock__.send = AsyncMock(return_value=FakeStreamResponse([...]))`.
 
@@ -159,6 +159,10 @@ errors and auth.
 Text documents, image URL, base64, mixed text+image, multi-modal `content`
 blocks, downstream URL routing, auth, errors. Two test classes — one per
 endpoint.
+
+### `test_systemone.py` — `/v1/systemone` (System One typed decisions)
+
+The decider-style decision endpoint. Covers verbatim forwarding to `{base_url}/systemone` (only `model` rewritten, the response's `model` set to the alias), the bare `/systemone` alias, an absent `model` resolving to the systemone default without a fallback header (and to `[fallback].systemone` when set), unknown/wrong-type aliases staying on systemone servers and systemone aliases never reaching chat servers, billing (`input_tokens + cached_tokens`, the cached-price discount, malformed usage never failing an answered request), downstream 413/422 pass-through unbilled, 503 failover, 502/400/401 paths, Langfuse capture (`{state, questions}` → `answers`), the dashboard's TypeSafe SDK card and the welcome-page row, and `TestTypeSafeSdkContract` — what `typesafe-sdk` 0.7.1 requires: its request shape (default model `jev-latest`, Bearer auth), a string `model` + `usage` object on the response, and `/v1/models` staying llm/vlm-only with no TypeSafe `models` list (no discovery, by design).
 
 ### `test_tokenize.py` — `/v1/tokenize` (vLLM-native pass-through)
 

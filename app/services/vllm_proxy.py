@@ -11,8 +11,9 @@ unambiguous at call sites that also import from ``azure_proxy``:
   - vllm_forward_count_tokens      — Anthropic count_tokens (forwards to /tokenize)
   - vllm_forward_tokenize          — vLLM-native /tokenize pass-through
   - vllm_forward_render            — vLLM-native /chat/completions/render pass-through
+  - vllm_forward_systemone         — System One typed decisions (/v1/systemone)
 
-All seven share ``_resolve_model`` for health-aware type-checked fallback;
+All eight share ``_resolve_model`` for health-aware type-checked fallback;
 billing goes through ``_log_usage`` (decoupled from any specific route map).
 """
 
@@ -2065,6 +2066,169 @@ async def vllm_forward_render(
     if decode and isinstance(data, dict):
         await _decode_render(data, route)
 
+    return JSONResponse(content=data, headers=extra_headers)
+
+
+# ---------------------------------------------------------------------------
+# 8. vllm_forward_systemone - System One typed decisions (/v1/systemone)
+# ---------------------------------------------------------------------------
+
+# A ``[models.systemone.*]`` downstream speaks TypeSafe's System One wire
+# format at ``{base_url}/systemone`` — e.g. Mapika's decider
+# (``decider/serve.py``, ``base_url = "http://host:8000/v1"``). It is not vLLM,
+# but it rides the same on-prem machinery: the health probe's
+# ``{base_url}/models`` is answered by decider's ``GET /v1/models``, and
+# failover, billing and observability are the shared ones.
+_SYSTEMONE_ENDPOINT = "/v1/systemone"
+
+
+def _default_alias(allowed_types: list[str]) -> str:
+    """The alias that serves a request naming no model.
+
+    ``model`` is optional in the System One wire format, so leaving it out is
+    a legitimate request, not a typo. It resolves the way ``_resolve_model``
+    ranks candidates — the ``[fallback]`` entry for the type, else the first
+    configured alias of the type — but as an exact match, so the request
+    isn't logged as a WARNING-level fallback with an ``X-Model-Fallback``
+    header on every call. A default whose server is down still falls back
+    normally. ``""`` when no route of these types exists (``_resolve_model``
+    then answers its usual 400).
+    """
+    for model_type in allowed_types:
+        fb_alias = FALLBACK_MAP.get(model_type)
+        if fb_alias and MODEL_ROUTING.get(fb_alias, {}).get("type") == model_type:
+            return fb_alias
+    for alias, route in dict(MODEL_ROUTING).items():
+        if route["type"] in allowed_types:
+            return alias
+    return ""
+
+
+def _usage_count(usage: dict, key: str) -> int:
+    """A non-negative token count from a downstream ``usage`` block; 0 when
+    absent or malformed, so a third-party server's odd usage can't turn an
+    answered request into a 500 at the billing step."""
+    try:
+        return max(0, int(usage.get(key) or 0))
+    except (TypeError, ValueError, OverflowError):  # OverflowError: JSON Infinity
+        return 0
+
+
+async def vllm_forward_systemone(
+    request: Request,
+    user: User,
+    allowed_types: list[str],
+) -> JSONResponse:
+    """Pass-through to a System One downstream's ``/v1/systemone``.
+
+    A System One model answers typed questions about a ``state`` in a single
+    forward pass — each question a ``choice``, a ``score`` or a ``noul``
+    (yes/no) — and returns calibrated probabilities under ``answers`` rather
+    than generated text. The body is forwarded verbatim (``state``,
+    ``questions``, ``independent``, ``layout``, ...); only ``model`` is
+    rewritten (alias → ``real_model``), and the response's ``model`` is set
+    to the serving alias. A request without ``model`` is served by the
+    type's default model (see ``_default_alias``). This is the path the
+    TypeSafe SDK calls (``POST {TYPESAFE_BASE_URL}/v1/systemone``).
+
+    On-prem only: there is no Azure/Bedrock dispatch (neither offers a
+    System One surface), so an unknown or cloud alias falls back through
+    ``_resolve_model`` to a systemone route like any other unknown alias.
+
+    Billed through ``_log_usage`` like embeddings/rerank. The downstream
+    reports Anthropic-style ``usage``, and decider's schema-cache layout
+    reports the cached question prefix as ``cached_tokens`` *next to*
+    ``input_tokens`` (which then counts only the uncached state tokens), not
+    inside it. The billed input is therefore their sum, with
+    ``cached_tokens`` as its cached portion: the model entry's
+    ``cached_input_price_per_1m`` discounts it when set, and otherwise every
+    token bills at the input price — the same default as every other
+    backend. ``output_tokens`` is 0, since nothing is generated.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    requested = body.get("model")
+    model_name = requested if isinstance(requested, str) else ""
+    if not model_name:
+        model_name = _default_alias(allowed_types)
+    resolved_alias, route, fallback_reason = _resolve_model(model_name, allowed_types)
+    model_type = route["type"]
+    extra_headers = _fallback_headers(fallback_reason)
+
+    # Phase 2: capture the request in the endpoint's own shape.
+    if capture_io_enabled():
+        set_io_input({"state": body.get("state"), "questions": body.get("questions")})
+
+    client = get_client()
+    try:
+        resp, resolved_alias, route, failover_note = await _post_with_failover(
+            client, "/systemone", body, resolved_alias, model_type, route,
+        )
+    except Exception as exc:
+        logger.error("systemone downstream error: {}: {}", type(exc).__name__, exc)
+        _log_error(user, body, str(exc), 502, resolved_alias, _SYSTEMONE_ENDPOINT, model_type)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    extra_headers = _merge_failover_header(extra_headers, failover_note)
+
+    # 413 (request too large), 422 (invalid questions) and 503 (queue full —
+    # already failed over to another server when one exists) are the
+    # downstream's to explain; pass them through unbilled.
+    if resp.status_code != 200:
+        _log_error(
+            user, body, resp.text[:500], resp.status_code, resolved_alias,
+            _SYSTEMONE_ENDPOINT, model_type,
+        )
+        return _error_response(resp)
+
+    try:
+        data = resp.json()
+    except Exception:
+        _log_error(
+            user, body, "downstream returned non-JSON response", 502,
+            resolved_alias, _SYSTEMONE_ENDPOINT, model_type,
+        )
+        return JSONResponse(
+            content={"error": "Downstream returned non-JSON response"},
+            status_code=502,
+        )
+    if not isinstance(data, dict):
+        _log_error(
+            user, body, "downstream returned a non-object JSON response", 502,
+            resolved_alias, _SYSTEMONE_ENDPOINT, model_type,
+        )
+        return JSONResponse(
+            content={"error": "Downstream returned a non-object JSON response"},
+            status_code=502,
+        )
+
+    # decider echoes its own name ("decider" by default); callers know the
+    # model by its alias. Set unconditionally: the TypeSafe SDK requires a
+    # string `model` on every response.
+    data["model"] = resolved_alias
+
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        usage = {}
+    input_tk = _usage_count(usage, "input_tokens")
+    cached_tk = _usage_count(usage, "cached_tokens")
+    output_tk = _usage_count(usage, "output_tokens")
+    if input_tk + cached_tk == 0:
+        logger.warning(
+            "systemone response reported no input tokens — billed as 0 | "
+            "user={} model={} (does the downstream return usage?)",
+            user.username, resolved_alias,
+        )
+    obs_output = data.get("answers") if capture_io_enabled() else None
+    _log_usage(
+        user, resolved_alias, model_type, input_tk + cached_tk, output_tk,
+        _SYSTEMONE_ENDPOINT, route=route, cached_tokens=cached_tk,
+        output_payload=obs_output,
+    )
     return JSONResponse(content=data, headers=extra_headers)
 
 
