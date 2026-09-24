@@ -312,7 +312,7 @@ curl http://your-gateway/v1/systemone \
        "questions": {"refund": {"type": "noul", "instructions": "Does the customer ask for a refund?"}}}'
 ```
 
-在 `[models.systemone."<alias>"]` 設定伺服器,`base_url = "http://decider-host:8000/v1"`(見 `config.toml.example`)。只依 input token 計費,不會生成任何 token。
+在 `[models.systemone."<alias>"]` 設定伺服器,`base_url = "http://decider-host:8000"`,也就是 decider 伺服器的根網址;結尾加 `/v1` 也可以(見 `config.toml.example`)。decider 不是 vLLM,所以 gateway 用 decider 自己的 `/health` 檢查健康狀態,回報 `"ok": true` 時才顯示 ONLINE。只依 input token 計費,不會生成任何 token。
 
 ### Anthropic Messages API
 

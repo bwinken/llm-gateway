@@ -1,6 +1,10 @@
 """
 Background task: periodically ping each backend server's /models endpoint
 and scrape its vLLM /metrics endpoint for a load snapshot.
+
+``systemone`` servers (e.g. Mapika's decider) are not vLLM: they are probed
+on their own ``/health`` instead (see ``_probe_systemone``) and have no
+Prometheus metrics to scrape.
 """
 
 from __future__ import annotations
@@ -49,16 +53,50 @@ def _apply_probe_result(base_url: str, alive: bool) -> bool:
     return True
 
 
+def _server_root(base_url: str) -> str:
+    """``base_url`` without a trailing ``/v1``: where root-level endpoints live."""
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3]
+    return root.rstrip("/")
+
+
 def _metrics_url(base_url: str) -> str:
     """Derive the vLLM /metrics URL from an OpenAI-style base_url.
 
     vLLM serves /metrics at the server root, not under /v1, so a base_url
     of ``http://host:8000/v1`` maps to ``http://host:8000/metrics``.
     """
-    root = base_url.rstrip("/")
-    if root.endswith("/v1"):
-        root = root[:-3]
-    return f"{root.rstrip('/')}/metrics"
+    return f"{_server_root(base_url)}/metrics"
+
+
+_SYSTEMONE_TYPE = "systemone"
+
+
+async def _probe_systemone(client, base_url: str, headers: dict[str, str]) -> bool:
+    """Liveness of a System One server — decider's own server, not vLLM.
+
+    decider answers ``GET /health`` at its root with ``{"ok": bool, ...}``;
+    ``ok`` stays false until its engine is loaded and sealed and turns false
+    again if its batcher dies, so a bare 200 would report a wedged server as
+    healthy. A server without ``/health`` (some other TypeSafe-compatible
+    implementation) is probed on the TypeSafe API's own ``GET /v1/models``
+    instead. ``base_url`` may be the server root or end in ``/v1``: the vLLM
+    ``{base_url}/models`` probe only worked with the latter, so a decider
+    route configured with its bare root showed DOWN on every cycle.
+    """
+    root = _server_root(base_url)
+    resp = await client.get(f"{root}/health", headers=headers, timeout=5.0)
+    if resp.status_code == 404:
+        resp = await client.get(f"{root}/v1/models", headers=headers, timeout=5.0)
+        return resp.status_code == 200
+    if resp.status_code != 200:
+        return False
+    try:
+        body = resp.json()
+    except ValueError:
+        return True
+    return not (isinstance(body, dict) and body.get("ok") is False)
 
 
 def _parse_vllm_metrics(text: str) -> dict[str, int] | None:
@@ -99,7 +137,7 @@ def _last_number(line: str) -> float | None:
 
 async def check_all_servers() -> None:
     """Ping every unique base_url in MODEL_ROUTING concurrently."""
-    seen: dict[str, str] = {}  # base_url -> api_key
+    seen: dict[str, tuple[str, str]] = {}  # base_url -> (api_key, type) of its first route
     # Dedicated probe client — never contends with user traffic for pool
     # slots, so a failed probe reflects the downstream, not the gateway.
     client = get_health_client()
@@ -109,15 +147,18 @@ async def check_all_servers() -> None:
     for _model_name, route in list(MODEL_ROUTING.items()):
         base_url = route["base_url"]
         if base_url not in seen:
-            seen[base_url] = route.get("api_key", "")
+            seen[base_url] = (route.get("api_key", ""), route.get("type", ""))
 
-    async def _ping(base_url: str, api_key: str) -> None:
+    async def _ping(base_url: str, api_key: str, model_type: str) -> None:
         headers: dict[str, str] = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         try:
-            resp = await client.get(f"{base_url}/models", headers=headers, timeout=5.0)
-            alive = resp.status_code == 200
+            if model_type == _SYSTEMONE_TYPE:
+                alive = await _probe_systemone(client, base_url, headers)
+            else:
+                resp = await client.get(f"{base_url}/models", headers=headers, timeout=5.0)
+                alive = resp.status_code == 200
         except httpx.PoolTimeout:
             # Probe never left the gateway — this says nothing about the
             # downstream, so keep whatever state the last real probe set.
@@ -128,6 +169,11 @@ async def check_all_servers() -> None:
         alive = _apply_probe_result(base_url, alive)
         if not alive:
             logger.warning("Server DOWN: {}", base_url)
+            set_metrics(base_url, None)
+            return
+        if model_type == _SYSTEMONE_TYPE:
+            # Not vLLM: there is no Prometheus /metrics to scrape, and asking
+            # would only leave a 404 in its access log every cycle.
             set_metrics(base_url, None)
             return
 
@@ -146,7 +192,7 @@ async def check_all_servers() -> None:
             metrics = None
         set_metrics(base_url, metrics)
 
-    await asyncio.gather(*[_ping(url, key) for url, key in seen.items()])
+    await asyncio.gather(*[_ping(url, key, mtype) for url, (key, mtype) in seen.items()])
     prune_cache(set(seen.keys()))
     for url in [u for u in _consecutive_failures if u not in seen]:
         _consecutive_failures.pop(url, None)

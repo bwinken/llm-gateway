@@ -23,7 +23,7 @@ import asyncio
 import json
 import os
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from fastapi import HTTPException, Request
@@ -758,6 +758,7 @@ def _failover_route(
 async def _post_with_failover(
     client, path: str, body: dict, alias: str, model_type: str,
     route: dict[str, Any], timeout: float = _NON_STREAM_TIMEOUT,
+    url_for: Callable[[dict[str, Any]], str] | None = None,
 ):
     """POST ``{route.base_url}{path}`` with a single failover retry.
 
@@ -765,11 +766,14 @@ async def _post_with_failover(
     ``(resp, alias, route, note)`` — alias/route reflect the server that
     actually answered; ``note`` is set when failover happened. Re-raises the
     connect exception when the final attempt fails at the connection level.
+
+    ``url_for``, when given, builds each attempt's URL from its route
+    instead — for a downstream whose endpoint doesn't hang off ``base_url``.
     """
     note: str | None = None
     while True:
         body["model"] = route["real_model"]
-        url = f"{route['base_url']}{path}"
+        url = url_for(route) if url_for else f"{route['base_url']}{path}"
         try:
             resp = await client.post(
                 url, json=body, headers=_get_downstream_headers(route), timeout=timeout,
@@ -2074,12 +2078,19 @@ async def vllm_forward_render(
 # ---------------------------------------------------------------------------
 
 # A ``[models.systemone.*]`` downstream speaks TypeSafe's System One wire
-# format at ``{base_url}/systemone`` — e.g. Mapika's decider
-# (``decider/serve.py``, ``base_url = "http://host:8000/v1"``). It is not vLLM,
-# but it rides the same on-prem machinery: the health probe's
-# ``{base_url}/models`` is answered by decider's ``GET /v1/models``, and
-# failover, billing and observability are the shared ones.
+# format at ``/v1/systemone`` under its server root — e.g. Mapika's decider
+# (``decider/serve.py``). It is not vLLM, so its ``base_url`` may be the bare
+# server root (``http://host:8000``) or end in ``/v1`` like a vLLM route;
+# ``_systemone_url`` accepts both. It rides the shared on-prem machinery
+# otherwise: the health loop (which probes decider's own ``/health`` —
+# ``health._probe_systemone``), failover, billing and observability.
 _SYSTEMONE_ENDPOINT = "/v1/systemone"
+
+
+def _systemone_url(route: dict[str, Any]) -> str:
+    """``{server root}/v1/systemone`` for a route, whether its ``base_url``
+    is the server root or ends in ``/v1``."""
+    return f"{_server_root(route['base_url'])}/v1/systemone"
 
 
 def _default_alias(allowed_types: list[str]) -> str:
@@ -2119,7 +2130,8 @@ async def vllm_forward_systemone(
     user: User,
     allowed_types: list[str],
 ) -> JSONResponse:
-    """Pass-through to a System One downstream's ``/v1/systemone``.
+    """Pass-through to a System One downstream's ``/v1/systemone`` (see
+    ``_systemone_url``: the route's ``base_url`` may omit ``/v1``).
 
     A System One model answers typed questions about a ``state`` in a single
     forward pass — each question a ``choice``, a ``score`` or a ``noul``
@@ -2168,6 +2180,7 @@ async def vllm_forward_systemone(
     try:
         resp, resolved_alias, route, failover_note = await _post_with_failover(
             client, "/systemone", body, resolved_alias, model_type, route,
+            url_for=_systemone_url,
         )
     except Exception as exc:
         logger.error("systemone downstream error: {}: {}", type(exc).__name__, exc)
