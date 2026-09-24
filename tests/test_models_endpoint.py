@@ -24,9 +24,10 @@ class TestListModels:
         assert data["object"] == "list"
         types = {m["type"] for m in data["data"]}
         assert types <= {"llm", "vlm"}
-        # embedding / reranker / vision_* entries must be filtered out
+        # embedding / reranker / vision_* / systemone entries must be filtered out
         assert "embedding" not in types
         assert "reranker" not in types
+        assert "systemone" not in types
 
     def test_base_fields_present(self, client, test_user):
         resp = client.get("/v1/models", headers=auth_header())

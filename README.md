@@ -36,7 +36,7 @@ Client App ──▶ LLM Gateway ──▶ /v1/*      ──▶ vLLM Instance A 
 - **Unified `/v1/*` surface** — One base URL exposes both backends. `/v1/chat/completions`, `/v1/messages`, `/v1/messages/count_tokens` dispatch by `model` alias: vLLM by default, Azure when the alias is configured under `[azure_models.*]` AND the caller has `can_use_azure`. `/v1/models` merges Azure aliases in for those callers so Claude Code's model picker shows both backends. Every route is also exposed without the `/v1` prefix (`/chat/completions`, `/messages`, ...) for clients whose base URL omits it. `/v1/chat/completions/render` (on-prem vLLM only) renders a request through the model's chat template and returns the resulting `token_ids` + resolved `sampling_params` **without generating** — a debug aid for seeing exactly what the model receives. vLLM returns token IDs rather than text, so the gateway detokenizes them for you and returns the prompt string as `decoded_prompt` (`?decode=false` for a pure pass-through). Neither billed nor recorded in Langfuse — it is a debug query, not inference. `/docs` carries the full usage guide for it; a downstream vLLM without the render server answers 404
 - **Anthropic Messages API** — `/v1/messages` and `/v1/messages/count_tokens`, drop-in compatible with the Anthropic Python SDK and Claude Code (works against any vLLM LLM/VLM downstream, and any Azure deployment when the caller has Azure access). Streams `reasoning_content` from `--enable-reasoning` / DeepSeek / Qwen3-thinking as Anthropic `thinking` content blocks, emits SSE `ping` keepalives every 10 s of downstream silence so clients survive long reasoning prefill, and surfaces a mid-stream downstream disconnect as a retryable `overloaded_error` rather than a falsely-complete turn
 - **Azure OpenAI backend** — Same client, same API key, same billing. Reachable via the unified `/v1/*` surface above (per-user, gated by `can_use_azure`), or via a dedicated Azure-only surface at `/azure/v1/*` (chat completions, responses, Anthropic Messages, count_tokens — no embeddings; that's vLLM-only by design)
-- **Multi-model routing** — LLM, VLM, Embedding, Vision Embedding, Reranker, Vision Reranker
+- **Multi-model routing** — LLM, VLM, Embedding, Vision Embedding, Reranker, Vision Reranker, System One (typed decisions such as Mapika's decider, served at `/v1/systemone` and callable with the TypeSafe Python SDK)
 - **SSE streaming** — Full Server-Sent Events support for chat completions and responses
 - **Smart fallback** — Configurable per-type fallback model, health-check-aware; `X-Model-Fallback` response header (vLLM path)
 - **Tiered pricing** — Per-type defaults plus optional per-model overrides on either vLLM or Azure entries, including a discounted `cached_input_price_per_1m` for prompt-cache hits (Azure cached tokens billed at the lower rate)
@@ -145,7 +145,7 @@ base_url = "http://host:port/v1"    # vLLM server URL
 api_key = "your-key"                # vLLM --api-key (leave empty if none)
 ```
 
-Supported model types: `llm`, `vlm`, `embedding`, `vision_embedding`, `reranker`, `vision_reranker`.
+Supported model types: `llm`, `vlm`, `embedding`, `vision_embedding`, `reranker`, `vision_reranker`, `systemone` (see [System One](#system-one-typed-decisions)).
 
 A reasoning model can also declare which effort levels its downstream actually accepts, so a model upgrade that dropped one (the usual case: no more `high`) doesn't start returning 400s to clients pinned to the old set:
 
@@ -225,7 +225,7 @@ is_reasoning = true           # enables reasoning-effort → extended-thinking t
 Optional. When `LANGFUSE_HOST` + `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` are all set, the gateway emits one Langfuse **generation** per billable request — non-blocking, errors swallowed, and a complete no-op when unset.
 
 - **Metrics (always, no PII):** user, model alias, endpoint, token usage, cost (computed by the gateway — Langfuse is **not** asked to re-price), latency, plus categorical scores for **client software** (`claude-code` / `roo-code` / `openai-compatible` / …, derived from `User-Agent` + endpoint), `empty_turn`, and `fallback_used`. This powers per-user / per-model / per-client analytics (filter by user in the Users view; group by model or `client` score; chart by day/month).
-- **Content (opt-in, PII):** set `LANGFUSE_CAPTURE_IO=true` to also attach the request messages and assistant response to each generation (chat / messages / responses, vLLM + Azure; embeddings/rerank/score are metrics-only by design). **Governance:** capturing individual users' prompts is individual-level monitoring — restrict Langfuse project access and confirm notice/consent before enabling in production.
+- **Content (opt-in, PII):** set `LANGFUSE_CAPTURE_IO=true` to also attach the request messages and assistant response to each generation (chat / messages / responses, vLLM + Azure, plus `/v1/systemone` state/questions and answers; embeddings/rerank/score are metrics-only by design). **Governance:** capturing individual users' prompts is individual-level monitoring — restrict Langfuse project access and confirm notice/consent before enabling in production.
 - **Version note:** built on the Langfuse Python SDK v4 (OTel-based); confirm SDK ↔ your Langfuse server version compatibility before rollout.
 
 See [docs/langfuse-observability.md](docs/langfuse-observability.md) for the full design.
@@ -273,6 +273,46 @@ curl http://your-gateway/v1/rerank \
     "documents": ["AI is...", "Machine learning is..."]
   }'
 ```
+
+### System One (typed decisions)
+
+A `systemone` model — e.g. [Mapika's decider](https://huggingface.co/Mapika/decider-4b), served by its own `scripts/serve.sh` — answers typed questions about a state (`choice`, `score`, or yes/no `noul`) with calibrated probabilities from a single forward pass instead of generating text. The gateway serves TypeSafe's System One wire format at `/v1/systemone` (and `/systemone`), so the [TypeSafe Python SDK](https://docs.typesafe.ai/sdk/python/) works unchanged against it:
+
+```bash
+pip install typesafe-sdk
+export TYPESAFE_BASE_URL=http://your-gateway     # gateway root, WITHOUT /v1 — the SDK appends /v1/systemone
+export TYPESAFE_API_KEY=sk-your-api-key          # your gateway API key
+export TYPESAFE_DEFAULT_MODEL=decider-4b         # a [models.systemone.*] alias
+```
+
+```python
+from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
+
+with TypeSafeClient() as client:
+    result = client.system_one(
+        state="I was charged twice for order A-104. Please refund the duplicate.",
+        questions={
+            "department": Choice(instructions="Which team should handle this?",
+                                 criteria={"billing": "Charges, invoices", "returns": "Exchanges, refunds", "other": None}),
+            "refund_requested": Noul(instructions="Does the customer ask for a refund?"),
+            "frustration": Score(instructions="How frustrated is the customer?",
+                                 criteria=["calm", "frustrated", "very frustrated"]),
+        },
+    )
+    print(result.choices["department"].choice, result.nouls["refund_requested"].noul)
+```
+
+Without `TYPESAFE_DEFAULT_MODEL` (or `TypeSafeClient(model=...)`) the SDK asks for TypeSafe's `jev-latest`. The gateway still answers from the systemone default, but marks the response with `X-Model-Fallback` and logs a warning on every call. `client.models.list()` lists the systemone aliases. Plain HTTP works too, and `model` is optional there:
+
+```bash
+curl http://your-gateway/v1/systemone \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"state": "I was charged twice.",
+       "questions": {"refund": {"type": "noul", "instructions": "Does the customer ask for a refund?"}}}'
+```
+
+Configure the server under `[models.systemone."<alias>"]` with `base_url = "http://decider-host:8000/v1"` (see `config.toml.example`). Billed on input tokens only; nothing is generated.
 
 ### Anthropic Messages API
 
@@ -548,6 +588,7 @@ llm-gateway/
     ├── test_vlm.py
     ├── test_vision_embedding.py
     ├── test_vision_rerank_score.py
+    ├── test_systemone.py
     ├── test_admin.py
     └── test_app_ownership.py
 ```

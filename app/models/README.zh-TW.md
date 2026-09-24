@@ -138,9 +138,9 @@ classDiagram
 | `id` | `INTEGER` | PK, auto-increment | — | 主鍵 |
 | `user_id` | `INTEGER` | 複合索引 | — | 發起請求的使用者 ID。未設 FK 約束（避免刪除使用者時級聯問題） |
 | `model` | `VARCHAR` | — | `""` | 使用者請求的模型別名（user-facing name，非 real_model） |
-| `model_type` | `VARCHAR` | — | `""` | 模型類型。可能值：`llm`、`vlm`、`embedding`、`vision_embedding`、`reranker`、`vision_reranker` |
+| `model_type` | `VARCHAR` | — | `""` | 模型類型。可能值：`llm`、`vlm`、`embedding`、`vision_embedding`、`reranker`、`vision_reranker`、`systemone` |
 | `input_tokens` | `INTEGER` | — | `0` | 輸入 token 數量（`prompt_tokens`） |
-| `output_tokens` | `INTEGER` | — | `0` | 輸出 token 數量（`completion_tokens`）。Embedding / Reranker 通常為 0 |
+| `output_tokens` | `INTEGER` | — | `0` | 輸出 token 數量（`completion_tokens`）。Embedding / Reranker 通常為 0,System One 一律為 0 |
 | `cost_usd` | `NUMERIC(12,6)` | NOT NULL | `0` | 計算費用（USD）。精度到小數點後 6 位。根據 `PRICING_MAP` 的 per-1M-token 價格計算 |
 | `endpoint` | `VARCHAR` | — | `""` | API 端點路徑，如 `/v1/chat/completions`、`/v1/embeddings`、`/v1/score`、`/responses` |
 | `created_at` | `DATETIME` | 複合索引 | `datetime.now(UTC)` | 請求時間 |

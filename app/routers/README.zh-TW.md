@@ -41,12 +41,13 @@ graph LR
 
 | 方法 | 路徑 | 說明 | Proxy 方式 | 允許類型 |
 |---|---|---|---|---|
-| `GET` | `/v1/models`、`/models` | 列出模型(僅 LLM/VLM)。有 `can_use_azure` 的使用者(admin 自動 bypass)會多看到 Azure 別名 | 直接回傳 | `llm`, `vlm` |
+| `GET` | `/v1/models`、`/models` | 列出模型(僅 LLM/VLM)。有 `can_use_azure` 的使用者(admin 自動 bypass)會多看到 Azure 別名。另帶一個 TypeSafe 格式的頂層 `models` 清單,列出 `systemone` 別名,供 TypeSafe SDK 的 `client.models.list()` 使用 | 直接回傳 | `llm`, `vlm`(`models` 內為 `systemone`) |
 | `POST` | `/v1/chat/completions`、`/chat/completions` | Chat 對話生成 | `vllm_forward_chat_completions`(vLLM) / `azure_forward_chat_completions`(Azure) | `llm`, `vlm` |
 | `POST` | `/v1/responses`、`/responses` | Responses API | `vllm_forward_responses` | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`、`/embeddings` | 文字向量嵌入 | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
 | `POST` | `/v1/rerank`、`/rerank` | 文件重排序 | `vllm_forward_simple_request` | `reranker`, `vision_reranker` |
 | `POST` | `/v1/score`、`/score` | 相關性評分 | `vllm_forward_simple_request` | `reranker`, `vision_reranker` |
+| `POST` | `/v1/systemone`、`/systemone` | System One 型別化決策(TypeSafe 的 wire format,也是 TypeSafe Python SDK 呼叫的路徑)。`model` 可省略,省略時用 systemone 預設模型。僅地端 | `vllm_forward_systemone` | `systemone` |
 | `POST` | `/v1/messages`、`/messages` | Anthropic Messages(轉譯為 OpenAI;`reasoning_content` 串流成 `thinking` block;下游靜默時每 10 秒送 SSE `ping`) | `vllm_forward_messages`(vLLM) / `azure_forward_messages`(Azure) | `llm`, `vlm` |
 | `POST` | `/v1/messages/count_tokens`、`/messages/count_tokens` | Anthropic token 計數(vLLM 走 `/tokenize`,失敗時 fallback chars/4;Azure 路徑用 chars/4 估算) | `vllm_forward_count_tokens`(vLLM) / `azure_forward_count_tokens`(Azure) | `llm`, `vlm` |
 | `POST` | `/v1/tokenize`、`/tokenize` | vLLM 原生 pass-through tokenize(無 Azure 路徑 — Azure 沒有 tokenize 端點) | `vllm_forward_tokenize` | `llm`, `vlm` |
@@ -74,6 +75,7 @@ alias 不在 AZURE_MODELS                              → vLLM 路徑
 | `vllm_forward_messages` | stream + non-stream | Anthropic Messages | Anthropic→OpenAI 請求、OpenAI→Anthropic 回應(使用 `services/anthropic_adapter.py`) |
 | `vllm_forward_count_tokens` | non-stream | `count_tokens` | 轉送至 vLLM `/tokenize`,失敗時 fallback 為 chars/4;不計費 |
 | `vllm_forward_tokenize` | non-stream | `/tokenize` | vLLM 原生 pass-through;不計費 |
+| `vllm_forward_systemone` | non-stream | `/systemone` | body 原樣轉送到 `{base_url}/systemone`(只改 `model`,回應的 `model` 換成 alias);依 `input_tokens + cached_tokens` 計費(decider 把快取的 schema 前綴另外回報,不含在 `input_tokens` 內);Phase 2 擷取 `{state, questions}` → `answers` |
 | `vllm_forward_render` | non-stream | `/chat/completions/render` | vLLM 原生 pass-through;套用與 chat completions 相同的 reasoning 方言對齊,回應的 `model` 換回 alias;預設會經由同一台的 `/detokenize` 補上 `decoded_prompt`(best-effort,失敗記在 `decode_error`;`?decode=false` 可關閉);不計費、不觀測 |
 
 ### 共通行為

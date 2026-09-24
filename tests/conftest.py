@@ -233,6 +233,14 @@ TEST_MODEL_ROUTING: dict[str, dict[str, Any]] = {
         "api_key": "VRERANK_API_KEY",
         "type": "vision_reranker",
     },
+    # System One typed-decision model (Mapika decider style). No api_key:
+    # decider's server checks none, so no Authorization header goes out.
+    "test-systemone": {
+        "base_url": "http://mock-systemone:8000/v1",
+        "real_model": "Mapika/decider-4b",
+        "api_key": "",
+        "type": "systemone",
+    },
 }
 
 TEST_PRICING_MAP: dict[str, dict[str, float]] = {
@@ -243,6 +251,7 @@ TEST_PRICING_MAP: dict[str, dict[str, float]] = {
     "reranker": {"input_price_per_1m": 0.05, "output_price_per_1m": 0.00},
     "vision_embedding": {"input_price_per_1m": 0.02, "output_price_per_1m": 0.00},
     "vision_reranker": {"input_price_per_1m": 0.05, "output_price_per_1m": 0.00},
+    "systemone": {"input_price_per_1m": 0.05, "output_price_per_1m": 0.00},
 }
 
 TEST_FALLBACK_MAP: dict[str, str] = {}

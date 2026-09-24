@@ -58,6 +58,10 @@ output_price_per_1m = 0.00
 input_price_per_1m = 2.00
 output_price_per_1m = 0.00
 
+[pricing.systemone]
+input_price_per_1m = 0.05
+output_price_per_1m = 0.00    # System One models generate nothing
+
 
 # ==========================================
 # Fallback (optional)
@@ -71,6 +75,7 @@ output_price_per_1m = 0.00
 # vision_embedding = "backup-vision-embedding"
 # reranker = "backup-reranker"
 # vision_reranker = "backup-vision-reranker"
+# systemone = "backup-decider"    # also the model a /v1/systemone request without `model` goes to
 
 
 # ==========================================
@@ -164,6 +169,32 @@ api_key = "your-api-key"
 real_model = "Qwen/Qwen3-VL-Reranker-2B"
 base_url = "http://your-vision-reranker-server:8091/v1"
 api_key = "your-api-key"
+
+# ------------------------------------------
+# System One (typed decisions)
+# ------------------------------------------
+# A System One model answers typed questions about a state — choice, score,
+# or yes/no ("noul") — with calibrated probabilities from one forward pass,
+# instead of generating text. Example: Mapika's decider
+# (https://huggingface.co/Mapika/decider-4b), run with its own
+# `scripts/serve.sh`, not vLLM. Clients post TypeSafe's System One format to
+# the gateway's /v1/systemone (or /systemone); the gateway forwards it to
+# {base_url}/systemone and health-probes {base_url}/models, so base_url must
+# end in /v1. A request without `model` goes to the [fallback] systemone
+# alias, else the first one listed here.
+# TypeSafe SDK (pip install typesafe-sdk) clients set TYPESAFE_BASE_URL to
+# the gateway root (no /v1), TYPESAFE_API_KEY to their gateway key, and
+# TYPESAFE_DEFAULT_MODEL to an alias below — the SDK otherwise sends
+# "jev-latest", which only reaches this model via the unknown-alias fallback.
+# Billing: input tokens only. When decider's schema cache is on, it reports
+# the cached question prefix as `cached_tokens`; that is billed as input too,
+# unless the entry sets input_price_per_1m + output_price_per_1m +
+# cached_input_price_per_1m to discount it.
+[models.systemone]
+[models.systemone."decider-4b"]
+real_model = "Mapika/decider-4b"    # decider ignores `model`; informational
+base_url = "http://your-decider-server:8000/v1"
+api_key = ""                        # decider's server checks no key
 
 
 # ==========================================

@@ -159,6 +159,12 @@ resp = client.chat.completions.create(
                     <td><span class="gw-badge" style="background:rgba(245,166,35,0.1);color:#f5a623;border-color:rgba(245,166,35,0.15)">reranker</span></td>
                 </tr>
                 <tr>
+                    <td><span class="text-xs font-mono font-bold text-ag">POST</span></td>
+                    <td class="font-mono text-sm text-t1">/v1/systemone</td>
+                    <td class="text-sm text-t3">Typed decisions with calibrated probabilities</td>
+                    <td><span class="gw-badge" style="background:rgba(61,214,140,0.1);color:#3dd68c;border-color:rgba(61,214,140,0.15)">systemone</span></td>
+                </tr>
+                <tr>
                     <td><span class="text-xs font-mono font-bold text-ab">GET</span></td>
                     <td class="font-mono text-sm text-t1">/v1/models</td>
                     <td class="text-sm text-t3">List all available models</td>
@@ -180,7 +186,8 @@ resp = client.chat.completions.create(
             'embedding': ('#4dd9e8', 'rgba(77,217,232,0.08)', 'rgba(77,217,232,0.15)'),
             'vision_embedding': ('#4dd9e8', 'rgba(77,217,232,0.08)', 'rgba(77,217,232,0.15)'),
             'reranker': ('#f5a623', 'rgba(245,166,35,0.08)', 'rgba(245,166,35,0.15)'),
-            'vision_reranker': ('#f5a623', 'rgba(245,166,35,0.08)', 'rgba(245,166,35,0.15)')
+            'vision_reranker': ('#f5a623', 'rgba(245,166,35,0.08)', 'rgba(245,166,35,0.15)'),
+            'systemone': ('#3dd68c', 'rgba(61,214,140,0.08)', 'rgba(61,214,140,0.15)')
         } %}
         {% for type_key, models in models_by_type.items() %}
         <div class="gw-card p-5">

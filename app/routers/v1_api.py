@@ -19,8 +19,8 @@ permissions the user happens to lack — which matches the "be liberal with
 unknown aliases" stance the gateway has always taken.
 
 Every route is also exposed without the ``/v1`` prefix (``/chat/completions``,
-``/models``, ``/embeddings``, ``/rerank``, ``/score``, ``/chat/completions/render``
-alongside the canonical ``/v1/...`` paths; the Anthropic-shaped ``/messages``,
+``/models``, ``/embeddings``, ``/rerank``, ``/score``, ``/chat/completions/render``,
+``/systemone`` alongside the canonical ``/v1/...`` paths; the Anthropic-shaped ``/messages``,
 ``/messages/count_tokens``, ``/responses``, ``/tokenize`` already had this alias). Clients whose base URL
 omits ``/v1`` reach the same handler — a common Roo Code / Cline / Cursor
 misconfiguration that previously surfaced as a silent 404.
@@ -59,6 +59,7 @@ from app.services.vllm_proxy import (
     vllm_forward_render,
     vllm_forward_responses,
     vllm_forward_simple_request,
+    vllm_forward_systemone,
     vllm_forward_tokenize,
 )
 
@@ -207,9 +208,17 @@ async def list_models(user: User = Depends(get_current_user)):
 
     The ``hidden`` flag is intentionally NOT filtered here (operators rely on
     it only for the web UI; existing tests pin this contract).
+
+    The response also carries a top-level ``models`` list in TypeSafe's
+    shape (``name`` / ``description`` / ``release_date``) naming the
+    ``systemone`` aliases, so the TypeSafe SDK's ``client.models.list()`` —
+    which GETs ``{base_url}/v1/models`` — works against the same base URL.
+    Each SDK reads only its own key: OpenAI-style clients read ``data``, the
+    TypeSafe SDK reads ``models``, and both ignore the other.
     """
+    routing = get_model_routing_snapshot()
     models = []
-    for name, route in get_model_routing_snapshot().items():
+    for name, route in routing.items():
         model_type = route["type"]
         if model_type not in ("llm", "vlm"):
             continue
@@ -264,7 +273,19 @@ async def list_models(user: User = Depends(get_current_user)):
                     entry[meta_key] = route[meta_key]
             models.append(entry)
 
-    return {"object": "list", "data": models}
+    # The gateway doesn't track release dates; the SDK requires the field to
+    # be a string, and an empty one is the honest "unknown".
+    typesafe_models = [
+        {
+            "name": name,
+            "description": str(route.get("display_name") or "System One typed-decision model"),
+            "release_date": "",
+        }
+        for name, route in routing.items()
+        if route["type"] == "systemone"
+    ]
+
+    return {"object": "list", "data": models, "models": typesafe_models}
 
 
 @router.post("/v1/chat/completions")
@@ -745,3 +766,18 @@ async def rerank(request: Request, user: User = Depends(get_current_user)):
         path_suffix="/score",
         endpoint_label="/v1/score",
     )
+
+
+@router.post("/v1/systemone")
+@router.post("/systemone")
+async def systemone(request: Request, user: User = Depends(get_current_user)):
+    """System One typed decisions, in TypeSafe's ``/v1/systemone`` wire format.
+
+    Served by ``[models.systemone.*]`` routes (e.g. Mapika's decider): post a
+    ``state`` plus named ``questions`` — each a ``choice``, ``score`` or
+    ``noul`` — and get calibrated probabilities back under ``answers``, from
+    one forward pass. ``model`` is optional; without it the default
+    systemone model answers. On-prem only, billed on input tokens (nothing
+    is generated). See ``vllm_forward_systemone``.
+    """
+    return await vllm_forward_systemone(request, user, allowed_types=["systemone"])
