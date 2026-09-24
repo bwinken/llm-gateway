@@ -41,7 +41,7 @@ graph LR
 
 | Method | Path(s) | Description | Proxy Method | Allowed Types |
 |---|---|---|---|---|
-| `GET` | `/v1/models`, `/models` | List models (LLM/VLM only). Azure aliases merged in for users with `can_use_azure` (admins bypass). Also carries a top-level TypeSafe-shaped `models` list of the `systemone` aliases, for the TypeSafe SDK's `client.models.list()` | Direct response | `llm`, `vlm` (+ `systemone` under `models`) |
+| `GET` | `/v1/models`, `/models` | List models (LLM/VLM only). Azure aliases merged in for users with `can_use_azure` (admins bypass) | Direct response | `llm`, `vlm` |
 | `POST` | `/v1/chat/completions`, `/chat/completions` | Chat completion generation | `vllm_forward_chat_completions` (vLLM) / `azure_forward_chat_completions` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/responses`, `/responses` | Responses API | `vllm_forward_responses` | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`, `/embeddings` | Text embeddings | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |

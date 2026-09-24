@@ -302,7 +302,7 @@ with TypeSafeClient() as client:
     print(result.choices["department"].choice, result.nouls["refund_requested"].noul)
 ```
 
-沒設 `TYPESAFE_DEFAULT_MODEL`(或 `TypeSafeClient(model=...)`)時,SDK 會送 TypeSafe 的 `jev-latest`。gateway 仍會用 systemone 的預設模型回答,但每次都會在回應加上 `X-Model-Fallback` 並記一筆 warning。`client.models.list()` 會列出 systemone 的 alias。直接打 HTTP 也可以,而且 `model` 可省略:
+沒設 `TYPESAFE_DEFAULT_MODEL`(或 `TypeSafeClient(model=...)`)時,SDK 會送 TypeSafe 的 `jev-latest`。gateway 仍會用 systemone 的預設模型回答,但每次都會在回應加上 `X-Model-Fallback` 並記一筆 warning。不提供模型探索:`/v1/models` 只列 llm/vlm,所以 SDK 的 `client.models.list()` 不支援。直接打 HTTP 也可以,而且 `model` 可省略:
 
 ```bash
 curl http://your-gateway/v1/systemone \

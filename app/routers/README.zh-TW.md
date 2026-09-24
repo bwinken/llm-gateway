@@ -41,7 +41,7 @@ graph LR
 
 | 方法 | 路徑 | 說明 | Proxy 方式 | 允許類型 |
 |---|---|---|---|---|
-| `GET` | `/v1/models`、`/models` | 列出模型(僅 LLM/VLM)。有 `can_use_azure` 的使用者(admin 自動 bypass)會多看到 Azure 別名。另帶一個 TypeSafe 格式的頂層 `models` 清單,列出 `systemone` 別名,供 TypeSafe SDK 的 `client.models.list()` 使用 | 直接回傳 | `llm`, `vlm`(`models` 內為 `systemone`) |
+| `GET` | `/v1/models`、`/models` | 列出模型(僅 LLM/VLM)。有 `can_use_azure` 的使用者(admin 自動 bypass)會多看到 Azure 別名 | 直接回傳 | `llm`, `vlm` |
 | `POST` | `/v1/chat/completions`、`/chat/completions` | Chat 對話生成 | `vllm_forward_chat_completions`(vLLM) / `azure_forward_chat_completions`(Azure) | `llm`, `vlm` |
 | `POST` | `/v1/responses`、`/responses` | Responses API | `vllm_forward_responses` | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`、`/embeddings` | 文字向量嵌入 | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |

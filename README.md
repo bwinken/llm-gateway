@@ -302,7 +302,7 @@ with TypeSafeClient() as client:
     print(result.choices["department"].choice, result.nouls["refund_requested"].noul)
 ```
 
-Without `TYPESAFE_DEFAULT_MODEL` (or `TypeSafeClient(model=...)`) the SDK asks for TypeSafe's `jev-latest`. The gateway still answers from the systemone default, but marks the response with `X-Model-Fallback` and logs a warning on every call. `client.models.list()` lists the systemone aliases. Plain HTTP works too, and `model` is optional there:
+Without `TYPESAFE_DEFAULT_MODEL` (or `TypeSafeClient(model=...)`) the SDK asks for TypeSafe's `jev-latest`. The gateway still answers from the systemone default, but marks the response with `X-Model-Fallback` and logs a warning on every call. There is no model discovery: `/v1/models` lists chat models only, so the SDK's `client.models.list()` is not supported. Plain HTTP works too, and `model` is optional there:
 
 ```bash
 curl http://your-gateway/v1/systemone \

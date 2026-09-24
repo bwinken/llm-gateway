@@ -208,17 +208,9 @@ async def list_models(user: User = Depends(get_current_user)):
 
     The ``hidden`` flag is intentionally NOT filtered here (operators rely on
     it only for the web UI; existing tests pin this contract).
-
-    The response also carries a top-level ``models`` list in TypeSafe's
-    shape (``name`` / ``description`` / ``release_date``) naming the
-    ``systemone`` aliases, so the TypeSafe SDK's ``client.models.list()`` —
-    which GETs ``{base_url}/v1/models`` — works against the same base URL.
-    Each SDK reads only its own key: OpenAI-style clients read ``data``, the
-    TypeSafe SDK reads ``models``, and both ignore the other.
     """
-    routing = get_model_routing_snapshot()
     models = []
-    for name, route in routing.items():
+    for name, route in get_model_routing_snapshot().items():
         model_type = route["type"]
         if model_type not in ("llm", "vlm"):
             continue
@@ -273,19 +265,7 @@ async def list_models(user: User = Depends(get_current_user)):
                     entry[meta_key] = route[meta_key]
             models.append(entry)
 
-    # The gateway doesn't track release dates; the SDK requires the field to
-    # be a string, and an empty one is the honest "unknown".
-    typesafe_models = [
-        {
-            "name": name,
-            "description": str(route.get("display_name") or "System One typed-decision model"),
-            "release_date": "",
-        }
-        for name, route in routing.items()
-        if route["type"] == "systemone"
-    ]
-
-    return {"object": "list", "data": models, "models": typesafe_models}
+    return {"object": "list", "data": models}
 
 
 @router.post("/v1/chat/completions")

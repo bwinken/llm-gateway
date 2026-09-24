@@ -10,10 +10,10 @@ reports as ``cached_tokens`` next to (not inside) ``input_tokens``.
 
 The ``TestTypeSafeSdkContract`` class pins what the TypeSafe Python SDK
 (``typesafe-sdk``) needs from the gateway: it POSTs
-``{TYPESAFE_BASE_URL}/v1/systemone`` with ``Authorization: Bearer <key>``,
-requires a string ``model`` and a ``usage`` object on the response, and its
-``client.models.list()`` GETs ``/v1/models`` expecting a top-level ``models``
-list of ``{name, description, release_date}``.
+``{TYPESAFE_BASE_URL}/v1/systemone`` with ``Authorization: Bearer <key>`` and
+requires a string ``model`` and a ``usage`` object on the response. Model
+discovery is deliberately not offered: ``GET /v1/models`` lists chat models
+(llm / vlm) only, so the SDK's ``client.models.list()`` is not supported.
 """
 
 from __future__ import annotations
@@ -526,26 +526,15 @@ class TestTypeSafeSdkContract:
         assert isinstance(data["usage"]["input_tokens"], int)
         assert {a["type"] for a in data["answers"].values()} == {"choice", "noul", "score"}
 
-    def test_models_list_carries_typesafe_shape(self, client, test_user):
-        """client.models.list() GETs /v1/models and requires a top-level
-        `models` list of {name, description, release_date} strings."""
+    def test_models_list_stays_chat_only(self, client, test_user):
+        """No model discovery for System One: /v1/models lists llm / vlm only
+        and carries no TypeSafe-shaped `models` list, so the SDK's
+        client.models.list() is intentionally unsupported."""
         data = client.get("/v1/models", headers=auth_header()).json()
 
-        assert data["models"] == [{
-            "name": "test-systemone",
-            "description": "System One typed-decision model",
-            "release_date": "",
-        }]
-        for entry in data["models"]:
-            assert all(isinstance(entry[k], str) for k in ("name", "description", "release_date"))
-        # The OpenAI-style list is unchanged: systemone is not a chat model.
+        assert set(data) == {"object", "data"}
+        assert {m["type"] for m in data["data"]} <= {"llm", "vlm"}
         assert "test-systemone" not in {m["id"] for m in data["data"]}
-
-    def test_models_list_uses_display_name_as_description(self, client, test_user):
-        with patch.dict(TEST_MODEL_ROUTING["test-systemone"], {"display_name": "Decider 4B"}):
-            data = client.get("/v1/models", headers=auth_header()).json()
-
-        assert data["models"][0]["description"] == "Decider 4B"
 
 
 # ---------------------------------------------------------------------------
