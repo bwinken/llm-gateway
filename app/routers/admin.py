@@ -776,6 +776,40 @@ def _validate_reasoning_keys(label: str, alias: str, info: dict) -> None:
             )
 
 
+def _validate_rate_limit_fallback(
+    label: str, alias: str, info: dict, models: dict,
+) -> None:
+    """`rate_limit_fallback` must name another entry of the same backend
+    that the chat/messages surfaces can serve (llm/vlm). Empty = unset."""
+    target = info.get("rate_limit_fallback")
+    if target in (None, ""):
+        return
+    if not isinstance(target, str):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} '{alias}' field 'rate_limit_fallback' must be an alias string.",
+        )
+    if target == alias:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} '{alias}' cannot be its own rate_limit_fallback.",
+        )
+    target_info = models.get(target)
+    if not isinstance(target_info, dict):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} '{alias}' rate_limit_fallback references unknown alias '{target}'.",
+        )
+    if target_info.get("type", "llm") not in ("llm", "vlm"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{label} '{alias}' rate_limit_fallback '{target}' has type "
+                f"'{target_info.get('type')}'; it must be llm or vlm."
+            ),
+        )
+
+
 # ── Model Configuration ──
 
 @router.get("/models", response_class=HTMLResponse)
@@ -948,6 +982,7 @@ async def save_config_api(
                         detail=f"Azure model '{alias}' field '{key}' must be non-negative.",
                     )
             _validate_reasoning_keys("Azure model", alias, info)
+            _validate_rate_limit_fallback("Azure model", alias, info, azure_models)
             for key in _MODEL_INTERNAL_KEYS:
                 if key not in info:
                     continue

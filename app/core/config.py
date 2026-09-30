@@ -93,6 +93,35 @@ _MODEL_INTERNAL_KEYS: tuple[str, ...] = (
 )
 
 
+# Cloud-only routing policy on [azure_models.*] / [bedrock_models.*] entries.
+# `rate_limit_fallback`: alias of another entry on the SAME backend that takes
+# the request when this one answers 429 (see
+# app.services.rate_limit_fallback). Internal — not surfaced via /v1/models.
+_CLOUD_ROUTING_KEYS: tuple[str, ...] = (
+    "rate_limit_fallback",
+)
+
+
+def _warn_bad_rate_limit_fallbacks(label: str, models: dict[str, dict[str, Any]]) -> None:
+    """Flag `rate_limit_fallback` targets that can never be used. Only a
+    WARNING: the proxy skips a bad hop at request time, so a typo degrades
+    to "no fallback" rather than keeping the gateway from starting."""
+    for alias, entry in models.items():
+        target = entry.get("rate_limit_fallback")
+        if target is None:
+            continue
+        if not isinstance(target, str) or not target:
+            logger.warning("config.toml: [{}.{}] rate_limit_fallback must be an alias string", label, alias)
+        elif target == alias:
+            logger.warning("config.toml: [{}.{}] rate_limit_fallback points to itself", label, alias)
+        elif target not in models:
+            logger.warning(
+                "config.toml: [{}.{}] rate_limit_fallback '{}' is not a [{}.*] alias "
+                "— fallback never crosses backends",
+                label, alias, target, label,
+            )
+
+
 def _active_config_path() -> Path:
     """Return the config file to read: config.toml, else the example.
 
@@ -235,6 +264,9 @@ def _build_config(raw: dict[str, Any]) -> tuple[
         for reasoning_key in _MODEL_REASONING_KEYS:
             if reasoning_key in cfg:
                 entry[reasoning_key] = cfg[reasoning_key]
+        for routing_key in _CLOUD_ROUTING_KEYS:
+            if routing_key in cfg:
+                entry[routing_key] = cfg[routing_key]
         for price_key in _MODEL_PRICING_KEYS:
             if price_key in cfg:
                 entry[price_key] = float(cfg[price_key])
@@ -274,6 +306,9 @@ def _build_config(raw: dict[str, Any]) -> tuple[
         for reasoning_key in _MODEL_REASONING_KEYS:
             if reasoning_key in cfg:
                 entry[reasoning_key] = cfg[reasoning_key]
+        for routing_key in _CLOUD_ROUTING_KEYS:
+            if routing_key in cfg:
+                entry[routing_key] = cfg[routing_key]
         for price_key in _MODEL_PRICING_KEYS:
             if price_key in cfg:
                 entry[price_key] = float(cfg[price_key])
@@ -286,6 +321,9 @@ def _build_config(raw: dict[str, Any]) -> tuple[
     for type_key, alias in raw.get("bedrock_fallback", {}).items():
         if isinstance(alias, str):
             bedrock_fallback_map[type_key] = alias
+
+    _warn_bad_rate_limit_fallbacks("azure_models", azure_models)
+    _warn_bad_rate_limit_fallbacks("bedrock_models", bedrock_models)
 
     # Unified `/v1/*` dispatch (v1_api) routes a request by looking up the
     # `model` alias across MODEL_ROUTING / AZURE_MODELS / BEDROCK_MODELS.
@@ -474,6 +512,9 @@ def save_config(
             for reasoning_key in _MODEL_REASONING_KEYS:
                 if reasoning_key in info:
                     entry[reasoning_key] = info[reasoning_key]
+            for routing_key in _CLOUD_ROUTING_KEYS:
+                if info.get(routing_key):
+                    entry[routing_key] = info[routing_key]
             for price_key in _MODEL_PRICING_KEYS:
                 if price_key in info:
                     entry[price_key] = float(info[price_key])
@@ -514,6 +555,9 @@ def save_config(
             for reasoning_key in _MODEL_REASONING_KEYS:
                 if reasoning_key in info:
                     entry[reasoning_key] = info[reasoning_key]
+            for routing_key in _CLOUD_ROUTING_KEYS:
+                if info.get(routing_key):
+                    entry[routing_key] = info[routing_key]
             for price_key in _MODEL_PRICING_KEYS:
                 if price_key in info:
                     entry[price_key] = float(info[price_key])

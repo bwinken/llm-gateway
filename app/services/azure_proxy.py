@@ -23,6 +23,7 @@ Key conventions:
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any, Iterator
 
@@ -43,6 +44,11 @@ from app.services.anthropic_adapter import (
 from app.services.reasoning_effort import (
     apply_to_openai_body,
     apply_to_responses_body,
+)
+from app.services.rate_limit_fallback import (
+    RATE_LIMITED,
+    note_fallback,
+    rate_limit_chain,
 )
 from app.services.redact import summarize_body
 from app.services.responses_adapter import (
@@ -151,6 +157,17 @@ def _fallback_headers(fallback_reason: str | None) -> dict[str, str]:
     if fallback_reason:
         return {"X-Model-Fallback": fallback_reason}
     return {}
+
+
+def _rate_limit_chain(
+    alias: str, entry: dict[str, Any],
+) -> list[tuple[str, dict[str, Any]]]:
+    """``alias`` followed by its ``rate_limit_fallback`` chain (Azure only).
+    See app.services.rate_limit_fallback."""
+    return rate_limit_chain(
+        alias, entry, AZURE_MODELS, _AZURE_DEFAULT_ALLOWED_TYPES,
+        _is_usable_entry, "Azure",
+    )
 
 
 def _build_responses_url(entry: dict[str, Any]) -> str:
@@ -352,54 +369,63 @@ async def azure_forward_chat_completions(
     request: Request,
     user: User,
 ) -> StreamingResponse | JSONResponse:
-    body = await request.json()
-    requested_alias = body.get("model", "")
+    original_body = await request.json()
+    requested_alias = original_body.get("model", "")
     resolved_alias, entry, fallback_reason = _resolve_azure(
         requested_alias, allowed_types=["llm", "vlm"],
     )
-    model_type = entry.get("type", "llm")
-    deployment = entry["deployment"]
-
-    is_stream = bool(body.get("stream", False))
-    # Reconcile the requested effort with what this deployment accepts before
-    # translation — a no-op unless the entry declares `reasoning_efforts`.
-    apply_to_openai_body(body, entry, resolved_alias, "/azure/v1/chat/completions")
-    responses_body = openai_chat_to_responses_request(body, model=deployment)
-    if is_stream:
-        responses_body["stream"] = True
-
-    _ensure_input(responses_body, body, resolved_alias, "/azure/v1/chat/completions")
+    is_stream = bool(original_body.get("stream", False))
 
     # Phase 2: capture the (OpenAI-shaped) request messages as Langfuse input.
     if capture_io_enabled():
-        set_io_input(body.get("messages"))
+        set_io_input(original_body.get("messages"))
 
-    target_url = _build_responses_url(entry)
-    headers = _build_headers(entry)
     client = get_azure_client()
+    chain = _rate_limit_chain(resolved_alias, entry)
+    for i, (alias, entry) in enumerate(chain):
+        last = i == len(chain) - 1
+        # Each attempt rebuilds its body from the client's request: the
+        # effort pass below mutates it per deployment.
+        body = original_body if len(chain) == 1 else copy.deepcopy(original_body)
+        model_type = entry.get("type", "llm")
+        deployment = entry["deployment"]
 
-    # Bill the resolved alias (what we actually used) but show the original
-    # in monitor logs so operators see what the client asked for.
-    monitor_body = {**body, "model": resolved_alias}
-    extra_headers = _fallback_headers(fallback_reason)
+        # Reconcile the requested effort with what this deployment accepts before
+        # translation — a no-op unless the entry declares `reasoning_efforts`.
+        apply_to_openai_body(body, entry, alias, "/azure/v1/chat/completions")
+        responses_body = openai_chat_to_responses_request(body, model=deployment)
+        if is_stream:
+            responses_body["stream"] = True
 
-    if is_stream:
-        return await _stream_chat(
+        _ensure_input(responses_body, body, alias, "/azure/v1/chat/completions")
+
+        target_url = _build_responses_url(entry)
+        headers = _build_headers(entry)
+
+        # Bill the resolved alias (what we actually used) but show the original
+        # in monitor logs so operators see what the client asked for.
+        monitor_body = {**body, "model": alias}
+        extra_headers = _fallback_headers(fallback_reason)
+
+        send = _stream_chat if is_stream else _non_stream_chat
+        result = await send(
             client, target_url, responses_body, headers,
-            user, resolved_alias, model_type, monitor_body, entry, body,
-            extra_headers,
+            user, alias, model_type, monitor_body, entry, body,
+            extra_headers, rate_limit_retry=not last,
         )
-    return await _non_stream_chat(
-        client, target_url, responses_body, headers,
-        user, resolved_alias, model_type, monitor_body, entry, body,
-        extra_headers,
-    )
+        if result is not RATE_LIMITED:
+            return result
+        fallback_reason = note_fallback(
+            fallback_reason, "azure", user, alias, chain[i + 1][0],
+            "/azure/v1/chat/completions",
+        )
 
 
 async def _non_stream_chat(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     incoming_body: dict, extra_headers: dict[str, str] | None = None,
+    rate_limit_retry: bool = False,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
@@ -414,6 +440,8 @@ async def _non_stream_chat(
                          alias, "/azure/v1/chat/completions")
         _log_error(user, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/azure/v1/chat/completions", model_type)
+        if rate_limit_retry and resp.status_code == 429:
+            return RATE_LIMITED
         return _error_response(resp)
 
     raw = resp.json()
@@ -433,6 +461,7 @@ async def _stream_chat(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     incoming_body: dict, extra_headers: dict[str, str] | None = None,
+    rate_limit_retry: bool = False,
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight: open the stream and check status BEFORE handing it to the
     # SSE pump. Without this an Azure 4xx is returned as a JSON error body
@@ -456,6 +485,8 @@ async def _stream_chat(
                          alias, "/azure/v1/chat/completions")
         _log_error(user, monitor_body, err_text[:500], resp.status_code,
                           alias, "/azure/v1/chat/completions", model_type)
+        if rate_limit_retry and resp.status_code == 429:
+            return RATE_LIMITED
         try:
             err_json = json.loads(err_text)
         except Exception:
@@ -568,50 +599,59 @@ async def azure_forward_messages(
     resolved_alias, entry, fallback_reason = _resolve_azure(
         requested_alias, allowed_types=["llm", "vlm"],
     )
-    model_type = entry.get("type", "llm")
-    deployment = entry["deployment"]
-
-    openai_body = anthropic_to_openai_request(
-        anthropic_body, is_reasoning=bool(entry.get("is_reasoning")),
-    )
-    apply_to_openai_body(openai_body, entry, resolved_alias, "/azure/v1/messages")
     is_stream = bool(anthropic_body.get("stream", False))
-    responses_body = openai_chat_to_responses_request(openai_body, model=deployment)
-    if is_stream:
-        responses_body["stream"] = True
-
-    _ensure_input(responses_body, anthropic_body, resolved_alias, "/azure/v1/messages")
 
     # Phase 2: capture the ORIGINAL Anthropic request as Langfuse input so the
     # trace stays in Anthropic shape (not the internal OpenAI pivot).
     if capture_io_enabled():
         set_io_input(anthropic_request_io(anthropic_body))
 
-    target_url = _build_responses_url(entry)
-    headers = _build_headers(entry)
     client = get_azure_client()
+    chain = _rate_limit_chain(resolved_alias, entry)
+    for i, (alias, entry) in enumerate(chain):
+        last = i == len(chain) - 1
+        # Translation depends on the entry (`is_reasoning`, effort policy,
+        # deployment), so every attempt re-translates the client's request.
+        source = anthropic_body if len(chain) == 1 else copy.deepcopy(anthropic_body)
+        model_type = entry.get("type", "llm")
+        deployment = entry["deployment"]
 
-    monitor_body = dict(anthropic_body)
-    monitor_body["model"] = resolved_alias
-    extra_headers = _fallback_headers(fallback_reason)
-
-    if is_stream:
-        return await _stream_messages(
-            client, target_url, responses_body, headers,
-            user, resolved_alias, model_type, monitor_body, entry, anthropic_body,
-            extra_headers,
+        openai_body = anthropic_to_openai_request(
+            source, is_reasoning=bool(entry.get("is_reasoning")),
         )
-    return await _non_stream_messages(
-        client, target_url, responses_body, headers,
-        user, resolved_alias, model_type, monitor_body, entry, anthropic_body,
-        extra_headers,
-    )
+        apply_to_openai_body(openai_body, entry, alias, "/azure/v1/messages")
+        responses_body = openai_chat_to_responses_request(openai_body, model=deployment)
+        if is_stream:
+            responses_body["stream"] = True
+
+        _ensure_input(responses_body, anthropic_body, alias, "/azure/v1/messages")
+
+        target_url = _build_responses_url(entry)
+        headers = _build_headers(entry)
+
+        monitor_body = dict(anthropic_body)
+        monitor_body["model"] = alias
+        extra_headers = _fallback_headers(fallback_reason)
+
+        send = _stream_messages if is_stream else _non_stream_messages
+        result = await send(
+            client, target_url, responses_body, headers,
+            user, alias, model_type, monitor_body, entry, anthropic_body,
+            extra_headers, rate_limit_retry=not last,
+        )
+        if result is not RATE_LIMITED:
+            return result
+        fallback_reason = note_fallback(
+            fallback_reason, "azure", user, alias, chain[i + 1][0],
+            "/azure/v1/messages",
+        )
 
 
 async def _non_stream_messages(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     incoming_body: dict, extra_headers: dict[str, str] | None = None,
+    rate_limit_retry: bool = False,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
@@ -626,6 +666,8 @@ async def _non_stream_messages(
                          alias, "/azure/v1/messages")
         _log_error(user, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/azure/v1/messages", model_type)
+        if rate_limit_retry and resp.status_code == 429:
+            return RATE_LIMITED
         return _error_response(resp)
 
     raw = resp.json()
@@ -648,6 +690,7 @@ async def _stream_messages(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     incoming_body: dict, extra_headers: dict[str, str] | None = None,
+    rate_limit_retry: bool = False,
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight to surface 4xx before opening the SSE channel — same
     # rationale as _stream_chat.
@@ -669,6 +712,8 @@ async def _stream_messages(
                          alias, "/azure/v1/messages")
         _log_error(user, monitor_body, err_text[:500], resp.status_code,
                           alias, "/azure/v1/messages", model_type)
+        if rate_limit_retry and resp.status_code == 429:
+            return RATE_LIMITED
         try:
             err_json = json.loads(err_text)
         except Exception:
@@ -849,56 +894,62 @@ async def azure_forward_responses(
     responsible for sending Responses-shape input/instructions/etc.
     """
     try:
-        body = await request.json()
+        original_body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
-    requested_alias = body.get("model", "")
+    requested_alias = original_body.get("model", "")
     resolved_alias, entry, fallback_reason = _resolve_azure(
         requested_alias, allowed_types=["llm", "vlm"],
     )
-    model_type = entry.get("type", "llm")
-    deployment = entry["deployment"]
+    is_stream = bool(original_body.get("stream", False))
 
     # Phase 2: capture the Responses-shape request input as Langfuse input.
     if capture_io_enabled():
-        set_io_input(body.get("input") or body.get("messages") or body)
+        set_io_input(original_body.get("input") or original_body.get("messages") or original_body)
 
-    # Only mutation: alias → deployment name. Everything else is up to the
-    # client. Sampling-param stripping that the chat completions path does
-    # is deliberately NOT applied here: a client speaking Responses API
-    # natively presumably knows which params its target model accepts.
-    body["model"] = deployment
-    # The one exception to "the client owns its params": an effort level the
-    # deployment is declared not to accept would 400, so it is remapped (and
-    # only then — without `reasoning_efforts` this stays a pure pass-through).
-    apply_to_responses_body(body, entry, resolved_alias, "/azure/v1/responses")
-
-    is_stream = bool(body.get("stream", False))
-    target_url = _build_responses_url(entry)
-    headers = _build_headers(entry)
     client = get_azure_client()
+    chain = _rate_limit_chain(resolved_alias, entry)
+    for i, (alias, entry) in enumerate(chain):
+        last = i == len(chain) - 1
+        body = original_body if len(chain) == 1 else copy.deepcopy(original_body)
+        model_type = entry.get("type", "llm")
 
-    monitor_body = {**body, "model": resolved_alias}
-    extra_headers = _fallback_headers(fallback_reason)
+        # Only mutation: alias → deployment name. Everything else is up to the
+        # client. Sampling-param stripping that the chat completions path does
+        # is deliberately NOT applied here: a client speaking Responses API
+        # natively presumably knows which params its target model accepts.
+        body["model"] = entry["deployment"]
+        # The one exception to "the client owns its params": an effort level the
+        # deployment is declared not to accept would 400, so it is remapped (and
+        # only then — without `reasoning_efforts` this stays a pure pass-through).
+        apply_to_responses_body(body, entry, alias, "/azure/v1/responses")
 
-    if is_stream:
-        return await _stream_responses(
+        target_url = _build_responses_url(entry)
+        headers = _build_headers(entry)
+
+        monitor_body = {**body, "model": alias}
+        extra_headers = _fallback_headers(fallback_reason)
+
+        send = _stream_responses if is_stream else _non_stream_responses
+        result = await send(
             client, target_url, body, headers,
-            user, resolved_alias, model_type, monitor_body, entry,
-            extra_headers,
+            user, alias, model_type, monitor_body, entry,
+            extra_headers, rate_limit_retry=not last,
         )
-    return await _non_stream_responses(
-        client, target_url, body, headers,
-        user, resolved_alias, model_type, monitor_body, entry,
-        extra_headers,
-    )
+        if result is not RATE_LIMITED:
+            return result
+        fallback_reason = note_fallback(
+            fallback_reason, "azure", user, alias, chain[i + 1][0],
+            "/azure/v1/responses",
+        )
 
 
 async def _non_stream_responses(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     extra_headers: dict[str, str] | None = None,
+    rate_limit_retry: bool = False,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
@@ -913,6 +964,8 @@ async def _non_stream_responses(
                          alias, "/azure/v1/responses")
         _log_error(user, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/azure/v1/responses", model_type)
+        if rate_limit_retry and resp.status_code == 429:
+            return RATE_LIMITED
         return _error_response(resp)
 
     data = resp.json()
@@ -930,6 +983,7 @@ async def _stream_responses(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     extra_headers: dict[str, str] | None = None,
+    rate_limit_retry: bool = False,
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight to surface 4xx before opening the SSE channel — same
     # rationale as _stream_chat / _stream_messages.
@@ -951,6 +1005,8 @@ async def _stream_responses(
                          alias, "/azure/v1/responses")
         _log_error(user, monitor_body, err_text[:500], resp.status_code,
                           alias, "/azure/v1/responses", model_type)
+        if rate_limit_retry and resp.status_code == 429:
+            return RATE_LIMITED
         try:
             err_json = json.loads(err_text)
         except Exception:

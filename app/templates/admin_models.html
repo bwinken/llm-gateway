@@ -219,7 +219,7 @@ function hasPricing(info) {
 // Advanced row is auto-expanded (and flagged with a dot) when pricing
 // overrides, metadata, or a reasoning-effort policy are set on the model.
 function hasAdvanced(info) {
-    return hasMeta(info) || hasPricing(info) || hasReasoning(info);
+    return hasMeta(info) || hasPricing(info) || hasReasoning(info) || !!info.rate_limit_fallback;
 }
 
 function typeDefaultPrice(type, field) {
@@ -739,6 +739,7 @@ function renderAzureMetaRow(alias, info) {
             <td colspan="8" class="px-5 py-4 space-y-4">
                 ${renderPricingFields(alias, info, 'azalias')}
                 ${renderReasoningFields(alias, info, 'azalias')}
+                ${renderAzureRateLimitFallback(alias, info)}
                 <div>
                 <span class="text-[11px] font-bold text-t3 uppercase tracking-wider">Metadata</span>
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs mt-2">
@@ -771,6 +772,44 @@ function renderAzureMetaRow(alias, info) {
             </td>
         </tr>
     `;
+}
+
+// 429 fallback: another Azure deployment that takes the request when this
+// one is rate limited. Edited straight on `config` (like the reasoning keys),
+// not via data-field inputs, so collectFromDOM never touches it. Targets are
+// llm/vlm Azure aliases other than this one — fallback never crosses backends.
+function renderAzureRateLimitFallback(alias, info) {
+    const a = escAttr(alias);
+    const current = info.rate_limit_fallback || '';
+    const candidates = Object.entries(config.azure_models || {})
+        .filter(([other, o]) => other !== alias && ['llm', 'vlm'].includes(o.type || 'llm'))
+        .map(([other]) => other);
+    // Keep a hand-written target selectable even if it's no longer a
+    // candidate, so a re-render never silently rewrites the config.
+    if (current && !candidates.includes(current)) candidates.push(current);
+    const opts = candidates.map(c =>
+        `<option value="${escAttr(c)}" ${c === current ? 'selected' : ''}>${escHtml(c)}</option>`
+    ).join('');
+    const tip = 'When Azure answers 429 (rate limit) for this deployment, retry the '
+        + 'request once on the chosen Azure deployment instead. Chains follow that '
+        + 'model\'s own setting (up to 3 hops). Streams switch before anything is sent.';
+    return `
+        <div>
+            <span class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="${escAttr(tip)}">Rate-limit fallback (429)</span>
+            <div class="mt-2">
+                <select onchange="setAzureRateLimitFallback('${a}', this.value)" class="gw-input text-sm py-1 px-2">
+                    <option value="">None — return the 429</option>
+                    ${opts}
+                </select>
+            </div>
+        </div>`;
+}
+
+function setAzureRateLimitFallback(alias, value) {
+    const info = config.azure_models[alias];
+    if (!info) return;
+    if (value) info.rate_limit_fallback = value;
+    else delete info.rate_limit_fallback;
 }
 
 function toggleAzureMeta(alias) {
@@ -834,6 +873,9 @@ function deleteAzureModel(alias) {
     // exist). Mirror of deleteModel() below.
     for (const [type, fb] of Object.entries(config.azure_fallback || {})) {
         if (fb === alias) delete config.azure_fallback[type];
+    }
+    for (const info of Object.values(config.azure_models)) {
+        if (info.rate_limit_fallback === alias) delete info.rate_limit_fallback;
     }
     render();
 }
