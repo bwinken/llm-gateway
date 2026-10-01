@@ -23,6 +23,7 @@ Key conventions:
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from typing import Any, Iterator
@@ -54,6 +55,7 @@ from app.services.rate_limit_fallback import (
 from app.services.redact import summarize_body
 from app.services.responses_adapter import (
     ResponsesToChatStreamTranslator,
+    is_rate_limit_event,
     openai_chat_to_responses_request,
     responses_to_openai_chat_response,
 )
@@ -365,6 +367,123 @@ def _parse_responses_sse_event(data_str: str) -> dict[str, Any] | None:
         return None
 
 
+# How long a stream that may still fall back on a rate limit is read ahead
+# before the client gets its headers. Azure can accept a stream (HTTP 200)
+# and report the quota a moment later as an in-stream error event; that
+# arrives right after `response.created`, long before any output.
+_STREAM_PEEK_WINDOW = 5.0
+# Lifecycle events Azure sends before any output — reading past them is safe.
+_PRE_OUTPUT_EVENTS = frozenset({"response.created", "response.in_progress", "response.queued"})
+_EOF = object()
+
+
+async def _next_line(it):
+    try:
+        return await it.__anext__()
+    except StopAsyncIteration:
+        return _EOF
+
+
+class _PeekedStream:
+    """The downstream response after its first SSE lines were read ahead.
+
+    Replays the buffered lines, then continues the SAME line iterator (an
+    httpx stream can be iterated only once). Quacks like the httpx response
+    as far as ``_pump_sse_lines`` / ``_release_stream`` are concerned.
+    """
+
+    def __init__(self, resp, it, buffered: list[str], pending, eof: bool):
+        self._resp = resp
+        self._it = it
+        self._buffered = buffered
+        self._pending = pending  # an in-flight read the peek window cut off
+        self._eof = eof
+
+    async def aiter_lines(self):
+        for line in self._buffered:
+            yield line
+        if self._pending is not None:
+            pending, self._pending = self._pending, None
+            line = await pending
+            if line is _EOF:
+                return
+            yield line
+        if not self._eof:
+            async for line in self._it:
+                yield line
+
+    async def aclose(self):
+        if self._pending is not None and not self._pending.done():
+            self._pending.cancel()
+        await self._resp.aclose()
+
+
+async def _peek_stream_start(resp) -> tuple[_PeekedStream, dict | None]:
+    """Read ahead until the first output event, an error event, the end of
+    the stream, or ``_STREAM_PEEK_WINDOW`` — whichever comes first.
+
+    Returns the stream to hand to the pump (nothing lost) and the error
+    event if one arrived before any output. Never cancels a read: one still
+    running when the window closes is handed over as ``pending``.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _STREAM_PEEK_WINDOW
+    it = resp.aiter_lines().__aiter__()
+    buffered: list[str] = []
+    pending = None
+    eof = False
+    error = None
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        fut = asyncio.ensure_future(_next_line(it))
+        done, _ = await asyncio.wait({fut}, timeout=remaining)
+        if not done:
+            pending = fut
+            break
+        if fut.exception() is not None:
+            pending = fut  # re-raised by the pump, which reports it
+            break
+        line = fut.result()
+        if line is _EOF:
+            eof = True
+            break
+        buffered.append(line)
+        if not line or not line.startswith("data: "):
+            continue
+        event = _parse_responses_sse_event(line[6:])
+        if event is None:
+            continue
+        etype = event.get("type")
+        if etype in ("error", "response.failed", "response.error"):
+            error = event
+            break
+        if etype not in _PRE_OUTPUT_EVENTS:
+            break
+    return _PeekedStream(resp, it, buffered, pending, eof), error
+
+
+async def _rate_limited_in_stream(
+    resp, rate_limit_retry: bool, user: User, monitor_body: dict,
+    alias: str, endpoint: str, model_type: str,
+):
+    """Stream pre-flight, second half: for a request that can still fall
+    back, look ahead for an in-stream rate-limit error. Returns
+    ``(stream, RATE_LIMITED)`` when the request should move to the next
+    model (the stream is already closed), else ``(stream, None)``.
+    """
+    if not rate_limit_retry:
+        return resp, None
+    stream, early_error = await _peek_stream_start(resp)
+    if early_error is not None and is_rate_limit_event(early_error):
+        await stream.aclose()
+        _log_error(user, monitor_body, json.dumps(early_error)[:500], 429,
+                   alias, endpoint, model_type)
+        return stream, RATE_LIMITED
+    return stream, None
+
+
 # ---------------------------------------------------------------------------
 # Chat Completions (`/azure/v1/chat/completions`)
 # ---------------------------------------------------------------------------
@@ -498,6 +617,12 @@ async def _stream_chat(
         except Exception:
             err_json = {"error": {"message": err_text[:500]}}
         return JSONResponse(status_code=resp.status_code, content=err_json)
+
+    resp, rate_limited = await _rate_limited_in_stream(
+        resp, rate_limit_retry, user, monitor_body, alias, "/azure/v1/chat/completions", model_type,
+    )
+    if rate_limited is not None:
+        return rate_limited
 
     _capture_io = capture_io_enabled()
     logger.info("Stream start | user={} model={} endpoint=/azure/v1/chat/completions",
@@ -727,6 +852,12 @@ async def _stream_messages(
         except Exception:
             err_json = {"type": "error", "error": {"type": "api_error", "message": err_text[:500]}}
         return JSONResponse(status_code=resp.status_code, content=err_json)
+
+    resp, rate_limited = await _rate_limited_in_stream(
+        resp, rate_limit_retry, user, monitor_body, alias, "/azure/v1/messages", model_type,
+    )
+    if rate_limited is not None:
+        return rate_limited
 
     _capture_io = capture_io_enabled()
     logger.info("Stream start | user={} model={} endpoint=/azure/v1/messages",
@@ -1022,6 +1153,12 @@ async def _stream_responses(
         except Exception:
             err_json = {"error": {"message": err_text[:500]}}
         return JSONResponse(status_code=resp.status_code, content=err_json)
+
+    resp, rate_limited = await _rate_limited_in_stream(
+        resp, rate_limit_retry, user, monitor_body, alias, "/azure/v1/responses", model_type,
+    )
+    if rate_limited is not None:
+        return rate_limited
 
     _capture_io = capture_io_enabled()
     logger.info("Stream start | user={} model={} endpoint=/azure/v1/responses",

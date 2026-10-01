@@ -382,6 +382,38 @@ def responses_to_openai_chat_response(
 # Response: Azure Responses API -> OpenAI chat completion (streaming)
 # ---------------------------------------------------------------------------
 
+_RATE_LIMIT_MARKERS = ("rate_limit", "ratelimit", "rate limit", "too_many_requests", "429")
+
+
+def is_rate_limit_event(event: dict[str, Any]) -> bool:
+    """True when a Responses SSE error event (``error`` / ``response.failed``
+    / ``response.error``) reports a rate limit.
+
+    Azure can accept a stream (HTTP 200) and only then report its quota as
+    an in-stream error, e.g. ``{"type": "too_many_requests", "code":
+    "rate_limit_exceeded", "message": "... exceeded token rate limit"}`` —
+    nested under ``error`` or ``response.error``, or at the top level.
+    """
+    if not isinstance(event, dict):
+        return False
+    candidates = [event]
+    for key in ("error",):
+        if isinstance(event.get(key), dict):
+            candidates.append(event[key])
+    resp = event.get("response")
+    if isinstance(resp, dict) and isinstance(resp.get("error"), dict):
+        candidates.append(resp["error"])
+    for c in candidates:
+        for field in ("code", "type"):
+            v = c.get(field)
+            if isinstance(v, (str, int)) and any(m in str(v).lower() for m in _RATE_LIMIT_MARKERS):
+                return True
+        msg = c.get("message")
+        if isinstance(msg, str) and "rate limit" in msg.lower():
+            return True
+    return False
+
+
 class ResponsesToChatStreamTranslator:
     """Convert Azure Responses SSE events into OpenAI chat completion chunks.
 
@@ -556,6 +588,11 @@ class ResponsesToChatStreamTranslator:
         is permanent (tool pairing, malformed request, etc.).
         """
         message = (self.derive_error_message() or "").lower()
+        # Rate limits first: Azure tags them `type: too_many_requests`, which
+        # the "request" substring check below used to file under
+        # invalid_request_error — so Claude Code gave up instead of retrying.
+        if any(is_rate_limit_event(p) for p in self.error_payloads):
+            return "overloaded_error"
         # Walk through error payload `type` / `code` first — these are
         # authoritative when present.
         for payload in self.error_payloads:
