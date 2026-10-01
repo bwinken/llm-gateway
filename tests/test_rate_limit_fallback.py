@@ -480,3 +480,73 @@ class TestAdminValidation:
             "e1": {**_azure_entry("e"), "type": "embedding"},
         })
         assert resp.status_code == 400
+
+
+class TestRateLimitLogging:
+    """A retried 429 logs one "Rate limit fallback" line, not the full
+    "<backend> returned 429" dump; a 429 that goes back to the client says
+    why it wasn't retried."""
+
+    @staticmethod
+    def _capture():
+        from app.core.logger import logger
+
+        lines: list[str] = []
+        sink_id = logger.add(lambda m: lines.append(m.record["message"]), level="WARNING")
+        return lines, lambda: logger.remove(sink_id)
+
+    def test_retried_429_logs_only_the_fallback_line(self, client):
+        fake_post, _ = _scripted_post({"big-deploy": 429}, _azure_key, _responses_payload())
+        client.__httpx_mock__.post = fake_post
+        lines, stop = self._capture()
+        try:
+            with patch.dict(TEST_AZURE_MODELS, AZURE_CHAIN):
+                resp = client.post(
+                    "/azure/v1/chat/completions",
+                    json={"model": "az-big", "messages": [{"role": "user", "content": "hi"}]},
+                    headers=auth_header(),
+                )
+        finally:
+            stop()
+        assert resp.status_code == 200
+        assert not [m for m in lines if m.startswith("Azure returned 429")]
+        assert [m for m in lines if m.startswith("Rate limit fallback")
+                and "az-big -> az-mid" in m]
+
+    def test_unconfigured_429_says_no_fallback(self, client):
+        fake_post, _ = _scripted_post({"gpt-4-deploy": 429}, _azure_key, _responses_payload())
+        client.__httpx_mock__.post = fake_post
+        lines, stop = self._capture()
+        try:
+            client.post(
+                "/azure/v1/messages",
+                json={"model": "azure-gpt-4", "max_tokens": 16,
+                      "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+        finally:
+            stop()
+        hits = [m for m in lines if m.startswith("Azure returned 429")]
+        assert len(hits) == 1
+        assert "no rate_limit_fallback configured for 'azure-gpt-4'" in hits[0]
+
+    def test_exhausted_chain_says_end_of_chain(self, client):
+        fake_post, _ = _scripted_post(
+            {"anthropic.big-v1%3A0": 429, "anthropic.small-v1%3A0": 429},
+            _bedrock_key, _converse_payload(),
+        )
+        client.__httpx_mock__.post = fake_post
+        lines, stop = self._capture()
+        try:
+            with patch.dict(TEST_BEDROCK_MODELS, BEDROCK_CHAIN):
+                client.post(
+                    "/aws/v1/chat/completions",
+                    json={"model": "br-big", "messages": [{"role": "user", "content": "hi"}]},
+                    headers=auth_header(),
+                )
+        finally:
+            stop()
+        hits = [m for m in lines if m.startswith("Bedrock returned 429")]
+        # Only the last model's 429 is dumped; the first hop is the fallback line.
+        assert len(hits) == 1 and "model=br-small" in hits[0]
+        assert "no rate_limit_fallback configured for 'br-small'" in hits[0]

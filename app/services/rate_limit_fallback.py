@@ -79,6 +79,23 @@ def rate_limit_chain(
     return chain
 
 
+def rate_limit_log_note(alias: str, models: dict[str, dict[str, Any]]) -> str:
+    """Why a 429 from ``alias`` is going back to the client — appended to
+    the "<backend> returned 429" WARNING so the line answers the operator's
+    first question on its own (a hop that IS taken logs "Rate limit
+    fallback" instead and skips that WARNING)."""
+    target = (models.get(alias) or {}).get("rate_limit_fallback")
+    if not target:
+        return (
+            f"no rate_limit_fallback configured for '{alias}' — "
+            "returning 429 to client (set one in Admin → Model Config)"
+        )
+    return (
+        f"end of rate-limit chain at '{alias}' (fallback models also rate "
+        "limited, already tried, or unusable) — returning 429 to client"
+    )
+
+
 def note_fallback(
     fallback_reason: str | None,
     backend: str,
