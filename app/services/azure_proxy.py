@@ -49,6 +49,7 @@ from app.services.rate_limit_fallback import (
     RATE_LIMITED,
     note_fallback,
     rate_limit_chain,
+    rate_limit_log_note,
 )
 from app.services.redact import summarize_body
 from app.services.responses_adapter import (
@@ -305,10 +306,13 @@ def _log_azure_error(
     sent_snippet = summarize_body(sent_body)
     in_snippet = summarize_body(incoming_body)
     input_summary = _summarize_input_items(sent_body.get("input")) if isinstance(sent_body, dict) else ""
+    # A 429 logged here is one going back to the client (a retried one is
+    # logged as "Rate limit fallback" instead) — say why it wasn't retried.
+    note = f" | {rate_limit_log_note(alias, AZURE_MODELS)}" if status == 429 else ""
     logger.warning(
-        "Azure returned {} | endpoint={} model={} resp={} | input_summary={} | "
+        "Azure returned {}{} | endpoint={} model={} resp={} | input_summary={} | "
         "sent_shape={} | incoming_shape={}",
-        status, endpoint, alias, resp_text[:1000], input_summary,
+        status, note, endpoint, alias, resp_text[:1000], input_summary,
         sent_snippet, in_snippet,
     )
 
@@ -436,8 +440,9 @@ async def _non_stream_chat(
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        _log_azure_error(incoming_body, body, resp.text, resp.status_code,
-                         alias, "/azure/v1/chat/completions")
+        if not (rate_limit_retry and resp.status_code == 429):
+            _log_azure_error(incoming_body, body, resp.text, resp.status_code,
+                             alias, "/azure/v1/chat/completions")
         _log_error(user, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/azure/v1/chat/completions", model_type)
         if rate_limit_retry and resp.status_code == 429:
@@ -481,8 +486,9 @@ async def _stream_chat(
         err_bytes = await resp.aread()
         await resp.aclose()
         err_text = err_bytes.decode("utf-8", "replace")
-        _log_azure_error(incoming_body, body, err_text, resp.status_code,
-                         alias, "/azure/v1/chat/completions")
+        if not (rate_limit_retry and resp.status_code == 429):
+            _log_azure_error(incoming_body, body, err_text, resp.status_code,
+                             alias, "/azure/v1/chat/completions")
         _log_error(user, monitor_body, err_text[:500], resp.status_code,
                           alias, "/azure/v1/chat/completions", model_type)
         if rate_limit_retry and resp.status_code == 429:
@@ -662,8 +668,9 @@ async def _non_stream_messages(
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        _log_azure_error(incoming_body, body, resp.text, resp.status_code,
-                         alias, "/azure/v1/messages")
+        if not (rate_limit_retry and resp.status_code == 429):
+            _log_azure_error(incoming_body, body, resp.text, resp.status_code,
+                             alias, "/azure/v1/messages")
         _log_error(user, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/azure/v1/messages", model_type)
         if rate_limit_retry and resp.status_code == 429:
@@ -708,8 +715,9 @@ async def _stream_messages(
         err_bytes = await resp.aread()
         await resp.aclose()
         err_text = err_bytes.decode("utf-8", "replace")
-        _log_azure_error(incoming_body, body, err_text, resp.status_code,
-                         alias, "/azure/v1/messages")
+        if not (rate_limit_retry and resp.status_code == 429):
+            _log_azure_error(incoming_body, body, err_text, resp.status_code,
+                             alias, "/azure/v1/messages")
         _log_error(user, monitor_body, err_text[:500], resp.status_code,
                           alias, "/azure/v1/messages", model_type)
         if rate_limit_retry and resp.status_code == 429:
@@ -960,8 +968,9 @@ async def _non_stream_responses(
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        _log_azure_error(monitor_body, body, resp.text, resp.status_code,
-                         alias, "/azure/v1/responses")
+        if not (rate_limit_retry and resp.status_code == 429):
+            _log_azure_error(monitor_body, body, resp.text, resp.status_code,
+                             alias, "/azure/v1/responses")
         _log_error(user, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/azure/v1/responses", model_type)
         if rate_limit_retry and resp.status_code == 429:
@@ -1001,8 +1010,9 @@ async def _stream_responses(
         err_bytes = await resp.aread()
         await resp.aclose()
         err_text = err_bytes.decode("utf-8", "replace")
-        _log_azure_error(monitor_body, body, err_text, resp.status_code,
-                         alias, "/azure/v1/responses")
+        if not (rate_limit_retry and resp.status_code == 429):
+            _log_azure_error(monitor_body, body, err_text, resp.status_code,
+                             alias, "/azure/v1/responses")
         _log_error(user, monitor_body, err_text[:500], resp.status_code,
                           alias, "/azure/v1/responses", model_type)
         if rate_limit_retry and resp.status_code == 429:

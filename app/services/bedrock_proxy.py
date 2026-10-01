@@ -68,6 +68,7 @@ from app.services.rate_limit_fallback import (
     RATE_LIMITED,
     note_fallback,
     rate_limit_chain,
+    rate_limit_log_note,
 )
 from app.services.reasoning_effort import apply_to_openai_body
 from app.services.redact import summarize_body
@@ -217,9 +218,12 @@ def _log_bedrock_error(
     """Surface Bedrock 4xx/5xx with both halves of the conversation (what the
     client asked / what the gateway translated to / how Bedrock objected)."""
     # Shape only — the bodies are the user's prompt. See services/redact.py.
+    # A 429 logged here is one going back to the client (a retried one is
+    # logged as "Rate limit fallback" instead) — say why it wasn't retried.
+    note = f" | {rate_limit_log_note(alias, BEDROCK_MODELS)}" if status == 429 else ""
     logger.warning(
-        "Bedrock returned {} | endpoint={} model={} resp={} | sent_shape={} | incoming_shape={}",
-        status, endpoint, alias, resp_text[:1000],
+        "Bedrock returned {}{} | endpoint={} model={} resp={} | sent_shape={} | incoming_shape={}",
+        status, note, endpoint, alias, resp_text[:1000],
         summarize_body(sent_body), summarize_body(incoming_body),
     )
 
@@ -364,8 +368,9 @@ async def _non_stream_chat(
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        _log_bedrock_error(incoming_body, body, resp.text, resp.status_code,
-                           alias, "/aws/v1/chat/completions")
+        if not (rate_limit_retry and resp.status_code == 429):
+            _log_bedrock_error(incoming_body, body, resp.text, resp.status_code,
+                               alias, "/aws/v1/chat/completions")
         _log_error(user, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/aws/v1/chat/completions", model_type)
         if rate_limit_retry and resp.status_code == 429:
@@ -408,8 +413,9 @@ async def _stream_chat(
         err_bytes = await resp.aread()
         await resp.aclose()
         err_text = err_bytes.decode("utf-8", "replace")
-        _log_bedrock_error(incoming_body, body, err_text, resp.status_code,
-                           alias, "/aws/v1/chat/completions")
+        if not (rate_limit_retry and resp.status_code == 429):
+            _log_bedrock_error(incoming_body, body, err_text, resp.status_code,
+                               alias, "/aws/v1/chat/completions")
         _log_error(user, monitor_body, err_text[:500], resp.status_code,
                           alias, "/aws/v1/chat/completions", model_type)
         if rate_limit_retry and resp.status_code == 429:
@@ -572,8 +578,9 @@ async def _non_stream_messages(
         raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
 
     if resp.status_code != 200:
-        _log_bedrock_error(incoming_body, body, resp.text, resp.status_code,
-                           alias, "/aws/v1/messages")
+        if not (rate_limit_retry and resp.status_code == 429):
+            _log_bedrock_error(incoming_body, body, resp.text, resp.status_code,
+                               alias, "/aws/v1/messages")
         _log_error(user, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/aws/v1/messages", model_type)
         if rate_limit_retry and resp.status_code == 429:
@@ -618,8 +625,9 @@ async def _stream_messages(
         err_bytes = await resp.aread()
         await resp.aclose()
         err_text = err_bytes.decode("utf-8", "replace")
-        _log_bedrock_error(incoming_body, body, err_text, resp.status_code,
-                           alias, "/aws/v1/messages")
+        if not (rate_limit_retry and resp.status_code == 429):
+            _log_bedrock_error(incoming_body, body, err_text, resp.status_code,
+                               alias, "/aws/v1/messages")
         _log_error(user, monitor_body, err_text[:500], resp.status_code,
                           alias, "/aws/v1/messages", model_type)
         if rate_limit_retry and resp.status_code == 429:
