@@ -33,6 +33,7 @@ Key conventions:
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any, Iterator
 from urllib.parse import quote
@@ -62,6 +63,11 @@ from app.services.observability import (
     StreamingChatOutput,
     capture_io_enabled,
     set_io_input,
+)
+from app.services.rate_limit_fallback import (
+    RATE_LIMITED,
+    note_fallback,
+    rate_limit_chain,
 )
 from app.services.reasoning_effort import apply_to_openai_body
 from app.services.redact import summarize_body
@@ -163,6 +169,17 @@ def _fallback_headers(fallback_reason: str | None) -> dict[str, str]:
     if fallback_reason:
         return {"X-Model-Fallback": fallback_reason}
     return {}
+
+
+def _rate_limit_chain(
+    alias: str, entry: dict[str, Any],
+) -> list[tuple[str, dict[str, Any]]]:
+    """``alias`` followed by its ``rate_limit_fallback`` chain (Bedrock only).
+    See app.services.rate_limit_fallback."""
+    return rate_limit_chain(
+        alias, entry, BEDROCK_MODELS, _BEDROCK_DEFAULT_ALLOWED_TYPES,
+        _is_usable_entry, "Bedrock",
+    )
 
 
 def _build_converse_url(entry: dict[str, Any], stream: bool) -> str:
@@ -285,49 +302,58 @@ async def bedrock_forward_chat_completions(
     user: User,
 ) -> StreamingResponse | JSONResponse:
     try:
-        body = await request.json()
+        original_body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
-    requested_alias = body.get("model", "")
+    requested_alias = original_body.get("model", "")
     resolved_alias, entry, fallback_reason = _resolve_bedrock(
         requested_alias, allowed_types=["llm", "vlm"],
     )
-    model_type = entry.get("type", "llm")
-
-    is_stream = bool(body.get("stream", False))
-    # Reconcile the requested effort with what this model accepts — a no-op
-    # unless the entry declares `reasoning_efforts`.
-    apply_to_openai_body(body, entry, resolved_alias, "/aws/v1/chat/completions")
-    converse_body = openai_chat_to_converse_request(body, model_id=entry.get("model_id", ""))
+    is_stream = bool(original_body.get("stream", False))
 
     if capture_io_enabled():
-        set_io_input(body.get("messages"))
+        set_io_input(original_body.get("messages"))
 
-    target_url = _build_converse_url(entry, stream=is_stream)
-    headers = _build_headers(entry)
     client = get_bedrock_client()
+    chain = _rate_limit_chain(resolved_alias, entry)
+    for i, (alias, entry) in enumerate(chain):
+        last = i == len(chain) - 1
+        # Each attempt rebuilds its body from the client's request: the
+        # effort pass and the Converse translation are per model.
+        body = original_body if len(chain) == 1 else copy.deepcopy(original_body)
+        model_type = entry.get("type", "llm")
 
-    monitor_body = {**body, "model": resolved_alias}
-    extra_headers = _fallback_headers(fallback_reason)
+        # Reconcile the requested effort with what this model accepts — a no-op
+        # unless the entry declares `reasoning_efforts`.
+        apply_to_openai_body(body, entry, alias, "/aws/v1/chat/completions")
+        converse_body = openai_chat_to_converse_request(body, model_id=entry.get("model_id", ""))
 
-    if is_stream:
-        return await _stream_chat(
+        target_url = _build_converse_url(entry, stream=is_stream)
+        headers = _build_headers(entry)
+
+        monitor_body = {**body, "model": alias}
+        extra_headers = _fallback_headers(fallback_reason)
+
+        send = _stream_chat if is_stream else _non_stream_chat
+        result = await send(
             client, target_url, converse_body, headers,
-            user, resolved_alias, model_type, monitor_body, entry, body,
-            extra_headers,
+            user, alias, model_type, monitor_body, entry, body,
+            extra_headers, rate_limit_retry=not last,
         )
-    return await _non_stream_chat(
-        client, target_url, converse_body, headers,
-        user, resolved_alias, model_type, monitor_body, entry, body,
-        extra_headers,
-    )
+        if result is not RATE_LIMITED:
+            return result
+        fallback_reason = note_fallback(
+            fallback_reason, "bedrock", user, alias, chain[i + 1][0],
+            "/aws/v1/chat/completions",
+        )
 
 
 async def _non_stream_chat(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     incoming_body: dict, extra_headers: dict[str, str] | None = None,
+    rate_limit_retry: bool = False,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
@@ -342,6 +368,8 @@ async def _non_stream_chat(
                            alias, "/aws/v1/chat/completions")
         _log_error(user, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/aws/v1/chat/completions", model_type)
+        if rate_limit_retry and resp.status_code == 429:
+            return RATE_LIMITED
         return _error_response(resp)
 
     raw = resp.json()
@@ -361,6 +389,7 @@ async def _stream_chat(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     incoming_body: dict, extra_headers: dict[str, str] | None = None,
+    rate_limit_retry: bool = False,
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight: open the stream and check status BEFORE handing it to the
     # event pump — a Bedrock 4xx arrives as a plain JSON body, not an
@@ -383,6 +412,8 @@ async def _stream_chat(
                            alias, "/aws/v1/chat/completions")
         _log_error(user, monitor_body, err_text[:500], resp.status_code,
                           alias, "/aws/v1/chat/completions", model_type)
+        if rate_limit_retry and resp.status_code == 429:
+            return RATE_LIMITED
         try:
             err_json = json.loads(err_text)
         except Exception:
@@ -481,47 +512,56 @@ async def bedrock_forward_messages(
     resolved_alias, entry, fallback_reason = _resolve_bedrock(
         requested_alias, allowed_types=["llm", "vlm"],
     )
-    model_type = entry.get("type", "llm")
-
-    openai_body = anthropic_to_openai_request(
-        anthropic_body, is_reasoning=bool(entry.get("is_reasoning")),
-    )
-    apply_to_openai_body(openai_body, entry, resolved_alias, "/aws/v1/messages")
     is_stream = bool(anthropic_body.get("stream", False))
-    converse_body = openai_chat_to_converse_request(
-        openai_body, model_id=entry.get("model_id", ""),
-    )
 
     # Phase 2: capture the ORIGINAL Anthropic request as Langfuse input so
     # the trace stays in Anthropic shape (not the internal OpenAI pivot).
     if capture_io_enabled():
         set_io_input(anthropic_request_io(anthropic_body))
 
-    target_url = _build_converse_url(entry, stream=is_stream)
-    headers = _build_headers(entry)
     client = get_bedrock_client()
+    chain = _rate_limit_chain(resolved_alias, entry)
+    for i, (alias, entry) in enumerate(chain):
+        last = i == len(chain) - 1
+        # Translation depends on the entry (`is_reasoning`, effort policy,
+        # model family), so every attempt re-translates the client's request.
+        source = anthropic_body if len(chain) == 1 else copy.deepcopy(anthropic_body)
+        model_type = entry.get("type", "llm")
 
-    monitor_body = dict(anthropic_body)
-    monitor_body["model"] = resolved_alias
-    extra_headers = _fallback_headers(fallback_reason)
-
-    if is_stream:
-        return await _stream_messages(
-            client, target_url, converse_body, headers,
-            user, resolved_alias, model_type, monitor_body, entry, anthropic_body,
-            extra_headers,
+        openai_body = anthropic_to_openai_request(
+            source, is_reasoning=bool(entry.get("is_reasoning")),
         )
-    return await _non_stream_messages(
-        client, target_url, converse_body, headers,
-        user, resolved_alias, model_type, monitor_body, entry, anthropic_body,
-        extra_headers,
-    )
+        apply_to_openai_body(openai_body, entry, alias, "/aws/v1/messages")
+        converse_body = openai_chat_to_converse_request(
+            openai_body, model_id=entry.get("model_id", ""),
+        )
+
+        target_url = _build_converse_url(entry, stream=is_stream)
+        headers = _build_headers(entry)
+
+        monitor_body = dict(anthropic_body)
+        monitor_body["model"] = alias
+        extra_headers = _fallback_headers(fallback_reason)
+
+        send = _stream_messages if is_stream else _non_stream_messages
+        result = await send(
+            client, target_url, converse_body, headers,
+            user, alias, model_type, monitor_body, entry, anthropic_body,
+            extra_headers, rate_limit_retry=not last,
+        )
+        if result is not RATE_LIMITED:
+            return result
+        fallback_reason = note_fallback(
+            fallback_reason, "bedrock", user, alias, chain[i + 1][0],
+            "/aws/v1/messages",
+        )
 
 
 async def _non_stream_messages(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     incoming_body: dict, extra_headers: dict[str, str] | None = None,
+    rate_limit_retry: bool = False,
 ) -> JSONResponse:
     try:
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
@@ -536,6 +576,8 @@ async def _non_stream_messages(
                            alias, "/aws/v1/messages")
         _log_error(user, monitor_body, resp.text[:500], resp.status_code,
                           alias, "/aws/v1/messages", model_type)
+        if rate_limit_retry and resp.status_code == 429:
+            return RATE_LIMITED
         return _error_response(resp)
 
     raw = resp.json()
@@ -558,6 +600,7 @@ async def _stream_messages(
     client, url: str, body: dict, headers: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     incoming_body: dict, extra_headers: dict[str, str] | None = None,
+    rate_limit_retry: bool = False,
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight to surface 4xx before opening the stream — same rationale
     # as _stream_chat.
@@ -579,6 +622,8 @@ async def _stream_messages(
                            alias, "/aws/v1/messages")
         _log_error(user, monitor_body, err_text[:500], resp.status_code,
                           alias, "/aws/v1/messages", model_type)
+        if rate_limit_retry and resp.status_code == 429:
+            return RATE_LIMITED
         try:
             err_json = json.loads(err_text)
         except Exception:

@@ -7,6 +7,7 @@ backends kept separate.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from sqlmodel import Session
 
@@ -71,16 +72,30 @@ class TestGetModelBreakdown:
         assert [r["model"] for r in rows] == ["this-month"]
 
     def test_day_period_only_counts_today(self, db_session, test_user):
-        _log(db_session, test_user.id, model="today-model", cost=0.3)
+        # Frozen mid-month: the day window starts at local (Asia/Taipei)
+        # midnight while the month window starts at UTC day 1, so on the
+        # first ~8 UTC hours of a month no "yesterday" row can be both
+        # outside today and inside the month — run off the real clock, this
+        # test failed every month in that window.
+        now = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+
+        class _Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+
+        _log(db_session, test_user.id, model="today-model", cost=0.3, created_at=now)
         _log(db_session, test_user.id, model="yesterday-model", cost=0.9,
-             created_at=datetime.now(timezone.utc) - timedelta(days=1))
+             created_at=now - timedelta(days=1))
         db_session.commit()
 
-        day_rows = get_model_breakdown(db_session, test_user.id, period="day")
-        assert [r["model"] for r in day_rows] == ["today-model"]
-        # Month window still includes both
-        month_rows = get_model_breakdown(db_session, test_user.id)
-        assert {r["model"] for r in month_rows} == {"today-model", "yesterday-model"}
+        with patch("app.services.stats.datetime", _Frozen), \
+                patch("app.core.timeutil.datetime", _Frozen):
+            day_rows = get_model_breakdown(db_session, test_user.id, period="day")
+            assert [r["model"] for r in day_rows] == ["today-model"]
+            # Month window still includes both
+            month_rows = get_model_breakdown(db_session, test_user.id)
+            assert {r["model"] for r in month_rows} == {"today-model", "yesterday-model"}
 
     def test_same_alias_split_across_backends(self, db_session, test_user):
         # A renamed/reused alias must not merge across backends.

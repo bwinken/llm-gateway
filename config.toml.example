@@ -209,8 +209,9 @@ api_key = ""                        # decider's server checks no key
 # requested type, it auto-picks the first compatible [azure_models.*].
 # Responses include `X-Model-Fallback: <reason>` so clients can detect it.
 #
-# There is intentionally no runtime error-driven fallback (429/5xx) — Azure
-# is a managed service and per-request fallback during a stream isn't safe.
+# This map only handles mis-named aliases. For a deployment that hits its
+# quota (429), set `rate_limit_fallback` on the model entry below; 5xx is
+# never retried.
 [azure_fallback]
 # llm = "gpt-4o"
 # vlm = "gpt-4o"
@@ -233,6 +234,12 @@ api_key = ""                        # decider's server checks no key
 #    accepted.
 #  - Responses API does not cover embeddings; `/azure/v1/embeddings` is
 #    intentionally not exposed. Configure embeddings on a vLLM backend.
+#  - `rate_limit_fallback` (optional): another [azure_models.*] alias that
+#    takes the request when this deployment answers 429. Followed as a
+#    chain (that model's own setting, up to 3 hops, no cycles); streams
+#    switch at pre-flight, before anything reaches the client. The response
+#    carries `X-Model-Fallback: rate limited: ...` and is billed at the
+#    model that served it. Never crosses to Bedrock or vLLM.
 # [azure_models."gpt-4o"]
 # type = "llm"
 # endpoint = "https://my-resource.cognitiveservices.azure.com"
@@ -245,6 +252,7 @@ api_key = ""                        # decider's server checks no key
 # supports_vision = true
 # input_price_per_1m = 2.50
 # output_price_per_1m = 10.00
+# rate_limit_fallback = "gpt-4o-mini"
 
 
 # ==========================================
@@ -253,8 +261,8 @@ api_key = ""                        # decider's server checks no key
 # Same contract as [azure_fallback], for the /aws/v1/* surface: when a
 # client posts an alias that isn't in [bedrock_models.*], fall back to the
 # alias listed here for the matching type instead of returning 400.
-# Responses include `X-Model-Fallback: <reason>`. No runtime error-driven
-# fallback (429/5xx) — Bedrock is a managed service.
+# Responses include `X-Model-Fallback: <reason>`. For 429 (throttling), set
+# `rate_limit_fallback` on the model entry below; 5xx is never retried.
 [bedrock_fallback]
 # llm = "claude-sonnet"
 
@@ -280,6 +288,9 @@ api_key = ""                        # decider's server checks no key
 #  - Mark Claude models `is_reasoning = true` to translate Anthropic /
 #    OpenAI reasoning-effort requests into Bedrock extended thinking
 #    (budget_tokens bucketed by effort).
+#  - `rate_limit_fallback` (optional): another [bedrock_models.*] alias that
+#    takes the request when this model answers 429 (ThrottlingException).
+#    Same chain rules as on [azure_models.*]; never crosses backends.
 # [bedrock_models."claude-sonnet"]
 # type = "llm"
 # region = "us-east-1"
@@ -294,3 +305,4 @@ api_key = ""                        # decider's server checks no key
 # input_price_per_1m = 3.00
 # output_price_per_1m = 15.00
 # cached_input_price_per_1m = 0.30
+# rate_limit_fallback = "claude-haiku"
