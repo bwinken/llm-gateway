@@ -10,7 +10,7 @@ their model pickers without us having to hard-code them client-side.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from tests.conftest import TEST_MODEL_ROUTING, auth_header, web_auth_header
 
@@ -206,8 +206,24 @@ class TestAdminAzureFallbackValidation:
         assert resp.status_code == 400
 
 
+def _azure_ok():
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "status": "completed",
+                "output": [{"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "ok"}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+    return _Resp()
+
+
 class TestHiddenModels:
-    """Hidden models are only hidden from web pages, NOT from /v1/models API."""
+    """Hidden models are left out of the model listings (web pages and
+    GET /v1/models) but still served when a request names the alias."""
 
     def _routing_with_hidden(self):
         """Return a copy of TEST_MODEL_ROUTING with test-llm marked hidden."""
@@ -215,16 +231,39 @@ class TestHiddenModels:
         routing["test-llm"]["hidden"] = True
         return routing
 
-    def test_hidden_model_still_in_api_list(self, client, test_user):
-        """Hidden models should still appear in /v1/models — the hidden flag
-        only affects user-facing web pages (welcome, dashboard)."""
+    def test_hidden_model_left_out_of_api_list(self, client, test_user):
         routing = self._routing_with_hidden()
         with patch("app.routers.v1_api.get_model_routing_snapshot", return_value=routing):
             resp = client.get("/v1/models", headers=auth_header())
         assert resp.status_code == 200
         ids = [m["id"] for m in resp.json()["data"]]
-        assert "test-llm" in ids
+        assert "test-llm" not in ids
         assert "test-vlm" in ids
+
+    def test_hidden_cloud_models_left_out_of_every_listing(self, client, test_user):
+        from tests.conftest import TEST_AZURE_MODELS, TEST_BEDROCK_MODELS
+
+        with patch.dict(TEST_AZURE_MODELS["azure-gpt-4"], {"hidden": True}), \
+                patch.dict(TEST_BEDROCK_MODELS["bedrock-claude"], {"hidden": True}):
+            for path in ("/v1/models", "/azure/v1/models", "/aws/v1/models"):
+                ids = [m["id"] for m in client.get(path, headers=auth_header()).json()["data"]]
+                assert "azure-gpt-4" not in ids and "bedrock-claude" not in ids, path
+            # the still-visible Bedrock model is listed
+            ids = [m["id"] for m in client.get("/aws/v1/models", headers=auth_header()).json()["data"]]
+            assert "bedrock-nova" in ids
+
+    def test_hidden_model_still_served_by_alias(self, client, test_user):
+        from tests.conftest import TEST_AZURE_MODELS
+
+        client.__httpx_mock__.post = AsyncMock(return_value=_azure_ok())
+        with patch.dict(TEST_AZURE_MODELS["azure-gpt-4"], {"hidden": True}):
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "azure-gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+        assert resp.status_code == 200
+        assert "X-Model-Fallback" not in resp.headers
 
     def test_hidden_field_not_surfaced_in_response(self, client, test_user):
         """The 'hidden' key should never appear in the /v1/models response

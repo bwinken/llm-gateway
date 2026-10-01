@@ -206,13 +206,15 @@ async def list_models(user: User = Depends(get_current_user)):
     client pointed at this single base URL sees exactly the set of aliases
     its API key may actually use.
 
-    The ``hidden`` flag is intentionally NOT filtered here (operators rely on
-    it only for the web UI; existing tests pin this contract).
+    Entries marked ``hidden`` are left out, here as on the dashboard, so a
+    model can be staged or retired without showing up in client pickers
+    (Claude Code, Roo Code). Hiding is a listing concern only: requests that
+    name the alias are still served.
     """
     models = []
     for name, route in get_model_routing_snapshot().items():
         model_type = route["type"]
-        if model_type not in ("llm", "vlm"):
+        if model_type not in ("llm", "vlm") or route.get("hidden"):
             continue
         entry: dict[str, object] = {
             "id": name,
@@ -234,7 +236,7 @@ async def list_models(user: User = Depends(get_current_user)):
     if user.can_use_azure or user.is_admin:
         for alias, route in get_azure_models_snapshot().items():
             model_type = route.get("type", "llm")
-            if model_type not in ("llm", "vlm"):
+            if model_type not in ("llm", "vlm") or route.get("hidden"):
                 continue
             entry = {
                 "id": alias,
@@ -251,7 +253,7 @@ async def list_models(user: User = Depends(get_current_user)):
     if user.can_use_bedrock or user.is_admin:
         for alias, route in get_bedrock_models_snapshot().items():
             model_type = route.get("type", "llm")
-            if model_type not in ("llm", "vlm"):
+            if model_type not in ("llm", "vlm") or route.get("hidden"):
                 continue
             entry = {
                 "id": alias,

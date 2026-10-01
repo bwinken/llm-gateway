@@ -48,6 +48,8 @@ async def list_bedrock_models(user: User = Depends(require_bedrock_access)):
     """
     models = []
     for alias, entry in get_bedrock_models_snapshot().items():
+        if entry.get("hidden"):
+            continue  # staged/retired: not listed, still served by alias
         model_type = entry.get("type", "llm")
         out: dict[str, object] = {
             "id": alias,
