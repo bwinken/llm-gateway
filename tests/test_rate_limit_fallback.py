@@ -550,3 +550,147 @@ class TestRateLimitLogging:
         # Only the last model's 429 is dumped; the first hop is the fallback line.
         assert len(hits) == 1 and "model=br-small" in hits[0]
         assert "no rate_limit_fallback configured for 'br-small'" in hits[0]
+
+
+_AZURE_IN_STREAM_429 = (
+    'data: {"type":"error","error":{"message":"Your requests to gpt-6-luna for gpt-6-luna '
+    'in eastus2 have exceeded token rate limit.","type":"too_many_requests",'
+    '"param":null,"code":"rate_limit_exceeded"}}'
+)
+_CREATED = 'data: {"type":"response.created","response":{"status":"in_progress"}}'
+
+
+def _ok_sse(text: str = "Hi") -> list[str]:
+    return [
+        _CREATED,
+        f'data: {{"type":"response.output_text.delta","delta":"{text}"}}',
+        'data: {"type":"response.completed","response":{"status":"completed",'
+        '"usage":{"input_tokens":3,"output_tokens":1}}}',
+    ]
+
+
+class TestAzureInStreamRateLimit:
+    """Azure can answer 200 and report the quota as the stream's first
+    event. With a fallback configured, that must still move the request."""
+
+    def _post_stream(self, client, path, body, streams):
+        sent: list[str] = []
+
+        def build_request(method, url, **kwargs):
+            sent.append(kwargs["json"]["model"])
+            return httpx.Request(method, url)
+
+        mock = client.__httpx_mock__
+        with patch.object(mock, "build_request", side_effect=build_request), \
+                patch.object(mock, "send", AsyncMock(side_effect=streams)), \
+                patch.dict(TEST_AZURE_MODELS, AZURE_CHAIN):
+            resp = client.post(path, json=body, headers=auth_header())
+        return resp, sent
+
+    def test_messages_stream_falls_back(self, client):
+        resp, sent = self._post_stream(
+            client, "/azure/v1/messages",
+            {"model": "az-big", "max_tokens": 64, "stream": True,
+             "messages": [{"role": "user", "content": "hi"}]},
+            [FakeStreamResponse([_CREATED, _AZURE_IN_STREAM_429]), FakeStreamResponse(_ok_sse())],
+        )
+        assert resp.status_code == 200
+        assert sent == ["big-deploy", "mid-deploy"]
+        assert "event: error" not in resp.text
+        assert "event: message_stop" in resp.text
+        assert "az-big (429) -> az-mid" in resp.headers["X-Model-Fallback"]
+
+    def test_chat_stream_falls_back(self, client):
+        resp, sent = self._post_stream(
+            client, "/azure/v1/chat/completions",
+            {"model": "az-big", "stream": True, "messages": [{"role": "user", "content": "hi"}]},
+            [FakeStreamResponse([_CREATED, _AZURE_IN_STREAM_429]), FakeStreamResponse(_ok_sse("yo"))],
+        )
+        assert sent == ["big-deploy", "mid-deploy"]
+        assert "yo" in resp.text and "rate limit" not in resp.text
+
+    def test_responses_stream_replays_peeked_lines(self, client):
+        # The look-ahead consumes the first lines; they must still reach
+        # the client, in order, on the pass-through path.
+        resp, sent = self._post_stream(
+            client, "/azure/v1/responses",
+            {"model": "az-big", "stream": True, "input": "hi"},
+            [FakeStreamResponse(_ok_sse("whole"))],
+        )
+        assert sent == ["big-deploy"]
+        lines = [line for line in resp.text.split("\n") if line]
+        assert lines == _ok_sse("whole")
+
+    def test_other_in_stream_error_does_not_fall_back(self, client):
+        bad = 'data: {"type":"error","error":{"message":"Invalid input","type":"invalid_request_error"}}'
+        resp, sent = self._post_stream(
+            client, "/azure/v1/messages",
+            {"model": "az-big", "max_tokens": 64, "stream": True,
+             "messages": [{"role": "user", "content": "hi"}]},
+            [FakeStreamResponse([_CREATED, bad])],
+        )
+        assert sent == ["big-deploy"]
+        assert "invalid_request_error" in resp.text
+
+    def test_without_fallback_rate_limit_is_retryable_overload(self, client):
+        mock = client.__httpx_mock__
+        with patch.object(mock, "build_request", return_value=httpx.Request("POST", "https://x")), \
+                patch.object(mock, "send", AsyncMock(return_value=FakeStreamResponse(
+                    [_CREATED, _AZURE_IN_STREAM_429]))):
+            resp = client.post(
+                "/azure/v1/messages",
+                json={"model": "azure-gpt-4", "max_tokens": 64, "stream": True,
+                      "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+        # Claude Code retries overloaded_error with backoff; it gave up on
+        # the invalid_request_error this used to be classified as.
+        assert '"overloaded_error"' in resp.text
+        assert "invalid_request_error" not in resp.text
+
+
+class TestRateLimitClassification:
+    def test_too_many_requests_is_overload(self):
+        from app.services.responses_adapter import ResponsesToChatStreamTranslator
+
+        xlat = ResponsesToChatStreamTranslator("m")
+        list(xlat.handle_event({"type": "error", "error": {
+            "message": "exceeded token rate limit", "type": "too_many_requests",
+            "code": "rate_limit_exceeded"}}))
+        assert xlat.derive_error_kind() == "overloaded_error"
+
+    def test_response_failed_nested_rate_limit(self):
+        from app.services.responses_adapter import is_rate_limit_event
+
+        assert is_rate_limit_event({"type": "response.failed", "response": {
+            "error": {"code": "rate_limit_exceeded", "message": "slow down"}}})
+        assert not is_rate_limit_event({"type": "error", "error": {
+            "type": "invalid_request_error", "message": "bad tool pairing"}})
+
+
+class _SlowStream(FakeStreamResponse):
+    """First line at once, the rest after a pause longer than the peek window."""
+
+    async def aiter_lines(self):
+        import asyncio
+
+        yield self._lines[0]
+        await asyncio.sleep(0.2)
+        for line in self._lines[1:]:
+            yield line
+
+
+class TestPeekWindow:
+    def test_read_in_flight_when_window_closes_is_not_lost(self, client):
+        mock = client.__httpx_mock__
+        with patch("app.services.azure_proxy._STREAM_PEEK_WINDOW", 0.05), \
+                patch.object(mock, "build_request", return_value=httpx.Request("POST", "https://x")), \
+                patch.object(mock, "send", AsyncMock(return_value=_SlowStream(_ok_sse("late")))), \
+                patch.dict(TEST_AZURE_MODELS, AZURE_CHAIN):
+            resp = client.post(
+                "/azure/v1/responses",
+                json={"model": "az-big", "stream": True, "input": "hi"},
+                headers=auth_header(),
+            )
+        lines = [line for line in resp.text.split("\n") if line]
+        assert lines == _ok_sse("late")
