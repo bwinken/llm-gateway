@@ -360,7 +360,7 @@ function listItem(kind, alias, info) {
     if (kind !== 'vllm' && info.type === 'vlm') badges.push(pill('vlm', 'rgba(167,139,250,0.12)', '#a78bfa'));
     if (info.is_reasoning) badges.push(pill('think', 'rgba(77,217,232,0.10)', '#4dd9e8', 'is_reasoning'));
     if (info.rate_limit_fallback) badges.push(pill('429→' + escHtml(info.rate_limit_fallback), 'rgba(245,166,35,0.10)', '#f5a623', 'Rate-limit fallback'));
-    if (info.hidden) badges.push(pill('hidden', 'rgba(255,255,255,0.05)', '#868da0', 'Not listed in /v1/models'));
+    if (info.hidden) badges.push(pill('hidden', 'rgba(255,255,255,0.05)', '#868da0', 'Hidden from the web dashboard (still in GET /v1/models)'));
     const marker = bad
         ? '<span class="w-1.5 h-1.5 rounded-full bg-ar shrink-0" title="Missing required fields"></span>'
         : isChanged(kind, alias)
@@ -478,8 +478,11 @@ function toggleSecret(btn) {
 }
 
 function renderRouting(kind, alias, info) {
-    const visibleRow = checkRow(kind, alias, 'hidden', !info.hidden, 'Listed in /v1/models',
-        'Unticked = hidden from the model list and the dashboard. The alias still works for anyone who knows it.', true);
+    // `hidden` only affects the web dashboard: GET /v1/models deliberately
+    // still lists the model (v1_api.list_models), so say exactly that.
+    const visibleRow = checkRow(kind, alias, 'hidden', !info.hidden, 'Shown on the web dashboard',
+        'Unticked = hidden from the dashboard\'s model list. It is still listed in GET /v1/models '
+        + '(e.g. the Claude Code model picker) and works for anyone who sends the alias.', true);
     if (kind === 'vllm') {
         const nativeTip = 'Forward Anthropic /v1/messages requests as-is to the native vLLM endpoint '
             + '(vLLM >= 0.11.1) instead of translating via the OpenAI pivot. Falls back to translation '
