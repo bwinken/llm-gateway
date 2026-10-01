@@ -848,6 +848,10 @@ async def save_config_api(
     fallback = body.get("fallback")
     azure_models = body.get("azure_models")
     azure_fallback = body.get("azure_fallback")
+    # Optional: older admin payloads omit these, and save_config leaves the
+    # [bedrock_*] sections untouched when they're None.
+    bedrock_models = body.get("bedrock_models")
+    bedrock_fallback = body.get("bedrock_fallback")
 
     if not isinstance(models, dict) or not isinstance(pricing, dict):
         raise HTTPException(status_code=400, detail="Invalid config format.")
@@ -855,6 +859,29 @@ async def save_config_api(
         raise HTTPException(status_code=400, detail="Invalid azure_models format.")
     if azure_fallback is not None and not isinstance(azure_fallback, dict):
         raise HTTPException(status_code=400, detail="Invalid azure_fallback format.")
+    if bedrock_models is not None and not isinstance(bedrock_models, dict):
+        raise HTTPException(status_code=400, detail="Invalid bedrock_models format.")
+    if bedrock_fallback is not None and not isinstance(bedrock_fallback, dict):
+        raise HTTPException(status_code=400, detail="Invalid bedrock_fallback format.")
+
+    # Aliases must be unique across backends — _build_config refuses to load
+    # a config that repeats one, and it only runs AFTER save_config has
+    # written the file, so catch it here instead of persisting a broken
+    # config.toml.
+    _seen_alias: dict[str, str] = {}
+    for _label, _map in (
+        ("vLLM", models), ("Azure", azure_models or {}), ("Bedrock", bedrock_models or {}),
+    ):
+        for _alias in _map:
+            if _alias in _seen_alias:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Alias '{_alias}' is used by both a {_seen_alias[_alias]} "
+                        f"and a {_label} model. Aliases must be unique across backends."
+                    ),
+                )
+            _seen_alias[_alias] = _label
 
     # Validate model entries have required fields + sanity-check metadata
     _META_TYPES: dict[str, type | tuple[type, ...]] = {
@@ -950,17 +977,50 @@ async def save_config_api(
                     ),
                 )
 
-    # Validate Azure model entries
-    if azure_models:
-        for alias, info in azure_models.items():
+    # Validate Bedrock fallback the same way as Azure's above.
+    if bedrock_fallback:
+        if not all(isinstance(v, str) for v in bedrock_fallback.values()):
+            raise HTTPException(status_code=400, detail="Bedrock fallback values must be strings.")
+        for type_key, alias in bedrock_fallback.items():
+            if not alias:
+                continue
+            target = (bedrock_models or {}).get(alias)
+            if bedrock_models is not None and target is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Bedrock fallback for type '{type_key}' references unknown alias '{alias}'.",
+                )
+            if target is not None and target.get("type", "llm") != type_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Bedrock fallback for type '{type_key}' points to '{alias}' "
+                        f"which has type '{target.get('type', 'llm')}'."
+                    ),
+                )
+
+    # Validate Azure + Bedrock model entries (same metadata / pricing /
+    # reasoning / rate-limit rules; only the connection fields differ).
+    for backend, cloud_models, required_fields in (
+        ("Azure", azure_models, ("type", "endpoint", "deployment", "api_key")),
+        ("Bedrock", bedrock_models, ("type", "model_id", "api_key")),
+    ):
+        if not cloud_models:
+            continue
+        for alias, info in cloud_models.items():
             if not isinstance(info, dict):
-                raise HTTPException(status_code=400, detail=f"Invalid azure model entry: {alias}")
-            for required in ("type", "endpoint", "deployment", "api_key"):
+                raise HTTPException(status_code=400, detail=f"Invalid {backend.lower()} model entry: {alias}")
+            for required in required_fields:
                 if not info.get(required):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Azure model '{alias}' missing required field '{required}'.",
+                        detail=f"{backend} model '{alias}' missing required field '{required}'.",
                     )
+            if backend == "Bedrock" and not (info.get("region") or info.get("endpoint")):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Bedrock model '{alias}' needs a region or an endpoint.",
+                )
             for key in _MODEL_METADATA_KEYS:
                 if key not in info:
                     continue
@@ -969,20 +1029,20 @@ async def save_config_api(
                 if expected is int and isinstance(value, bool):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Azure model '{alias}' field '{key}' must be an integer, got boolean.",
+                        detail=f"{backend} model '{alias}' field '{key}' must be an integer, got boolean.",
                     )
                 if not isinstance(value, expected):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Azure model '{alias}' field '{key}' has wrong type.",
+                        detail=f"{backend} model '{alias}' field '{key}' has wrong type.",
                     )
                 if expected is int and value < 0:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Azure model '{alias}' field '{key}' must be non-negative.",
+                        detail=f"{backend} model '{alias}' field '{key}' must be non-negative.",
                     )
-            _validate_reasoning_keys("Azure model", alias, info)
-            _validate_rate_limit_fallback("Azure model", alias, info, azure_models)
+            _validate_reasoning_keys(f"{backend} model", alias, info)
+            _validate_rate_limit_fallback(f"{backend} model", alias, info, cloud_models)
             for key in _MODEL_INTERNAL_KEYS:
                 if key not in info:
                     continue
@@ -991,7 +1051,7 @@ async def save_config_api(
                 if not isinstance(value, expected):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Azure model '{alias}' field '{key}' has wrong type.",
+                        detail=f"{backend} model '{alias}' field '{key}' has wrong type.",
                     )
             for key in _MODEL_PRICING_KEYS:
                 if key not in info:
@@ -1000,15 +1060,18 @@ async def save_config_api(
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Azure model '{alias}' field '{key}' must be a number.",
+                        detail=f"{backend} model '{alias}' field '{key}' must be a number.",
                     )
                 if value < 0:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Azure model '{alias}' field '{key}' must be non-negative.",
+                        detail=f"{backend} model '{alias}' field '{key}' must be non-negative.",
                     )
 
-    save_config(models, pricing, fallback or {}, azure_models, azure_fallback)
+    save_config(
+        models, pricing, fallback or {}, azure_models, azure_fallback,
+        bedrock_models, bedrock_fallback,
+    )
     return JSONResponse({"ok": True})
 
 

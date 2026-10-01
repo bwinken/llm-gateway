@@ -354,7 +354,8 @@
     box.className = 'gw-tipbox';
     document.body.appendChild(box);
     document.addEventListener('mouseenter', function(e){
-        var el = e.target.closest('.gw-tip');
+        // mouseenter (capture) also fires on `document`, which has no closest().
+        var el = e.target && e.target.closest ? e.target.closest('.gw-tip') : null;
         if (!el || !el.dataset.tip) return;
         box.textContent = el.dataset.tip;
         box.className = 'gw-tipbox' + (el.classList.contains('gw-tip-wide') ? ' wide' : '');
