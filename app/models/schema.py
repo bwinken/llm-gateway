@@ -15,6 +15,14 @@ def _generate_api_key() -> str:
     return f"sk-internal-{ts}-{short_hex}"
 
 
+APP_ACCOUNT_PREFIX = "app_"
+
+
+def is_app_account(username: str) -> bool:
+    """Service accounts are named ``app_*`` (the admin panel adds the prefix)."""
+    return username.startswith(APP_ACCOUNT_PREFIX)
+
+
 def mask_api_key(key: str) -> str:
     """Render a key for display: enough to identify it, not enough to use it.
 
@@ -50,6 +58,11 @@ class User(SQLModel, table=True):
     is_disabled: bool = Field(default=False)
     can_use_azure: bool = Field(default=False)
     can_use_bedrock: bool = Field(default=False)
+    # Exempt from the gateway-wide concurrency limit ([app].concurrency_limit_*,
+    # see app/services/concurrency.py). Admins are always exempt. App accounts
+    # are created waived (batch jobs legitimately run many requests at once);
+    # an admin can un-waive one to limit it.
+    concurrency_waived: bool = Field(default=False)
     owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     display_name: str = Field(default="")
     org_code: str = Field(default="")
@@ -63,6 +76,34 @@ class AppOwner(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     app_id: int = Field(foreign_key="users.id", index=True)
     owner_id: int = Field(foreign_key="users.id", index=True)
+
+
+class ConcurrencyLease(SQLModel, table=True):
+    """One in-flight inference request holding a concurrency slot.
+
+    Inserted when a limited request starts, deleted when its response
+    (stream included) has been fully sent. Rows of a worker that died
+    without cleaning up are removed by the per-worker sweep (dead pid on
+    this host) or, failing that, once ``expires_at`` passes — the owning
+    worker pushes it forward every heartbeat while the request is alive.
+    See app/services/concurrency.py.
+
+    Timestamps are naive UTC (not the aware values other tables use) so a
+    PostgreSQL session TimeZone can never shift them between write and
+    compare. No foreign key on ``user_id``: rows are short-lived and the
+    user delete path removes them explicitly.
+    """
+    __tablename__ = "concurrency_leases"
+    __table_args__ = (
+        Index("ix_concurrency_user_expires", "user_id", "expires_at"),
+    )
+
+    id: str = Field(primary_key=True)
+    user_id: int = Field()
+    worker_id: str = Field(index=True)      # "<hostname>:<pid>:<boot token>"
+    endpoint: str = Field(default="")
+    created_at: datetime = Field()
+    expires_at: datetime = Field()
 
 
 class UsageLog(SQLModel, table=True):

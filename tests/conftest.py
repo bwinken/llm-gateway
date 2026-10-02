@@ -369,6 +369,10 @@ _ALL_PATCHES = [
     # ensure_azure_budget / ensure_bedrock_budget (unified /v1 dispatch) open
     # their own session on this module-level engine — point it at the test DB.
     lambda: patch("app.core.deps.engine", _test_engine),
+    # The concurrency lease store (app/services/concurrency.py) opens its own
+    # short sessions too. The limit defaults to mode "off", so only tests that
+    # turn it on ever reach it.
+    lambda: patch("app.services.concurrency.engine", _test_engine),
     lambda: patch("app.services.vllm_proxy.is_alive", return_value=True),
     lambda: patch("app.services.azure_proxy.AZURE_MODELS", TEST_AZURE_MODELS),
     lambda: patch("app.services.azure_proxy.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),
@@ -394,6 +398,7 @@ _ALL_PATCHES = [
 def _patch_all():
     """Apply all patches for every test."""
     import app.services.vllm_proxy  # noqa: F811 — ensure module is loaded before patching
+    import app.services.concurrency  # noqa: F401 — same, for the lease-store engine patch
     from contextlib import ExitStack
 
     with ExitStack() as stack:

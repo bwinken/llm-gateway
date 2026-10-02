@@ -29,6 +29,46 @@
     </script>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+    /* Page tabs. Buttons carry data-tab="<name>" inside the bar; panels carry
+       data-panel="<name>". The active tab is restored from the URL hash, else
+       from sessionStorage (a form POST redirects back WITHOUT the hash), else
+       the first tab. Charts drawn while hidden have zero size, so a resize
+       event is fired after every switch. */
+    window.gwTabs = function (barId, storageKey) {
+        var bar = document.getElementById(barId);
+        if (!bar) return;
+        var tabs = Array.prototype.slice.call(bar.querySelectorAll('[data-tab]'));
+        var names = tabs.map(function (t) { return t.dataset.tab; });
+        var panels = Array.prototype.slice.call(document.querySelectorAll('[data-panel]'))
+            .filter(function (p) { return names.indexOf(p.dataset.panel) !== -1; });
+        function show(name, updateHash) {
+            tabs.forEach(function (t) {
+                var on = t.dataset.tab === name;
+                t.classList.toggle('gw-tab-on', on);
+                t.setAttribute('aria-selected', on ? 'true' : 'false');
+            });
+            panels.forEach(function (p) { p.style.display = p.dataset.panel === name ? '' : 'none'; });
+            try { sessionStorage.setItem(storageKey, name); } catch (e) {}
+            if (updateHash && history.replaceState) {
+                history.replaceState(null, '', location.pathname + location.search + '#' + name);
+            }
+            window.dispatchEvent(new Event('resize'));
+        }
+        tabs.forEach(function (t) {
+            t.addEventListener('click', function () { show(t.dataset.tab, true); });
+        });
+        window.addEventListener('hashchange', function () {
+            var h = location.hash.slice(1);
+            if (names.indexOf(h) !== -1) show(h, false);
+        });
+        var initial = location.hash.slice(1);
+        if (names.indexOf(initial) === -1) {
+            try { initial = sessionStorage.getItem(storageKey); } catch (e) { initial = null; }
+        }
+        show(names.indexOf(initial) !== -1 ? initial : names[0], false);
+    };
+    </script>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -257,6 +297,37 @@
         .gw-code { background: #0e0f14; border: 1px solid rgba(255,255,255,0.04); border-radius: 10px; }
 
         /* ── Support bot floating button (bottom-right, all pages) ── */
+        /* ── Page tabs (dashboard / admin) — sticky under the fixed navbar ── */
+        .gw-tabs {
+            position: sticky; top: 56px; z-index: 30;
+            display: flex; gap: 2px; overflow-x: auto;
+            margin: 0 0 24px; padding-top: 4px;
+            background: #0c0d12;
+            border-bottom: 1px solid rgba(255,255,255,0.07);
+        }
+        /* Model Config keeps its own sticky sidebar at top: 80px; a sticky
+           tab bar would cover it, so there the bar scrolls with the page. */
+        .gw-tabs-static { position: static; }
+        .gw-tab {
+            position: relative; flex-shrink: 0;
+            display: inline-flex; align-items: center; gap: 8px;
+            padding: 10px 16px; font-size: 14px; font-weight: 600;
+            color: #868da0; background: none; border: none; cursor: pointer;
+            transition: color 0.15s;
+        }
+        .gw-tab:hover { color: #c4c9d4; }
+        .gw-tab-on { color: #eef0f4; }
+        .gw-tab-on::after {
+            content: ''; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px;
+            background: linear-gradient(90deg, #6398ff, #4dd9e8); border-radius: 2px;
+        }
+        .gw-tab-count {
+            font-size: 11px; font-weight: 700; line-height: 1; padding: 3px 7px; border-radius: 999px;
+            background: rgba(255,255,255,0.06); color: #868da0;
+        }
+        .gw-tab-count-warn { background: rgba(245,166,35,0.14); color: #f5a623; }
+        .gw-tab-count-crit { background: rgba(255,92,92,0.16); color: #ff8a8a; }
+
         .gw-fab {
             position: fixed; right: 22px; bottom: 22px; z-index: 60;
             width: 54px; height: 54px; border-radius: 50%;

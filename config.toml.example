@@ -26,6 +26,20 @@ install_guide_url = ""
 # /azure/v1/* and /aws/v1/* surfaces never fall back. Default: false.
 cloud_budget_fallback = false
 
+# Per-user concurrency limit (admin panel → "Concurrency Limit" card): how
+# many inference requests (chat / responses / messages, streams included)
+# one account may have in flight at once, across all gateway workers.
+# concurrency_limit_mode:
+#   "off"     — no check (default)
+#   "monitor" — over-limit requests are served, but logged as
+#               "Concurrency limit exceeded (monitor)" WARNINGs
+#   "enforce" — over-limit requests get 429 with Retry-After
+# concurrency_limit: integer >= 1. Admins and accounts marked "waived" in the
+# admin user table are never limited. App accounts (app_*) start out waived;
+# un-waive one in the admin panel to limit it.
+concurrency_limit_mode = "off"
+concurrency_limit = 8
+
 # ==========================================
 # Pricing (USD per 1M tokens)
 # ==========================================

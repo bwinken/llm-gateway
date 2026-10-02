@@ -698,6 +698,50 @@ def set_cloud_budget_fallback(enabled: bool) -> None:
     _save_app_keys({_CLOUD_BUDGET_FALLBACK_KEY: bool(enabled)})
 
 
+# Per-user concurrency limit (admin panel → "Concurrency Limit" card; enforced
+# by app/services/concurrency.py). "Off" is an explicit mode rather than a
+# magic limit value, so the limit itself is always a real number >= 1.
+CONCURRENCY_MODES: tuple[str, ...] = ("off", "monitor", "enforce")
+_CONCURRENCY_MODE_KEY = "concurrency_limit_mode"
+_CONCURRENCY_LIMIT_KEY = "concurrency_limit"
+DEFAULT_CONCURRENCY_LIMIT = 8
+
+
+def get_concurrency_settings() -> tuple[str, int]:
+    """Return ``(mode, limit)`` for the per-user concurrency limit.
+
+    ``mode`` is ``"off"`` (no check), ``"monitor"`` (over-limit requests are
+    logged but served) or ``"enforce"`` (over-limit requests get 429).
+    Missing or invalid values fall back to ``("off", 8)`` — the gateway never
+    starts limiting because of a typo. Auto-reloads on file change.
+    """
+    _check_auto_reload()
+    mode = str(APP_CONFIG.get(_CONCURRENCY_MODE_KEY) or "off").strip().lower()
+    if mode not in CONCURRENCY_MODES:
+        mode = "off"
+    raw = APP_CONFIG.get(_CONCURRENCY_LIMIT_KEY, DEFAULT_CONCURRENCY_LIMIT)
+    try:
+        limit = int(raw)
+    except (TypeError, ValueError):
+        limit = DEFAULT_CONCURRENCY_LIMIT
+    if isinstance(raw, bool) or limit < 1:
+        limit = DEFAULT_CONCURRENCY_LIMIT
+    return mode, limit
+
+
+def set_concurrency_settings(mode: str, limit: int) -> None:
+    """Persist ``[app].concurrency_limit_mode`` / ``concurrency_limit``.
+
+    Callers validate first; this re-checks so a bad value can never reach
+    config.toml through some other path.
+    """
+    if mode not in CONCURRENCY_MODES:
+        raise ValueError(f"concurrency mode must be one of {CONCURRENCY_MODES}, got {mode!r}")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError(f"concurrency limit must be an integer >= 1, got {limit!r}")
+    _save_app_keys({_CONCURRENCY_MODE_KEY: mode, _CONCURRENCY_LIMIT_KEY: limit})
+
+
 def _save_app_keys(values: dict[str, Any]) -> None:
     """Merge ``values`` into the [app] section of config.toml and reload."""
     raw = _load_toml()

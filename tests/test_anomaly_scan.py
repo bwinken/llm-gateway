@@ -178,5 +178,5 @@ class TestAnomalyAdminAPI:
         self._seed_event(db_session)
         resp = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"]))
         assert resp.status_code == 200
-        assert "Anomalies" in resp.text
+        assert "Usage anomalies" in resp.text
         assert "burst_rate" in resp.text

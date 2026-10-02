@@ -19,34 +19,142 @@
         <p class="mt-1 text-sm text-t3">Manage users, view total usage, and adjust billing limits.</p>
     </div>
     <div class="flex items-center gap-3">
-        <a href="/admin/models" class="gw-btn gw-btn-ghost text-sm px-4 py-2">Model Config</a>
         <a href="/dashboard" class="gw-btn gw-btn-ghost text-sm px-4 py-2">&larr; Dashboard</a>
     </div>
 </div>
 
-{# ── Monthly Summary ── #}
-<div class="mb-8 gw-anim gw-d1">
-    <h2 class="text-sm font-bold text-t3 uppercase tracking-wider mb-4">{{ month_label }} &mdash; All Users</h2>
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
-        <div class="gw-card gw-stat relative p-5" style="--accent:linear-gradient(90deg,#6398ff,#4dd9e8)">
-            <dt class="text-xs font-semibold text-t3 uppercase tracking-wider gw-tip" data-tip="All users combined this month">Total Requests</dt>
-            <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums">{{ monthly_total_reqs }}</dd>
+{% macro money(v) -%}${{ "%.2f"|format(v) if v >= 1 else "%.4f"|format(v) }}{%- endmacro %}
+{# ── Needs attention: anomalies, servers, budgets — what to act on first ── #}
+{% set n_crit = anomalies|selectattr('severity', 'equalto', 'critical')|list|length + system_status.down|length + budget_pressure|selectattr('percent', 'ge', 100)|list|length %}
+{% set n_attention = anomalies|length + system_status.down|length + system_status.queueing|length + budget_pressure|length %}
+<div class="gw-card mb-6 gw-anim gw-d1 overflow-hidden"
+     style="border-color:{{ 'rgba(255,92,92,0.35)' if n_crit else 'rgba(245,166,35,0.3)' if n_attention else 'rgba(61,214,140,0.25)' }}">
+    <div class="px-5 py-3 flex items-center gap-3" style="border-bottom:1px solid rgba(255,255,255,0.04);background:{{ 'rgba(255,92,92,0.06)' if n_crit else 'rgba(245,166,35,0.05)' if n_attention else 'rgba(61,214,140,0.05)' }}">
+        <h2 class="text-sm font-bold" style="color:{{ '#ff8a8a' if n_crit else '#f5a623' if n_attention else '#3dd68c' }}">
+            {{ 'Needs attention' if n_attention else 'All clear' }}</h2>
+        <span class="text-xs text-t3">
+            {% if n_attention %}{{ n_attention }} item{{ '' if n_attention == 1 else 's' }}{% if n_crit %} · <span style="color:#ff8a8a">{{ n_crit }} urgent</span>{% endif %}
+            {% else %}No open anomalies, every model is online and nobody is near their daily limit.{% endif %}
+        </span>
+    </div>
+    {% if n_attention %}
+    <div class="grid grid-cols-1 lg:grid-cols-3 divide-y lg:divide-y-0 lg:divide-x" style="--tw-divide-opacity:1;border-color:rgba(255,255,255,0.04)">
+        {# Anomalies #}
+        <div class="p-4" style="border-color:rgba(255,255,255,0.05)">
+            <div class="text-[11px] font-bold uppercase tracking-wider text-t3 mb-2 gw-tip gw-tip-wide"
+                 data-tip="Unusual usage flagged by the hourly scan (scripts/scan_anomalies.py). Detection only: nothing is blocked.">Usage anomalies</div>
+            {% for a in anomalies %}
+            <div id="anomaly-{{ a.id }}" class="py-2 flex items-start gap-2 {{ 'opacity-50' if a.status == 'acknowledged' }}" style="border-top:1px solid rgba(255,255,255,0.03)">
+                <span class="mt-0.5 text-[10px] px-1.5 py-0.5 rounded font-mono uppercase flex-shrink-0"
+                      style="{{ 'background:rgba(255,92,92,0.14);color:#ff8a8a' if a.severity == 'critical' else 'background:rgba(245,166,35,0.12);color:#f5a623' }}">{{ a.severity }}</span>
+                <div class="min-w-0 flex-1">
+                    <div class="text-sm text-t1">
+                        {% if a.user_id %}<span class="font-semibold">{{ anomaly_usernames.get(a.user_id, 'user #' ~ a.user_id) }}</span>
+                        {% elif a.model %}<code class="font-mono">{{ a.model }}</code>{% else %}{{ a.scope }}{% endif %}
+                        <span class="text-t4 font-mono text-xs ml-1">{{ a.rule }}</span>
+                    </div>
+                    <div class="text-xs text-t3">{{ a.summary }}</div>
+                </div>
+                <div class="flex gap-1 flex-shrink-0">
+                    {% if a.status == 'new' %}<button onclick="anomalyAction({{ a.id }}, 'ack')" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Ack</button>{% endif %}
+                    <button onclick="anomalyAction({{ a.id }}, 'resolve')" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Resolve</button>
+                </div>
+            </div>
+            {% else %}
+            <div class="text-xs text-t4 py-2">None open.</div>
+            {% endfor %}
         </div>
-        <div class="gw-card gw-stat relative p-5" style="--accent:linear-gradient(90deg,#3dd68c,#4dd9e8)">
-            <dt class="text-xs font-semibold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Sum of all users' estimated costs based on token pricing">Total Cost</dt>
-            <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums tracking-tight">${{ "%.4f"|format(monthly_total_cost) }}</dd>
+        {# Servers #}
+        <div class="p-4" style="border-color:rgba(255,255,255,0.05)">
+            <div class="text-[11px] font-bold uppercase tracking-wider text-t3 mb-2">On-prem models
+                <span class="ml-1 normal-case tracking-normal font-normal text-t4">{{ system_status.online }}/{{ system_status.total }} online</span></div>
+            {% for name in system_status.down %}
+            <div class="py-2 flex items-center justify-between gap-2" style="border-top:1px solid rgba(255,255,255,0.03)">
+                <span class="flex items-center gap-2 min-w-0"><span class="gw-dot-off flex-shrink-0"></span><code class="text-sm font-mono text-t1 truncate">{{ name }}</code></span>
+                <span class="text-xs font-semibold" style="color:#ff8a8a">down</span>
+            </div>
+            {% endfor %}
+            {% for q in system_status.queueing %}
+            <div class="py-2 flex items-center justify-between gap-2" style="border-top:1px solid rgba(255,255,255,0.03)">
+                <code class="text-sm font-mono text-t1 truncate">{{ q.name }}</code>
+                <span class="text-xs font-semibold font-mono px-1.5 py-0.5 rounded"
+                      style="{{ 'background:rgba(255,92,92,0.14);color:#ff8a8a' if q.waiting >= 10 else 'background:rgba(245,166,35,0.12);color:#f5a623' }}">{{ q.waiting }} queued</span>
+            </div>
+            {% endfor %}
+            {% if not system_status.down and not system_status.queueing %}<div class="text-xs text-t4 py-2">All online, no queues.</div>{% endif %}
         </div>
-        <div class="gw-card gw-stat relative p-5" style="--accent:linear-gradient(90deg,#a78bfa,#6398ff)">
-            <dt class="text-xs font-semibold text-t3 uppercase tracking-wider gw-tip" data-tip="Prompt tokens sent to models">Input Tokens</dt>
-            <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums">{{ format_token(monthly_total_input) }}</dd>
+        {# Budgets #}
+        <div class="p-4" style="border-color:rgba(255,255,255,0.05)">
+            <div class="text-[11px] font-bold uppercase tracking-wider text-t3 mb-2 gw-tip gw-tip-wide"
+                 data-tip="Accounts that have used 90% or more of today's daily limit. At 100% their requests get 429 until local midnight.">Near daily limit</div>
+            {% for b in budget_pressure %}
+            <a href="?q={{ b.username | urlencode }}#users" class="py-2 block hover:bg-[rgba(255,255,255,0.02)]" style="border-top:1px solid rgba(255,255,255,0.03)">
+                <div class="flex items-center justify-between gap-2">
+                    <span class="text-sm text-t1 truncate">{{ b.display_name or b.username }}</span>
+                    <span class="text-xs font-mono font-semibold" style="color:{{ '#ff8a8a' if b.percent >= 100 else '#f5a623' }}">{{ b.percent|round(0)|int }}%{{ ' · blocked' if b.percent >= 100 }}</span>
+                </div>
+                <div class="mt-1 flex items-center gap-2">
+                    <div class="flex-1 h-1.5 rounded-full overflow-hidden bg-n3"><div class="h-1.5 rounded-full" style="width:{{ [b.percent, 100]|min }}%;background:{{ '#ff5c5c' if b.percent >= 100 else '#f5a623' }}"></div></div>
+                    <span class="text-[11px] font-mono text-t4 whitespace-nowrap">{{ money(b.cost) }} / ${{ '%g'|format(b.limit) }}</span>
+                </div>
+            </a>
+            {% else %}
+            <div class="text-xs text-t4 py-2">Nobody is above 90% today.</div>
+            {% endfor %}
         </div>
-        <div class="gw-card gw-stat relative p-5" style="--accent:linear-gradient(90deg,#f5a623,#ff5c5c)">
-            <dt class="text-xs font-semibold text-t3 uppercase tracking-wider gw-tip" data-tip="Completion tokens generated by models">Output Tokens</dt>
-            <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums">{{ format_token(monthly_total_output) }}</dd>
+    </div>
+    {% endif %}
+</div>
+<script>
+function anomalyAction(id, action) {
+    fetch('/admin/api/anomalies/' + id + '/' + action, { method: 'POST' })
+        .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function(){
+            var row = document.getElementById('anomaly-' + id);
+            if (!row) return;
+            if (action === 'resolve') { row.remove(); }
+            else { row.classList.add('opacity-50'); var b = row.querySelector('button'); if (b && b.textContent === 'Ack') b.remove(); }
+        })
+        .catch(function(e){ alert('Failed: ' + e.message); });
+}
+</script>
+
+{# ── Key numbers: today first, then the month ── #}
+<div class="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8 gw-anim gw-d2">
+    <div class="gw-card gw-stat relative p-5" style="--accent:linear-gradient(90deg,#3dd68c,#4dd9e8)">
+        <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Spend today</dt>
+        <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums tracking-tight">{{ money(today_totals.cost) }}</dd>
+        <div class="mt-1 text-xs text-t4">all accounts</div>
+    </div>
+    <div class="gw-card gw-stat relative p-5" style="--accent:linear-gradient(90deg,#6398ff,#4dd9e8)">
+        <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Requests today</dt>
+        <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums">{{ today_totals.requests }}</dd>
+        <div class="mt-1 text-xs text-t4">all accounts</div>
+    </div>
+    <div class="gw-card gw-stat relative p-5" style="--accent:linear-gradient(90deg,#a78bfa,#6398ff)">
+        <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip" data-tip="People (not app accounts) with at least one request today">Active users today</dt>
+        <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums">{{ today_totals.active_users }}</dd>
+        <div class="mt-1 text-xs text-t4">{{ user_total }} accounts total</div>
+    </div>
+    <div class="gw-card gw-stat relative p-5" style="--accent:linear-gradient(90deg,#34d399,#3dd68c)">
+        <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Chat / responses / messages requests running right now (counted only while the concurrency limit is Monitor or Enforce)">In flight now</dt>
+        <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums">{{ concurrency_in_flight.total if concurrency_in_flight is not none and concurrency_mode != 'off' else '—' }}</dd>
+        <div class="mt-1 text-xs text-t4">
+            {% if concurrency_mode == 'off' %}tracking off{% elif concurrency_in_flight is not none %}busiest account {{ concurrency_in_flight.peak_user }} / {{ concurrency_limit }}{% endif %}
         </div>
+    </div>
+    <div class="gw-card gw-stat relative p-5 col-span-2 lg:col-span-1" style="--accent:linear-gradient(90deg,#f5a623,#ff9933)">
+        <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">{{ month_label }}</dt>
+        <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums tracking-tight">{{ money(monthly_total_cost) }}</dd>
+        <div class="mt-1 text-xs text-t4 font-mono">{{ monthly_total_reqs }} reqs · {{ format_token(monthly_total_input) }} in · {{ format_token(monthly_total_output) }} out</div>
     </div>
 </div>
 
+{# ── Tabs: everything below the attention panel and key numbers ── #}
+{% set on_admin_page = true %}
+{% include '_admin_tabs.html' %}
+
+<div data-panel="overview">
 {# ── DAU Trend ── #}
 <div class="mb-8 gw-anim gw-d2">
     <div class="gw-card overflow-hidden">
@@ -167,6 +275,74 @@
     </div>
 </div>
 
+{# ── Department Usage ── #}
+<div class="mb-8 gw-anim gw-d4">
+    <div class="gw-card overflow-hidden">
+        <div class="px-5 py-3 flex items-center gap-2" style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <h3 class="text-xs font-bold text-t3 uppercase tracking-wider">Department Usage</h3>
+            <span class="ml-auto text-[11px] text-t4 font-mono">{{ month_label }}</span>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="gw-table">
+                <thead><tr>
+                    <th>Department</th><th style="text-align:right">Users</th><th style="text-align:right">Cost</th>
+                    <th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Reqs</th>
+                </tr></thead>
+                <tbody>
+                    {% for d in dept_usage %}
+                    <tr class="dept-row">
+                        <td>
+                            <span class="text-sm font-medium text-t1">{{ d.department }}</span>
+                        </td>
+                        <td class="text-right text-sm font-mono text-t3">{{ d.user_count }}</td>
+                        <td class="text-right text-sm font-mono font-medium text-t1">${{ "%.4f"|format(d.cost) }}</td>
+                        <td class="text-right text-sm font-mono text-t3">{{ format_token(d.input_tokens) }}</td>
+                        <td class="text-right text-sm font-mono text-t3">{{ format_token(d.output_tokens) }}</td>
+                        <td class="text-right text-sm font-mono text-t3">{{ d.requests }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not dept_usage %}
+                    <tr><td colspan="6" class="text-center py-6 text-sm text-t4">No usage data this month.</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+            {% if dept_usage|length > 15 %}
+            {# Client-side pager: rows are already rendered (sorted by cost),
+               JS just windows them 15 at a time — no page round-trip. #}
+            <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)">
+                <button id="deptPrev" class="gw-btn gw-btn-ghost text-xs px-2 py-1">&larr; Prev</button>
+                <span id="deptRange"></span>
+                <button id="deptNext" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Next &rarr;</button>
+            </div>
+            <script>
+            (function(){
+                var SIZE = 15;
+                var rows = Array.prototype.slice.call(document.querySelectorAll('.dept-row'));
+                if (rows.length <= SIZE) return;
+                var page = 0;
+                var prev = document.getElementById('deptPrev');
+                var next = document.getElementById('deptNext');
+                var range = document.getElementById('deptRange');
+                function render(){
+                    var start = page * SIZE, end = Math.min(start + SIZE, rows.length);
+                    rows.forEach(function(r, i){ r.style.display = (i >= start && i < end) ? '' : 'none'; });
+                    range.textContent = (start + 1) + '-' + end + ' of ' + rows.length;
+                    var atStart = page === 0, atEnd = end >= rows.length;
+                    prev.classList.toggle('opacity-30', atStart);
+                    prev.classList.toggle('pointer-events-none', atStart);
+                    next.classList.toggle('opacity-30', atEnd);
+                    next.classList.toggle('pointer-events-none', atEnd);
+                }
+                prev.addEventListener('click', function(){ if (page > 0) { page--; render(); } });
+                next.addEventListener('click', function(){ if ((page + 1) * SIZE < rows.length) { page++; render(); } });
+                render();
+            })();
+            </script>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
 {# ── Usage Export ── #}
 <div class="mb-8 gw-anim gw-d4">
     <div class="gw-card p-5">
@@ -257,251 +433,9 @@ function submitExportCsv() {
 }
 </script>
 
-{# ── Anomalies (from scripts/scan_anomalies.py; hidden when nothing open) ── #}
-{% if anomalies %}
-<div class="mb-8 gw-anim gw-d4">
-    <div class="gw-card overflow-hidden" style="border-color:rgba(255,92,92,0.25)">
-        <div class="px-5 py-3 flex items-center gap-2" style="border-bottom:1px solid rgba(255,255,255,0.04)">
-            <h3 class="text-xs font-bold uppercase tracking-wider" style="color:#ff8a8a">Anomalies</h3>
-            <span class="text-[11px] text-t4">unusual usage patterns flagged by the hourly scan</span>
-            <span class="ml-auto text-[11px] text-t4 font-mono">{{ anomalies|length }} open</span>
-        </div>
-        <div class="overflow-x-auto">
-            <table class="gw-table">
-                <thead><tr>
-                    <th>Severity</th><th>Rule</th><th>Target</th><th>Detail</th>
-                    <th style="text-align:right">Observed / Baseline</th><th style="text-align:right">Actions</th>
-                </tr></thead>
-                <tbody>
-                    {% for a in anomalies %}
-                    <tr id="anomaly-{{ a.id }}" class="{{ 'opacity-50' if a.status == 'acknowledged' }}">
-                        <td class="whitespace-nowrap">
-                            <span class="text-[10px] px-1.5 py-0.5 rounded font-mono uppercase"
-                                  style="{{ 'background:rgba(255,92,92,0.12);color:#ff8a8a' if a.severity == 'critical' else 'background:rgba(245,166,35,0.12);color:#f5a623' }}">
-                                {{ a.severity }}</span>
-                        </td>
-                        <td class="whitespace-nowrap text-sm font-mono text-t2">{{ a.rule }}</td>
-                        <td class="whitespace-nowrap text-sm">
-                            {% if a.user_id %}<span class="text-t1 font-medium">{{ anomaly_usernames.get(a.user_id, 'user #' ~ a.user_id) }}</span>
-                            {% elif a.model %}<code class="text-t1 font-mono">{{ a.model }}</code>
-                            {% else %}{{ a.scope }}{% endif %}
-                        </td>
-                        <td class="text-xs text-t3" style="max-width:340px">{{ a.summary }}</td>
-                        <td class="whitespace-nowrap text-right text-xs font-mono text-t3">
-                            {{ '%g'|format(a.observed) }} / {{ '%g'|format(a.baseline) }}
-                            <span class="text-t4">(×{{ '%g'|format(a.ratio) }})</span>
-                        </td>
-                        <td class="whitespace-nowrap text-right">
-                            {% if a.status == 'new' %}
-                            <button onclick="anomalyAction({{ a.id }}, 'ack')" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Ack</button>
-                            {% endif %}
-                            <button onclick="anomalyAction({{ a.id }}, 'resolve')" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Resolve</button>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-</div>
-<script>
-function anomalyAction(id, action) {
-    fetch('/admin/api/anomalies/' + id + '/' + action, { method: 'POST' })
-        .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-        .then(function(){
-            var row = document.getElementById('anomaly-' + id);
-            if (!row) return;
-            if (action === 'resolve') { row.remove(); }
-            else { row.classList.add('opacity-50'); var b = row.querySelector('button'); if (b && b.textContent === 'Ack') b.remove(); }
-        })
-        .catch(function(e){ alert('Failed: ' + e.message); });
-}
-</script>
-{% endif %}
-
-{# ── Department Usage ── #}
-<div class="mb-8 gw-anim gw-d4">
-    <div class="gw-card overflow-hidden">
-        <div class="px-5 py-3 flex items-center gap-2" style="border-bottom:1px solid rgba(255,255,255,0.04)">
-            <h3 class="text-xs font-bold text-t3 uppercase tracking-wider">Department Usage</h3>
-            <span class="ml-auto text-[11px] text-t4 font-mono">{{ month_label }}</span>
-        </div>
-        <div class="overflow-x-auto">
-            <table class="gw-table">
-                <thead><tr>
-                    <th>Department</th><th style="text-align:right">Users</th><th style="text-align:right">Cost</th>
-                    <th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Reqs</th>
-                </tr></thead>
-                <tbody>
-                    {% for d in dept_usage %}
-                    <tr class="dept-row">
-                        <td>
-                            <span class="text-sm font-medium text-t1">{{ d.department }}</span>
-                        </td>
-                        <td class="text-right text-sm font-mono text-t3">{{ d.user_count }}</td>
-                        <td class="text-right text-sm font-mono font-medium text-t1">${{ "%.4f"|format(d.cost) }}</td>
-                        <td class="text-right text-sm font-mono text-t3">{{ format_token(d.input_tokens) }}</td>
-                        <td class="text-right text-sm font-mono text-t3">{{ format_token(d.output_tokens) }}</td>
-                        <td class="text-right text-sm font-mono text-t3">{{ d.requests }}</td>
-                    </tr>
-                    {% endfor %}
-                    {% if not dept_usage %}
-                    <tr><td colspan="6" class="text-center py-6 text-sm text-t4">No usage data this month.</td></tr>
-                    {% endif %}
-                </tbody>
-            </table>
-            {% if dept_usage|length > 15 %}
-            {# Client-side pager: rows are already rendered (sorted by cost),
-               JS just windows them 15 at a time — no page round-trip. #}
-            <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)">
-                <button id="deptPrev" class="gw-btn gw-btn-ghost text-xs px-2 py-1">&larr; Prev</button>
-                <span id="deptRange"></span>
-                <button id="deptNext" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Next &rarr;</button>
-            </div>
-            <script>
-            (function(){
-                var SIZE = 15;
-                var rows = Array.prototype.slice.call(document.querySelectorAll('.dept-row'));
-                if (rows.length <= SIZE) return;
-                var page = 0;
-                var prev = document.getElementById('deptPrev');
-                var next = document.getElementById('deptNext');
-                var range = document.getElementById('deptRange');
-                function render(){
-                    var start = page * SIZE, end = Math.min(start + SIZE, rows.length);
-                    rows.forEach(function(r, i){ r.style.display = (i >= start && i < end) ? '' : 'none'; });
-                    range.textContent = (start + 1) + '-' + end + ' of ' + rows.length;
-                    var atStart = page === 0, atEnd = end >= rows.length;
-                    prev.classList.toggle('opacity-30', atStart);
-                    prev.classList.toggle('pointer-events-none', atStart);
-                    next.classList.toggle('opacity-30', atEnd);
-                    next.classList.toggle('pointer-events-none', atEnd);
-                }
-                prev.addEventListener('click', function(){ if (page > 0) { page--; render(); } });
-                next.addEventListener('click', function(){ if ((page + 1) * SIZE < rows.length) { page++; render(); } });
-                render();
-            })();
-            </script>
-            {% endif %}
-        </div>
-    </div>
 </div>
 
-{# ── Default Daily Limit ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #6398ff">
-    <div class="flex flex-wrap items-center justify-between gap-4">
-        <div>
-            <h2 class="text-sm font-bold text-t2 mb-1">Default Daily Limit</h2>
-            <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="New users get this value. Existing users below it (and not unlimited, i.e. limit > 0) get bumped up to it. Users at or above this stay unchanged. 0 = unlimited.">
-                Floor for daily spend (USD). Applies to new users; existing users below the floor are auto-raised.
-            </p>
-        </div>
-        <form action="/admin/default-limit" method="POST"
-              onsubmit="return confirm('Set default daily limit to $' + this.new_default.value + '? All users below this floor (excluding unlimited) will be raised to it.');"
-              class="flex items-end gap-3">
-            <div>
-                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Default Limit (USD)</label>
-                <div class="flex items-center gap-1">
-                    <span class="text-sm text-t4">$</span>
-                    <input type="number" step="0.1" min="0" name="new_default" value="{{ default_daily_limit }}"
-                           class="gw-input w-28 text-sm font-mono py-1.5 px-2">
-                </div>
-            </div>
-            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
-        </form>
-    </div>
-</div>
-
-{# ── Cloud Budget Fallback ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #a78bfa">
-    <div class="flex flex-wrap items-center justify-between gap-4">
-        <div>
-            <h2 class="text-sm font-bold text-t2 mb-1">Cloud Budget Fallback</h2>
-            <p class="text-xs text-t4 gw-tip gw-tip-wide"
-               data-tip="Applies to the unified /v1/* surface only. A user whose Azure or AWS daily sub-limit is spent gets the on-prem default model (response carries X-Budget-Fallback) instead of a 429. The overall daily limit still applies — once that is gone too, requests are refused. /azure/v1/* and /aws/v1/* never fall back.">
-                When a user's Azure / AWS daily sub-limit is exhausted, serve their request with the on-prem model instead of refusing it.
-                Requests are still refused once the overall daily limit is exhausted.
-            </p>
-        </div>
-        <form id="cloud-budget-fallback-form" action="/admin/cloud-budget-fallback" method="POST"
-              class="flex items-center gap-3">
-            <label class="flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" name="enabled" value="on" {{ 'checked' if cloud_budget_fallback else '' }}
-                       class="w-4 h-4" style="accent-color:#a78bfa">
-                <span id="cloud-budget-fallback-state" class="text-sm font-semibold text-t4"
-                      style="{{ 'color:#cab9ff' if cloud_budget_fallback else '' }}">
-                    {{ 'Enabled — falls back to on-prem' if cloud_budget_fallback else 'Disabled — 429 when cloud budget is spent' }}
-                </span>
-            </label>
-            <noscript><button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button></noscript>
-        </form>
-    </div>
-</div>
-
-{# ── Site Links (support bot + install guide) ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #4dd9e8">
-    <div class="mb-4">
-        <h2 class="text-sm font-bold text-t2 mb-1">Site Links</h2>
-        <p class="text-xs text-t4">
-            Links shown to every user in the web UI. Leave a field empty to hide that element.
-        </p>
-    </div>
-    <form action="/admin/site-links" method="POST" class="flex items-end gap-4 flex-wrap">
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                   data-tip="Floating bot button at the bottom-right of every page. Clicking opens this URL in a new tab. Empty = button hidden.">
-                Support Bot URL
-            </label>
-            <input type="text" name="support_bot_url" value="{{ site_links.support_bot_url }}"
-                   placeholder="https://chat.example.com/support-bot"
-                   class="gw-input w-80 text-sm font-mono py-1.5 px-2">
-        </div>
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                   data-tip="Step-by-step Claude Code tools installation guide. Shown as a highlighted card at the top of the Setup page, opens in a new tab. Empty = card hidden.">
-                Install Guide URL
-            </label>
-            <input type="text" name="install_guide_url" value="{{ site_links.install_guide_url }}"
-                   placeholder="https://wiki.example.com/claude-code-guide"
-                   class="gw-input w-80 text-sm font-mono py-1.5 px-2">
-        </div>
-        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
-    </form>
-</div>
-
-{# ── Create App Account ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d5">
-    <h2 class="text-sm font-bold text-t2 mb-4">Create App Account</h2>
-    <form action="/admin/users/create" method="POST" class="flex items-end gap-4 flex-wrap">
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Prefix app_ is added automatically. Use for programmatic API access.">Username</label>
-            <div class="flex items-center gap-1">
-                <span class="text-sm text-t4 font-mono">app_</span>
-                <input type="text" name="username" required placeholder="my_service"
-                       pattern="[a-zA-Z0-9_\-]+" title="Letters, numbers, underscores and hyphens"
-                       class="gw-input w-48 text-sm font-mono py-1.5 px-2">
-            </div>
-        </div>
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Max daily spend in USD. API returns 429 when limit is reached.">Daily Limit (USD)</label>
-            <div class="flex items-center gap-1">
-                <span class="text-sm text-t4">$</span>
-                <input type="number" step="0.1" name="daily_limit_usd" value="10.0"
-                       class="gw-input w-24 text-sm font-mono py-1.5 px-2">
-            </div>
-        </div>
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Owner can view and refresh this app's API key from their Dashboard. Enter username.">Owner</label>
-            <input type="text" name="owner_username" placeholder="username (optional)"
-                   class="gw-input w-48 text-sm font-mono py-1.5 px-2">
-        </div>
-        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-            Create
-        </button>
-    </form>
-</div>
-
+<div data-panel="users">
 {# ── User Management ── #}
 <div class="gw-anim gw-d6">
     <div class="flex items-center justify-between mb-4">
@@ -632,6 +566,16 @@ function anomalyAction(id, action) {
                                     </button>
                                 </form>
                                 {% if not u.is_admin %}
+                                <form action="/admin/users/{{ u.id }}/toggle-concurrency-waive" method="POST" data-username="{{ u.username }}"
+                                      data-granted="{{ 'true' if u.concurrency_waived else 'false' }}" data-backend="waive"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Apply the concurrency limit again' : 'Waive the concurrency limit') + '?');">
+                                    <button type="submit"
+                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.concurrency_waived else 'gw-btn-ghost' }}"
+                                            style="{{ 'background:rgba(52,211,153,0.15);border-color:rgba(52,211,153,0.4);color:#86efac' if u.concurrency_waived else '' }}"
+                                            title="{{ 'Concurrency limit waived — click to apply it' if u.concurrency_waived else 'Concurrency limit applies — click to waive' }}">
+                                        Waive
+                                    </button>
+                                </form>
                                 <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-username="{{ u.username }}"
                                       onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.is_disabled else 'false' }} ? 'Enable' : 'Disable') + ' account?');">
                                     <button type="submit"
@@ -760,6 +704,18 @@ function anomalyAction(id, action) {
                                         AWS
                                     </button>
                                 </form>
+                                {% if not u.is_admin %}
+                                <form action="/admin/users/{{ u.id }}/toggle-concurrency-waive" method="POST" data-username="{{ u.username }}"
+                                      data-granted="{{ 'true' if u.concurrency_waived else 'false' }}" data-backend="waive"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Apply the concurrency limit again' : 'Waive the concurrency limit') + '?');">
+                                    <button type="submit"
+                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.concurrency_waived else 'gw-btn-ghost' }}"
+                                            style="{{ 'background:rgba(52,211,153,0.15);border-color:rgba(52,211,153,0.4);color:#86efac' if u.concurrency_waived else '' }}"
+                                            title="{{ 'Concurrency limit waived — click to apply it' if u.concurrency_waived else 'Concurrency limit applies — click to waive' }}">
+                                        Waive
+                                    </button>
+                                </form>
+                                {% endif %}
                                 <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-username="{{ u.username }}"
                                       onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.is_disabled else 'false' }} ? 'Enable' : 'Disable') + ' app?');">
                                     <button type="submit"
@@ -790,6 +746,171 @@ function anomalyAction(id, action) {
         {% endif %}
     </div>
 </div>
+
+</div>
+
+<div data-panel="settings">
+{# ── Settings ── #}
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-x-6 gw-anim gw-d5">
+{# ── Concurrency Limit ── #}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #34d399">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+        <div class="max-w-xl">
+            <h2 class="text-sm font-bold text-t2 mb-1">Concurrency Limit</h2>
+            <p class="text-xs text-t4 gw-tip gw-tip-wide"
+               data-tip="Counts chat / responses / messages requests (streams included) across all gateway workers, from admission until the response is fully sent. Monitor: everything is served, over-limit requests are logged as 'Concurrency limit exceeded (monitor)'. Enforce: over-limit requests get 429 with Retry-After: 5 (Claude Code retries automatically). Admins and accounts marked Waive are never limited; app accounts start out waived (un-waive one to limit it). count_tokens, tokenize, models, embeddings and rerank are not counted.">
+                Maximum in-flight inference requests per account. Admins and waived accounts (all app accounts, by default) are exempt.
+            </p>
+            <p class="text-xs text-t4 mt-1.5">
+                {% if concurrency_in_flight is none %}
+                In flight now: <span class="text-t3">unavailable</span>
+                {% else %}
+                In flight now:
+                <span class="font-mono text-t2">{{ concurrency_in_flight.total }}</span> request{{ '' if concurrency_in_flight.total == 1 else 's' }}
+                across <span class="font-mono text-t2">{{ concurrency_in_flight.users }}</span> account{{ '' if concurrency_in_flight.users == 1 else 's' }}
+                · busiest account <span class="font-mono text-t2">{{ concurrency_in_flight.peak_user }}</span>
+                {% if concurrency_mode == 'off' %}<span class="text-t4">(not tracked while Off)</span>{% endif %}
+                {% endif %}
+            </p>
+        </div>
+        <form action="/admin/concurrency-limit" method="POST" class="flex items-end gap-3"
+              onsubmit="return this.mode.value !== 'enforce' || confirm('Enforce the concurrency limit? Accounts over ' + this.limit.value + ' in-flight requests will get 429 responses.');">
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Mode</label>
+                <select name="mode" class="gw-input text-sm py-1.5 px-2">
+                    {% for m in concurrency_modes %}
+                    <option value="{{ m }}" {{ 'selected' if m == concurrency_mode else '' }}>{{ {'off': 'Off — no limit', 'monitor': 'Monitor — log only', 'enforce': 'Enforce — 429'}[m] }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Per account</label>
+                <input type="number" step="1" min="1" required name="limit" value="{{ concurrency_limit }}"
+                       class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+            </div>
+            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
+        </form>
+    </div>
+</div>
+
+{# ── Default Daily Limit ── #}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #6398ff">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+            <h2 class="text-sm font-bold text-t2 mb-1">Default Daily Limit</h2>
+            <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="New users get this value. Existing users below it (and not unlimited, i.e. limit > 0) get bumped up to it. Users at or above this stay unchanged. 0 = unlimited.">
+                Floor for daily spend (USD). Applies to new users; existing users below the floor are auto-raised.
+            </p>
+        </div>
+        <form action="/admin/default-limit" method="POST"
+              onsubmit="return confirm('Set default daily limit to $' + this.new_default.value + '? All users below this floor (excluding unlimited) will be raised to it.');"
+              class="flex items-end gap-3">
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Default Limit (USD)</label>
+                <div class="flex items-center gap-1">
+                    <span class="text-sm text-t4">$</span>
+                    <input type="number" step="0.1" min="0" name="new_default" value="{{ default_daily_limit }}"
+                           class="gw-input w-28 text-sm font-mono py-1.5 px-2">
+                </div>
+            </div>
+            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
+        </form>
+    </div>
+</div>
+
+{# ── Cloud Budget Fallback ── #}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #a78bfa">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+            <h2 class="text-sm font-bold text-t2 mb-1">Cloud Budget Fallback</h2>
+            <p class="text-xs text-t4 gw-tip gw-tip-wide"
+               data-tip="Applies to the unified /v1/* surface only. A user whose Azure or AWS daily sub-limit is spent gets the on-prem default model (response carries X-Budget-Fallback) instead of a 429. The overall daily limit still applies — once that is gone too, requests are refused. /azure/v1/* and /aws/v1/* never fall back.">
+                When a user's Azure / AWS daily sub-limit is exhausted, serve their request with the on-prem model instead of refusing it.
+                Requests are still refused once the overall daily limit is exhausted.
+            </p>
+        </div>
+        <form id="cloud-budget-fallback-form" action="/admin/cloud-budget-fallback" method="POST"
+              class="flex items-center gap-3">
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" name="enabled" value="on" {{ 'checked' if cloud_budget_fallback else '' }}
+                       class="w-4 h-4" style="accent-color:#a78bfa">
+                <span id="cloud-budget-fallback-state" class="text-sm font-semibold text-t4"
+                      style="{{ 'color:#cab9ff' if cloud_budget_fallback else '' }}">
+                    {{ 'Enabled — falls back to on-prem' if cloud_budget_fallback else 'Disabled — 429 when cloud budget is spent' }}
+                </span>
+            </label>
+            <noscript><button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button></noscript>
+        </form>
+    </div>
+</div>
+
+{# ── Create App Account ── #}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5">
+    <h2 class="text-sm font-bold text-t2 mb-4">Create App Account</h2>
+    <form action="/admin/users/create" method="POST" class="flex items-end gap-4 flex-wrap">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Prefix app_ is added automatically. Use for programmatic API access.">Username</label>
+            <div class="flex items-center gap-1">
+                <span class="text-sm text-t4 font-mono">app_</span>
+                <input type="text" name="username" required placeholder="my_service"
+                       pattern="[a-zA-Z0-9_\-]+" title="Letters, numbers, underscores and hyphens"
+                       class="gw-input w-48 text-sm font-mono py-1.5 px-2">
+            </div>
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Max daily spend in USD. API returns 429 when limit is reached.">Daily Limit (USD)</label>
+            <div class="flex items-center gap-1">
+                <span class="text-sm text-t4">$</span>
+                <input type="number" step="0.1" name="daily_limit_usd" value="10.0"
+                       class="gw-input w-24 text-sm font-mono py-1.5 px-2">
+            </div>
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Owner can view and refresh this app's API key from their Dashboard. Enter username.">Owner</label>
+            <input type="text" name="owner_username" placeholder="username (optional)"
+                   class="gw-input w-48 text-sm font-mono py-1.5 px-2">
+        </div>
+        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            Create
+        </button>
+    </form>
+</div>
+
+</div>
+{# ── Site Links (support bot + install guide) ── #}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #4dd9e8">
+    <div class="mb-4">
+        <h2 class="text-sm font-bold text-t2 mb-1">Site Links</h2>
+        <p class="text-xs text-t4">
+            Links shown to every user in the web UI. Leave a field empty to hide that element.
+        </p>
+    </div>
+    <form action="/admin/site-links" method="POST" class="flex items-end gap-4 flex-wrap">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Floating bot button at the bottom-right of every page. Clicking opens this URL in a new tab. Empty = button hidden.">
+                Support Bot URL
+            </label>
+            <input type="text" name="support_bot_url" value="{{ site_links.support_bot_url }}"
+                   placeholder="https://chat.example.com/support-bot"
+                   class="gw-input w-80 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Step-by-step Claude Code tools installation guide. Shown as a highlighted card at the top of the Setup page, opens in a new tab. Empty = card hidden.">
+                Install Guide URL
+            </label>
+            <input type="text" name="install_guide_url" value="{{ site_links.install_guide_url }}"
+                   placeholder="https://wiki.example.com/claude-code-guide"
+                   class="gw-input w-80 text-sm font-mono py-1.5 px-2">
+        </div>
+        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
+    </form>
+</div>
+
+</div>
+<script>gwTabs('adminTabs', 'adminTab');</script>
 
 {# ── API Key Modal ── #}
 <div id="keyModal" class="fixed inset-0 z-50 hidden">
@@ -1037,22 +1158,26 @@ function anomalyAction(id, action) {
 </script>
 
 <script>
-    /* ── In-place Azure / AWS grant toggles + Cloud Budget Fallback ──
+    /* ── In-place Azure / AWS grant + concurrency Waive toggles + Cloud Budget Fallback ──
        These used to be classic POST → 303 → /admin round-trips, which
        re-rendered the whole page on every click and dumped the viewport
        (the scroll restore below is best-effort — the tables still jumped).
        Now the click POSTs with Accept: application/json, the endpoint
        answers with the new flag value, and only the one button repaints. */
     (function(){
-        var TOGGLE_ACTION = /\/admin\/users\/\d+\/toggle-(azure|bedrock)$/;
+        var TOGGLE_ACTION = /\/admin\/users\/\d+\/toggle-(azure|bedrock|concurrency-waive)$/;
         var GRANTED_STYLE = {
             azure:   'background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.4);color:#cab9ff',
-            bedrock: 'background:rgba(255,153,51,0.15);border-color:rgba(255,153,51,0.4);color:#ffcb8a'
+            bedrock: 'background:rgba(255,153,51,0.15);border-color:rgba(255,153,51,0.4);color:#ffcb8a',
+            waive:   'background:rgba(52,211,153,0.15);border-color:rgba(52,211,153,0.4);color:#86efac'
         };
         var TITLES = {
             azure:   { on: 'Azure granted',       off: 'No Azure access' },
-            bedrock: { on: 'AWS Bedrock granted', off: 'No AWS Bedrock access' }
+            bedrock: { on: 'AWS Bedrock granted', off: 'No AWS Bedrock access' },
+            waive:   { on: 'Concurrency limit waived — click to apply it',
+                       off: 'Concurrency limit applies — click to waive' }
         };
+        var RESPONSE_KEYS = { azure: 'can_use_azure', bedrock: 'can_use_bedrock', waive: 'concurrency_waived' };
 
         function paint(form, granted) {
             var backend = form.dataset.backend;
@@ -1095,8 +1220,7 @@ function anomalyAction(id, action) {
             if (btn) btn.disabled = true;
             postJson(form.action, form)
                 .then(function(data){
-                    var key = backend === 'azure' ? 'can_use_azure' : 'can_use_bedrock';
-                    paint(form, !!data[key]);
+                    paint(form, !!data[RESPONSE_KEYS[backend]]);
                 })
                 .catch(function(err){ alert('Update failed — ' + err.message); })
                 .then(function(){ if (btn) btn.disabled = false; });

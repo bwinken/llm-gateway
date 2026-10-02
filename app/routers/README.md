@@ -65,6 +65,8 @@ alias not in AZURE_MODELS                            → vLLM path
 
 A cloud-bound request then passes `_cloud_budget_gate` (per-user Azure/Bedrock daily sub-limit). Exhausted → 429 by default; with `[app].cloud_budget_fallback = true` (admin panel → Cloud Budget Fallback) the request drops through to the vLLM path instead and the response carries `X-Budget-Fallback`. The overall daily limit is still enforced at auth, so a user with no budget left anywhere gets the usual 429 either way; `/azure/v1/*` and `/aws/v1/*` never fall back.
 
+**Concurrency limit**: `chat_completions`, `responses` and `messages` (and their `/azure/v1/*` / `/aws/v1/*` counterparts) authenticate through `deps.limited_current_user` / `limited_azure_access` / `limited_bedrock_access` instead of the plain auth dependencies. Those hold a row in `concurrency_leases` until the response — stream included — has been sent, and 429 an account already at `[app].concurrency_limit` in-flight requests when the mode is `enforce` (admin panel → Concurrency Limit; admins and waived accounts exempt). `count_tokens`, `tokenize`, `render`, `models`, embeddings, rerank and systemone are not counted. See `app/services/concurrency.py`.
+
 The "Azure alias from non-Azure user → vLLM fallback" branch matches the gateway's longstanding liberal alias handling. Azure existence is hidden via the per-user `/v1/models` filter rather than a 404 at request time. `AZURE_MODELS` and `MODEL_ROUTING` must not share alias names — `_build_config` raises `ValueError` at startup if they do.
 
 ### Proxy Methods
@@ -172,7 +174,9 @@ There is intentionally **no** `/azure/v1/embeddings` — the Responses API doesn
 |---|---|---|
 | `GET` | `/admin/users` | List all users (includes `display_name`, `org_code`) |
 | `POST` | `/admin/users` | Create user (JSON body: `username`, `daily_limit_usd`, `is_admin`, `owner_ids`) |
-| `PATCH` | `/admin/users/{id}` | Update user (`daily_limit_usd`, `is_admin`, `owner_ids`) |
+| `PATCH` | `/admin/users/{id}` | Update user (`daily_limit_usd`, `is_admin`, `owner_ids`, `concurrency_waived` — a JSON boolean) |
+| `POST` | `/admin/concurrency-limit` | Form `mode` (`off` / `monitor` / `enforce`) + `limit` (integer ≥ 1) |
+| `POST` | `/admin/users/{id}/toggle-concurrency-waive` | Flip the user's concurrency-limit exemption (JSON reply with `Accept: application/json`) |
 
 ### Model Config API (JWT auth, requires admin scope)
 
