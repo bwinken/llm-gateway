@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import case as sa_case
 from sqlmodel import Session, func, select
 
-from app.core.timeutil import local_day_start_utc
+from app.core.timeutil import LOCAL_TZ, local_day_start_utc
 from app.models.schema import AppOwner, UsageLog, User
 
 
@@ -86,8 +86,14 @@ def get_user_monthly_summary(session: Session, user_id: int) -> dict:
 
 
 def get_daily_trends(session: Session, user_id: int, days: int = 30) -> list[dict]:
-    """Return daily aggregates for the last N days as a list of dicts."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    """Return one row per local day for the last ``days`` days, today included.
+
+    Days without usage are present with zeros. The chart plots one point per
+    row on an evenly spaced axis, so a skipped day would draw the line
+    straight across a quiet weekend and put non-adjacent days side by side.
+    """
+    first_day_start = local_day_start_utc() - timedelta(days=days - 1)
+    cutoff = first_day_start
 
     day = _local_date(session, UsageLog.created_at)
     stmt = (
@@ -104,9 +110,8 @@ def get_daily_trends(session: Session, user_id: int, days: int = 30) -> list[dic
         .order_by(day)
     )
     rows = session.exec(stmt).all()
-
-    return [
-        {
+    by_day = {
+        str(row[0]): {
             "date": str(row[0]),
             "reqs": int(row[1]),
             "cost": round(float(row[2]), 6),
@@ -114,7 +119,15 @@ def get_daily_trends(session: Session, user_id: int, days: int = 30) -> list[dic
             "output_tokens": int(row[4]),
         }
         for row in rows
-    ]
+    }
+    first = datetime.now(LOCAL_TZ).date() - timedelta(days=days - 1)
+    out = []
+    for i in range(days):
+        day_str = (first + timedelta(days=i)).isoformat()
+        out.append(by_day.get(day_str) or {
+            "date": day_str, "reqs": 0, "cost": 0.0, "input_tokens": 0, "output_tokens": 0,
+        })
+    return out
 
 
 def get_dau_trends(session: Session, days: int = 30) -> list[dict]:

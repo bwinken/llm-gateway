@@ -194,3 +194,34 @@ class TestTabs:
         assert "1 down" in body
         assert body.index("Spent today") < body.index('id="dashTabs"') < body.index("On-Prem Models")
         assert "<details" in body and "API examples" in body
+
+
+class TestDailyTrends:
+    def test_quiet_days_are_zero_not_missing(self, db_session, test_user):
+        """The trend chart spaces points evenly, so a day without usage must
+        be a 0 row: skipping it drew the line across quiet weekends."""
+        from app.core.timeutil import LOCAL_TZ
+        from app.services.stats import get_daily_trends
+
+        _spend(db_session, test_user, 1.0)                           # today
+        _spend(db_session, test_user, 2.0, minutes_ago=3 * 24 * 60)  # 3 days ago
+        rows = get_daily_trends(db_session, test_user.id)
+        assert len(rows) == 30
+        dates = [r["date"] for r in rows]
+        assert dates == sorted(dates) and len(set(dates)) == 30
+        assert dates[-1] == datetime.now(LOCAL_TZ).date().isoformat()
+        assert rows[-1]["reqs"] == 1
+        assert sum(r["reqs"] for r in rows) == 2
+        assert [r["reqs"] for r in rows].count(0) == 28
+        assert rows[-2] == {"date": dates[-2], "reqs": 0, "cost": 0.0, "input_tokens": 0, "output_tokens": 0}
+
+    def test_daily_table_lists_only_active_days(self, client, db_session, test_user):
+        _spend(db_session, test_user, 1.0)
+        body = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
+        table = body[body.index("Daily Breakdown"):]
+        assert "No usage data yet." not in table
+        assert table.count('text-right text-sm font-mono text-t2">1</td>') == 1  # just today's row
+
+    def test_daily_table_empty_state(self, client, test_user):
+        body = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
+        assert "No usage data yet." in body

@@ -395,13 +395,33 @@
     const gC = ctx.createLinearGradient(0, 0, 0, 280);
     gC.addColorStop(0, 'rgba(61,214,140,0.12)'); gC.addColorStop(1, 'rgba(61,214,140,0)');
 
+    // Small dots, with today's point (the last one) emphasized.
+    const lastIdx = labels.length - 1;
+    function pointStyle(color) {
+        return {
+            pointRadius: c => c.dataIndex === lastIdx ? 4.5 : 2,
+            pointHoverRadius: 6,
+            pointBackgroundColor: color,
+            pointBorderColor: c => c.dataIndex === lastIdx ? '#eef0f4' : color,
+            pointBorderWidth: c => c.dataIndex === lastIdx ? 2 : 0,
+        };
+    }
+    const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    function dayTitle(iso) {
+        const d = new Date(iso + 'T00:00:00');
+        return iso + ' (' + WEEKDAYS[d.getDay()] + ')' + (iso === labels[lastIdx] ? ' · today' : '');
+    }
+
     const chart = new Chart(ctx, {
         type: 'line',
         data: {
             labels: labels,
             datasets: [
-                { label: 'Requests', data: dataReqs, borderColor: '#6398ff', backgroundColor: gR, borderWidth: 2, pointRadius: 3, pointBackgroundColor: '#6398ff', pointBorderColor: '#16171e', pointBorderWidth: 2, yAxisID: 'yReqs', tension: 0.4, fill: true },
-                { label: 'Cost (USD)', data: dataCost, borderColor: '#3dd68c', backgroundColor: gC, borderWidth: 2, pointBackgroundColor: '#3dd68c', pointBorderColor: '#16171e', pointBorderWidth: 2, pointRadius: 3, yAxisID: 'yCost', tension: 0.4, fill: true, hidden: true }
+                // 'monotone' keeps the curve smooth without overshooting:
+                // the default cubic spline bulged above peaks and dipped
+                // below real values between points (even towards zero).
+                { label: 'Requests', data: dataReqs, borderColor: '#6398ff', backgroundColor: gR, borderWidth: 2, yAxisID: 'yReqs', cubicInterpolationMode: 'monotone', tension: 0.3, fill: true, ...pointStyle('#6398ff') },
+                { label: 'Cost (USD)', data: dataCost, borderColor: '#3dd68c', backgroundColor: gC, borderWidth: 2, yAxisID: 'yCost', cubicInterpolationMode: 'monotone', tension: 0.3, fill: true, hidden: true, ...pointStyle('#3dd68c') }
             ]
         },
         options: {
@@ -409,12 +429,13 @@
             interaction: { mode: 'index', intersect: false },
             plugins: {
                 legend: { display: false },
-                tooltip: { backgroundColor: '#1f2029', borderColor: 'rgba(255,255,255,0.06)', borderWidth: 1, titleColor: '#eef0f4', bodyColor: '#c4c9d4', padding: 12, cornerRadius: 8, bodyFont: { family: 'JetBrains Mono', size: 12 }, titleFont: { family: 'Plus Jakarta Sans', size: 13, weight: '600' } }
+                tooltip: { callbacks: { title: items => dayTitle(items[0].label) }, backgroundColor: '#1f2029', borderColor: 'rgba(255,255,255,0.06)', borderWidth: 1, titleColor: '#eef0f4', bodyColor: '#c4c9d4', padding: 12, cornerRadius: 8, bodyFont: { family: 'JetBrains Mono', size: 12 }, titleFont: { family: 'Plus Jakarta Sans', size: 13, weight: '600' } }
             },
             scales: {
-                x: { grid: { display: false }, ticks: { color: '#4e5569', font: { family: 'Plus Jakarta Sans', size: 11 } }, border: { display: false } },
-                yReqs: { type: 'linear', display: true, position: 'left', grid: { color: 'rgba(255,255,255,0.025)' }, ticks: { color: '#4e5569', font: { family: 'JetBrains Mono', size: 11 } }, border: { display: false }, title: { display: true, text: 'Count', color: '#4e5569' } },
-                yCost: { type: 'linear', display: false, position: 'left', grid: { color: 'rgba(255,255,255,0.025)' }, ticks: { color: '#4e5569', font: { family: 'JetBrains Mono', size: 11 }, callback: function(v) { return '$' + v; } }, border: { display: false } }
+                // MM/DD, unrotated, about one label per 4 days.
+                x: { grid: { display: false }, ticks: { color: '#4e5569', font: { family: 'JetBrains Mono', size: 11 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8, callback: function(v) { return this.getLabelForValue(v).slice(5).replace('-', '/'); } }, border: { display: false } },
+                yReqs: { type: 'linear', display: true, position: 'left', beginAtZero: true, grid: { color: 'rgba(255,255,255,0.025)' }, ticks: { color: '#4e5569', precision: 0, font: { family: 'JetBrains Mono', size: 11 } }, border: { display: false }, title: { display: true, text: 'Requests', color: '#4e5569' } },
+                yCost: { type: 'linear', display: false, position: 'left', beginAtZero: true, grid: { color: 'rgba(255,255,255,0.025)' }, ticks: { color: '#4e5569', font: { family: 'JetBrains Mono', size: 11 }, callback: function(v) { return '$' + v; } }, border: { display: false } }
             }
         }
     });
@@ -704,7 +725,7 @@
                 <th style="text-align:right">Output</th>
             </tr></thead>
             <tbody>
-                {% for d in trend_data | reverse %}
+                {% for d in trend_data | reverse if d.reqs %}
                 <tr class="{{ 'bg-[rgba(99,152,255,0.04)]' if d.date == today_str }}">
                     <td class="whitespace-nowrap text-sm font-mono {{ 'text-ab font-medium' if d.date == today_str else 'text-t2' }}">
                         {{ d.date }}{% if d.date == today_str %} <span class="text-[10px] text-ab ml-1">Today</span>{% endif %}
@@ -715,7 +736,7 @@
                     <td class="text-right text-sm font-mono text-t3">{{ format_token(d.output_tokens) }}</td>
                 </tr>
                 {% endfor %}
-                {% if not trend_data %}
+                {% if not trend_data | selectattr('reqs') | list %}
                 <tr><td colspan="5" class="text-center py-6 text-sm text-t4">No usage data yet.</td></tr>
                 {% endif %}
             </tbody>
