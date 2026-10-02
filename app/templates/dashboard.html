@@ -145,6 +145,21 @@
     </div>
 </div>
 
+{# ── Tabs: models (default) and usage history, below the budget hero ── #}
+<div id="dashTabs" class="gw-tabs gw-anim gw-d2" role="tablist">
+    <button type="button" class="gw-tab" data-tab="models" role="tab">
+        Models
+        {% if system_status.down %}<span class="gw-tab-count gw-tab-count-crit">{{ system_status.down|length }} down</span>
+        {% elif system_status.queueing %}<span class="gw-tab-count gw-tab-count-warn">{{ system_status.queueing|length }} queueing</span>
+        {% endif %}
+    </button>
+    <button type="button" class="gw-tab" data-tab="usage" role="tab">
+        Usage
+        <span class="gw-tab-count">{{ money(total_cost) }} this month</span>
+    </button>
+</div>
+
+<div data-panel="models">
 {# ── Models — On-Prem (vLLM) ── #}
 {% set type_labels = {
     'llm': 'LLM (Chat)',
@@ -347,6 +362,9 @@
 </div>
 {% endif %}
 
+</div>
+
+<div data-panel="usage">
 {# ── Usage Trend Chart ── #}
 <div class="gw-card p-6 mb-8 gw-anim gw-d6">
     <div class="flex items-center justify-between mb-6">
@@ -756,11 +774,19 @@
 </div>
 {% endif %}
 
-{# ── API Integration Guide ── #}
-<div class="mt-8 gw-anim">
-    <div class="flex items-center justify-between mb-5">
-        <h3 class="text-base font-semibold text-t1">API Integration Guide</h3>
-    </div>
+</div>
+
+{# ── API Integration Guide: reference material, folded under the model list ── #}
+<div data-panel="models">
+<details class="gw-card mt-2 gw-anim group">
+    <summary class="px-5 py-4 flex items-center justify-between cursor-pointer select-none list-none">
+        <span>
+            <span class="text-sm font-bold text-t2">API examples</span>
+            <span class="ml-2 text-xs text-t4">Chat, embeddings, rerank, score, System One: copy-paste snippets with your key</span>
+        </span>
+        <svg class="w-4 h-4 text-t4 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </summary>
+    <div class="px-5 pb-5">
 
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {% set endpoints = [
@@ -894,7 +920,10 @@ result = client.system_one(
         </div>
         {% endif %}
     </div>
+    </div>
+</details>
 </div>
+<script>gwTabs('dashTabs', 'dashTab');</script>
 
 {# ── API Key Modal ── #}
 <div id="apiKeyModal" class="fixed inset-0 z-50 hidden">

@@ -93,6 +93,7 @@ Each of these has broken production or a test before. The parenthesized test pin
 
 **Admin UI**
 - In-place toggles POST with `Accept: application/json` and repaint one element. Send explicit values (`enabled=on|off`): disabled controls are dropped from `FormData`.
+- `/dashboard` and `/admin` split their lower half into tabs via `gwTabs(barId, storageKey)` in `base.html`: buttons `data-tab="x"`, panels `data-panel="x"` (several panels may share a name). The active tab comes from the URL hash, else `sessionStorage`. The fallback is required because every admin form POST redirects to plain `/admin`, dropping the hash. The budget hero and the "Needs attention" panel stay above the tab bar. Charts inside a hidden tab are sized on the `resize` event the switch fires.
 - `admin_models.html` writes every input straight into its `config` object through `setField`. There is no DOM re-collection at save time.
 
 **Lint and config**

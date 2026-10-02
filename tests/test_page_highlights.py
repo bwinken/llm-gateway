@@ -157,3 +157,40 @@ class TestPages:
         assert "Spend today" in body
         # Attention first, settings last.
         assert body.index("Needs attention") < body.index("Spend today") < body.index("User Management") < body.index("Concurrency Limit")
+
+
+class TestTabs:
+    """Both pages split their lower half into tabs; the budget / attention
+    blocks above the tab bar stay visible on every tab."""
+
+    def test_admin_tabs_and_badges(self, client, db_session, admin_user, test_user):
+        test_user.daily_limit_usd = 10
+        db_session.add(test_user)
+        db_session.commit()
+        _spend(db_session, test_user, 11)
+        with (
+            patch("app.routers.admin.is_alive", return_value=True),
+            patch("app.routers.admin.get_metrics", return_value=None),
+            patch("app.routers.admin.get_concurrency_settings", return_value=("monitor", 8)),
+        ):
+            body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        for name in ("overview", "users", "settings"):
+            assert f'data-tab="{name}"' in body
+            assert f'data-panel="{name}"' in body
+        assert "1 blocked" in body
+        assert "limit: monitor" in body
+        assert "gwTabs('adminTabs', 'adminTab')" in body
+        # Attention panel and key numbers sit above the tab bar.
+        assert body.index("Needs attention") < body.index("Spend today") < body.index('id="adminTabs"')
+        # Near-limit entries deep-link into the Users tab, filtered.
+        assert "?q=testuser#users" in body
+
+    def test_dashboard_tabs(self, client, test_user):
+        with patch("app.routers.web_ui.is_alive", side_effect=lambda url: url != "http://mock-vlm:8001/v1"):
+            body = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
+        assert 'data-tab="models"' in body and 'data-tab="usage"' in body
+        assert body.count('data-panel="models"') == 2  # model tables + folded API examples
+        assert 'data-panel="usage"' in body
+        assert "1 down" in body
+        assert body.index("Spent today") < body.index('id="dashTabs"') < body.index("On-Prem Models")
+        assert "<details" in body and "API examples" in body

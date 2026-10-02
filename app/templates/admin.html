@@ -89,7 +89,7 @@
             <div class="text-[11px] font-bold uppercase tracking-wider text-t3 mb-2 gw-tip gw-tip-wide"
                  data-tip="Accounts that have used 90% or more of today's daily limit. At 100% their requests get 429 until local midnight.">Near daily limit</div>
             {% for b in budget_pressure %}
-            <a href="?q={{ b.username | urlencode }}#user-mgmt" class="py-2 block hover:bg-[rgba(255,255,255,0.02)]" style="border-top:1px solid rgba(255,255,255,0.03)">
+            <a href="?q={{ b.username | urlencode }}#users" class="py-2 block hover:bg-[rgba(255,255,255,0.02)]" style="border-top:1px solid rgba(255,255,255,0.03)">
                 <div class="flex items-center justify-between gap-2">
                     <span class="text-sm text-t1 truncate">{{ b.display_name or b.username }}</span>
                     <span class="text-xs font-mono font-semibold" style="color:{{ '#ff8a8a' if b.percent >= 100 else '#f5a623' }}">{{ b.percent|round(0)|int }}%{{ ' · blocked' if b.percent >= 100 }}</span>
@@ -151,6 +151,23 @@ function anomalyAction(id, action) {
     </div>
 </div>
 
+{# ── Tabs: everything below the attention panel and key numbers ── #}
+{% set n_blocked = budget_pressure|selectattr('percent', 'ge', 100)|list|length %}
+<div id="adminTabs" class="gw-tabs gw-anim gw-d2" role="tablist">
+    <button type="button" class="gw-tab" data-tab="overview" role="tab">Overview</button>
+    <button type="button" class="gw-tab" data-tab="users" role="tab">
+        Users
+        {% if n_blocked %}<span class="gw-tab-count gw-tab-count-crit gw-tip" data-tip="Accounts that hit their daily limit today">{{ n_blocked }} blocked</span>
+        {% elif budget_pressure %}<span class="gw-tab-count gw-tab-count-warn gw-tip" data-tip="Accounts above 90% of their daily limit">{{ budget_pressure|length }} near limit</span>
+        {% else %}<span class="gw-tab-count">{{ user_total + app_total }}</span>{% endif %}
+    </button>
+    <button type="button" class="gw-tab" data-tab="settings" role="tab">
+        Settings
+        {% if concurrency_mode != 'off' %}<span class="gw-tab-count gw-tip" data-tip="Concurrency limit mode">limit: {{ concurrency_mode }}</span>{% endif %}
+    </button>
+</div>
+
+<div data-panel="overview">
 {# ── DAU Trend ── #}
 <div class="mb-8 gw-anim gw-d2">
     <div class="gw-card overflow-hidden">
@@ -429,7 +446,9 @@ function submitExportCsv() {
 }
 </script>
 
-<div id="user-mgmt"></div>
+</div>
+
+<div data-panel="users">
 {# ── User Management ── #}
 <div class="gw-anim gw-d6">
     <div class="flex items-center justify-between mb-4">
@@ -741,8 +760,10 @@ function submitExportCsv() {
     </div>
 </div>
 
+</div>
+
+<div data-panel="settings">
 {# ── Settings ── #}
-<h2 class="text-sm font-bold text-t3 uppercase tracking-wider mb-4 mt-2 gw-anim gw-d5">Settings</h2>
 <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-6 gw-anim gw-d5">
 {# ── Concurrency Limit ── #}
 <div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #34d399">
@@ -900,6 +921,9 @@ function submitExportCsv() {
         <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
     </form>
 </div>
+
+</div>
+<script>gwTabs('adminTabs', 'adminTab');</script>
 
 {# ── API Key Modal ── #}
 <div id="keyModal" class="fixed inset-0 z-50 hidden">
