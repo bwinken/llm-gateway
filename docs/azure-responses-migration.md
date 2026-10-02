@@ -5,8 +5,8 @@ release that routes every Azure call through the v1 Responses API
 (`/openai/v1/responses`). Pure docs / no required config edits, but a
 few behaviors are worth knowing before the rollout.
 
-For end-user client-configuration guidance, see the **Client configuration
-recommendations** section in [README.md](../README.md).
+For end-user client-configuration guidance, see the
+[Client Guide](client-guide.md#tool-calling-pick-the-right-client-mode).
 
 ---
 
