@@ -20,17 +20,21 @@ from app.core.config import (
     _MODEL_METADATA_KEYS,
     _MODEL_PRICING_KEYS,
     APP_TITLE,
+    CONCURRENCY_MODES,
     get_cloud_budget_fallback,
+    get_concurrency_settings,
     get_config_data,
     get_default_daily_limit,
     get_site_links,
     save_config,
     set_cloud_budget_fallback,
+    set_concurrency_settings,
     set_default_daily_limit,
     set_site_links,
 )
 from app.core.database import get_session
 from app.models.schema import AnomalyEvent, AppOwner, User, UsageLog, mask_api_key
+from app.services import concurrency
 from app.services.analytics import build_monthly_report, iter_months, parse_ym
 from app.services.stats import (
     get_all_users_usage,
@@ -147,6 +151,7 @@ async def admin_page(
             "is_disabled": u.is_disabled,
             "can_use_azure": u.can_use_azure,
             "can_use_bedrock": u.can_use_bedrock,
+            "concurrency_waived": u.concurrency_waived,
             "owners": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
@@ -195,6 +200,13 @@ async def admin_page(
             "summary": summary,
         })
 
+    concurrency_mode, concurrency_limit = get_concurrency_settings()
+    try:
+        concurrency_in_flight = concurrency.in_flight_summary()
+    except Exception as exc:  # the card must not take the admin page down
+        logger.warning("Concurrency in-flight summary failed | error={}: {}", type(exc).__name__, exc)
+        concurrency_in_flight = None
+
     return templates.TemplateResponse(
         "admin.html",
         {
@@ -221,6 +233,10 @@ async def admin_page(
             "today_dau": today_dau,
             "default_daily_limit": get_default_daily_limit(),
             "cloud_budget_fallback": get_cloud_budget_fallback(),
+            "concurrency_mode": concurrency_mode,
+            "concurrency_limit": concurrency_limit,
+            "concurrency_modes": CONCURRENCY_MODES,
+            "concurrency_in_flight": concurrency_in_flight,
             "site_links": get_site_links(),
             # Pagination state
             "limit": limit,
@@ -497,6 +513,46 @@ async def update_cloud_budget_fallback(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.post("/concurrency-limit")
+async def update_concurrency_limit(
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+):
+    """Set the per-user concurrency limit (``[app].concurrency_limit_mode`` /
+    ``concurrency_limit``).
+
+    Form fields: ``mode`` — ``off`` / ``monitor`` / ``enforce``; ``limit`` — an
+    integer >= 1 (required in every mode, so switching back on later doesn't
+    silently come up with a stale or missing number). "Unlimited" is
+    ``mode=off``, never a magic limit value. Takes effect on the next request
+    in every worker (config auto-reload); nothing in flight is interrupted.
+    """
+    form = await request.form()
+    mode = str(form.get("mode") or "").strip().lower()
+    if mode not in CONCURRENCY_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"mode must be one of: {', '.join(CONCURRENCY_MODES)}.",
+        )
+    raw_limit = str(form.get("limit") or "").strip()
+    try:
+        limit = int(raw_limit)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="limit must be a whole number.")
+    if limit < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="limit must be at least 1 (use mode 'off' for no limit).",
+        )
+    set_concurrency_settings(mode, limit)
+    logger.info(
+        "Concurrency limit set | mode={} limit={} admin={}", mode, limit, admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "mode": mode, "limit": limit})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 def _wants_json(request: Request) -> bool:
     """True when the caller asked for a JSON reply (``Accept: application/json``).
 
@@ -563,6 +619,31 @@ async def toggle_bedrock(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.post("/users/{user_id}/toggle-concurrency-waive")
+async def toggle_concurrency_waive(
+    user_id: int,
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Flip the user's concurrency_waived flag (exempt from the concurrency
+    limit). Requests already in flight keep their slot until they finish."""
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    target.concurrency_waived = not target.concurrency_waived
+    session.add(target)
+    session.commit()
+    logger.info(
+        "Concurrency limit {} | user={} admin={}",
+        "waived" if target.concurrency_waived else "applied",
+        target.username, admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "concurrency_waived": target.concurrency_waived})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 @router.post("/users/{user_id}/delete")
 async def delete_user(
     user_id: int,
@@ -584,6 +665,7 @@ async def delete_user(
         (AppOwner.app_id == user_id) | (AppOwner.owner_id == user_id)
     ))
     session.execute(delete(UsageLog).where(UsageLog.user_id == user_id))
+    concurrency.delete_user_leases(session, user_id)
     session.delete(target)
     session.commit()
 
@@ -656,6 +738,7 @@ async def list_users_api(
             "azure_daily_limit_usd": u.azure_daily_limit_usd,
             "bedrock_daily_limit_usd": u.bedrock_daily_limit_usd,
             "is_admin": u.is_admin,
+            "concurrency_waived": u.concurrency_waived,
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
@@ -690,6 +773,8 @@ async def create_user_api(
         new_user.bedrock_daily_limit_usd = None if raw is None else float(raw)
     if "is_admin" in body:
         new_user.is_admin = bool(body["is_admin"])
+    if "concurrency_waived" in body:
+        new_user.concurrency_waived = _strict_bool(body["concurrency_waived"], "concurrency_waived")
     session.add(new_user)
     session.commit()
     session.refresh(new_user)
@@ -713,6 +798,14 @@ async def create_user_api(
     }
 
 
+def _strict_bool(value: object, field: str) -> bool:
+    """A JSON boolean, nothing else — ``bool("false")`` is True, which would
+    silently waive a user whose admin sent the string by mistake."""
+    if not isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"{field} must be true or false.")
+    return value
+
+
 @router.patch("/users/{user_id}")
 async def update_user_api(
     user_id: int,
@@ -733,6 +826,8 @@ async def update_user_api(
         target.bedrock_daily_limit_usd = None if raw is None else float(raw)
     if "is_admin" in body:
         target.is_admin = bool(body["is_admin"])
+    if "concurrency_waived" in body:
+        target.concurrency_waived = _strict_bool(body["concurrency_waived"], "concurrency_waived")
     if "owner_ids" in body:
         session.execute(delete(AppOwner).where(AppOwner.app_id == user_id))
         for oid in (body["owner_ids"] or []):

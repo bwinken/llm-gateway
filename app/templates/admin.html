@@ -438,6 +438,47 @@ function anomalyAction(id, action) {
     </div>
 </div>
 
+{# ── Concurrency Limit ── #}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #34d399">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+        <div class="max-w-xl">
+            <h2 class="text-sm font-bold text-t2 mb-1">Concurrency Limit</h2>
+            <p class="text-xs text-t4 gw-tip gw-tip-wide"
+               data-tip="Counts chat / responses / messages requests (streams included) across all gateway workers, from admission until the response is fully sent. Monitor: everything is served, over-limit requests are logged as 'Concurrency limit exceeded (monitor)'. Enforce: over-limit requests get 429 with Retry-After: 5 (Claude Code retries automatically). Admins and accounts marked Waive in the tables below are never limited. count_tokens, tokenize, models, embeddings and rerank are not counted.">
+                Maximum in-flight inference requests per account. Admins and waived accounts are exempt.
+            </p>
+            <p class="text-xs text-t4 mt-1.5">
+                {% if concurrency_in_flight is none %}
+                In flight now: <span class="text-t3">unavailable</span>
+                {% else %}
+                In flight now:
+                <span class="font-mono text-t2">{{ concurrency_in_flight.total }}</span> request{{ '' if concurrency_in_flight.total == 1 else 's' }}
+                across <span class="font-mono text-t2">{{ concurrency_in_flight.users }}</span> account{{ '' if concurrency_in_flight.users == 1 else 's' }}
+                · busiest account <span class="font-mono text-t2">{{ concurrency_in_flight.peak_user }}</span>
+                {% if concurrency_mode == 'off' %}<span class="text-t4">(not tracked while Off)</span>{% endif %}
+                {% endif %}
+            </p>
+        </div>
+        <form action="/admin/concurrency-limit" method="POST" class="flex items-end gap-3"
+              onsubmit="return this.mode.value !== 'enforce' || confirm('Enforce the concurrency limit? Accounts over ' + this.limit.value + ' in-flight requests will get 429 responses.');">
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Mode</label>
+                <select name="mode" class="gw-input text-sm py-1.5 px-2">
+                    {% for m in concurrency_modes %}
+                    <option value="{{ m }}" {{ 'selected' if m == concurrency_mode else '' }}>{{ {'off': 'Off — no limit', 'monitor': 'Monitor — log only', 'enforce': 'Enforce — 429'}[m] }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Per account</label>
+                <input type="number" step="1" min="1" required name="limit" value="{{ concurrency_limit }}"
+                       class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+            </div>
+            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
+        </form>
+    </div>
+</div>
+
 {# ── Site Links (support bot + install guide) ── #}
 <div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #4dd9e8">
     <div class="mb-4">
@@ -632,6 +673,16 @@ function anomalyAction(id, action) {
                                     </button>
                                 </form>
                                 {% if not u.is_admin %}
+                                <form action="/admin/users/{{ u.id }}/toggle-concurrency-waive" method="POST" data-username="{{ u.username }}"
+                                      data-granted="{{ 'true' if u.concurrency_waived else 'false' }}" data-backend="waive"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Apply the concurrency limit again' : 'Waive the concurrency limit') + '?');">
+                                    <button type="submit"
+                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.concurrency_waived else 'gw-btn-ghost' }}"
+                                            style="{{ 'background:rgba(52,211,153,0.15);border-color:rgba(52,211,153,0.4);color:#86efac' if u.concurrency_waived else '' }}"
+                                            title="{{ 'Concurrency limit waived — click to apply it' if u.concurrency_waived else 'Concurrency limit applies — click to waive' }}">
+                                        Waive
+                                    </button>
+                                </form>
                                 <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-username="{{ u.username }}"
                                       onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.is_disabled else 'false' }} ? 'Enable' : 'Disable') + ' account?');">
                                     <button type="submit"
@@ -760,6 +811,18 @@ function anomalyAction(id, action) {
                                         AWS
                                     </button>
                                 </form>
+                                {% if not u.is_admin %}
+                                <form action="/admin/users/{{ u.id }}/toggle-concurrency-waive" method="POST" data-username="{{ u.username }}"
+                                      data-granted="{{ 'true' if u.concurrency_waived else 'false' }}" data-backend="waive"
+                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Apply the concurrency limit again' : 'Waive the concurrency limit') + '?');">
+                                    <button type="submit"
+                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.concurrency_waived else 'gw-btn-ghost' }}"
+                                            style="{{ 'background:rgba(52,211,153,0.15);border-color:rgba(52,211,153,0.4);color:#86efac' if u.concurrency_waived else '' }}"
+                                            title="{{ 'Concurrency limit waived — click to apply it' if u.concurrency_waived else 'Concurrency limit applies — click to waive' }}">
+                                        Waive
+                                    </button>
+                                </form>
+                                {% endif %}
                                 <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-username="{{ u.username }}"
                                       onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.is_disabled else 'false' }} ? 'Enable' : 'Disable') + ' app?');">
                                     <button type="submit"
@@ -1037,22 +1100,26 @@ function anomalyAction(id, action) {
 </script>
 
 <script>
-    /* ── In-place Azure / AWS grant toggles + Cloud Budget Fallback ──
+    /* ── In-place Azure / AWS grant + concurrency Waive toggles + Cloud Budget Fallback ──
        These used to be classic POST → 303 → /admin round-trips, which
        re-rendered the whole page on every click and dumped the viewport
        (the scroll restore below is best-effort — the tables still jumped).
        Now the click POSTs with Accept: application/json, the endpoint
        answers with the new flag value, and only the one button repaints. */
     (function(){
-        var TOGGLE_ACTION = /\/admin\/users\/\d+\/toggle-(azure|bedrock)$/;
+        var TOGGLE_ACTION = /\/admin\/users\/\d+\/toggle-(azure|bedrock|concurrency-waive)$/;
         var GRANTED_STYLE = {
             azure:   'background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.4);color:#cab9ff',
-            bedrock: 'background:rgba(255,153,51,0.15);border-color:rgba(255,153,51,0.4);color:#ffcb8a'
+            bedrock: 'background:rgba(255,153,51,0.15);border-color:rgba(255,153,51,0.4);color:#ffcb8a',
+            waive:   'background:rgba(52,211,153,0.15);border-color:rgba(52,211,153,0.4);color:#86efac'
         };
         var TITLES = {
             azure:   { on: 'Azure granted',       off: 'No Azure access' },
-            bedrock: { on: 'AWS Bedrock granted', off: 'No AWS Bedrock access' }
+            bedrock: { on: 'AWS Bedrock granted', off: 'No AWS Bedrock access' },
+            waive:   { on: 'Concurrency limit waived — click to apply it',
+                       off: 'Concurrency limit applies — click to waive' }
         };
+        var RESPONSE_KEYS = { azure: 'can_use_azure', bedrock: 'can_use_bedrock', waive: 'concurrency_waived' };
 
         function paint(form, granted) {
             var backend = form.dataset.backend;
@@ -1095,8 +1162,7 @@ function anomalyAction(id, action) {
             if (btn) btn.disabled = true;
             postJson(form.action, form)
                 .then(function(data){
-                    var key = backend === 'azure' ? 'can_use_azure' : 'can_use_bedrock';
-                    paint(form, !!data[key]);
+                    paint(form, !!data[RESPONSE_KEYS[backend]]);
                 })
                 .catch(function(err){ alert('Update failed — ' + err.message); })
                 .then(function(){ if (btn) btn.disabled = false; });

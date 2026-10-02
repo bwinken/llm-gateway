@@ -5,12 +5,17 @@ Dependency: extract and validate API key from Authorization header.
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 
-from fastapi import Depends, Header, HTTPException, Security, status
+import anyio
+from fastapi import Depends, Header, HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session, func, select
+from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import AccountDisabledError
+from app.core.config import get_concurrency_settings
 from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
@@ -306,3 +311,103 @@ def require_bedrock_access(
         )
     ensure_bedrock_budget(user)
     return user
+
+
+# ── Per-user concurrency limit ──
+#
+# Wraps an auth dependency in a ``yield`` dependency that holds a lease in
+# ``concurrency_leases`` (app/services/concurrency.py) while the request is in
+# flight. The exit runs only after the response has been sent — streaming
+# bodies included (FastAPI >= 0.118) — the same ordering that made a
+# request-scoped DB session pin a pool connection for a whole stream. Here
+# that ordering is the point, and no connection is held in between: acquire
+# and release are separate short transactions.
+
+_CONCURRENCY_RETRY_AFTER_S = 5
+
+
+@asynccontextmanager
+async def _concurrency_slot(user: User, endpoint: str) -> AsyncIterator[None]:
+    """Hold one concurrency slot for ``user`` around the request.
+
+    - mode ``off``, admins, and ``concurrency_waived`` users: no-op.
+    - ``monitor``: the lease is always taken; going over the limit logs a
+      WARNING and the request is served.
+    - ``enforce``: over the limit → 429 with ``Retry-After``.
+    - the lease store failing (DB trouble) never fails the request: it is
+      logged and the request proceeds unlimited (fail-open), so the limiter
+      can't become an outage of its own.
+    """
+    mode, limit = get_concurrency_settings()
+    if mode == "off" or user.is_admin or user.concurrency_waived:
+        yield
+        return
+
+    from app.services import concurrency
+
+    try:
+        lease_id, active = await run_in_threadpool(
+            concurrency.acquire, user.id, limit, endpoint, enforce=(mode == "enforce"),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Concurrency check failed, allowing request | user={} endpoint={} error={}: {}",
+            user.username, endpoint, type(exc).__name__, exc,
+        )
+        yield
+        return
+
+    if active >= limit:
+        logger.warning(
+            "Concurrency limit {} | user={} in_flight={} limit={} endpoint={}",
+            "hit" if lease_id is None else "exceeded (monitor)",
+            user.username, active + (0 if lease_id is None else 1), limit, endpoint,
+        )
+        if lease_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    f"Too many concurrent requests: {active} already in flight "
+                    f"(limit {limit}). Retry when one finishes."
+                ),
+                headers={"Retry-After": str(_CONCURRENCY_RETRY_AFTER_S)},
+            )
+
+    try:
+        yield
+    finally:
+        # Shielded: when the client disconnects mid-stream, Starlette cancels
+        # the response task group and anyio re-delivers that cancellation at
+        # every await — an unshielded release would be cancelled before its
+        # DELETE ran and the slot would stay taken until the TTL expired.
+        with anyio.CancelScope(shield=True):
+            try:
+                await run_in_threadpool(concurrency.release, lease_id)
+            except Exception as exc:
+                logger.warning(
+                    "Concurrency lease release failed (expires on its own) | user={} lease={} error={}: {}",
+                    user.username, lease_id, type(exc).__name__, exc,
+                )
+
+
+def _limited(auth_dependency: Callable[..., User]) -> Callable[..., AsyncIterator[User]]:
+    """Build a dependency that authenticates via ``auth_dependency`` and then
+    holds a concurrency slot until the response has been sent."""
+
+    async def dependency(
+        request: Request,
+        user: User = Depends(auth_dependency),
+    ) -> AsyncIterator[User]:
+        async with _concurrency_slot(user, request.url.path):
+            yield user
+
+    dependency.__name__ = f"limited_{auth_dependency.__name__}"
+    return dependency
+
+
+# Inference endpoints only (chat / responses / messages). Cheap metadata calls
+# — count_tokens, tokenize, render, models — and the short single-pass
+# embeddings / rerank / systemone keep the plain auth dependencies.
+limited_current_user = _limited(get_current_user)
+limited_azure_access = _limited(require_azure_access)
+limited_bedrock_access = _limited(require_bedrock_access)

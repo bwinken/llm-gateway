@@ -42,6 +42,13 @@ async def lifespan(app: FastAPI):
     from app.services.observability import get_langfuse
     get_langfuse()
 
+    # Concurrency leases: clear the ones left by workers that died without
+    # releasing (e.g. SIGKILLed mid-stream during a restart) BEFORE serving,
+    # so their users aren't counted as busy; then keep renewing/sweeping.
+    from app.services.concurrency import lease_heartbeat_loop, sweep_safely
+    await asyncio.to_thread(sweep_safely)
+    lease_task = asyncio.create_task(lease_heartbeat_loop())
+
     # Launch background health checker
     health_task = asyncio.create_task(health_check_loop(interval=30))
     logger.info("{} ready.", APP_TITLE)
@@ -49,11 +56,12 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    health_task.cancel()
-    try:
-        await health_task
-    except asyncio.CancelledError:
-        pass
+    for task in (health_task, lease_task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     await close_client()
     from app.services.observability import flush_langfuse
     flush_langfuse()

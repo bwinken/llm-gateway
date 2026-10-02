@@ -18,7 +18,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 
 from app.core.config import _MODEL_METADATA_KEYS, get_bedrock_models_snapshot
-from app.core.deps import require_bedrock_access
+from app.core.deps import limited_bedrock_access, require_bedrock_access
 from app.models.schema import User
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
@@ -69,7 +69,7 @@ async def list_bedrock_models(user: User = Depends(require_bedrock_access)):
 @router.post("/aws/chat/completions")
 async def bedrock_chat_completions(
     request: Request,
-    user: User = Depends(require_bedrock_access),
+    user: User = Depends(limited_bedrock_access),
 ):
     """OpenAI chat completions for Bedrock models (translated to Converse).
 
@@ -84,7 +84,7 @@ async def bedrock_chat_completions(
 @router.post("/aws/messages")
 async def bedrock_messages(
     request: Request,
-    user: User = Depends(require_bedrock_access),
+    user: User = Depends(limited_bedrock_access),
 ):
     """Anthropic Messages API compatibility for Bedrock models.
 

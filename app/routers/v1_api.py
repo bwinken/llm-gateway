@@ -38,7 +38,7 @@ from app.core.config import (
     get_cloud_budget_fallback,
     get_model_routing_snapshot,
 )
-from app.core.deps import check_cloud_budget, get_current_user
+from app.core.deps import check_cloud_budget, get_current_user, limited_current_user
 from app.core.logger import logger
 from app.models.schema import User
 from app.services.azure_proxy import (
@@ -272,7 +272,7 @@ async def list_models(user: User = Depends(get_current_user)):
 
 @router.post("/v1/chat/completions")
 @router.post("/chat/completions")
-async def chat_completions(request: Request, user: User = Depends(get_current_user)):
+async def chat_completions(request: Request, user: User = Depends(limited_current_user)):
     alias = await _peek_model_alias(request)
     budget_fallback: str | None = None
     if alias and _route_to_azure(alias, user):
@@ -611,7 +611,7 @@ print(resp.json()["decoded_prompt"])
 
 @router.post("/v1/responses")
 @router.post("/responses")
-async def responses(request: Request, user: User = Depends(get_current_user)):
+async def responses(request: Request, user: User = Depends(limited_current_user)):
     """OpenAI Responses API endpoint.
 
     Dispatches to the Azure backend (pure Responses pass-through) when the
@@ -636,7 +636,7 @@ async def responses(request: Request, user: User = Depends(get_current_user)):
 
 @router.post("/v1/messages")
 @router.post("/messages")
-async def messages(request: Request, user: User = Depends(get_current_user)):
+async def messages(request: Request, user: User = Depends(limited_current_user)):
     """Anthropic Messages API compatibility endpoint.
 
     Translates Anthropic /v1/messages requests to OpenAI chat completions

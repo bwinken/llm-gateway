@@ -16,7 +16,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 
 from app.core.config import _MODEL_METADATA_KEYS, get_azure_models_snapshot
-from app.core.deps import require_azure_access
+from app.core.deps import limited_azure_access, require_azure_access
 from app.models.schema import User
 from app.services.azure_proxy import (
     azure_forward_chat_completions,
@@ -69,7 +69,7 @@ async def list_azure_models(user: User = Depends(require_azure_access)):
 @router.post("/azure/chat/completions")
 async def azure_chat_completions(
     request: Request,
-    user: User = Depends(require_azure_access),
+    user: User = Depends(limited_azure_access),
 ):
     """OpenAI chat completions for Azure deployments.
 
@@ -84,7 +84,7 @@ async def azure_chat_completions(
 @router.post("/azure/responses")
 async def azure_responses(
     request: Request,
-    user: User = Depends(require_azure_access),
+    user: User = Depends(limited_azure_access),
 ):
     """Direct pass-through to Azure's Responses API.
 
@@ -104,7 +104,7 @@ async def azure_responses(
 @router.post("/azure/messages")
 async def azure_messages(
     request: Request,
-    user: User = Depends(require_azure_access),
+    user: User = Depends(limited_azure_access),
 ):
     """Anthropic Messages API compatibility for Azure OpenAI deployments.
 

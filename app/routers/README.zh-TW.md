@@ -63,6 +63,8 @@ alias 在 AZURE_MODELS 但無權限                       → vLLM 路徑(透過
 alias 不在 AZURE_MODELS                              → vLLM 路徑
 ```
 
+**並行上限**：`chat_completions`、`responses`、`messages`（以及 `/azure/v1/*`、`/aws/v1/*` 對應的路由）改用 `deps.limited_current_user` / `limited_azure_access` / `limited_bedrock_access` 做認證。這些 dependency 會在 `concurrency_leases` 佔一筆租約，直到回應（含 stream）送完才歸還；模式為 `enforce` 時，已經有 `[app].concurrency_limit` 個 request 在跑的帳號會收到 429（admin panel → Concurrency Limit 設定；admin 與被 waive 的帳號不受限）。`count_tokens`、`tokenize`、`render`、`models`、embeddings、rerank、systemone 不計入。詳見 `app/services/concurrency.py`。
+
 「沒權限的 user 打 Azure alias → fallback 到 vLLM」這個分支沿用 gateway 一向「對未知 alias 寬容」的設計。Azure 模型的存在感是透過 per-user `/v1/models` 過濾隱藏，而不是用 404 在請求時擋。`AZURE_MODELS` 跟 `MODEL_ROUTING` 不能有同名 alias — `_build_config` 啟動時會 `ValueError`。
 
 ### Proxy 方式
@@ -170,7 +172,9 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 |---|---|---|
 | `GET` | `/admin/users` | 列出所有使用者（含 `display_name`, `org_code`） |
 | `POST` | `/admin/users` | 建立使用者（JSON body：`username`, `daily_limit_usd`, `is_admin`, `owner_ids`） |
-| `PATCH` | `/admin/users/{id}` | 更新使用者（`daily_limit_usd`, `is_admin`, `owner_ids`） |
+| `PATCH` | `/admin/users/{id}` | 更新使用者（`daily_limit_usd`, `is_admin`, `owner_ids`, `concurrency_waived` — 必須是 JSON boolean） |
+| `POST` | `/admin/concurrency-limit` | 表單欄位 `mode`（`off` / `monitor` / `enforce`）+ `limit`（≥ 1 的整數） |
+| `POST` | `/admin/users/{id}/toggle-concurrency-waive` | 切換該使用者是否豁免並行上限（帶 `Accept: application/json` 時回 JSON） |
 
 ### Model Config API（JWT 認證，需 admin scope）
 
