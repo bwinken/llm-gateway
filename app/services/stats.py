@@ -389,3 +389,82 @@ def get_model_breakdown(
         }
         for row in rows
     ]
+
+
+def get_today_totals(session: Session) -> dict:
+    """All-account totals for today (local day): cost, requests, and how many
+    people (app accounts excluded) made at least one request."""
+    today_start = local_day_start_utc()
+    row = session.exec(
+        select(
+            func.coalesce(func.sum(UsageLog.cost_usd), 0),
+            func.count(UsageLog.id),
+        ).where(UsageLog.created_at >= today_start)
+    ).first()
+    active = session.exec(
+        select(func.count(func.distinct(UsageLog.user_id)))
+        .join(User, UsageLog.user_id == User.id)
+        .where(UsageLog.created_at >= today_start)
+        .where(~User.username.startswith("app_"))
+    ).one()
+    return {
+        "cost": round(float(row[0]), 4) if row else 0.0,
+        "requests": int(row[1]) if row else 0,
+        "active_users": int(active or 0),
+    }
+
+
+def get_budget_pressure(session: Session, threshold: float = 0.9) -> list[dict]:
+    """Enabled accounts whose spend today has reached ``threshold`` of their
+    daily limit (unlimited accounts, ``daily_limit_usd <= 0``, never appear).
+    Sorted by share used, highest first — the "about to get 429s" list."""
+    today_start = local_day_start_utc()
+    spent = (
+        select(UsageLog.user_id, func.sum(UsageLog.cost_usd).label("cost"))
+        .where(UsageLog.created_at >= today_start)
+        .group_by(UsageLog.user_id)
+        .subquery()
+    )
+    rows = session.exec(
+        select(User.id, User.username, User.display_name, User.daily_limit_usd, spent.c.cost)
+        .join(spent, spent.c.user_id == User.id)
+        .where(User.daily_limit_usd > 0)
+        .where(~User.is_disabled)
+    ).all()
+    out = []
+    for uid, username, display_name, limit, cost in rows:
+        cost = float(cost or 0)
+        share = cost / float(limit)
+        if share >= threshold:
+            out.append({
+                "id": uid, "username": username, "display_name": display_name or "",
+                "cost": round(cost, 4), "limit": float(limit), "percent": round(share * 100, 1),
+            })
+    out.sort(key=lambda r: r["percent"], reverse=True)
+    return out
+
+
+QUEUE_OVERLOADED = 10  # waiting requests at which a server is shown as overloaded
+
+
+def summarize_server_status(servers: list[dict]) -> dict:
+    """Roll per-model on-prem status up for a page header.
+
+    ``servers`` items carry ``name``, ``alive`` and ``waiting`` (None when the
+    server's /metrics is unavailable). Returns counts plus the names behind
+    each non-healthy bucket, so a page can say *which* models need a look.
+    """
+    down = [s["name"] for s in servers if not s["alive"]]
+    queueing = [
+        {"name": s["name"], "waiting": s["waiting"]}
+        for s in servers
+        if s["alive"] and s.get("waiting")
+    ]
+    queueing.sort(key=lambda s: s["waiting"], reverse=True)
+    return {
+        "total": len(servers),
+        "online": len(servers) - len(down),
+        "down": down,
+        "queueing": queueing,
+        "overloaded": [s for s in queueing if s["waiting"] >= QUEUE_OVERLOADED],
+    }

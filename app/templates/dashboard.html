@@ -12,35 +12,136 @@
 
 {% block content %}
 
+{% macro money(v) -%}${{ "%.2f"|format(v) if v >= 1 else "%.4f"|format(v) }}{%- endmacro %}
+{% set band = {
+    'ok':        {'color': '#3dd68c', 'soft': 'rgba(61,214,140,0.10)',  'edge': 'rgba(61,214,140,0.22)'},
+    'warn':      {'color': '#f5a623', 'soft': 'rgba(245,166,35,0.10)',  'edge': 'rgba(245,166,35,0.30)'},
+    'crit':      {'color': '#ff7a45', 'soft': 'rgba(255,122,69,0.12)',  'edge': 'rgba(255,122,69,0.40)'},
+    'over':      {'color': '#ff5c5c', 'soft': 'rgba(255,92,92,0.12)',   'edge': 'rgba(255,92,92,0.45)'},
+    'unlimited': {'color': '#6398ff', 'soft': 'rgba(99,152,255,0.10)',  'edge': 'rgba(99,152,255,0.22)'},
+}[budget_state] %}
+
 {# ── Page Header ── #}
-<div class="mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 gw-anim">
+<div class="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 gw-anim">
     <div>
         <h1 class="text-2xl font-bold text-t1">Dashboard</h1>
-        <p class="mt-1 text-sm text-t3">Overview of your API usage and system status.</p>
+        <p class="mt-1 text-sm text-t3">Your budget, usage and the models available to you.</p>
     </div>
-    <button onclick="document.getElementById('apiKeyModal').classList.remove('hidden')"
-            class="gw-btn gw-btn-primary px-4 py-2.5 text-sm self-start">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
-        My API Key
-    </button>
+    <div class="flex items-center gap-2 self-start">
+        <a href="/setup" class="gw-btn gw-btn-ghost px-4 py-2.5 text-sm">Set up Claude Code</a>
+        <button onclick="document.getElementById('apiKeyModal').classList.remove('hidden')"
+                class="gw-btn gw-btn-primary px-4 py-2.5 text-sm">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+            My API Key
+        </button>
+    </div>
 </div>
 
-{# ── Setup quick link — Claude Code installer (prominent up top) ── #}
-<div class="gw-card p-5 mb-8 gw-anim gw-d1 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
-     style="background:rgba(245,166,35,0.04);border-color:rgba(245,166,35,0.18)">
-    <div class="flex items-start gap-3 flex-1">
-        <svg class="w-6 h-6 flex-shrink-0 mt-0.5" style="color:#f5a623" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
-        </svg>
-        <div class="text-sm">
-            <div class="text-t1 font-semibold mb-0.5">First-time setup</div>
-            <div class="text-t3">Install the Claude Code CLI, pre-configured with your API key — no admin privileges required.</div>
-        </div>
+{# ── First-time setup: only until the account has made its first request ── #}
+{% if total_reqs == 0 and today_reqs == 0 %}
+<div class="gw-card p-5 mb-6 gw-anim gw-d1 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
+     style="background:rgba(99,152,255,0.06);border-color:rgba(99,152,255,0.25)">
+    <div class="text-sm">
+        <div class="text-t1 font-semibold mb-0.5">Get started</div>
+        <div class="text-t3">Install Claude Code pre-configured with your API key (no admin rights needed), or copy your key into any OpenAI / Anthropic client.</div>
     </div>
-    <div class="flex flex-wrap gap-2 sm:flex-shrink-0">
-        <a href="/setup" class="gw-btn gw-btn-primary text-sm px-3 py-2 whitespace-nowrap">
-            Claude Code &rarr;
-        </a>
+    <a href="/setup" class="gw-btn gw-btn-primary text-sm px-4 py-2 whitespace-nowrap">Set up Claude Code &rarr;</a>
+</div>
+{% endif %}
+
+{# ── Today: budget hero + this month ── #}
+{% set show_azure_row = azure_today_cost > 0 or (azure_access and azure_limit > 0) %}
+{% set show_bedrock_row = bedrock_today_cost > 0 or (bedrock_access and bedrock_limit > 0) %}
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-6">
+    <div class="gw-card p-6 lg:col-span-2 gw-anim gw-d1" style="border-color:{{ band.edge }};background:linear-gradient(135deg, {{ band.soft }}, transparent 55%), #16171e">
+        <div class="flex flex-wrap items-start justify-between gap-6">
+            <div>
+                <div class="text-[11px] font-bold uppercase tracking-wider text-t3">Spent today</div>
+                <div class="mt-2 text-5xl font-bold text-t1 font-mono tabular-nums tracking-tight">{{ money(today_cost) }}</div>
+                <div class="mt-2 text-sm text-t3">
+                    {% if budget_state == 'unlimited' %}No daily limit on this account
+                    {% else %}of <span class="text-t1 font-semibold font-mono">${{ '%g'|format(user.daily_limit_usd) }}</span> daily limit{% endif %}
+                    · <span class="font-mono text-t2">{{ today_reqs }}</span> request{{ '' if today_reqs == 1 else 's' }}
+                </div>
+            </div>
+            {% if budget_state != 'unlimited' %}
+            <div class="sm:text-right">
+                <div class="text-[11px] font-bold uppercase tracking-wider text-t3">Remaining</div>
+                <div class="mt-2 text-4xl font-bold font-mono tabular-nums tracking-tight" style="color:{{ band.color }}">{{ money(budget_remaining) }}</div>
+                <div class="mt-2 text-sm text-t3">resets in <span class="text-t2 font-mono">{{ budget_resets_in }}</span></div>
+            </div>
+            {% else %}
+            <span class="gw-badge text-sm px-3 py-1" style="background:{{ band.soft }};color:{{ band.color }};border-color:{{ band.edge }}">Unlimited</span>
+            {% endif %}
+        </div>
+
+        {% if budget_state != 'unlimited' %}
+        <div class="mt-5">
+            <div class="w-full h-3 rounded-full overflow-hidden bg-n3">
+                <div class="h-3 rounded-full" style="width:{{ usage_percent }}%;background:{{ band.color }}"></div>
+            </div>
+            <div class="mt-2 flex justify-between text-xs">
+                <span style="color:{{ band.color }}" class="font-semibold">
+                    {% if budget_state == 'over' %}Daily limit reached: requests are refused (429) until the reset.
+                    {% elif budget_state == 'crit' %}Almost used up: requests are refused once you reach 100%.
+                    {% elif budget_state == 'warn' %}Over 70% of today's budget used.
+                    {% else %}Within budget.{% endif %}
+                </span>
+                <span class="font-mono text-t3">{{ usage_percent | round(0) | int }}% used</span>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if show_azure_row or show_bedrock_row %}
+        <div class="mt-5 pt-4 grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs" style="border-top:1px solid rgba(255,255,255,0.05)">
+            <div>
+                <div class="text-t4 uppercase tracking-wider text-[10px] font-bold">On-prem</div>
+                <div class="mt-1 font-mono text-t1 text-sm">{{ money(vllm_today_cost) }}</div>
+            </div>
+            {% if show_azure_row %}
+            <div>
+                <div class="uppercase tracking-wider text-[10px] font-bold gw-tip gw-tip-wide" style="color:#cab9ff"
+                     data-tip="Azure portion of today's spend{{ '. Azure requests get 429 once this sub-limit is reached.' if azure_limit > 0 }}">Azure</div>
+                <div class="mt-1 font-mono text-t1 text-sm">{{ money(azure_today_cost) }}{% if azure_limit > 0 %} <span class="text-t4">/ ${{ '%g'|format(azure_limit) }}</span>{% endif %}</div>
+                {% if azure_limit > 0 %}
+                <div class="mt-1.5 w-full h-1.5 rounded-full overflow-hidden bg-n3">
+                    <div class="h-1.5 rounded-full" style="width:{{ azure_usage_percent }}%;background:{{ '#ff5c5c' if azure_usage_percent >= 90 else '#a78bfa' }}"></div>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+            {% if show_bedrock_row %}
+            <div>
+                <div class="uppercase tracking-wider text-[10px] font-bold gw-tip gw-tip-wide" style="color:#ffcb8a"
+                     data-tip="AWS Bedrock portion of today's spend{{ '. Bedrock requests get 429 once this sub-limit is reached.' if bedrock_limit > 0 }}">AWS Bedrock</div>
+                <div class="mt-1 font-mono text-t1 text-sm">{{ money(bedrock_today_cost) }}{% if bedrock_limit > 0 %} <span class="text-t4">/ ${{ '%g'|format(bedrock_limit) }}</span>{% endif %}</div>
+                {% if bedrock_limit > 0 %}
+                <div class="mt-1.5 w-full h-1.5 rounded-full overflow-hidden bg-n3">
+                    <div class="h-1.5 rounded-full" style="width:{{ bedrock_usage_percent }}%;background:{{ '#ff5c5c' if bedrock_usage_percent >= 90 else '#ff9933' }}"></div>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="gw-card p-6 gw-anim gw-d2 flex flex-col">
+        <div class="text-[11px] font-bold uppercase tracking-wider text-t3">This month</div>
+        <div class="mt-2 text-4xl font-bold text-t1 font-mono tabular-nums tracking-tight">{{ money(total_cost) }}</div>
+        <div class="mt-2 text-sm text-t3"><span class="font-mono text-t2">{{ total_reqs }}</span> request{{ '' if total_reqs == 1 else 's' }}</div>
+        <div class="mt-auto pt-5 grid grid-cols-2 gap-3 text-xs">
+            <div class="rounded-lg p-3 bg-n1">
+                <div class="text-t4">Tokens in</div>
+                <div class="mt-1 font-mono text-t1 text-base">{{ format_token(my_input) }}</div>
+                <div class="text-t4 font-mono text-[11px]">today {{ format_token(today_input) }}</div>
+            </div>
+            <div class="rounded-lg p-3 bg-n1">
+                <div class="text-t4">Tokens out</div>
+                <div class="mt-1 font-mono text-t1 text-base">{{ format_token(my_output) }}</div>
+                <div class="text-t4 font-mono text-[11px]">today {{ format_token(today_output) }}</div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -121,9 +222,19 @@
 {% endmacro %}
 <div class="gw-card p-5 mb-6 gw-anim gw-d2">
     <div class="flex items-center justify-between gap-2 border-b pb-3 mb-1" style="border-color: rgba(255,255,255,0.04);">
-        <div class="flex items-center gap-2">
-            <div class="gw-dot-on"></div>
+        <div class="flex flex-wrap items-center gap-2">
             <span class="text-sm font-bold text-t2 gw-tip gw-tip-wide" data-tip="On-prem vLLM servers. Health check pings all servers every 30s; load numbers come from each server's /metrics.">On-Prem Models</span>
+            {% if system_status.total %}
+            <span class="gw-badge" style="background:rgba(61,214,140,0.10);color:#3dd68c;border-color:rgba(61,214,140,0.2)">{{ system_status.online }} online</span>
+            {% if system_status.queueing %}
+            <span class="gw-badge gw-tip gw-tip-wide" data-tip="Requests are queueing on: {% for q in system_status.queueing %}{{ q.name }} ({{ q.waiting }}){{ ', ' if not loop.last }}{% endfor %}. Expect slower responses there."
+                  style="background:rgba(245,166,35,0.10);color:#f5a623;border-color:rgba(245,166,35,0.25)">{{ system_status.queueing|length }} queueing</span>
+            {% endif %}
+            {% if system_status.down %}
+            <span class="gw-badge gw-tip gw-tip-wide" data-tip="Down: {{ system_status.down|join(', ') }}. Requests for these are served by a fallback model."
+                  style="background:rgba(255,92,92,0.12);color:#ff7a7a;border-color:rgba(255,92,92,0.3)">{{ system_status.down|length }} down</span>
+            {% endif %}
+            {% endif %}
         </div>
         <code class="text-[11px] font-mono text-t4 bg-n1 px-1.5 py-0.5 rounded">{{ gateway_base }}</code>
     </div>
@@ -155,7 +266,8 @@
                     </td>
                 </tr>
                 {% for s in server_groups[type_key] %}
-                <tr>
+                {% set busy = s.alive and s.waiting %}
+                <tr style="{{ 'background:rgba(255,92,92,0.06)' if not s.alive or (busy and s.waiting >= 10) else 'background:rgba(245,166,35,0.05)' if busy else '' }}">
                     <td class="whitespace-nowrap">
                         <span class="inline-flex items-center gap-1.5">
                             <span class="{{ 'gw-dot-on' if s.alive else 'gw-dot-off' }}"></span>
@@ -169,7 +281,12 @@
                     <td class="whitespace-nowrap text-[11px] font-mono">
                         {% if s.alive and s.running is not none %}
                         <span class="text-t4">run <b class="text-t2">{{ s.running }}</b></span>
-                        <span class="ml-2 {{ 'text-ar' if s.waiting >= 10 else 'text-aa' if s.waiting > 0 else 'text-t4' }}">wait <b>{{ s.waiting }}</b></span>
+                        {% if s.waiting >= 10 %}
+                        <span class="ml-2 px-1.5 py-0.5 rounded font-semibold" style="background:rgba(255,92,92,0.15);color:#ff7a7a">{{ s.waiting }} queued · busy</span>
+                        {% elif s.waiting > 0 %}
+                        <span class="ml-2 px-1.5 py-0.5 rounded font-semibold" style="background:rgba(245,166,35,0.12);color:#f5a623">{{ s.waiting }} queued</span>
+                        {% else %}<span class="ml-2 text-t4">no queue</span>{% endif %}
+                        {% elif not s.alive %}<span class="text-ar">unavailable: falls back to another model</span>
                         {% else %}<span class="text-t4">—</span>{% endif %}
                     </td>
                     <td class="whitespace-nowrap text-right text-[11px] font-mono text-t3">
@@ -229,105 +346,6 @@
     {% endif %}
 </div>
 {% endif %}
-
-{# ── Monthly Stats (top row) ── #}
-<h3 class="text-[11px] font-semibold text-t4 uppercase tracking-wider mb-3 gw-anim gw-d2">This Month</h3>
-<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 mb-6">
-    <div class="gw-card gw-stat relative p-6 gw-anim gw-d2" style="--accent: linear-gradient(90deg, #6398ff, #4dd9e8);">
-        <dt class="text-xs font-semibold text-t3 uppercase tracking-wider gw-tip" data-tip="Your total API calls this month">Monthly Requests</dt>
-        <dd class="mt-3 text-3xl font-bold text-t1 font-mono tabular-nums">{{ total_reqs }}</dd>
-        <div class="mt-2 text-[11px] text-t4 font-mono">API Calls</div>
-    </div>
-    <div class="gw-card gw-stat relative p-6 gw-anim gw-d3" style="--accent: linear-gradient(90deg, #3dd68c, #4dd9e8);">
-        <dt class="text-xs font-semibold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Based on token usage × per-type pricing from config.toml">Monthly Cost</dt>
-        <dd class="mt-3 text-3xl font-bold text-t1 font-mono tabular-nums tracking-tight">${{ "%.4f"|format(total_cost) }}</dd>
-        <div class="mt-2 text-[11px] text-t4 font-mono">Current billing cycle</div>
-    </div>
-    <div class="gw-card gw-stat relative p-6 gw-anim gw-d4" style="--accent: linear-gradient(90deg, #a78bfa, #6398ff);">
-        <dt class="text-xs font-semibold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Total input tokens consumed this month">Monthly Input</dt>
-        <dd class="mt-3 text-3xl font-bold text-t1 font-mono tabular-nums">{{ format_token(my_input) }}</dd>
-        <div class="mt-2 text-[11px] text-t4 font-mono">Tokens in</div>
-    </div>
-    <div class="gw-card gw-stat relative p-6 gw-anim gw-d5" style="--accent: linear-gradient(90deg, #6398ff, #a78bfa);">
-        <dt class="text-xs font-semibold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Total output tokens generated this month">Monthly Output</dt>
-        <dd class="mt-3 text-3xl font-bold text-t1 font-mono tabular-nums">{{ format_token(my_output) }}</dd>
-        <div class="mt-2 text-[11px] text-t4 font-mono">Tokens out</div>
-    </div>
-</div>
-
-{# ── Today's Stats (bottom row) ── #}
-<h3 class="text-[11px] font-semibold text-t4 uppercase tracking-wider mb-3 gw-anim gw-d2">Today</h3>
-<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
-    <div class="gw-card gw-stat relative p-6 gw-anim gw-d2" style="--accent: linear-gradient(90deg, #6398ff, #4dd9e8);">
-        <dt class="text-xs font-semibold text-t3 uppercase tracking-wider gw-tip" data-tip="API calls since 00:00 (Asia/Taipei)">Today's Requests</dt>
-        <dd class="mt-3 text-3xl font-bold text-t1 font-mono tabular-nums">{{ today_reqs }}</dd>
-        <div class="mt-2 text-[11px] text-t4 font-mono">API Calls</div>
-    </div>
-    <div class="gw-card gw-stat relative p-6 gw-anim gw-d3" style="--accent: {{ 'linear-gradient(90deg, #ff5c5c, #f5a623)' if usage_percent > 90 else 'linear-gradient(90deg, #3dd68c, #6398ff)' }};">
-        <div class="flex justify-between items-center">
-            <dt class="text-xs font-semibold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Today's cost vs daily limit. API returns 429 when exceeded.">Today's Cost</dt>
-            <span class="text-xs font-mono font-medium {{ 'text-ar' if usage_percent > 90 else 'text-ag' }}">{{ usage_percent | round(1) }}%</span>
-        </div>
-        <dd class="mt-3 text-3xl font-bold text-t1 font-mono tabular-nums tracking-tight">${{ "%.4f"|format(today_cost) }}</dd>
-        <div class="w-full rounded-full h-1.5 mt-2 overflow-hidden bg-n3">
-            <div class="h-1.5 rounded-full {{ 'bg-ar' if usage_percent > 90 else 'bg-ag' }} transition-all" style="width: {{ usage_percent }}%"></div>
-        </div>
-        <div class="mt-2 text-[11px] text-t4 font-mono">
-            {% if user.daily_limit_usd > 0 %}
-                Remaining: <span class="text-t2">${{ "%.4f"|format([user.daily_limit_usd - today_cost, 0]|max) }}</span>
-                <span class="text-t4">/ ${{ user.daily_limit_usd }} today</span>
-            {% else %}
-                <span class="text-ag">Unlimited</span>
-            {% endif %}
-        </div>
-        {# A cloud backend's row appears only when the user has that access
-           OR actually spent on it today (real spend must never be hidden —
-           e.g. access revoked mid-day). A stale sub-limit alone must NOT
-           surface a backend the user has no access to. #}
-        {% set show_azure_row = azure_today_cost > 0 or (azure_access and azure_limit > 0) %}
-        {% set show_bedrock_row = bedrock_today_cost > 0 or (bedrock_access and bedrock_limit > 0) %}
-        {% if show_azure_row or show_bedrock_row %}
-        <div class="mt-2 pt-2 border-t border-n3 text-[11px] text-t4 font-mono space-y-1">
-            <div class="flex justify-between">
-                <span class="gw-tip" data-tip="On-prem (vLLM) portion of today's cost">On-prem</span>
-                <span class="text-t2">${{ "%.4f"|format(vllm_today_cost) }}</span>
-            </div>
-            {% if show_azure_row %}
-            <div class="flex justify-between">
-                <span class="gw-tip gw-tip-wide" data-tip="Azure portion of today's cost{{ '. Azure calls return 429 when the Azure sub-limit is exceeded.' if azure_limit > 0 }}" style="color:#cab9ff">Azure</span>
-                <span class="text-t2">${{ "%.4f"|format(azure_today_cost) }}{% if azure_limit > 0 %} <span class="{{ 'text-ar' if azure_usage_percent > 90 else 'text-t4' }}">/ ${{ azure_limit }}</span>{% endif %}</span>
-            </div>
-            {% if azure_limit > 0 %}
-            <div class="w-full rounded-full h-1 overflow-hidden bg-n3">
-                <div class="h-1 rounded-full transition-all {{ 'bg-ar' if azure_usage_percent > 90 else '' }}" style="width: {{ azure_usage_percent }}%; {{ 'background:#a78bfa' if azure_usage_percent <= 90 }}"></div>
-            </div>
-            {% endif %}
-            {% endif %}
-            {% if show_bedrock_row %}
-            <div class="flex justify-between">
-                <span class="gw-tip gw-tip-wide" data-tip="AWS Bedrock portion of today's cost{{ '. Bedrock calls return 429 when the Bedrock sub-limit is exceeded.' if bedrock_limit > 0 }}" style="color:#ffcb8a">AWS</span>
-                <span class="text-t2">${{ "%.4f"|format(bedrock_today_cost) }}{% if bedrock_limit > 0 %} <span class="{{ 'text-ar' if bedrock_usage_percent > 90 else 'text-t4' }}">/ ${{ bedrock_limit }}</span>{% endif %}</span>
-            </div>
-            {% if bedrock_limit > 0 %}
-            <div class="w-full rounded-full h-1 overflow-hidden bg-n3">
-                <div class="h-1 rounded-full transition-all {{ 'bg-ar' if bedrock_usage_percent > 90 else '' }}" style="width: {{ bedrock_usage_percent }}%; {{ 'background:#ff9933' if bedrock_usage_percent <= 90 }}"></div>
-            </div>
-            {% endif %}
-            {% endif %}
-        </div>
-        {% endif %}
-    </div>
-    <div class="gw-card gw-stat relative p-6 gw-anim gw-d4" style="--accent: linear-gradient(90deg, #a78bfa, #6398ff);">
-        <dt class="text-xs font-semibold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Input tokens consumed since 00:00 (Asia/Taipei)">Today's Input</dt>
-        <dd class="mt-3 text-3xl font-bold text-t1 font-mono tabular-nums">{{ format_token(today_input) }}</dd>
-        <div class="mt-2 text-[11px] text-t4 font-mono">Tokens in</div>
-    </div>
-    <div class="gw-card gw-stat relative p-6 gw-anim gw-d5" style="--accent: linear-gradient(90deg, #6398ff, #a78bfa);">
-        <dt class="text-xs font-semibold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Output tokens generated since 00:00 (Asia/Taipei)">Today's Output</dt>
-        <dd class="mt-3 text-3xl font-bold text-t1 font-mono tabular-nums">{{ format_token(today_output) }}</dd>
-        <div class="mt-2 text-[11px] text-t4 font-mono">Tokens out</div>
-    </div>
-</div>
 
 {# ── Usage Trend Chart ── #}
 <div class="gw-card p-6 mb-8 gw-anim gw-d6">

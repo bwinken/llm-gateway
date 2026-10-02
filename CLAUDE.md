@@ -131,6 +131,7 @@ Tests use in-memory SQLite with `StaticPool` (all connections share one DB), set
 Pitfalls:
 - **Never let a test trigger a real `save_config()`.** It writes `config.toml` and `reload_config()` mutates the patched `TEST_*` dicts in place, emptying them for every later test. Wrap happy-path `PUT /admin/api/config` in `with patch("app.routers.admin.save_config"):` (pattern: `tests/test_models_endpoint.py::TestAdminConfigMetadataValidation`). `TestAzureFallback` in `test_azure_api.py` deliberately mutates `TEST_AZURE_MODELS`; keep the autouse patch pointing at the same dict.
 - The shared httpx mock's `reset_mock()` does **not** clear `side_effect`, and some tests replace its methods. Use `patch.object(client.__httpx_mock__, "post", side_effect=...)` and assert on the mock you patched, never on the shared one.
+- Import `app.routers.*` inside test functions, never at a test module's top level. `_build_test_app` imports the routers under its config patches; a collection-time import binds them to the real config and the page silently renders the wrong models.
 - The concurrency limit defaults to `off`. Tests that exercise it patch `app.core.deps.get_concurrency_settings`.
 - SQLite ignores `FOR UPDATE`. `test_pg_concurrent_acquire_respects_limit` runs against PostgreSQL when `CONCURRENCY_TEST_PG_URL` is set; it is skipped in CI.
 

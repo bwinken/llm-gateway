@@ -25,6 +25,7 @@ from app.core.config import (
     get_concurrency_settings,
     get_config_data,
     get_default_daily_limit,
+    get_model_routing_snapshot,
     get_site_links,
     save_config,
     set_cloud_budget_fallback,
@@ -36,8 +37,12 @@ from app.core.database import get_session
 from app.models.schema import AnomalyEvent, AppOwner, User, UsageLog, mask_api_key
 from app.services import concurrency
 from app.services.analytics import build_monthly_report, iter_months, parse_ym
+from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
     get_all_users_usage,
+    get_budget_pressure,
+    get_today_totals,
+    summarize_server_status,
     get_dau_trends,
     get_department_usage,
     get_leaderboard,
@@ -200,6 +205,17 @@ async def admin_page(
             "summary": summary,
         })
 
+    # "Needs attention": what an admin should act on first, computed here so
+    # the page can lead with it instead of burying it under the analytics.
+    today_totals = get_today_totals(session)
+    budget_pressure = get_budget_pressure(session)
+    system_status = summarize_server_status([
+        {"name": alias, "alive": is_alive(route["base_url"]),
+         "waiting": (get_metrics(route["base_url"]) or {}).get("waiting")}
+        for alias, route in get_model_routing_snapshot().items()
+        if not route.get("hidden")
+    ])
+
     concurrency_mode, concurrency_limit = get_concurrency_settings()
     try:
         concurrency_in_flight = concurrency.in_flight_summary()
@@ -233,6 +249,9 @@ async def admin_page(
             "today_dau": today_dau,
             "default_daily_limit": get_default_daily_limit(),
             "cloud_budget_fallback": get_cloud_budget_fallback(),
+            "today_totals": today_totals,
+            "budget_pressure": budget_pressure,
+            "system_status": system_status,
             "concurrency_mode": concurrency_mode,
             "concurrency_limit": concurrency_limit,
             "concurrency_modes": CONCURRENCY_MODES,
