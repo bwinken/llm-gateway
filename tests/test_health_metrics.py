@@ -57,3 +57,34 @@ class TestParseVllmMetrics:
         out = _parse_vllm_metrics(text)
         # running line unparseable → 0; waiting parsed
         assert out == {"running": 0, "waiting": 7}
+
+    def test_waiting_by_reason_not_double_counted(self):
+        """vLLM >= 0.20 exports vllm:num_requests_waiting_by_reason alongside
+        the total (vllm-project/vllm#38435); its reasons sum to the total.
+        Prefix matching added both, so the dashboard showed 2x the queue."""
+        text = (
+            "# HELP vllm:num_requests_waiting Number of requests waiting to be processed.\n"
+            "# TYPE vllm:num_requests_waiting gauge\n"
+            'vllm:num_requests_waiting{engine="0",model_name="m"} 6.0\n'
+            "# HELP vllm:num_requests_waiting_by_reason Number of waiting requests by reason.\n"
+            "# TYPE vllm:num_requests_waiting_by_reason gauge\n"
+            'vllm:num_requests_waiting_by_reason{engine="0",model_name="m",reason="capacity"} 4.0\n'
+            'vllm:num_requests_waiting_by_reason{engine="0",model_name="m",reason="deferred"} 2.0\n'
+            'vllm:num_requests_running{engine="0",model_name="m"} 3.0\n'
+        )
+        assert _parse_vllm_metrics(text) == {"running": 3, "waiting": 6}
+
+    def test_sums_data_parallel_engines(self):
+        """One server, several DP engines: each engine is its own label set
+        and the server-wide queue is their sum."""
+        text = (
+            'vllm:num_requests_waiting{engine="0",model_name="m"} 2.0\n'
+            'vllm:num_requests_waiting{engine="1",model_name="m"} 5.0\n'
+            'vllm:num_requests_waiting_by_reason{engine="0",model_name="m",reason="capacity"} 2.0\n'
+            'vllm:num_requests_waiting_by_reason{engine="1",model_name="m",reason="capacity"} 5.0\n'
+        )
+        assert _parse_vllm_metrics(text) == {"running": 0, "waiting": 7}
+
+    def test_unlabeled_sample(self):
+        text = "vllm:num_requests_running 2\nvllm:num_requests_waiting 1\n"
+        assert _parse_vllm_metrics(text) == {"running": 2, "waiting": 1}

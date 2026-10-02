@@ -104,8 +104,14 @@ def _parse_vllm_metrics(text: str) -> dict[str, int] | None:
 
     Returns None when neither metric is present (endpoint disabled, wrong
     format, or not a vLLM server) so the caller can fall back gracefully.
-    A vLLM server may export the metric once per model_name label; we sum
-    across labels to get the server-wide total.
+    A vLLM server may export the metric once per label set (``model_name``,
+    and ``engine`` per data-parallel engine); we sum those to get the
+    server-wide total.
+
+    The metric name must match EXACTLY, not by prefix: vLLM >= 0.20 also
+    exports ``vllm:num_requests_waiting_by_reason{reason="capacity"|"deferred"}``
+    (vllm-project/vllm#38435), whose reasons sum to ``num_requests_waiting``
+    — prefix matching counted every waiting request twice.
     """
     running: float | None = None
     waiting: float | None = None
@@ -113,12 +119,13 @@ def _parse_vllm_metrics(text: str) -> dict[str, int] | None:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        # Format: `vllm:num_requests_running{labels...} 8.0`
-        if line.startswith("vllm:num_requests_running"):
+        # Format: `vllm:num_requests_running{labels...} 8.0` (or no labels).
+        name = line.split("{", 1)[0].split(None, 1)[0]
+        if name == "vllm:num_requests_running":
             val = _last_number(line)
             if val is not None:
                 running = (running or 0.0) + val
-        elif line.startswith("vllm:num_requests_waiting"):
+        elif name == "vllm:num_requests_waiting":
             val = _last_number(line)
             if val is not None:
                 waiting = (waiting or 0.0) + val
