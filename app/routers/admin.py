@@ -34,7 +34,7 @@ from app.core.config import (
     set_site_links,
 )
 from app.core.database import get_session
-from app.models.schema import AnomalyEvent, AppOwner, User, UsageLog, mask_api_key
+from app.models.schema import AnomalyEvent, AppOwner, User, UsageLog, is_app_account, mask_api_key
 from app.services import concurrency
 from app.services.analytics import build_monthly_report, iter_months, parse_ym
 from app.core.server_state import get_metrics, is_alive
@@ -290,7 +290,7 @@ async def create_app_account_web(
     if existing:
         raise HTTPException(status_code=409, detail=f"User '{username}' already exists.")
 
-    user = User(username=username)
+    user = User(username=username, concurrency_waived=True)  # app accounts start waived
     if daily_limit is not None:
         user.daily_limit_usd = float(daily_limit)
     session.add(user)
@@ -781,7 +781,9 @@ async def create_user_api(
     if existing:
         raise HTTPException(status_code=409, detail=f"User '{username}' already exists.")
 
-    new_user = User(username=username)
+    # App accounts start waived from the concurrency limit; an explicit
+    # "concurrency_waived" in the body (handled below) still wins.
+    new_user = User(username=username, concurrency_waived=is_app_account(username))
     if "daily_limit_usd" in body:
         new_user.daily_limit_usd = float(body["daily_limit_usd"])
     if "azure_daily_limit_usd" in body:

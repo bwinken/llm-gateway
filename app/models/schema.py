@@ -15,6 +15,14 @@ def _generate_api_key() -> str:
     return f"sk-internal-{ts}-{short_hex}"
 
 
+APP_ACCOUNT_PREFIX = "app_"
+
+
+def is_app_account(username: str) -> bool:
+    """Service accounts are named ``app_*`` (the admin panel adds the prefix)."""
+    return username.startswith(APP_ACCOUNT_PREFIX)
+
+
 def mask_api_key(key: str) -> str:
     """Render a key for display: enough to identify it, not enough to use it.
 
@@ -51,7 +59,9 @@ class User(SQLModel, table=True):
     can_use_azure: bool = Field(default=False)
     can_use_bedrock: bool = Field(default=False)
     # Exempt from the gateway-wide concurrency limit ([app].concurrency_limit_*,
-    # see app/services/concurrency.py). Admins are always exempt.
+    # see app/services/concurrency.py). Admins are always exempt. App accounts
+    # are created waived (batch jobs legitimately run many requests at once);
+    # an admin can un-waive one to limit it.
     concurrency_waived: bool = Field(default=False)
     owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     display_name: str = Field(default="")

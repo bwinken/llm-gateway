@@ -116,7 +116,7 @@ ANTHROPIC_BASE_URL=http://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key clau
 
 - 設定每位使用者的每日預算，以及選填的 Azure、Bedrock 子額度；
 - 授權 Azure 或 Bedrock，或停用帳號；
-- 設定每人**並行上限**（Off、Monitor、Enforce），並可個別豁免帳號；
+- 設定每人**並行上限**（Off、Monitor、Enforce），並可個別豁免帳號（App 帳號預設豁免）；
 - 決定雲端子額度用完時，是改由地端模型回答，還是回 429；
 - 在 **Model Config** 編輯模型、價格與備援；
 - 匯出每月費用報表（xlsx，或依後端拆分的 CSV），並查看用量異常。

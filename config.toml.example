@@ -35,7 +35,8 @@ cloud_budget_fallback = false
 #               "Concurrency limit exceeded (monitor)" WARNINGs
 #   "enforce" — over-limit requests get 429 with Retry-After
 # concurrency_limit: integer >= 1. Admins and accounts marked "waived" in the
-# admin user table are never limited.
+# admin user table are never limited. App accounts (app_*) start out waived;
+# un-waive one in the admin panel to limit it.
 concurrency_limit_mode = "off"
 concurrency_limit = 8
 

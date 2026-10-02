@@ -605,3 +605,45 @@ def test_pg_concurrent_acquire_respects_limit():
             s.delete(s.exec(select(User).where(User.username == "race")).one())
             s.commit()
         engine.dispose()
+
+
+class TestAppAccountsStartWaived:
+    """App accounts are batch/service callers: they start exempt from the
+    concurrency limit, and an admin can still un-waive one."""
+
+    @staticmethod
+    def _hdr(admin_user):
+        return web_auth_header(sub=admin_user.username, scopes=["admin"])
+
+    def _get(self, db_session, username):
+        db_session.expire_all()
+        return db_session.exec(select(User).where(User.username == username)).one()
+
+    def test_admin_form_creates_waived_app(self, client, db_session, admin_user):
+        resp = client.post("/admin/users/create", data={"username": "batch", "daily_limit": "5"},
+                           headers=self._hdr(admin_user), follow_redirects=False)
+        assert resp.status_code in (200, 303)
+        assert self._get(db_session, "app_batch").concurrency_waived is True
+
+    def test_api_create_app_defaults_waived(self, client, db_session, admin_user):
+        resp = client.post("/admin/users", json={"username": "app_etl"}, headers=self._hdr(admin_user))
+        assert resp.status_code == 200
+        assert self._get(db_session, "app_etl").concurrency_waived is True
+
+    def test_api_create_person_not_waived(self, client, db_session, admin_user):
+        client.post("/admin/users", json={"username": "dana"}, headers=self._hdr(admin_user))
+        assert self._get(db_session, "dana").concurrency_waived is False
+
+    def test_api_explicit_value_wins(self, client, db_session, admin_user):
+        client.post("/admin/users", json={"username": "app_strict", "concurrency_waived": False},
+                    headers=self._hdr(admin_user))
+        assert self._get(db_session, "app_strict").concurrency_waived is False
+
+    def test_unwaived_app_is_limited(self, client, db_session, admin_user):
+        app = User(username="app_limited", api_key="sk-app-limited", concurrency_waived=False)
+        db_session.add(app)
+        db_session.commit()
+        _add_lease(app.id)
+        with _mode("enforce", 1):
+            resp = client.post("/v1/chat/completions", json=_CHAT, headers=auth_header("sk-app-limited"))
+        assert resp.status_code == 429

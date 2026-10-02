@@ -758,8 +758,8 @@ function submitExportCsv() {
         <div class="max-w-xl">
             <h2 class="text-sm font-bold text-t2 mb-1">Concurrency Limit</h2>
             <p class="text-xs text-t4 gw-tip gw-tip-wide"
-               data-tip="Counts chat / responses / messages requests (streams included) across all gateway workers, from admission until the response is fully sent. Monitor: everything is served, over-limit requests are logged as 'Concurrency limit exceeded (monitor)'. Enforce: over-limit requests get 429 with Retry-After: 5 (Claude Code retries automatically). Admins and accounts marked Waive in the tables below are never limited. count_tokens, tokenize, models, embeddings and rerank are not counted.">
-                Maximum in-flight inference requests per account. Admins and waived accounts are exempt.
+               data-tip="Counts chat / responses / messages requests (streams included) across all gateway workers, from admission until the response is fully sent. Monitor: everything is served, over-limit requests are logged as 'Concurrency limit exceeded (monitor)'. Enforce: over-limit requests get 429 with Retry-After: 5 (Claude Code retries automatically). Admins and accounts marked Waive are never limited; app accounts start out waived (un-waive one to limit it). count_tokens, tokenize, models, embeddings and rerank are not counted.">
+                Maximum in-flight inference requests per account. Admins and waived accounts (all app accounts, by default) are exempt.
             </p>
             <p class="text-xs text-t4 mt-1.5">
                 {% if concurrency_in_flight is none %}

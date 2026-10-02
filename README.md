@@ -116,7 +116,7 @@ Open `http://your-gateway` and sign in through SSO. Accounts with the `admin` sc
 
 - set each user's daily budget, plus optional Azure and Bedrock sub-limits;
 - grant Azure or Bedrock access, or disable an account;
-- set the per-user **concurrency limit** (Off, Monitor, or Enforce) and waive it for individual accounts;
+- set the per-user **concurrency limit** (Off, Monitor, or Enforce) and waive it for individual accounts (app accounts start out waived);
 - choose whether a spent cloud sub-limit falls back to on-prem models instead of returning 429;
 - edit models, pricing, and fallbacks under **Model Config**;
 - export monthly cost reports (xlsx, or CSV split by backend) and review usage anomalies.
