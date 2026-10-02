@@ -225,3 +225,28 @@ class TestDailyTrends:
     def test_daily_table_empty_state(self, client, test_user):
         body = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
         assert "No usage data yet." in body
+
+
+class TestModelsTab:
+    """Model Config stays its own page but is reached as the admin panel's
+    fourth tab, with the same bar rendered on both pages."""
+
+    def test_admin_bar_links_to_model_config(self, client, admin_user):
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        bar = body[body.index('id="adminTabs"'):]
+        bar = bar[:bar.index("</div>")]
+        assert 'data-tab="overview"' in bar and 'href="/admin/models"' in bar
+        assert "gw-tabs-static" not in bar  # sticky on /admin
+
+    def test_model_config_page_shows_same_tabs(self, client, admin_user):
+        body = client.get("/admin/models", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        bar_start = body.index('id="adminTabs"')
+        bar = body[bar_start:]
+        bar = bar[:bar.index("</div>")]
+        for name in ("overview", "users", "settings"):
+            assert f'href="/admin#{name}"' in bar
+        assert 'class="gw-tab gw-tab-on" href="/admin/models"' in bar
+        # Not sticky here: the page has its own sticky sidebar at top: 80px.
+        assert "gw-tabs-static" in body[bar_start - 60:bar_start + 60]
+        # No in-page tab controller on this page (its hash is the model selection).
+        assert "gwTabs('adminTabs'" not in body

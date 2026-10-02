@@ -19,7 +19,6 @@
         <p class="mt-1 text-sm text-t3">Manage users, view total usage, and adjust billing limits.</p>
     </div>
     <div class="flex items-center gap-3">
-        <a href="/admin/models" class="gw-btn gw-btn-ghost text-sm px-4 py-2">Model Config</a>
         <a href="/dashboard" class="gw-btn gw-btn-ghost text-sm px-4 py-2">&larr; Dashboard</a>
     </div>
 </div>
@@ -152,20 +151,8 @@ function anomalyAction(id, action) {
 </div>
 
 {# ── Tabs: everything below the attention panel and key numbers ── #}
-{% set n_blocked = budget_pressure|selectattr('percent', 'ge', 100)|list|length %}
-<div id="adminTabs" class="gw-tabs gw-anim gw-d2" role="tablist">
-    <button type="button" class="gw-tab" data-tab="overview" role="tab">Overview</button>
-    <button type="button" class="gw-tab" data-tab="users" role="tab">
-        Users
-        {% if n_blocked %}<span class="gw-tab-count gw-tab-count-crit gw-tip" data-tip="Accounts that hit their daily limit today">{{ n_blocked }} blocked</span>
-        {% elif budget_pressure %}<span class="gw-tab-count gw-tab-count-warn gw-tip" data-tip="Accounts above 90% of their daily limit">{{ budget_pressure|length }} near limit</span>
-        {% else %}<span class="gw-tab-count">{{ user_total + app_total }}</span>{% endif %}
-    </button>
-    <button type="button" class="gw-tab" data-tab="settings" role="tab">
-        Settings
-        {% if concurrency_mode != 'off' %}<span class="gw-tab-count gw-tip" data-tip="Concurrency limit mode">limit: {{ concurrency_mode }}</span>{% endif %}
-    </button>
-</div>
+{% set on_admin_page = true %}
+{% include '_admin_tabs.html' %}
 
 <div data-panel="overview">
 {# ── DAU Trend ── #}

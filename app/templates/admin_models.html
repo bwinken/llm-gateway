@@ -22,10 +22,12 @@
         <p class="mt-1 text-sm text-t3">Pick a model on the left to edit it. Changes stay local until you save — then they're written to config.toml and reloaded.</p>
     </div>
     <div class="flex items-center gap-3">
-        <a href="/admin" class="gw-btn gw-btn-ghost text-sm px-4 py-2">&larr; Admin</a>
         <button onclick="saveAll()" id="saveBtn" class="gw-btn gw-btn-primary text-sm px-5 py-2 disabled:opacity-50">Save</button>
     </div>
 </div>
+
+{% set on_admin_page = false %}
+{% include '_admin_tabs.html' %}
 
 {# Status message #}
 <div id="statusMsg" class="hidden mb-4 px-4 py-3 rounded-lg text-sm font-medium"></div>

@@ -305,6 +305,9 @@
             background: #0c0d12;
             border-bottom: 1px solid rgba(255,255,255,0.07);
         }
+        /* Model Config keeps its own sticky sidebar at top: 80px; a sticky
+           tab bar would cover it, so there the bar scrolls with the page. */
+        .gw-tabs-static { position: static; }
         .gw-tab {
             position: relative; flex-shrink: 0;
             display: inline-flex; align-items: center; gap: 8px;

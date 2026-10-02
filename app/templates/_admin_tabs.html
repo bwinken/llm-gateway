@@ -1,0 +1,35 @@
+{# Admin section tabs, shared by /admin and /admin/models.
+
+   On /admin (on_admin_page = true) Overview / Users / Settings are in-page
+   tabs driven by gwTabs() (data-tab buttons), and "Models" is a link to the
+   separate Model Config page. On /admin/models the same bar is rendered with
+   links back to /admin#<tab>, so the four read as one set of tabs while
+   Model Config keeps its own page: its URL-hash routing, unsaved-changes
+   bar and leave-page guard stay untouched.
+
+   Badges render only where their data exists (the /admin context). #}
+{% set models_active = not on_admin_page %}
+<div id="adminTabs" class="gw-tabs {{ 'gw-tabs-static' if models_active }} gw-anim gw-d2" role="tablist">
+    {% for name, label in [('overview', 'Overview'), ('users', 'Users'), ('settings', 'Settings')] %}
+    {% if on_admin_page %}
+    <button type="button" class="gw-tab" data-tab="{{ name }}" role="tab">
+    {% else %}
+    <a class="gw-tab" href="/admin#{{ name }}" role="tab" aria-selected="false">
+    {% endif %}
+        {{ label }}
+        {% if name == 'users' and budget_pressure is defined %}
+            {% set n_blocked = budget_pressure|selectattr('percent', 'ge', 100)|list|length %}
+            {% if n_blocked %}<span class="gw-tab-count gw-tab-count-crit gw-tip" data-tip="Accounts that hit their daily limit today">{{ n_blocked }} blocked</span>
+            {% elif budget_pressure %}<span class="gw-tab-count gw-tab-count-warn gw-tip" data-tip="Accounts above 90% of their daily limit">{{ budget_pressure|length }} near limit</span>
+            {% else %}<span class="gw-tab-count">{{ user_total + app_total }}</span>{% endif %}
+        {% elif name == 'settings' and concurrency_mode is defined and concurrency_mode != 'off' %}
+            <span class="gw-tab-count gw-tip" data-tip="Concurrency limit mode">limit: {{ concurrency_mode }}</span>
+        {% endif %}
+    {% if on_admin_page %}</button>{% else %}</a>{% endif %}
+    {% endfor %}
+    <a class="gw-tab {{ 'gw-tab-on' if models_active }}" href="/admin/models" role="tab"
+       aria-selected="{{ 'true' if models_active else 'false' }}">
+        Models
+        {% if on_admin_page %}<span class="gw-tab-count gw-tip" data-tip="Opens the model configuration editor (routing, pricing, fallbacks)">config</span>{% endif %}
+    </a>
+</div>
