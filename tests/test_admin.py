@@ -99,3 +99,52 @@ class TestCreateUserAPI:
             headers=web_auth_header(sub="testuser", scopes=["read"]),
         )
         assert resp.status_code == 403
+
+
+class TestDeleteUser:
+    """PostgreSQL enforces foreign keys; in-memory SQLite only does with the
+    pragma on, so these tests turn it on to catch a missed reference."""
+
+    @staticmethod
+    def _fk_on(on: bool):
+        from tests.conftest import _test_engine
+
+        with _test_engine.connect() as conn:
+            conn.exec_driver_sql(f"PRAGMA foreign_keys={'ON' if on else 'OFF'}")
+
+    def test_delete_user_with_every_reference(self, client, db_session, admin_user, test_user):
+        from datetime import datetime, timezone
+
+        from sqlmodel import select
+
+        from app.models.schema import AnomalyEvent, AppOwner, UsageLog, User
+
+        now = datetime.now(timezone.utc)
+        legacy_app = User(username="app_legacy", owner_id=test_user.id)
+        db_session.add(legacy_app)
+        db_session.commit()
+        db_session.add(AppOwner(app_id=legacy_app.id, owner_id=test_user.id))
+        db_session.add(UsageLog(user_id=test_user.id, model="m", endpoint="/v1/chat/completions"))
+        db_session.add(AnomalyEvent(
+            scope=f"user:{test_user.id}", rule="cost_spike", user_id=test_user.id,
+            window_start=now, window_end=now,
+        ))
+        db_session.commit()
+        uid, app_id = test_user.id, legacy_app.id
+
+        self._fk_on(True)
+        try:
+            resp = client.post(
+                f"/admin/users/{uid}/delete",
+                headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
+                follow_redirects=False,
+            )
+        finally:
+            self._fk_on(False)
+
+        assert resp.status_code == 303
+        db_session.expire_all()
+        assert db_session.get(User, uid) is None
+        assert db_session.get(User, app_id).owner_id is None
+        assert db_session.exec(select(AnomalyEvent).where(AnomalyEvent.user_id == uid)).all() == []
+        assert db_session.exec(select(AppOwner)).all() == []

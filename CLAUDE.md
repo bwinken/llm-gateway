@@ -63,6 +63,7 @@ Each of these has broken production or a test before. The parenthesized test pin
 - That same exit timing is what keeps a concurrency lease held for a whole stream. If a FastAPI upgrade ever changes it, the limit silently stops limiting (`TestLeaseSpansTheResponse`).
 - Teardown that runs on client disconnect must survive anyio's repeated cancellation: detach it (`_release_stream`) or shield it (`anyio.CancelScope(shield=True)`). Otherwise connections and leases leak (`test_stream_disconnect_cleanup.py`, `TestClientDisconnect`).
 - Never hold a DB connection across a stream: no advisory locks, no long transactions.
+- `delete_user` clears every row referencing `users.id` before deleting the user: `app_owners`, the legacy `users.owner_id`, `anomaly_events`, `usage_logs`, leases. Add any new FK there too; PostgreSQL turns a missed one into a 500 that SQLite tests miss unless `PRAGMA foreign_keys` is on (`TestDeleteUser`).
 
 **Streams**
 - Every streaming pre-flight uses `_STREAM_TIMEOUT` (time-to-headers is bounded) and checks `status_code` **before** handing the response to the pump. A cloud 4xx is a JSON body that the pump would silently drop (`test_stream_preflight_timeout.py`).

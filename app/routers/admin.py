@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlmodel import Session, func, select
 
 from app.core.auth import get_web_user
@@ -679,10 +679,16 @@ async def delete_user(
     if target.id == admin_user.id:
         raise HTTPException(status_code=400, detail="Cannot delete yourself.")
 
-    # Bulk-delete ownership records, usage logs, then the user
+    # Clear every row that references users.id, then the user. PostgreSQL
+    # enforces these foreign keys, so a missed one fails the delete with a 500.
     session.execute(delete(AppOwner).where(
         (AppOwner.app_id == user_id) | (AppOwner.owner_id == user_id)
     ))
+    # Legacy single-owner column: superseded by app_owners, but migration
+    # d5a2c3e67f04 copied it without clearing it, so old app accounts still
+    # point at their original owner.
+    session.execute(update(User).where(User.owner_id == user_id).values(owner_id=None))
+    session.execute(delete(AnomalyEvent).where(AnomalyEvent.user_id == user_id))
     session.execute(delete(UsageLog).where(UsageLog.user_id == user_id))
     concurrency.delete_user_leases(session, user_id)
     session.delete(target)
