@@ -63,6 +63,7 @@ Windows users can get a pre-configured Claude Code installer from the **Setup** 
 | Endpoint | Purpose |
 |---|---|
 | `GET /v1/models` | Models your account can use |
+| `GET /v1/me` | Your access (on-prem / Azure / AWS) and today's budget: limit, spent, remaining, reset time. Answers even when the budget is spent. See [Checking your quota](#checking-your-quota) |
 | `POST /v1/embeddings` | Embeddings (vLLM only) |
 | `POST /v1/rerank`, `/v1/score` | Reranking |
 | `POST /v1/messages/count_tokens` | Token count for an Anthropic request (not billed) |
@@ -77,6 +78,41 @@ curl http://your-gateway/v1/rerank \
   -H "Content-Type: application/json" \
   -d '{"model": "bge-reranker-v2-m3", "query": "What is AI?", "documents": ["AI is...", "Machine learning is..."]}'
 ```
+
+## Checking your quota
+
+```bash
+curl http://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
+```
+
+```json
+{
+  "object": "account",
+  "username": "alice",
+  "display_name": "Alice",
+  "is_admin": false,
+  "daily": {
+    "limit_usd": 10.0, "used_usd": 3.25, "remaining_usd": 6.75,
+    "requests": 42, "input_tokens": 120000, "output_tokens": 18000,
+    "enforced": true, "timezone": "Asia/Taipei",
+    "resets_at": "2026-10-14T00:00:00+08:00", "resets_in_seconds": 30120
+  },
+  "backends": {
+    "onprem": {"access": true,  "limit_usd": null, "used_usd": 1.25, "remaining_usd": 6.75},
+    "azure":  {"access": true,  "limit_usd": 3.0,  "used_usd": 2.0,  "remaining_usd": 1.0},
+    "aws":    {"access": false, "limit_usd": null, "used_usd": 0.0,  "remaining_usd": 0.0}
+  },
+  "cloud_budget_fallback": false,
+  "concurrency": {"mode": "enforce", "limit": 8}
+}
+```
+
+- `daily` is your overall budget for today; every backend's spend counts toward it. The day is the `Asia/Taipei` calendar day.
+- `backends.<name>.limit_usd` is that backend's own daily cap, if an admin set one (`null` = no separate cap). `remaining_usd` is what you can still spend there today: the tighter of that cap and your overall remaining budget, `0` without access.
+- `null` for a limit or a remainder means unlimited.
+- `enforced: false` means the gateway only logs overages instead of returning 429.
+- `cloud_budget_fallback: true` means a `/v1/*` request for a cloud model whose cap is spent is answered by an on-prem model instead of a 429.
+- `concurrency.limit` is how many requests your key may have in flight at once (`null` = no limit).
 
 ## Tool calling: pick the right client mode
 

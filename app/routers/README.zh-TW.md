@@ -42,6 +42,7 @@ graph LR
 | 方法 | 路徑 | 說明 | Proxy 方式 | 允許類型 |
 |---|---|---|---|---|
 | `GET` | `/v1/models`、`/models` | 列出模型(僅 LLM/VLM)。有 `can_use_azure` 的使用者(admin 自動 bypass)會多看到 Azure 別名 | 直接回傳 | `llm`, `vlm` |
+| `GET` | `/v1/me`、`/me` | 呼叫者的權限(地端 / Azure / AWS)與各後端今日額度。驗證時不做每日額度 429，額度用完也能查 | 直接回傳 | — |
 | `POST` | `/v1/chat/completions`、`/chat/completions` | Chat 對話生成 | `vllm_forward_chat_completions`(vLLM) / `azure_forward_chat_completions`(Azure) | `llm`, `vlm` |
 | `POST` | `/v1/responses`、`/responses` | Responses API | `vllm_forward_responses` | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`、`/embeddings` | 文字向量嵌入 | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
@@ -208,7 +209,7 @@ API key 或 SSO session。這兩個端點也不會洩漏任何「服務有回應
 ```mermaid
 graph TD
     subgraph "API Key 認證 (deps.py)"
-        V1["/v1/models<br/>/v1/chat/completions<br/>/v1/embeddings<br/>/v1/rerank • /v1/score<br/>/v1/responses<br/>/v1/messages • /v1/messages/count_tokens<br/>/v1/tokenize<br/>/v1/chat/completions/render"]
+        V1["/v1/models • /v1/me<br/>/v1/chat/completions<br/>/v1/embeddings<br/>/v1/rerank • /v1/score<br/>/v1/responses<br/>/v1/messages • /v1/messages/count_tokens<br/>/v1/tokenize<br/>/v1/chat/completions/render"]
         Azure["/azure/v1/models<br/>/azure/v1/chat/completions<br/>/azure/v1/embeddings<br/>/azure/v1/messages • /azure/messages<br/>/azure/v1/messages/count_tokens"]
     end
 

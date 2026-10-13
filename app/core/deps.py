@@ -206,9 +206,11 @@ def ensure_bedrock_budget(user: User) -> None:
     check_cloud_budget(user, "bedrock")
 
 
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
-    x_api_key: str | None = Header(default=None, alias="x-api-key"),
+def _authenticate(
+    credentials: HTTPAuthorizationCredentials | None,
+    x_api_key: str | None,
+    *,
+    check_daily_limit: bool,
 ) -> User:
     # NOTE: request-header capture for observability lives in
     # RequestMetaMiddleware (pure ASGI), NOT here — a contextvar written in this
@@ -272,10 +274,39 @@ def get_current_user(
             # fix the situation. Non-admins always get rejected.
             logger.warning("Auth rejected: user '{}' is disabled", user.username)
             raise AccountDisabledError(user.username)
-        _check_daily_limit(session, user)
+        if check_daily_limit:
+            _check_daily_limit(session, user)
     # ``user`` is now detached: its columns are loaded (SQLModel does not
     # expire on close) and downstream code only ever reads them.
     return user
+
+
+def get_today_usage(user: User) -> dict:
+    """Today's spend and token totals for ``user``, split by backend
+    (``stats.get_user_daily_summary``). Short-lived session; blocking."""
+    from app.services.stats import get_user_daily_summary
+
+    with Session(engine) as session:
+        return get_user_daily_summary(session, user.id)
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
+) -> User:
+    """API-key auth for billable endpoints: rejects disabled accounts and
+    429s once today's spend has reached ``daily_limit_usd``."""
+    return _authenticate(credentials, x_api_key, check_daily_limit=True)
+
+
+def get_current_user_unmetered(
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
+) -> User:
+    """Same auth as ``get_current_user`` but without the daily-limit check,
+    for read-only account endpoints (``GET /v1/me``) that must still answer
+    once the budget is spent — that is exactly when a client asks."""
+    return _authenticate(credentials, x_api_key, check_daily_limit=False)
 
 
 def require_azure_access(

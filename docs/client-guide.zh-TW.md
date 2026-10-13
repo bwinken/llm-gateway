@@ -63,6 +63,7 @@ Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 C
 | 端點 | 用途 |
 |---|---|
 | `GET /v1/models` | 你的帳號可以用的模型 |
+| `GET /v1/me` | 你的權限（地端 / Azure / AWS）和今日額度：上限、已用、剩餘、重置時間。額度用完時一樣可以查。見[查詢額度](#查詢額度) |
 | `POST /v1/embeddings` | Embeddings（僅 vLLM） |
 | `POST /v1/rerank`、`/v1/score` | Rerank |
 | `POST /v1/messages/count_tokens` | 計算 Anthropic 請求的 token 數（不計費） |
@@ -77,6 +78,41 @@ curl http://your-gateway/v1/rerank \
   -H "Content-Type: application/json" \
   -d '{"model": "bge-reranker-v2-m3", "query": "What is AI?", "documents": ["AI is...", "Machine learning is..."]}'
 ```
+
+## 查詢額度
+
+```bash
+curl http://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
+```
+
+```json
+{
+  "object": "account",
+  "username": "alice",
+  "display_name": "Alice",
+  "is_admin": false,
+  "daily": {
+    "limit_usd": 10.0, "used_usd": 3.25, "remaining_usd": 6.75,
+    "requests": 42, "input_tokens": 120000, "output_tokens": 18000,
+    "enforced": true, "timezone": "Asia/Taipei",
+    "resets_at": "2026-10-14T00:00:00+08:00", "resets_in_seconds": 30120
+  },
+  "backends": {
+    "onprem": {"access": true,  "limit_usd": null, "used_usd": 1.25, "remaining_usd": 6.75},
+    "azure":  {"access": true,  "limit_usd": 3.0,  "used_usd": 2.0,  "remaining_usd": 1.0},
+    "aws":    {"access": false, "limit_usd": null, "used_usd": 0.0,  "remaining_usd": 0.0}
+  },
+  "cloud_budget_fallback": false,
+  "concurrency": {"mode": "enforce", "limit": 8}
+}
+```
+
+- `daily` 是今日的總額度，所有後端的花費都算在裡面。一天以 `Asia/Taipei` 的日曆日計算。
+- `backends.<name>.limit_usd` 是管理員替該後端另外設的每日上限（`null` = 沒有另外設）。`remaining_usd` 是今天在該後端還能花多少：取該上限剩餘和總額度剩餘中較小的那個；沒有權限時為 `0`。
+- 上限或剩餘為 `null` 代表不限。
+- `enforced: false` 代表超額時 gateway 只記 log，不會回 429。
+- `cloud_budget_fallback: true` 代表雲端模型的子額度用完時，`/v1/*` 的請求會改由地端模型回答，而不是回 429。
+- `concurrency.limit` 是你的 key 同時可以進行幾個請求（`null` = 不限）。
 
 ## Tool calling：選對 client 模式
 
