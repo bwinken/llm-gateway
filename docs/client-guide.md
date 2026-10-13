@@ -92,15 +92,15 @@ curl http://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
   "display_name": "Alice",
   "is_admin": false,
   "daily": {
-    "limit_usd": 10.0, "used_usd": 3.25, "remaining_usd": 6.75,
+    "unlimited": false, "limit_usd": 10.0, "used_usd": 3.25, "remaining_usd": 6.75,
     "requests": 42, "input_tokens": 120000, "output_tokens": 18000,
     "enforced": true, "timezone": "Asia/Taipei",
     "resets_at": "2026-10-14T00:00:00+08:00", "resets_in_seconds": 30120
   },
   "backends": {
-    "onprem": {"access": true,  "limit_usd": null, "used_usd": 1.25, "remaining_usd": 6.75},
-    "azure":  {"access": true,  "limit_usd": 3.0,  "used_usd": 2.0,  "remaining_usd": 1.0},
-    "aws":    {"access": false, "limit_usd": null, "used_usd": 0.0,  "remaining_usd": 0.0}
+    "onprem": {"access": true,                         "unlimited": false, "used_usd": 1.25, "remaining_usd": 6.75},
+    "azure":  {"access": true,  "sub_limit_usd": 3.0,  "unlimited": false, "used_usd": 2.0,  "remaining_usd": 1.0},
+    "aws":    {"access": false,                        "unlimited": false, "used_usd": 0.0,  "remaining_usd": 0.0}
   },
   "cloud_budget_fallback": false,
   "concurrency": {"mode": "enforce", "limit": 8}
@@ -108,13 +108,13 @@ curl http://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 ```
 
 - `daily` is your overall budget for today; every backend's spend counts toward it. The day is the `Asia/Taipei` calendar day.
-- `backends.<name>.limit_usd` is that backend's own daily cap, if an admin set one. `null` means no separate cap, **not** unlimited: the backend is still bounded by `daily`. On-prem never has a cap of its own, so its `limit_usd` is always `null`.
-- `remaining_usd` is what you can still spend there today: the tighter of that backend's cap and your overall remaining budget, `0` without access, `null` only when nothing caps it (overall limit unlimited and no separate cap). The remainders share one budget and don't add up: in the example, spending $1 on Azure leaves $5.75 for on-prem.
-- `daily.limit_usd` / `daily.remaining_usd` of `null` means your overall budget is unlimited.
+- The response never contains `null`. When there is no limit, `unlimited` is `true` and `limit_usd` / `remaining_usd` are left out.
+- `backends.<name>.remaining_usd` is what you can still spend there today: the tighter of that backend's own cap and your overall remaining budget, `0` without access. The remainders share one budget and don't add up: in the example, spending $1 on Azure leaves $5.75 for on-prem.
+- `backends.<name>.sub_limit_usd` appears only when an admin set a separate daily cap for that backend (Azure / AWS). On-prem has no cap of its own; it is bounded by `daily`.
 - A request is refused only once `used_usd` reaches the limit, so the last request of the day can overshoot it slightly.
 - `enforced: false` means the gateway only logs overages instead of returning 429.
 - `cloud_budget_fallback: true` means a `/v1/*` request for a cloud model whose cap is spent is answered by an on-prem model instead of a 429.
-- `concurrency.limit` is how many requests your key may have in flight at once (`null` = no limit).
+- `concurrency.limit` is how many requests your key may have in flight at once. With `"mode": "off"` there is no limit and `limit` is left out.
 
 ## Tool calling: pick the right client mode
 

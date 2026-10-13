@@ -301,6 +301,19 @@ def _min_remaining(*values: float | None) -> float | None:
     return min(capped) if capped else None
 
 
+def _budget(limit: float | None, used: float, remaining: float | None) -> dict:
+    """``unlimited`` plus the numbers that exist — never a null: no limit is
+    spelled ``unlimited: true`` with ``limit_usd`` / ``remaining_usd`` left
+    out, not ``limit_usd: null``."""
+    out: dict[str, object] = {"unlimited": remaining is None}
+    if limit is not None:
+        out["limit_usd"] = limit
+    out["used_usd"] = _usd(used)
+    if remaining is not None:
+        out["remaining_usd"] = remaining
+    return out
+
+
 @router.get("/v1/me")
 @router.get("/me")
 async def account_info(user: User = Depends(get_current_user_unmetered)):
@@ -309,13 +322,19 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
     Answers even once the daily limit is spent (no 429 at auth), since
     "how much is left / when does it reset" is what a client asks then.
 
+    The response never carries null: "no limit" is ``unlimited: true`` with
+    ``limit_usd`` / ``remaining_usd`` left out, so a client can't misread a
+    null as zero or a missing sub-limit as "unlimited".
+
     Per backend (``onprem`` = vLLM, ``azure``, ``aws`` = Bedrock):
       - ``access``: may this key reach it (admins bypass the cloud flags);
-      - ``limit_usd``: the backend's own daily sub-limit, None = no separate cap;
       - ``used_usd``: today's spend there;
       - ``remaining_usd``: what can still be spent there today — the tighter
-        of the sub-limit and the overall daily limit (cloud spend counts
-        toward both), 0 without access, None when nothing caps it.
+        of the backend's sub-limit and the overall daily limit (cloud spend
+        counts toward both), 0 without access;
+      - ``sub_limit_usd``: only when an admin set a separate cap for it;
+      - ``unlimited``: true only when neither the sub-limit nor the overall
+        limit caps it (``remaining_usd`` is then left out).
 
     Limits are those the gateway enforces; with ``ENFORCE_DAILY_LIMIT=false``
     they are only logged (``daily.enforced`` = false).
@@ -327,16 +346,15 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
 
     def _backend(access: bool, used: float, sub_limit: float | None) -> dict:
         sub_limit = _cap(sub_limit)
+        out: dict[str, object] = {"access": access}
+        if sub_limit is not None:
+            out["sub_limit_usd"] = sub_limit
         if access:
             remaining = _min_remaining(_remaining(sub_limit, used), daily_remaining)
         else:
             remaining = 0.0
-        return {
-            "access": access,
-            "limit_usd": sub_limit,
-            "used_usd": _usd(used),
-            "remaining_usd": remaining,
-        }
+        out.update(_budget(None, used, remaining))
+        return out
 
     mode, limit = get_concurrency_settings()
     concurrency_applies = mode != "off" and not user.is_admin and not user.concurrency_waived
@@ -348,9 +366,7 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
         "display_name": user.display_name,
         "is_admin": user.is_admin,
         "daily": {
-            "limit_usd": daily_limit,
-            "used_usd": _usd(today["total_cost_usd"]),
-            "remaining_usd": daily_remaining,
+            **_budget(daily_limit, today["total_cost_usd"], daily_remaining),
             "requests": today["total_requests"],
             "input_tokens": today["total_input_tokens"],
             "output_tokens": today["total_output_tokens"],
@@ -373,10 +389,9 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
             ),
         },
         "cloud_budget_fallback": get_cloud_budget_fallback(),
-        "concurrency": {
-            "mode": mode if concurrency_applies else "off",
-            "limit": limit if concurrency_applies else None,
-        },
+        "concurrency": (
+            {"mode": mode, "limit": limit} if concurrency_applies else {"mode": "off"}
+        ),
     }
 
 
