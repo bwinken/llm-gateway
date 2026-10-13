@@ -1,20 +1,19 @@
-"""Tests for the daily-limit enforcement escape hatches in deps.py.
+"""Tests for daily-limit enforcement in deps.py.
 
-Two ways to avoid the 429 block:
-  1. Per-user: set ``User.daily_limit_usd`` to 0 → unlimited for that user.
-  2. Gateway-wide: set ``ENFORCE_DAILY_LIMIT=false`` → log-only soft mode.
-
-Both preserve the default (strict) behavior when unused.
+Every account has a limit: ``daily_limit_usd = 0`` is a $0 budget (every
+request refused), not "unlimited". The only escape hatch is gateway-wide:
+``ENFORCE_DAILY_LIMIT=false`` → log-only soft mode.
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest.mock import patch
 
 from sqlmodel import Session
 
 from app.models.schema import UsageLog, User
-from tests.conftest import auth_header, make_httpx_response
+from tests.conftest import auth_header, make_httpx_response, web_auth_header
 
 
 def _post_chat(client, headers=None):
@@ -72,16 +71,23 @@ class TestDailyLimitEnforcement:
         assert "Daily spending limit" in resp.json()["detail"]
 
 
-class TestPerUserUnlimited:
-    """daily_limit_usd <= 0 → skip the check entirely for this user."""
+class TestZeroLimit:
+    """daily_limit_usd = 0 is a $0 budget, not "unlimited"."""
 
-    def test_zero_limit_skips_check(self, client, db_session, test_user):
+    def test_zero_limit_blocks_without_any_spend(self, client, db_session, test_user):
         test_user.daily_limit_usd = 0.0
         db_session.add(test_user)
         db_session.commit()
-        _burn_budget(db_session, test_user, Decimal("9999.00"))
         resp = _post_chat(client)
-        assert resp.status_code == 200
+        assert resp.status_code == 429
+        assert "Daily spending limit is $0" in resp.json()["detail"]
+
+    def test_zero_limit_soft_mode_lets_through(self, client, db_session, test_user, monkeypatch):
+        monkeypatch.setenv("ENFORCE_DAILY_LIMIT", "false")
+        test_user.daily_limit_usd = 0.0
+        db_session.add(test_user)
+        db_session.commit()
+        assert _post_chat(client).status_code == 200
 
 
 class TestGatewaySoftMode:
@@ -110,3 +116,57 @@ class TestGatewaySoftMode:
         _burn_budget(db_session, test_user, Decimal("100.00"))
         resp = _post_chat(client)
         assert resp.status_code == 429
+
+
+class TestAdminLimitValidation:
+    """Limits are finite numbers >= 0: negative / inf / nan would quietly
+    reintroduce "unlimited", so admin writes reject them."""
+
+    @staticmethod
+    def _hdr(admin_user):
+        return web_auth_header(sub=admin_user.username, scopes=["admin"])
+
+    def test_web_form_rejects_negative(self, client, admin_user, test_user):
+        resp = client.post(
+            f"/admin/users/{test_user.id}/limit", data={"new_limit": "-1"},
+            headers=self._hdr(admin_user), follow_redirects=False,
+        )
+        assert resp.status_code == 400
+
+    def test_web_form_accepts_zero(self, client, db_session, admin_user, test_user):
+        resp = client.post(
+            f"/admin/users/{test_user.id}/limit", data={"new_limit": "0"},
+            headers=self._hdr(admin_user), follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        db_session.expire_all()
+        assert db_session.get(User, test_user.id).daily_limit_usd == 0.0
+
+    def test_api_rejects_inf_and_nan(self, client, admin_user, test_user):
+        for raw in ("inf", "nan", "-0.5", "abc", True):
+            resp = client.patch(
+                f"/admin/users/{test_user.id}", json={"daily_limit_usd": raw},
+                headers=self._hdr(admin_user),
+            )
+            assert resp.status_code == 400, raw
+        resp = client.patch(
+            f"/admin/users/{test_user.id}", json={"bedrock_daily_limit_usd": "inf"},
+            headers=self._hdr(admin_user),
+        )
+        assert resp.status_code == 400
+
+    def test_api_create_rejects_negative(self, client, admin_user):
+        resp = client.post(
+            "/admin/users", json={"username": "neg", "daily_limit_usd": -5},
+            headers=self._hdr(admin_user),
+        )
+        assert resp.status_code == 400
+
+    def test_default_limit_rejects_inf(self, client, admin_user):
+        with patch("app.routers.admin.set_default_daily_limit") as saved:
+            resp = client.post(
+                "/admin/default-limit", data={"new_default": "inf"},
+                headers=self._hdr(admin_user), follow_redirects=False,
+            )
+        assert resp.status_code == 400
+        saved.assert_not_called()

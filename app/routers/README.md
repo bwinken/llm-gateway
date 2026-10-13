@@ -42,6 +42,7 @@ graph LR
 | Method | Path(s) | Description | Proxy Method | Allowed Types |
 |---|---|---|---|---|
 | `GET` | `/v1/models`, `/models` | List models (LLM/VLM only). Azure aliases merged in for users with `can_use_azure` (admins bypass) | Direct response | `llm`, `vlm` |
+| `GET` | `/v1/me`, `/me` | Caller's access (on-prem / Azure / AWS) and today's budget per backend. Auth skips the daily-limit 429 so it answers when the budget is spent | Direct response | — |
 | `POST` | `/v1/chat/completions`, `/chat/completions` | Chat completion generation | `vllm_forward_chat_completions` (vLLM) / `azure_forward_chat_completions` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/responses`, `/responses` | Responses API | `vllm_forward_responses` | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`, `/embeddings` | Text embeddings | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
@@ -165,7 +166,7 @@ There is intentionally **no** `/azure/v1/embeddings` — the Responses API doesn
 | `POST` | `/admin/users/{id}/refresh-key` | Regenerate any user's API key, returns JSON |
 | `POST` | `/admin/users/{id}/toggle-disable` | Flip the user's `is_disabled` flag. Refuses to disable yourself (400). Allows enabling yourself |
 | `POST` | `/admin/users/{id}/toggle-azure` | Flip the user's `can_use_azure` flag (gates `/azure/v1/*` access) |
-| `POST` | `/admin/default-limit` | Set the default daily limit (USD). Persists to `[app].default_daily_limit_usd` in `config.toml` and bulk-bumps any user with `0 < daily_limit_usd < new_floor` up to the floor (unlimited users with `daily_limit_usd = 0` are never modified) |
+| `POST` | `/admin/default-limit` | Set the default daily limit (USD). Persists to `[app].default_daily_limit_usd` in `config.toml` and bulk-bumps any user with `0 < daily_limit_usd < new_floor` up to the floor (users at `daily_limit_usd = 0`, a deliberate $0 budget, are never modified) |
 | `GET` | `/admin/models` | Model config page (SPA, loads data via API) |
 
 ### Admin REST API (JWT auth, requires admin scope)

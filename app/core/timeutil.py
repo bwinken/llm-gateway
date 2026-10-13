@@ -8,6 +8,14 @@ from zoneinfo import ZoneInfo
 LOCAL_TZ = ZoneInfo("Asia/Taipei")
 
 
+def next_local_midnight(local_now: datetime | None = None) -> datetime:
+    """The next local midnight (aware, Asia/Taipei) — when daily quotas reset."""
+    local_now = local_now or datetime.now(LOCAL_TZ)
+    return (local_now + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+
 def seconds_until_local_midnight() -> int:
     """Seconds until the next local midnight — when daily quotas reset.
 
@@ -16,10 +24,7 @@ def seconds_until_local_midnight() -> int:
     Never returns less than 1.
     """
     local_now = datetime.now(LOCAL_TZ)
-    next_midnight = (local_now + timedelta(days=1)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    return max(1, int((next_midnight - local_now).total_seconds()))
+    return max(1, int((next_local_midnight(local_now) - local_now).total_seconds()))
 
 
 def local_day_start_utc() -> datetime:

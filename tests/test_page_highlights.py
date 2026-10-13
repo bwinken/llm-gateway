@@ -28,7 +28,8 @@ def _spend(session, user: User, usd: float, *, minutes_ago: int = 5) -> None:
 # a collection-time import would bind them to the real (unpatched) config.
 class TestBudgetState:
     @pytest.mark.parametrize("limit, spent, state", [
-        (0, 50, "unlimited"),
+        (0, 0, "over"),  # $0 budget: refused from the start
+        (0, 50, "over"),
         (10, 0, "ok"),
         (10, 6.99, "ok"),
         (10, 7, "warn"),
@@ -89,11 +90,11 @@ class TestTodayAggregates:
         near = User(username="near", api_key="sk-near", daily_limit_usd=10)
         over = User(username="over", api_key="sk-over", daily_limit_usd=10)
         fine = User(username="fine", api_key="sk-fine", daily_limit_usd=10)
-        unlimited = User(username="unl", api_key="sk-unl", daily_limit_usd=0)
+        zero = User(username="zero", api_key="sk-zero", daily_limit_usd=0)  # blocked on purpose
         disabled = User(username="dis", api_key="sk-dis", daily_limit_usd=10, is_disabled=True)
-        db_session.add_all([near, over, fine, unlimited, disabled])
+        db_session.add_all([near, over, fine, zero, disabled])
         db_session.commit()
-        for u, usd in [(near, 9.2), (over, 12), (fine, 5), (unlimited, 500), (disabled, 50)]:
+        for u, usd in [(near, 9.2), (over, 12), (fine, 5), (zero, 500), (disabled, 50)]:
             _spend(db_session, u, usd)
         rows = get_budget_pressure(db_session)
         assert [r["username"] for r in rows] == ["over", "near"]
@@ -116,13 +117,14 @@ class TestPages:
         # The budget comes before the model tables.
         assert body.index("Spent today") < body.index("On-Prem Models")
 
-    def test_dashboard_unlimited(self, client, db_session, test_user):
+    def test_dashboard_zero_limit(self, client, db_session, test_user):
         test_user.daily_limit_usd = 0
         db_session.add(test_user)
         db_session.commit()
         body = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
-        assert "No daily limit on this account" in body
-        assert "Remaining" not in body
+        assert "No daily budget on this account" in body
+        assert "Unlimited" not in body
+        assert "100% used" in body
 
     def test_dashboard_status_chips(self, client, test_user):
         metrics = {"http://mock-llm:8000/v1": {"running": 4, "waiting": 12}}

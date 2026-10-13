@@ -21,7 +21,7 @@ Browser → Nginx (:80)
                           → Gateway                 ← JWT header 認證
 ```
 
-範例 nginx 設定(`deploy/llm-gateway-example.nginx.conf`)在 HTTP 與 HTTPS 兩個 server context 中都有平行的 `/v1/` 和 `/azure/` 區塊。兩者都不經 oauth2-proxy,直接保留客戶端的 `Authorization: Bearer <api_key>` 轉發給 gateway。
+範例 nginx 設定(`deploy/llm-gateway-example.nginx.conf`)在 HTTP 與 HTTPS 兩個 server context 中都有平行的 `/v1/`、`/azure/`、`/aws/` 和 `= /me` 區塊。它們都不經 oauth2-proxy,直接保留客戶端的 `Authorization: Bearer <api_key>` 轉發給 gateway。
 
 - **Gateway**：user-level systemd service（Python/FastAPI）
 - **PostgreSQL + oauth2-proxy**：Docker Compose（`deploy/docker-compose.yml`）

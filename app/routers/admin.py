@@ -4,6 +4,7 @@ Admin panel: web UI + API endpoints for user management and model configuration.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -66,6 +67,23 @@ templates.env.globals["get_site_links"] = get_site_links
 # ── Web UI ──
 
 _PAGE_SIZE = 15
+
+
+def _limit_usd(raw: object, field: str) -> float:
+    """A daily limit (or sub-limit) in USD: a finite number >= 0.
+
+    There is no "unlimited": 0 is a $0 budget (every request refused), and
+    negative / inf / nan are rejected rather than quietly meaning "no cap".
+    """
+    if isinstance(raw, bool):
+        raise HTTPException(status_code=400, detail=f"{field} must be a number.")
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{field} must be a number.")
+    if not math.isfinite(value) or value < 0:
+        raise HTTPException(status_code=400, detail=f"{field} must be a number >= 0.")
+    return value
 
 
 @router.get("", response_class=HTMLResponse)
@@ -292,7 +310,7 @@ async def create_app_account_web(
 
     user = User(username=username, concurrency_waived=True)  # app accounts start waived
     if daily_limit is not None:
-        user.daily_limit_usd = float(daily_limit)
+        user.daily_limit_usd = _limit_usd(daily_limit, "daily_limit_usd")
     session.add(user)
     session.commit()
     session.refresh(user)
@@ -360,7 +378,7 @@ async def update_user_limit(
     form = await request.form()
     new_limit = form.get("new_limit")
     if new_limit is not None:
-        target.daily_limit_usd = float(new_limit)
+        target.daily_limit_usd = _limit_usd(new_limit, "new_limit")
         session.add(target)
         session.commit()
 
@@ -376,8 +394,7 @@ async def update_user_azure_limit(
     """Set the user's Azure-specific daily sub-limit.
 
     Empty value clears the sub-limit (NULL → Azure spend only bounded by the
-    overall daily_limit_usd, i.e. pre-feature behavior). 0 also means "no
-    separate Azure cap" but is stored as sent.
+    overall daily_limit_usd). 0 is a $0 cap: Azure requests are refused.
     """
     target = session.exec(select(User).where(User.id == user_id)).first()
     if not target:
@@ -390,10 +407,7 @@ async def update_user_azure_limit(
         if raw == "":
             target.azure_daily_limit_usd = None
         else:
-            try:
-                target.azure_daily_limit_usd = float(raw)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="new_azure_limit must be a number.")
+            target.azure_daily_limit_usd = _limit_usd(raw, "new_azure_limit")
         session.add(target)
         session.commit()
 
@@ -422,10 +436,7 @@ async def update_user_bedrock_limit(
         if raw == "":
             target.bedrock_daily_limit_usd = None
         else:
-            try:
-                target.bedrock_daily_limit_usd = float(raw)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="new_bedrock_limit must be a number.")
+            target.bedrock_daily_limit_usd = _limit_usd(raw, "new_bedrock_limit")
         session.add(target)
         session.commit()
 
@@ -439,23 +450,18 @@ async def update_default_limit(
 ):
     """Set default daily limit. Bumps any user below the new floor up to it.
 
-    Users with daily_limit_usd = 0 (unlimited) are never modified.
+    Users with daily_limit_usd = 0 (a deliberate $0 budget) are never modified.
     Users already above the floor are never modified.
     """
     form = await request.form()
     raw_value = form.get("new_default")
     if raw_value is None:
         raise HTTPException(status_code=400, detail="Missing new_default.")
-    try:
-        new_default = float(raw_value)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="new_default must be a number.")
-    if new_default < 0:
-        raise HTTPException(status_code=400, detail="new_default must be non-negative.")
+    new_default = _limit_usd(raw_value, "new_default")
 
     set_default_daily_limit(new_default)
 
-    # Bulk-bump users below the new floor (skip unlimited users).
+    # Bulk-bump users below the new floor (skip $0 accounts: blocked on purpose).
     from sqlalchemy import update as sql_update
     stmt = (
         sql_update(User)
@@ -791,13 +797,17 @@ async def create_user_api(
     # "concurrency_waived" in the body (handled below) still wins.
     new_user = User(username=username, concurrency_waived=is_app_account(username))
     if "daily_limit_usd" in body:
-        new_user.daily_limit_usd = float(body["daily_limit_usd"])
+        new_user.daily_limit_usd = _limit_usd(body["daily_limit_usd"], "daily_limit_usd")
     if "azure_daily_limit_usd" in body:
         raw = body["azure_daily_limit_usd"]
-        new_user.azure_daily_limit_usd = None if raw is None else float(raw)
+        new_user.azure_daily_limit_usd = (
+            None if raw is None else _limit_usd(raw, "azure_daily_limit_usd")
+        )
     if "bedrock_daily_limit_usd" in body:
         raw = body["bedrock_daily_limit_usd"]
-        new_user.bedrock_daily_limit_usd = None if raw is None else float(raw)
+        new_user.bedrock_daily_limit_usd = (
+            None if raw is None else _limit_usd(raw, "bedrock_daily_limit_usd")
+        )
     if "is_admin" in body:
         new_user.is_admin = bool(body["is_admin"])
     if "concurrency_waived" in body:
@@ -844,13 +854,17 @@ async def update_user_api(
         raise HTTPException(status_code=404, detail="User not found.")
 
     if "daily_limit_usd" in body:
-        target.daily_limit_usd = float(body["daily_limit_usd"])
+        target.daily_limit_usd = _limit_usd(body["daily_limit_usd"], "daily_limit_usd")
     if "azure_daily_limit_usd" in body:
         raw = body["azure_daily_limit_usd"]
-        target.azure_daily_limit_usd = None if raw is None else float(raw)
+        target.azure_daily_limit_usd = (
+            None if raw is None else _limit_usd(raw, "azure_daily_limit_usd")
+        )
     if "bedrock_daily_limit_usd" in body:
         raw = body["bedrock_daily_limit_usd"]
-        target.bedrock_daily_limit_usd = None if raw is None else float(raw)
+        target.bedrock_daily_limit_usd = (
+            None if raw is None else _limit_usd(raw, "bedrock_daily_limit_usd")
+        )
     if "is_admin" in body:
         target.is_admin = bool(body["is_admin"])
     if "concurrency_waived" in body:

@@ -516,13 +516,13 @@ function submitExportCsv() {
                         <td class="whitespace-nowrap">
                             <form action="/admin/users/{{ u.id }}/limit" method="POST" class="flex items-center gap-2">
                                 <span class="text-t4 text-sm">$</span>
-                                <input type="number" step="0.1" name="new_limit" value="{{ u.daily_limit_usd }}"
+                                <input type="number" step="0.1" min="0" name="new_limit" value="{{ u.daily_limit_usd }}"
                                        class="gw-input w-20 text-sm font-mono py-1 px-2">
                                 <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
                             </form>
                             {% if u.can_use_azure %}
                             <form action="/admin/users/{{ u.id }}/azure-limit" method="POST" class="flex items-center gap-2 mt-1"
-                                  title="Azure daily sub-limit (counts inside the overall limit). Empty = no separate Azure cap.">
+                                  title="Azure daily sub-limit (counts inside the overall limit). Empty = no separate Azure cap; 0 = no Azure spend.">
                                 <span class="text-xs" style="color:#cab9ff">Az$</span>
                                 <input type="number" step="0.1" min="0" name="new_azure_limit"
                                        value="{{ u.azure_daily_limit_usd if u.azure_daily_limit_usd is not none else '' }}"
@@ -533,7 +533,7 @@ function submitExportCsv() {
                             {% endif %}
                             {% if u.can_use_bedrock %}
                             <form action="/admin/users/{{ u.id }}/bedrock-limit" method="POST" class="flex items-center gap-2 mt-1"
-                                  title="Bedrock daily sub-limit (counts inside the overall limit). Empty = no separate Bedrock cap.">
+                                  title="Bedrock daily sub-limit (counts inside the overall limit). Empty = no separate Bedrock cap; 0 = no Bedrock spend.">
                                 <span class="text-xs" style="color:#ffcb8a">Aw$</span>
                                 <input type="number" step="0.1" min="0" name="new_bedrock_limit"
                                        value="{{ u.bedrock_daily_limit_usd if u.bedrock_daily_limit_usd is not none else '' }}"
@@ -655,13 +655,13 @@ function submitExportCsv() {
                         <td class="whitespace-nowrap">
                             <form action="/admin/users/{{ u.id }}/limit" method="POST" class="flex items-center gap-2">
                                 <span class="text-t4 text-sm">$</span>
-                                <input type="number" step="0.1" name="new_limit" value="{{ u.daily_limit_usd }}"
+                                <input type="number" step="0.1" min="0" name="new_limit" value="{{ u.daily_limit_usd }}"
                                        class="gw-input w-20 text-sm font-mono py-1 px-2">
                                 <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
                             </form>
                             {% if u.can_use_azure %}
                             <form action="/admin/users/{{ u.id }}/azure-limit" method="POST" class="flex items-center gap-2 mt-1"
-                                  title="Azure daily sub-limit (counts inside the overall limit). Empty = no separate Azure cap.">
+                                  title="Azure daily sub-limit (counts inside the overall limit). Empty = no separate Azure cap; 0 = no Azure spend.">
                                 <span class="text-xs" style="color:#cab9ff">Az$</span>
                                 <input type="number" step="0.1" min="0" name="new_azure_limit"
                                        value="{{ u.azure_daily_limit_usd if u.azure_daily_limit_usd is not none else '' }}"
@@ -672,7 +672,7 @@ function submitExportCsv() {
                             {% endif %}
                             {% if u.can_use_bedrock %}
                             <form action="/admin/users/{{ u.id }}/bedrock-limit" method="POST" class="flex items-center gap-2 mt-1"
-                                  title="Bedrock daily sub-limit (counts inside the overall limit). Empty = no separate Bedrock cap.">
+                                  title="Bedrock daily sub-limit (counts inside the overall limit). Empty = no separate Bedrock cap; 0 = no Bedrock spend.">
                                 <span class="text-xs" style="color:#ffcb8a">Aw$</span>
                                 <input type="number" step="0.1" min="0" name="new_bedrock_limit"
                                        value="{{ u.bedrock_daily_limit_usd if u.bedrock_daily_limit_usd is not none else '' }}"
@@ -798,12 +798,12 @@ function submitExportCsv() {
     <div class="flex flex-wrap items-center justify-between gap-4">
         <div>
             <h2 class="text-sm font-bold text-t2 mb-1">Default Daily Limit</h2>
-            <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="New users get this value. Existing users below it (and not unlimited, i.e. limit > 0) get bumped up to it. Users at or above this stay unchanged. 0 = unlimited.">
+            <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="New users get this value. Existing users below it get bumped up to it, except accounts set to $0 (blocked on purpose). Users at or above this stay unchanged. Every account has a limit: 0 means $0, not unlimited.">
                 Floor for daily spend (USD). Applies to new users; existing users below the floor are auto-raised.
             </p>
         </div>
         <form action="/admin/default-limit" method="POST"
-              onsubmit="return confirm('Set default daily limit to $' + this.new_default.value + '? All users below this floor (excluding unlimited) will be raised to it.');"
+              onsubmit="return confirm('Set default daily limit to $' + this.new_default.value + '? All users below this floor (except $0 accounts) will be raised to it.');"
               class="flex items-end gap-3">
             <div>
                 <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Default Limit (USD)</label>
@@ -858,10 +858,10 @@ function submitExportCsv() {
             </div>
         </div>
         <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Max daily spend in USD. API returns 429 when limit is reached.">Daily Limit (USD)</label>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Max daily spend in USD. API returns 429 when limit is reached. 0 = $0 (every request refused).">Daily Limit (USD)</label>
             <div class="flex items-center gap-1">
                 <span class="text-sm text-t4">$</span>
-                <input type="number" step="0.1" name="daily_limit_usd" value="10.0"
+                <input type="number" step="0.1" min="0" name="daily_limit_usd" value="10.0"
                        class="gw-input w-24 text-sm font-mono py-1.5 px-2">
             </div>
         </div>

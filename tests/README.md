@@ -306,7 +306,8 @@ Also note `test_azure_blocked_without_can_use_azure` lives in `test_azure_api.py
 | Test class | What it covers |
 |---|---|
 | `TestDailyLimitEnforcement` | Under-limit request passes; at-or-over limit returns 429 (the post-write race-condition guard logs a warning but doesn't change the response code) |
-| `TestPerUserUnlimited` | `daily_limit_usd = 0` skips the limit check entirely |
+| `TestZeroLimit` | `daily_limit_usd = 0` is a $0 budget: every request 429s (soft mode still lets it through) |
+| `TestAdminLimitValidation` | Admin limit writes reject negative / `inf` / `nan`; `0` is accepted |
 | `TestGatewaySoftMode` | `ENFORCE_DAILY_LIMIT` env var: `false` lets overage through (with warning log), default-strict, explicit `true` still enforces, value is case-insensitive |
 
 ### `test_usage_export.py` — Monthly usage report (xlsx)

@@ -78,6 +78,8 @@ Each of these has broken production or a test before. The parenthesized test pin
 **Routing and config**
 - Aliases are unique across `[models.*]`, `[azure_models.*]` and `[bedrock_models.*]`. `_build_config` raises at startup; `PUT /admin/api/config` rejects collisions before writing.
 - An unknown alias falls back (with `X-Model-Fallback`) rather than returning 404. A cloud alias requested without permission silently falls back to vLLM: cloud models are hidden through the `/v1/models` filter, not through errors.
+- `GET /v1/me` authenticates with `get_current_user_unmetered`, never `get_current_user`: it must answer when the budget is spent, which is when clients ask (`TestOverBudget`). Its response never contains `null` (`_no_nulls` in `test_account_info.py`).
+- Every account has a limit: `daily_limit_usd = 0` is a **$0 budget**, never "unlimited", and a sub-limit of `0` is a $0 cap (NULL = no separate cap). Admin writes go through `admin._limit_usd` (finite, ≥ 0); never reintroduce a `<= 0` → skip branch (`TestZeroLimit`, `TestAdminLimitValidation`).
 - An exhausted cloud sub-limit is a **429**, not a silent vLLM fallback, unless `[app].cloud_budget_fallback` is on, and that only applies on `/v1/*`.
 - `rate_limit_fallback` stays on the **same backend**, and the request body is rebuilt per attempt from a deep copy of the original.
 - Reasoning effort: no nearest-level guessing. Forward what was asked, what config maps it to, or nothing. An undeclared route is byte-faithful. `max` is a level of its own, not a spelling of `xhigh`. `reasoning_effort` is only emitted for `is_reasoning` models.

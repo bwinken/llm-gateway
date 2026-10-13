@@ -28,6 +28,8 @@ misconfiguration that previously surfaced as a silent 404.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
@@ -36,10 +38,19 @@ from app.core.config import (
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
     get_cloud_budget_fallback,
+    get_concurrency_settings,
     get_model_routing_snapshot,
 )
-from app.core.deps import check_cloud_budget, get_current_user, limited_current_user
+from app.core.deps import (
+    _enforce_daily_limit,
+    check_cloud_budget,
+    get_current_user,
+    get_current_user_unmetered,
+    get_today_usage,
+    limited_current_user,
+)
 from app.core.logger import logger
+from app.core.timeutil import LOCAL_TZ, next_local_midnight, seconds_until_local_midnight
 from app.models.schema import User
 from app.services.azure_proxy import (
     azure_forward_chat_completions,
@@ -268,6 +279,94 @@ async def list_models(user: User = Depends(get_current_user)):
             models.append(entry)
 
     return {"object": "list", "data": models}
+
+
+def _usd(value: float) -> float:
+    """Round to the precision ``usage_logs.cost_usd`` stores (Numeric(12, 6))."""
+    return round(value, 6)
+
+
+def _remaining(limit: float, used: float) -> float:
+    return _usd(max(0.0, limit - used))
+
+
+@router.get("/v1/me")
+@router.get("/me")
+async def account_info(user: User = Depends(get_current_user_unmetered)):
+    """The caller's own access and today's budget, for clients and scripts.
+
+    Answers even once the daily limit is spent (no 429 at auth), since
+    "how much is left / when does it reset" is what a client asks then.
+    Every account has a finite limit, so every amount is a number (never
+    null, no "unlimited").
+
+    Per backend (``onprem`` = vLLM, ``azure``, ``aws`` = Bedrock):
+      - ``access``: may this key reach it (admins bypass the cloud flags);
+      - ``sub_limit_usd``: only when an admin set a separate cap for it
+        (0 included: a $0 cap);
+      - ``used_usd``: today's spend there;
+      - ``remaining_usd``: what can still be spent there today — the tighter
+        of the sub-limit and the overall daily limit (cloud spend counts
+        toward both), 0 without access.
+
+    Limits are those the gateway enforces; with ``ENFORCE_DAILY_LIMIT=false``
+    they are only logged (``daily.enforced`` = false).
+    """
+    today = await run_in_threadpool(get_today_usage, user)
+
+    daily_limit = max(0.0, user.daily_limit_usd)
+    daily_remaining = _remaining(daily_limit, today["total_cost_usd"])
+
+    def _backend(access: bool, used: float, sub_limit: float | None) -> dict:
+        out: dict[str, object] = {"access": access}
+        if sub_limit is not None:
+            out["sub_limit_usd"] = max(0.0, sub_limit)
+        remaining = daily_remaining
+        if sub_limit is not None:
+            remaining = min(remaining, _remaining(sub_limit, used))
+        out["used_usd"] = _usd(used)
+        out["remaining_usd"] = remaining if access else 0.0
+        return out
+
+    mode, limit = get_concurrency_settings()
+    concurrency_applies = mode != "off" and not user.is_admin and not user.concurrency_waived
+    local_now = datetime.now(LOCAL_TZ)
+
+    return {
+        "object": "account",
+        "username": user.username,
+        "display_name": user.display_name,
+        "is_admin": user.is_admin,
+        "daily": {
+            "limit_usd": daily_limit,
+            "used_usd": _usd(today["total_cost_usd"]),
+            "remaining_usd": daily_remaining,
+            "requests": today["total_requests"],
+            "input_tokens": today["total_input_tokens"],
+            "output_tokens": today["total_output_tokens"],
+            "enforced": _enforce_daily_limit(),
+            "timezone": str(LOCAL_TZ),
+            "resets_at": next_local_midnight(local_now).isoformat(),
+            "resets_in_seconds": seconds_until_local_midnight(),
+        },
+        "backends": {
+            "onprem": _backend(True, today["vllm_cost_usd"], None),
+            "azure": _backend(
+                user.can_use_azure or user.is_admin,
+                today["azure_cost_usd"],
+                user.azure_daily_limit_usd,
+            ),
+            "aws": _backend(
+                user.can_use_bedrock or user.is_admin,
+                today["bedrock_cost_usd"],
+                user.bedrock_daily_limit_usd,
+            ),
+        },
+        "cloud_budget_fallback": get_cloud_budget_fallback(),
+        "concurrency": (
+            {"mode": mode, "limit": limit} if concurrency_applies else {"mode": "off"}
+        ),
+    }
 
 
 @router.post("/v1/chat/completions")

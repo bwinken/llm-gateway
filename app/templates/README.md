@@ -46,7 +46,7 @@ disabled.html        → Rendered by AccountDisabledError handler when a disable
 | Section | Description |
 |---|---|
 | **System Status** | All downstream server health, grouped by type (LLM / VLM / Embedding / Reranker), real-time ONLINE / DOWN. Each model row shows admin-set metadata badges (context window, `tools`, `vision`, `cache`) when set |
-| **Stats Cards** | Monthly stat cards: Requests count, Estimated Cost, Budget Usage (progress bar + percentage + today's `Remaining: $X.XXXX / $Y` display, or "Unlimited" when `daily_limit_usd = 0`), Total Tokens (Input / Output) |
+| **Stats Cards** | Monthly stat cards: Requests count, Estimated Cost, Budget Usage (progress bar + percentage + today's `Remaining: $X.XXXX / $Y` display; `daily_limit_usd = 0` shows "No daily budget on this account"), Total Tokens (Input / Output) |
 | **Usage Trend** | Chart.js line chart, 30-day usage trend, toggle between Requests / Cost (USD) views |
 | **My App Accounts** | Owned app account list (visible to owners only), shows API key, monthly usage, Copy / Refresh Key |
 | **Azure Access** | Shown only when `user.can_use_azure or user.is_admin`. Lists configured Azure model aliases with their metadata badges. If the user has access but no Azure models are configured, shows a "Contact your administrator" message |
@@ -79,7 +79,7 @@ disabled.html        → Rendered by AccountDisabledError handler when a disable
 | **User Leaderboard** | User ranking, top-10 by monthly cost descending, shows display_name and org_code badge |
 | **Department Usage** | Usage table grouped by org_code: Users, Cost, Input / Output Tokens, Reqs |
 | **Create App Account** | Form to create new app account: username (auto-prefixed with `app_`), Daily Limit, Owner |
-| **User Management** | Server-side paginated (limit/offset) user table with server-side search (`q` parameter, ILIKE on username/display_name/org_code), Users / Apps tab switching. Header shows a **Default Limit** input + Save button (`POST /admin/default-limit`) — sets `[app].default_daily_limit_usd` and bulk-bumps any user with `0 < daily_limit_usd < new_floor` up to the floor (unlimited users with `daily_limit_usd = 0` are never modified) |
+| **User Management** | Server-side paginated (limit/offset) user table with server-side search (`q` parameter, ILIKE on username/display_name/org_code), Users / Apps tab switching. Header shows a **Default Limit** input + Save button (`POST /admin/default-limit`) — sets `[app].default_daily_limit_usd` and bulk-bumps any user with `0 < daily_limit_usd < new_floor` up to the floor (users at `daily_limit_usd = 0`, a deliberate $0 budget, are never modified) |
 
 ### Available Actions
 
