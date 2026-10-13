@@ -166,7 +166,7 @@ There is intentionally **no** `/azure/v1/embeddings` — the Responses API doesn
 | `POST` | `/admin/users/{id}/refresh-key` | Regenerate any user's API key, returns JSON |
 | `POST` | `/admin/users/{id}/toggle-disable` | Flip the user's `is_disabled` flag. Refuses to disable yourself (400). Allows enabling yourself |
 | `POST` | `/admin/users/{id}/toggle-azure` | Flip the user's `can_use_azure` flag (gates `/azure/v1/*` access) |
-| `POST` | `/admin/default-limit` | Set the default daily limit (USD). Persists to `[app].default_daily_limit_usd` in `config.toml` and bulk-bumps any user with `0 < daily_limit_usd < new_floor` up to the floor (unlimited users with `daily_limit_usd = 0` are never modified) |
+| `POST` | `/admin/default-limit` | Set the default daily limit (USD). Persists to `[app].default_daily_limit_usd` in `config.toml` and bulk-bumps any user with `0 < daily_limit_usd < new_floor` up to the floor (users at `daily_limit_usd = 0`, a deliberate $0 budget, are never modified) |
 | `GET` | `/admin/models` | Model config page (SPA, loads data via API) |
 
 ### Admin REST API (JWT auth, requires admin scope)

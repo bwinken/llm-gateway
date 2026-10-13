@@ -48,8 +48,8 @@ def _me(client, path: str = "/v1/me", headers=None):
     resp = client.get(path, headers=headers or auth_header())
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    # "No limit" is spelled unlimited=true, never a null a client could
-    # misread as zero (or a missing sub-limit misread as "unlimited").
+    # Every account has a finite limit, so every amount is a number: a null
+    # would read as "unlimited" (or as zero) to a client.
     assert _no_nulls(body), body
     return body
 
@@ -61,7 +61,7 @@ class TestAccountInfo:
         assert body["username"] == "testuser"
         assert body["is_admin"] is False
         daily = body["daily"]
-        assert daily["unlimited"] is False
+        assert "unlimited" not in daily
         assert daily["limit_usd"] == 100.0
         assert daily["used_usd"] == 0.0
         assert daily["remaining_usd"] == 100.0
@@ -72,7 +72,7 @@ class TestAccountInfo:
         assert 0 < daily["resets_in_seconds"] <= 86400
         for name in ("onprem", "azure", "aws"):
             assert body["backends"][name] == {
-                "access": True, "unlimited": False, "used_usd": 0.0, "remaining_usd": 100.0,
+                "access": True, "used_usd": 0.0, "remaining_usd": 100.0,
             }
 
     def test_unprefixed_alias(self, client, test_user):
@@ -93,11 +93,10 @@ class TestAccountInfo:
         assert daily["output_tokens"] == 15
         backends = body["backends"]
         assert backends["onprem"] == {
-            "access": True, "unlimited": False, "used_usd": 10.0, "remaining_usd": 85.5,
+            "access": True, "used_usd": 10.0, "remaining_usd": 85.5,
         }
         assert backends["azure"] == {
-            "access": True, "sub_limit_usd": 5.0, "unlimited": False,
-            "used_usd": 3.0, "remaining_usd": 2.0,
+            "access": True, "sub_limit_usd": 5.0, "used_usd": 3.0, "remaining_usd": 2.0,
         }
         assert backends["aws"]["used_usd"] == 1.5
         assert backends["aws"]["remaining_usd"] == 85.5
@@ -116,28 +115,23 @@ class TestAccountInfo:
         )
         assert _me(client)["daily"]["used_usd"] == 0.0
 
-    def test_unlimited(self, client, db_session, test_user):
-        _update(db_session, test_user, daily_limit_usd=0.0, azure_daily_limit_usd=0.0)
-        _spend(db_session, test_user, "500")
+    def test_zero_limit_is_zero(self, client, db_session, test_user):
+        # 0 is a $0 budget, not "unlimited": nothing left anywhere.
+        _update(db_session, test_user, daily_limit_usd=0.0)
         body = _me(client)
-        daily = body["daily"]
-        assert daily["unlimited"] is True
-        assert "limit_usd" not in daily and "remaining_usd" not in daily
-        assert daily["used_usd"] == 500.0
-        assert body["backends"]["azure"] == {
-            "access": True, "unlimited": True, "used_usd": 0.0,
-        }
+        assert body["daily"]["limit_usd"] == 0.0
+        assert body["daily"]["remaining_usd"] == 0.0
+        for name in ("onprem", "azure", "aws"):
+            assert body["backends"][name]["remaining_usd"] == 0.0
 
-    def test_sub_limit_caps_an_otherwise_unlimited_user(self, client, db_session, test_user):
-        _update(db_session, test_user, daily_limit_usd=0.0, azure_daily_limit_usd=5.0)
-        _spend(db_session, test_user, "1", backend="azure")
-        body = _me(client)
-        assert body["daily"]["unlimited"] is True
-        assert body["backends"]["onprem"]["unlimited"] is True
-        assert body["backends"]["azure"] == {
-            "access": True, "sub_limit_usd": 5.0, "unlimited": False,
-            "used_usd": 1.0, "remaining_usd": 4.0,
+    def test_zero_sub_limit_is_zero(self, client, db_session, test_user):
+        _update(db_session, test_user, azure_daily_limit_usd=0.0)
+        backends = _me(client)["backends"]
+        assert backends["azure"] == {
+            "access": True, "sub_limit_usd": 0.0, "used_usd": 0.0, "remaining_usd": 0.0,
         }
+        assert backends["onprem"]["remaining_usd"] == 100.0
+        assert "sub_limit_usd" not in backends["aws"]
 
     def test_no_cloud_access(self, client, db_session, test_user):
         _update(db_session, test_user, can_use_azure=False, can_use_bedrock=False)
@@ -145,7 +139,6 @@ class TestAccountInfo:
         assert backends["onprem"]["access"] is True
         for name in ("azure", "aws"):
             assert backends[name]["access"] is False
-            assert backends[name]["unlimited"] is False
             assert backends[name]["remaining_usd"] == 0.0
 
     def test_admin_bypasses_cloud_flags(self, client, admin_user):

@@ -286,32 +286,8 @@ def _usd(value: float) -> float:
     return round(value, 6)
 
 
-def _cap(limit: float | None) -> float | None:
-    """A configured limit, or None when it means "no cap" (NULL or <= 0)."""
-    return limit if limit is not None and limit > 0 else None
-
-
-def _remaining(limit: float | None, used: float) -> float | None:
-    return None if limit is None else _usd(max(0.0, limit - used))
-
-
-def _min_remaining(*values: float | None) -> float | None:
-    """The tightest of several remainders; None only when none is capped."""
-    capped = [v for v in values if v is not None]
-    return min(capped) if capped else None
-
-
-def _budget(limit: float | None, used: float, remaining: float | None) -> dict:
-    """``unlimited`` plus the numbers that exist — never a null: no limit is
-    spelled ``unlimited: true`` with ``limit_usd`` / ``remaining_usd`` left
-    out, not ``limit_usd: null``."""
-    out: dict[str, object] = {"unlimited": remaining is None}
-    if limit is not None:
-        out["limit_usd"] = limit
-    out["used_usd"] = _usd(used)
-    if remaining is not None:
-        out["remaining_usd"] = remaining
-    return out
+def _remaining(limit: float, used: float) -> float:
+    return _usd(max(0.0, limit - used))
 
 
 @router.get("/v1/me")
@@ -321,39 +297,35 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
 
     Answers even once the daily limit is spent (no 429 at auth), since
     "how much is left / when does it reset" is what a client asks then.
-
-    The response never carries null: "no limit" is ``unlimited: true`` with
-    ``limit_usd`` / ``remaining_usd`` left out, so a client can't misread a
-    null as zero or a missing sub-limit as "unlimited".
+    Every account has a finite limit, so every amount is a number (never
+    null, no "unlimited").
 
     Per backend (``onprem`` = vLLM, ``azure``, ``aws`` = Bedrock):
       - ``access``: may this key reach it (admins bypass the cloud flags);
+      - ``sub_limit_usd``: only when an admin set a separate cap for it
+        (0 included: a $0 cap);
       - ``used_usd``: today's spend there;
       - ``remaining_usd``: what can still be spent there today — the tighter
-        of the backend's sub-limit and the overall daily limit (cloud spend
-        counts toward both), 0 without access;
-      - ``sub_limit_usd``: only when an admin set a separate cap for it;
-      - ``unlimited``: true only when neither the sub-limit nor the overall
-        limit caps it (``remaining_usd`` is then left out).
+        of the sub-limit and the overall daily limit (cloud spend counts
+        toward both), 0 without access.
 
     Limits are those the gateway enforces; with ``ENFORCE_DAILY_LIMIT=false``
     they are only logged (``daily.enforced`` = false).
     """
     today = await run_in_threadpool(get_today_usage, user)
 
-    daily_limit = _cap(user.daily_limit_usd)
+    daily_limit = max(0.0, user.daily_limit_usd)
     daily_remaining = _remaining(daily_limit, today["total_cost_usd"])
 
     def _backend(access: bool, used: float, sub_limit: float | None) -> dict:
-        sub_limit = _cap(sub_limit)
         out: dict[str, object] = {"access": access}
         if sub_limit is not None:
-            out["sub_limit_usd"] = sub_limit
-        if access:
-            remaining = _min_remaining(_remaining(sub_limit, used), daily_remaining)
-        else:
-            remaining = 0.0
-        out.update(_budget(None, used, remaining))
+            out["sub_limit_usd"] = max(0.0, sub_limit)
+        remaining = daily_remaining
+        if sub_limit is not None:
+            remaining = min(remaining, _remaining(sub_limit, used))
+        out["used_usd"] = _usd(used)
+        out["remaining_usd"] = remaining if access else 0.0
         return out
 
     mode, limit = get_concurrency_settings()
@@ -366,7 +338,9 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
         "display_name": user.display_name,
         "is_admin": user.is_admin,
         "daily": {
-            **_budget(daily_limit, today["total_cost_usd"], daily_remaining),
+            "limit_usd": daily_limit,
+            "used_usd": _usd(today["total_cost_usd"]),
+            "remaining_usd": daily_remaining,
             "requests": today["total_requests"],
             "input_tokens": today["total_input_tokens"],
             "output_tokens": today["total_output_tokens"],

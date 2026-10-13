@@ -46,7 +46,7 @@ disabled.html        → 已停用使用者點擊任何 HTML 路由時,由 Accou
 | 區塊 | 說明 |
 |---|---|
 | **System Status** | 所有下游伺服器健康狀態,依類型分組(LLM / VLM / Embedding / Reranker),即時顯示 ONLINE / DOWN。每筆模型旁顯示管理員設定的 metadata badge(context window、`tools`、`vision`、`cache`) |
-| **Stats Cards** | 當月統計卡片:Requests 數、Estimated Cost、Budget Usage(進度條 + 百分比 + 當日剩餘額度顯示 `Remaining: $X.XXXX / $Y`,`daily_limit_usd = 0` 時顯示 "Unlimited")、Total Tokens(Input / Output) |
+| **Stats Cards** | 當月統計卡片:Requests 數、Estimated Cost、Budget Usage(進度條 + 百分比 + 當日剩餘額度顯示 `Remaining: $X.XXXX / $Y`,`daily_limit_usd = 0` 時顯示 "No daily budget on this account")、Total Tokens(Input / Output) |
 | **Usage Trend** | Chart.js 折線圖，近 30 天用量趨勢，可切換 Requests / Cost (USD) 兩種視圖 |
 | **My App Accounts** | 擁有的 App 帳號清單（僅 owner 可見），顯示 API key、月用量，可 Copy / Refresh Key |
 | **Azure Access** | 僅當 `user.can_use_azure or user.is_admin` 時顯示。列出已設定的 Azure 模型別名與其 metadata badge;若使用者有權但目前沒有 Azure 模型,則顯示 "Contact your administrator" |
@@ -79,7 +79,7 @@ disabled.html        → 已停用使用者點擊任何 HTML 路由時,由 Accou
 | **User Leaderboard** | 使用者排行榜，按月費用降序 top-10，顯示 display_name、org_code badge |
 | **Department Usage** | 依 org_code 分組的部門用量表：Users、Cost、Input / Output Tokens、Reqs |
 | **Create App Account** | 建立新 App 帳號的表單：username（自動加 `app_` 前綴）、Daily Limit、Owner |
-| **User Management** | 後端分頁(limit/offset)的使用者表格,Users / Apps 分頁切換。標題列有 **Default Limit** 輸入框 + Save 按鈕(`POST /admin/default-limit`) — 寫入 `[app].default_daily_limit_usd` 並批次將 `0 < daily_limit_usd < new_floor` 的使用者拉高到新 floor(`daily_limit_usd = 0` 的無限制使用者不會被改動) |
+| **User Management** | 後端分頁(limit/offset)的使用者表格,Users / Apps 分頁切換。標題列有 **Default Limit** 輸入框 + Save 按鈕(`POST /admin/default-limit`) — 寫入 `[app].default_daily_limit_usd` 並批次將 `0 < daily_limit_usd < new_floor` 的使用者拉高到新 floor(`daily_limit_usd = 0` 的使用者是刻意設成 $0,不會被改動) |
 
 ### 可執行操作
 

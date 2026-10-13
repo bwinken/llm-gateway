@@ -129,7 +129,8 @@ class TestBackendTagging:
 
 
 class TestAzureSubLimitDefaultOff:
-    """NULL / <= 0 azure_daily_limit_usd → behavior identical to before."""
+    """NULL azure_daily_limit_usd → no separate cap (overall limit only);
+    0 is a real $0 cap, not "off"."""
 
     def test_null_limit_never_blocks_azure(self, client, db_session, test_user):
         assert test_user.azure_daily_limit_usd is None  # model default
@@ -137,11 +138,12 @@ class TestAzureSubLimitDefaultOff:
         _mock_azure_ok(client)
         assert _post_azure_chat(client).status_code == 200
 
-    def test_zero_limit_never_blocks_azure(self, client, db_session, test_user):
+    def test_zero_limit_blocks_azure(self, client, db_session, test_user):
         _set_azure_limit(db_session, test_user, 0.0)
-        _burn(db_session, test_user, Decimal("50.00"), "azure")
         _mock_azure_ok(client)
-        assert _post_azure_chat(client).status_code == 200
+        resp = _post_azure_chat(client)
+        assert resp.status_code == 429
+        assert "Azure daily spending limit is $0" in resp.json()["detail"]
 
 
 class TestUsersWithoutAzureAccess:
@@ -303,6 +305,25 @@ class TestAdminAzureLimitEndpoint:
             follow_redirects=False,
         )
         assert resp.status_code == 400
+
+    def test_negative_value_is_400(self, client, db_session, admin_user, test_user):
+        resp = client.post(
+            f"/admin/users/{test_user.id}/azure-limit",
+            data={"new_azure_limit": "-1"},
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
+            follow_redirects=False,
+        )
+        assert resp.status_code == 400
+
+    def test_zero_is_stored_as_zero(self, client, db_session, admin_user, test_user):
+        resp = client.post(
+            f"/admin/users/{test_user.id}/azure-limit",
+            data={"new_azure_limit": "0"},
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert self._get_user(db_session, test_user.id).azure_daily_limit_usd == 0.0
 
     def test_patch_users_api_accepts_azure_limit(self, client, db_session, admin_user, test_user):
         resp = client.patch(

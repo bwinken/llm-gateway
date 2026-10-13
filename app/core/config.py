@@ -11,6 +11,7 @@ Each model entry in MODEL_ROUTING contains:
 
 from __future__ import annotations
 
+import math
 import os
 import tempfile
 import threading
@@ -621,14 +622,17 @@ def get_default_daily_limit() -> float:
     """Return default daily limit (USD) for newly provisioned users.
 
     Looks up [app].default_daily_limit_usd in config.toml, falling back
-    to 10.0 if missing/invalid. Auto-reloads if config file changed.
+    to 10.0 if missing/invalid (including inf/nan: every account has a
+    finite limit). Negative values clamp to 0, a $0 budget. Auto-reloads
+    if config file changed.
     """
     _check_auto_reload()
     val = APP_CONFIG.get("default_daily_limit_usd", 10.0)
     try:
-        return max(0.0, float(val))
+        limit = float(val)
     except (TypeError, ValueError):
         return 10.0
+    return max(0.0, limit) if math.isfinite(limit) else 10.0
 
 
 def set_default_daily_limit(value: float) -> None:

@@ -429,7 +429,8 @@ def get_today_totals(session: Session) -> dict:
 
 def get_budget_pressure(session: Session, threshold: float = 0.9) -> list[dict]:
     """Enabled accounts whose spend today has reached ``threshold`` of their
-    daily limit (unlimited accounts, ``daily_limit_usd <= 0``, never appear).
+    daily limit. Accounts with a $0 limit are left out: they are blocked on
+    purpose, not running out.
     Sorted by share used, highest first — the "about to get 429s" list."""
     today_start = local_day_start_utc()
     spent = (

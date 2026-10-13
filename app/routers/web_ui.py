@@ -59,14 +59,22 @@ def _resolve_prices(entry: dict, model_type: str, pricing_map: dict) -> tuple[fl
     return float(p.get("input_price_per_1m", 0.0)), float(p.get("output_price_per_1m", 0.0))
 
 
+def _usage_percent(spent: float, limit: float) -> float:
+    """Share of ``limit`` spent, capped at 100; a $0 limit is 100 % used."""
+    if limit <= 0:
+        return 100.0
+    return min(100.0, (spent / limit) * 100)
+
+
 def _budget_state(limit: float, spent: float) -> str:
     """Colour band for the dashboard's budget meter.
 
-    ``unlimited`` (limit <= 0) · ``ok`` (< 70 %) · ``warn`` (< 90 %) ·
-    ``crit`` (< 100 %) · ``over`` (limit reached: requests now get 429).
+    ``ok`` (< 70 %) · ``warn`` (< 90 %) · ``crit`` (< 100 %) · ``over``
+    (limit reached: requests now get 429). Every account has a limit; a $0
+    one is ``over`` from the start.
     """
     if limit <= 0:
-        return "unlimited"
+        return "over"
     share = spent / limit
     if share >= 1:
         return "over"
@@ -250,22 +258,22 @@ async def dashboard(
     # Today's totals + budget percentage based on today's cost vs daily limit
     today = get_user_daily_summary(session, user.id)
     today_cost = today["total_cost_usd"]
-    daily_limit = user.daily_limit_usd if user.daily_limit_usd > 0 else 1.0
-    usage_percent = min(100.0, (today_cost / daily_limit) * 100)
+    usage_percent = _usage_percent(today_cost, user.daily_limit_usd)
     budget_state = _budget_state(user.daily_limit_usd, today_cost)
 
-    # Azure sub-budget: shown only when an azure_daily_limit_usd is set.
+    # Azure sub-budget: shown only when an azure_daily_limit_usd is set
+    # (None = no separate cap; 0 is a real $0 cap and is shown).
     azure_today_cost = today["azure_cost_usd"]
-    azure_limit = user.azure_daily_limit_usd or 0.0
+    azure_limit = user.azure_daily_limit_usd
     azure_usage_percent = (
-        min(100.0, (azure_today_cost / azure_limit) * 100) if azure_limit > 0 else 0.0
+        _usage_percent(azure_today_cost, azure_limit) if azure_limit is not None else 0.0
     )
 
     # Bedrock sub-budget — same contract as the Azure one above.
     bedrock_today_cost = today["bedrock_cost_usd"]
-    bedrock_limit = user.bedrock_daily_limit_usd or 0.0
+    bedrock_limit = user.bedrock_daily_limit_usd
     bedrock_usage_percent = (
-        min(100.0, (bedrock_today_cost / bedrock_limit) * 100) if bedrock_limit > 0 else 0.0
+        _usage_percent(bedrock_today_cost, bedrock_limit) if bedrock_limit is not None else 0.0
     )
 
     claude_code_available = (_SETUP_DIR / "install-claude-code.bat").is_file()

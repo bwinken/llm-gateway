@@ -59,17 +59,13 @@ def _mask(key: str) -> str:
 def _check_daily_limit(session: Session, user: User) -> None:
     """Reject if user has exceeded their daily spending limit.
 
-    Two escape hatches:
-      - ``user.daily_limit_usd <= 0`` → treated as unlimited for this user
-      - env ``ENFORCE_DAILY_LIMIT=false`` → gateway-wide soft mode (log only)
+    Every account has a limit: there is no per-user "unlimited". A limit of
+    0 means a $0 budget, so every request is refused. The only escape hatch
+    is gateway-wide: env ``ENFORCE_DAILY_LIMIT=false`` → soft mode (log only).
 
     In soft mode we still compute the cost and emit a WARNING so an
     operator tailing the log sees the overage — we just don't 429 it.
     """
-    # Per-user unlimited: 0 (or negative) disables the check entirely.
-    if user.daily_limit_usd <= 0:
-        return
-
     today_start = local_day_start_utc()
     stmt = (
         select(func.coalesce(func.sum(UsageLog.cost_usd), 0))
@@ -81,9 +77,13 @@ def _check_daily_limit(session: Session, user: User) -> None:
         return
 
     if _enforce_daily_limit():
+        if user.daily_limit_usd <= 0:
+            detail = "Daily spending limit is $0 for this account. Contact your administrator."
+        else:
+            detail = f"Daily spending limit (${user.daily_limit_usd}) exceeded. Today: ${today_cost:.4f}."
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Daily spending limit (${user.daily_limit_usd}) exceeded. Today: ${today_cost:.4f}.",
+            detail=detail,
             headers={"Retry-After": str(seconds_until_local_midnight())},
         )
     # Soft mode: let the request through but make the overage visible.
@@ -108,9 +108,10 @@ def _check_backend_daily_limit(
     The sub-limit (``users.azure_daily_limit_usd`` / ``bedrock_daily_limit_usd``)
     is an *additional* cap on that backend's portion of today's spend — cloud
     spend always counts toward the overall ``daily_limit_usd`` as well (checked
-    in ``_check_daily_limit``); it is not a parallel budget. ``None`` or
-    ``<= 0`` means "no separate cap" — the default for every user, preserving
-    pre-feature behavior exactly.
+    in ``_check_daily_limit``); it is not a parallel budget. ``None`` means
+    "no separate cap" (bounded by the overall limit only) — the default for
+    every user. ``0`` is a $0 cap: the backend is refused (or, with
+    ``allow_fallback``, served on-prem).
 
     Returns True when the request may proceed to the cloud backend.
 
@@ -134,7 +135,7 @@ def _check_backend_daily_limit(
         limit = user.bedrock_daily_limit_usd
     else:  # pragma: no cover - programming error, not a runtime condition
         raise ValueError(f"unknown cloud backend {backend!r}")
-    if limit is None or limit <= 0:
+    if limit is None:
         return True
 
     today_start = local_day_start_utc()
@@ -151,12 +152,16 @@ def _check_backend_daily_limit(
     if _enforce_daily_limit():
         if allow_fallback:
             return False
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=(
+        if limit <= 0:
+            detail = f"{label} daily spending limit is $0 for this account."
+        else:
+            detail = (
                 f"{label} daily spending limit (${limit}) exceeded. "
                 f"Today ({label}): ${spent:.4f}."
-            ),
+            )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=detail,
             headers={"Retry-After": str(seconds_until_local_midnight())},
         )
     logger.warning(

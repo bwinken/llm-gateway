@@ -164,7 +164,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `POST` | `/admin/users/{id}/refresh-key` | 重新產生任意使用者的 API key，回傳 JSON |
 | `POST` | `/admin/users/{id}/toggle-disable` | 翻轉使用者的 `is_disabled` 旗標。禁止停用自己(回 400);可以重新啟用自己 |
 | `POST` | `/admin/users/{id}/toggle-azure` | 翻轉使用者的 `can_use_azure` 旗標(控制 `/azure/v1/*` 存取) |
-| `POST` | `/admin/default-limit` | 設定預設每日額度(USD)。寫入 `[app].default_daily_limit_usd` 並批次將 `0 < daily_limit_usd < new_floor` 的使用者拉高到新 floor(`daily_limit_usd = 0` 的無限制使用者不會被改動) |
+| `POST` | `/admin/default-limit` | 設定預設每日額度(USD)。寫入 `[app].default_daily_limit_usd` 並批次將 `0 < daily_limit_usd < new_floor` 的使用者拉高到新 floor(`daily_limit_usd = 0` 的使用者是刻意設成 $0,不會被改動) |
 | `GET` | `/admin/models` | 模型設定頁面（SPA，透過 API 載入資料） |
 
 ### Admin REST API（JWT 認證，需 admin scope）
