@@ -21,7 +21,7 @@ Browser → Nginx (:80)
                           → Gateway                 ← JWT header auth
 ```
 
-The example nginx config (`deploy/llm-gateway-example.nginx.conf`) defines parallel `/v1/` and `/azure/` blocks in both the HTTP and HTTPS server contexts. Both bypass oauth2-proxy and forward straight to the gateway with the client's `Authorization: Bearer <api_key>` header preserved.
+The example nginx config (`deploy/llm-gateway-example.nginx.conf`) defines parallel `/v1/`, `/azure/`, `/aws/` and `= /me` blocks in both the HTTP and HTTPS server contexts. All of them bypass oauth2-proxy and forward straight to the gateway with the client's `Authorization: Bearer <api_key>` header preserved.
 
 - **Gateway**: user-level systemd service (Python/FastAPI)
 - **PostgreSQL + oauth2-proxy**: Docker Compose (`deploy/docker-compose.yml`)

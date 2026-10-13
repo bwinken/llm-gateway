@@ -63,7 +63,7 @@ Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 C
 | 端點 | 用途 |
 |---|---|
 | `GET /v1/models` | 你的帳號可以用的模型 |
-| `GET /v1/me` | 你的權限（地端 / Azure / AWS）和今日額度：上限、已用、剩餘、重置時間。額度用完時一樣可以查。見[查詢額度](#查詢額度) |
+| `GET /v1/me`、`/me` | 你的權限（地端 / Azure / AWS）和今日額度：上限、已用、剩餘、重置時間。額度用完時一樣可以查。見[查詢額度](#查詢額度) |
 | `POST /v1/embeddings` | Embeddings（僅 vLLM） |
 | `POST /v1/rerank`、`/v1/score` | Rerank |
 | `POST /v1/messages/count_tokens` | 計算 Anthropic 請求的 token 數（不計費） |
@@ -108,8 +108,10 @@ curl http://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 ```
 
 - `daily` 是今日的總額度，所有後端的花費都算在裡面。一天以 `Asia/Taipei` 的日曆日計算。
-- `backends.<name>.limit_usd` 是管理員替該後端另外設的每日上限（`null` = 沒有另外設）。`remaining_usd` 是今天在該後端還能花多少：取該上限剩餘和總額度剩餘中較小的那個；沒有權限時為 `0`。
-- 上限或剩餘為 `null` 代表不限。
+- `backends.<name>.limit_usd` 是管理員替該後端另外設的每日上限。`null` 代表沒有另外設，**不是**不限：該後端仍受 `daily` 總額度約束。地端沒有自己的上限，所以 `limit_usd` 永遠是 `null`。
+- `remaining_usd` 是今天在該後端還能花多少：取該後端上限剩餘和總額度剩餘中較小的那個；沒有權限時為 `0`；只有完全不受限（總額度不限且沒有另外設上限）時才是 `null`。各後端的剩餘共用同一份額度，不能相加：以上面的例子，在 Azure 花掉 $1 之後，地端只剩 $5.75。
+- `daily.limit_usd` / `daily.remaining_usd` 為 `null` 代表總額度不限。
+- 只有在 `used_usd` 已達上限時才會拒絕請求，所以當天最後一個請求可能會稍微超出上限。
 - `enforced: false` 代表超額時 gateway 只記 log，不會回 429。
 - `cloud_budget_fallback: true` 代表雲端模型的子額度用完時，`/v1/*` 的請求會改由地端模型回答，而不是回 429。
 - `concurrency.limit` 是你的 key 同時可以進行幾個請求（`null` = 不限）。

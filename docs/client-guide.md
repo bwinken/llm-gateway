@@ -63,7 +63,7 @@ Windows users can get a pre-configured Claude Code installer from the **Setup** 
 | Endpoint | Purpose |
 |---|---|
 | `GET /v1/models` | Models your account can use |
-| `GET /v1/me` | Your access (on-prem / Azure / AWS) and today's budget: limit, spent, remaining, reset time. Answers even when the budget is spent. See [Checking your quota](#checking-your-quota) |
+| `GET /v1/me`, `/me` | Your access (on-prem / Azure / AWS) and today's budget: limit, spent, remaining, reset time. Answers even when the budget is spent. See [Checking your quota](#checking-your-quota) |
 | `POST /v1/embeddings` | Embeddings (vLLM only) |
 | `POST /v1/rerank`, `/v1/score` | Reranking |
 | `POST /v1/messages/count_tokens` | Token count for an Anthropic request (not billed) |
@@ -108,8 +108,10 @@ curl http://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 ```
 
 - `daily` is your overall budget for today; every backend's spend counts toward it. The day is the `Asia/Taipei` calendar day.
-- `backends.<name>.limit_usd` is that backend's own daily cap, if an admin set one (`null` = no separate cap). `remaining_usd` is what you can still spend there today: the tighter of that cap and your overall remaining budget, `0` without access.
-- `null` for a limit or a remainder means unlimited.
+- `backends.<name>.limit_usd` is that backend's own daily cap, if an admin set one. `null` means no separate cap, **not** unlimited: the backend is still bounded by `daily`. On-prem never has a cap of its own, so its `limit_usd` is always `null`.
+- `remaining_usd` is what you can still spend there today: the tighter of that backend's cap and your overall remaining budget, `0` without access, `null` only when nothing caps it (overall limit unlimited and no separate cap). The remainders share one budget and don't add up: in the example, spending $1 on Azure leaves $5.75 for on-prem.
+- `daily.limit_usd` / `daily.remaining_usd` of `null` means your overall budget is unlimited.
+- A request is refused only once `used_usd` reaches the limit, so the last request of the day can overshoot it slightly.
 - `enforced: false` means the gateway only logs overages instead of returning 429.
 - `cloud_budget_fallback: true` means a `/v1/*` request for a cloud model whose cap is spent is answered by an on-prem model instead of a 429.
 - `concurrency.limit` is how many requests your key may have in flight at once (`null` = no limit).
