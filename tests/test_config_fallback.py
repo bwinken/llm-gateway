@@ -95,3 +95,6 @@ class TestBedrockIamCredentials:
         assert saved["br"]["aws_access_key_id"] == "AKIA"
         assert saved["br"]["aws_secret_access_key"] == "s"
         assert "aws_access_key_id" not in saved["bearer"]
+        # No region set → none written, so BEDROCK_REGION keeps applying.
+        assert "region" not in saved["bearer"]
+        assert "region" not in cfg._build_config({"bedrock_models": {"b": {"model_id": "m"}}})[6]["b"]

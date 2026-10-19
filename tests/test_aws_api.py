@@ -551,6 +551,57 @@ class TestBedrockChatCompletions:
         )
         assert auth == expected["Authorization"]
 
+    def _capture_post(self, client, entry, monkeypatch, env):
+        from unittest.mock import patch
+        from tests.conftest import TEST_BEDROCK_MODELS
+
+        for name in ("BEDROCK_REGION", "BEDROCK_AWS_ACCESS_KEY_ID", "BEDROCK_AWS_SECRET_ACCESS_KEY"):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        captured: dict = {}
+
+        async def fake_post(url, **kwargs):
+            captured.update(url=url, headers=kwargs["headers"])
+            return make_httpx_response(200, _converse_payload("ok", 1, 1))
+
+        with patch.dict(TEST_BEDROCK_MODELS, {"bedrock-x": entry}), \
+             patch.object(client.__httpx_mock__, "post", side_effect=fake_post):
+            resp = client.post(
+                "/aws/v1/chat/completions",
+                json={"model": "bedrock-x", "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+        assert resp.status_code == 200, resp.text
+        return captured
+
+    _SHARED = {"BEDROCK_REGION": "ap-northeast-1",
+               "BEDROCK_AWS_ACCESS_KEY_ID": "AKIASHARED", "BEDROCK_AWS_SECRET_ACCESS_KEY": "s"}
+
+    def test_shared_env_credentials_and_region_apply_to_a_bare_entry(self, client, monkeypatch):
+        bare = {"type": "llm", "model_id": "global.anthropic.claude-haiku-5-5", "api_key": ""}
+        captured = self._capture_post(client, bare, monkeypatch, self._SHARED)
+        assert captured["url"].startswith("https://bedrock-runtime.ap-northeast-1.amazonaws.com/")
+        assert "Credential=AKIASHARED/" in captured["headers"]["Authorization"]
+        assert "/ap-northeast-1/bedrock/aws4_request" in captured["headers"]["Authorization"]
+
+    def test_entry_settings_win_over_shared_env(self, client, monkeypatch):
+        own_iam = {"type": "llm", "model_id": "m", "api_key": "", "region": "us-west-2",
+                   "aws_access_key_id": "AKIAOWN", "aws_secret_access_key": "s2"}
+        captured = self._capture_post(client, own_iam, monkeypatch, self._SHARED)
+        assert captured["url"].startswith("https://bedrock-runtime.us-west-2.amazonaws.com/")
+        assert "Credential=AKIAOWN/" in captured["headers"]["Authorization"]
+        assert "/us-west-2/bedrock/" in captured["headers"]["Authorization"]
+
+        own_key = {"type": "llm", "model_id": "m", "api_key": "bedrock-key"}
+        captured = self._capture_post(client, own_key, monkeypatch, self._SHARED)
+        assert captured["headers"]["Authorization"] == "Bearer bedrock-key"
+
+    def test_region_defaults_to_us_east_1_without_shared_region(self, client, monkeypatch):
+        bare = {"type": "llm", "model_id": "m", "api_key": "k"}
+        captured = self._capture_post(client, bare, monkeypatch, {})
+        assert captured["url"].startswith("https://bedrock-runtime.us-east-1.amazonaws.com/")
+
     def test_iam_credentials_sign_the_stream_request(self, client):
         from unittest.mock import patch
         from tests.conftest import TEST_BEDROCK_MODELS

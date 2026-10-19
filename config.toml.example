@@ -289,15 +289,18 @@ api_key = ""                        # decider's server checks no key
 # Nova, Llama, Mistral, ...) shares one code path:
 #  - `region` builds the default endpoint
 #    https://bedrock-runtime.{region}.amazonaws.com; set `endpoint` to
-#    override it (VPC endpoints, gov regions).
+#    override it (VPC endpoints, gov regions). Omit it to use BEDROCK_REGION
+#    from .env (else us-east-1).
 #  - `model_id` is the Bedrock model ID or inference-profile ID, e.g.
 #    "anthropic.claude-sonnet-4-20250514-v1:0" or "us.anthropic....".
-#  - Credentials, one of:
-#      `api_key`: a long-term Bedrock API key (sent as Authorization: Bearer)
+#  - Credentials, first match wins:
 #      `aws_access_key_id` + `aws_secret_access_key`: IAM credentials; every
-#        request is SigV4-signed and the secret is never sent. Wins when both
-#        kinds are set. The signature is scoped to `region`, so keep it set
-#        to the endpoint's region even when overriding `endpoint`.
+#        request is SigV4-signed and the secret is never sent
+#      `api_key`: a long-term Bedrock API key (sent as Authorization: Bearer)
+#      neither: the IAM pair shared in .env (BEDROCK_AWS_ACCESS_KEY_ID /
+#        BEDROCK_AWS_SECRET_ACCESS_KEY) — set once for every model.
+#    The signature is scoped to the region, so it must be the endpoint's
+#    region even when overriding `endpoint`.
 #  - Routed by model_id (no health-check). Type-aware fallback for unknown
 #    aliases via [bedrock_fallback] above. Same metadata and per-model
 #    pricing override fields as [models.*] are accepted.

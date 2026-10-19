@@ -130,10 +130,10 @@ const CONNECTION_FIELDS = {
     ],
     bedrock: [
         { f: 'model_id', label: 'Model ID', t: 'str', req: true, mono: true, ph: 'us.anthropic.claude-sonnet-4-5-v1:0', tip: 'Bedrock model or inference-profile ID.' },
-        { f: 'region', label: 'Region', t: 'opt', mono: true, ph: BEDROCK_DEFAULT_REGION },
-        { f: 'api_key', label: 'API key', t: 'secret', mono: true, ph: '(or IAM keys below)', tip: 'Long-term Bedrock API key (sent as Authorization: Bearer). Leave empty when using IAM keys.' },
+        { f: 'region', label: 'Region', t: 'opt', mono: true, ph: BEDROCK_DEFAULT_REGION, tip: 'Blank = BEDROCK_REGION from .env (else us-east-1).' },
+        { f: 'api_key', label: 'API key', t: 'secret', mono: true, ph: '(or IAM keys below)', tip: 'Long-term Bedrock API key (sent as Authorization: Bearer). Leave empty when using IAM keys, here or shared in .env.' },
         { f: 'endpoint', label: 'Endpoint override', t: 'opt', mono: true, ph: '(https://bedrock-runtime.<region>.amazonaws.com)', tip: 'Only for VPC endpoints / gov regions. Keep Region set to the endpoint\'s region: IAM signatures are scoped to it.' },
-        { f: 'aws_access_key_id', label: 'IAM access key ID', t: 'opt', mono: true, ph: '(AKIA…)', tip: 'With the secret below, every request is SigV4-signed instead of using the API key. The secret itself is never sent.' },
+        { f: 'aws_access_key_id', label: 'IAM access key ID', t: 'opt', mono: true, ph: '(AKIA…)', tip: 'With the secret below, every request is SigV4-signed instead of using the API key. The secret itself is never sent. Blank = the pair shared in .env (BEDROCK_AWS_ACCESS_KEY_ID / BEDROCK_AWS_SECRET_ACCESS_KEY).' },
         { f: 'aws_secret_access_key', label: 'IAM secret access key', t: 'optsecret', mono: true, ph: '(none)' },
     ],
 };
@@ -288,7 +288,9 @@ function problems(kind, alias, info) {
         const keyId = !!String(info.aws_access_key_id ?? '').trim();
         const secret = !!String(info.aws_secret_access_key ?? '').trim();
         if (keyId !== secret) out.push('IAM access key ID and secret access key go together.');
-        else if (!keyId && !String(info.api_key ?? '').trim()) out.push('Set an API key, or an IAM access key ID + secret access key.');
+        else if (!keyId && !String(info.api_key ?? '').trim() && !config.bedrock_shared?.iam_credentials) {
+            out.push('Set an API key, or an IAM access key ID + secret access key (or share them in .env).');
+        }
     }
     const target = info.rate_limit_fallback;
     if (target) {
@@ -451,6 +453,15 @@ function fieldAttrs(kind, alias, field, t) {
     return `data-kind="${kind}" data-alias="${escAttr(alias)}" data-field="${field}" data-t="${t}"`;
 }
 
+// Blank Bedrock region / IAM fields fall back to the values shared in .env;
+// the placeholder says so (GET /admin/api/config reports them, never the secret).
+function connectionPlaceholder(kind, fd) {
+    const shared = kind === 'bedrock' ? (config.bedrock_shared || {}) : {};
+    if (fd.f === 'region' && shared.region) return `${shared.region} (shared)`;
+    if ((fd.f === 'aws_access_key_id' || fd.f === 'aws_secret_access_key') && shared.iam_credentials) return '(shared in .env)';
+    return fd.ph;
+}
+
 function renderConnection(kind, alias, info) {
     const typeOpts = BACKENDS[kind].types.concat(BACKENDS[kind].types.includes(info.type) ? [] : [info.type])
         .map(t => `<option value="${escAttr(t)}" ${t === info.type ? 'selected' : ''}>${escHtml(t)}</option>`).join('');
@@ -466,7 +477,7 @@ function renderConnection(kind, alias, info) {
                 <span class="mc-label ${fd.req ? 'mc-req' : ''} ${fd.tip ? 'gw-tip gw-tip-wide' : ''}" ${fd.tip ? `data-tip="${escAttr(fd.tip)}"` : ''}>${fd.label}</span>
                 <div class="relative">
                     <input type="text" value="${escAttr(v)}" ${fieldAttrs(kind, alias, fd.f, fd.t)} ${fd.req ? 'data-req="1"' : ''} oninput="setField(this)"
-                           autocomplete="off" spellcheck="false" placeholder="${escAttr(fd.ph || '')}"
+                           autocomplete="off" spellcheck="false" placeholder="${escAttr(connectionPlaceholder(kind, fd) || '')}"
                            class="gw-input w-full text-sm py-1.5 px-2.5 ${fd.mono ? 'font-mono' : ''} ${secret ? 'mc-secret pr-14' : ''} ${missing ? 'mc-bad' : ''}">
                     ${secret ? `<button type="button" onclick="toggleSecret(this)" class="absolute right-1.5 top-1.5 text-[11px] text-t4 hover:text-t2 px-1.5 py-0.5">Show</button>` : ''}
                 </div>
@@ -987,7 +998,7 @@ function submitModal() {
 function newEntry(kind, type, alias) {
     if (kind === 'vllm') return { type, real_model: alias, base_url: 'http://localhost:8000/v1', api_key: '' };
     if (kind === 'azure') return { type, endpoint: '', deployment: alias, api_key: '', api_version: AZURE_DEFAULT_API_VERSION };
-    return { type, region: BEDROCK_DEFAULT_REGION, model_id: '', api_key: '' };
+    return { type, model_id: '', api_key: '' };   // region / IAM keys: blank = shared .env values
 }
 
 // Rebuild the map with the new key in the same position (config.toml keeps

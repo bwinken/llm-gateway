@@ -43,7 +43,13 @@ from urllib.parse import quote
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.core.config import BEDROCK_FALLBACK_MAP, BEDROCK_MODELS, _check_auto_reload
+from app.core.config import (
+    BEDROCK_FALLBACK_MAP,
+    BEDROCK_MODELS,
+    _check_auto_reload,
+    bedrock_region,
+    bedrock_shared_settings,
+)
 from app.core.logger import logger
 from app.core.server_state import get_bedrock_client
 from app.models.schema import User
@@ -98,9 +104,8 @@ _BEDROCK_DEFAULT_ALLOWED_TYPES: tuple[str, ...] = ("llm", "vlm")
 
 
 def _is_usable_entry(entry: dict[str, Any]) -> bool:
-    return bool(entry.get("model_id")) and bool(
-        entry.get("region") or entry.get("endpoint")
-    )
+    # A region always resolves (entry, BEDROCK_REGION, us-east-1).
+    return bool(entry.get("model_id"))
 
 
 def _resolve_bedrock(
@@ -130,7 +135,7 @@ def _resolve_bedrock(
         if not _is_usable_entry(entry):
             raise HTTPException(
                 status_code=500,
-                detail=f"Bedrock model '{alias}' missing model_id or region/endpoint.",
+                detail=f"Bedrock model '{alias}' missing model_id.",
             )
         return alias, entry, None
 
@@ -192,7 +197,7 @@ def _rate_limit_chain(
 def _build_converse_url(entry: dict[str, Any], stream: bool) -> str:
     endpoint = (entry.get("endpoint") or "").rstrip("/")
     if not endpoint:
-        endpoint = f"https://bedrock-runtime.{entry.get('region', 'us-east-1')}.amazonaws.com"
+        endpoint = f"https://bedrock-runtime.{bedrock_region(entry)}.amazonaws.com"
     # model_id contains '.' and ':' (and '/' for ARNs) — quote everything.
     model_id = quote(entry.get("model_id", ""), safe="")
     op = "converse-stream" if stream else "converse"
@@ -206,19 +211,23 @@ def _encode_body(body: dict[str, Any]) -> bytes:
 def _build_headers(entry: dict[str, Any], url: str, payload: bytes) -> dict[str, str]:
     """Bedrock auth, the single seam for downstream credentials.
 
-    IAM credentials win when both halves are set: the request is SigV4-signed
-    over ``payload``, which must be sent unchanged, and signed per attempt
-    right before sending (a signature expires after ~5 minutes). Otherwise
-    the long-term Bedrock API key goes out as a Bearer token.
+    First match wins: the entry's IAM pair, the entry's ``api_key`` (Bearer),
+    then the IAM pair shared by every entry in .env. IAM requests are
+    SigV4-signed over ``payload``, which must be sent unchanged, and signed
+    per attempt right before sending (a signature expires after ~5 minutes).
     """
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     access_key = entry.get("aws_access_key_id")
     secret_key = entry.get("aws_secret_access_key")
+    if not (access_key and secret_key) and not entry.get("api_key"):
+        shared = bedrock_shared_settings()
+        access_key = shared["aws_access_key_id"]
+        secret_key = shared["aws_secret_access_key"]
     if access_key and secret_key:
         headers.update(sign_request(
             "POST", url, payload,
             access_key=access_key, secret_key=secret_key,
-            region=entry.get("region") or "us-east-1", service="bedrock",
+            region=bedrock_region(entry), service="bedrock",
         ))
     else:
         headers["Authorization"] = f"Bearer {entry.get('api_key', '')}"

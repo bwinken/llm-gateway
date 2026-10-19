@@ -174,8 +174,26 @@ _AZURE_DEFAULT_API_VERSION = "2024-08-01-preview"
 # IAM `aws_access_key_id` + `aws_secret_access_key`, which SigV4-sign every
 # request and win when both are set (bedrock_proxy._build_headers). The
 # signature is scoped to `region`, which must match the endpoint's region.
+# `region` and the IAM pair can instead be set once for every entry in .env
+# (bedrock_shared_settings); an entry's own value wins.
 _BEDROCK_DEFAULT_REGION = "us-east-1"
 _BEDROCK_IAM_KEYS: tuple[str, ...] = ("aws_access_key_id", "aws_secret_access_key")
+_BEDROCK_SHARED_ENV: tuple[tuple[str, str], ...] = (
+    ("region", "BEDROCK_REGION"),
+    ("aws_access_key_id", "BEDROCK_AWS_ACCESS_KEY_ID"),
+    ("aws_secret_access_key", "BEDROCK_AWS_SECRET_ACCESS_KEY"),
+)
+
+
+def bedrock_shared_settings() -> dict[str, str]:
+    """Defaults every [bedrock_models.*] entry inherits, from .env (read on
+    each call; .env itself is loaded once, so a change needs a restart)."""
+    return {key: os.getenv(env, "").strip() for key, env in _BEDROCK_SHARED_ENV}
+
+
+def bedrock_region(entry: dict[str, Any]) -> str:
+    """The entry's region, else BEDROCK_REGION, else us-east-1."""
+    return entry.get("region") or bedrock_shared_settings()["region"] or _BEDROCK_DEFAULT_REGION
 
 
 def _build_config(raw: dict[str, Any]) -> tuple[
@@ -292,10 +310,12 @@ def _build_config(raw: dict[str, Any]) -> tuple[
             continue
         entry: dict[str, Any] = {
             "type": cfg.get("type", "llm"),
-            "region": cfg.get("region", _BEDROCK_DEFAULT_REGION),
             "model_id": cfg.get("model_id", ""),
             "api_key": cfg.get("api_key", ""),
         }
+        # Left unset when absent so BEDROCK_REGION applies (bedrock_region).
+        if cfg.get("region"):
+            entry["region"] = str(cfg["region"])
         # Optional endpoint override (VPC endpoint / gov region); when absent
         # bedrock_proxy builds https://bedrock-runtime.{region}.amazonaws.com.
         if cfg.get("endpoint"):
@@ -546,10 +566,11 @@ def save_config(
         for alias, info in bedrock_models.items():
             entry: dict[str, Any] = {
                 "type": info.get("type", "llm"),
-                "region": info.get("region") or _BEDROCK_DEFAULT_REGION,
                 "model_id": info.get("model_id", ""),
                 "api_key": info.get("api_key", ""),
             }
+            if info.get("region"):
+                entry["region"] = str(info["region"])
             if info.get("endpoint"):
                 entry["endpoint"] = str(info["endpoint"]).rstrip("/")
             for iam_key in _BEDROCK_IAM_KEYS:
@@ -611,6 +632,16 @@ def get_config_data() -> dict[str, Any]:
         "azure_fallback": dict(AZURE_FALLBACK_MAP),
         "bedrock_models": dict(BEDROCK_MODELS),
         "bedrock_fallback": dict(BEDROCK_FALLBACK_MAP),
+        # What blank Bedrock fields fall back to. Never the secret itself.
+        "bedrock_shared": _bedrock_shared_summary(),
+    }
+
+
+def _bedrock_shared_summary() -> dict[str, Any]:
+    shared = bedrock_shared_settings()
+    return {
+        "region": shared["region"],   # "" when unset: us-east-1 applies
+        "iam_credentials": bool(shared["aws_access_key_id"] and shared["aws_secret_access_key"]),
     }
 
 
