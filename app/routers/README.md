@@ -64,7 +64,7 @@ alias in AZURE_MODELS AND no permission              → vLLM path (silent fallb
 alias not in AZURE_MODELS                            → vLLM path
 ```
 
-A cloud-bound request then passes `_cloud_budget_gate` (per-user Azure/Bedrock daily sub-limit). Exhausted → 429 by default; with `[app].cloud_budget_fallback = true` (admin panel → Cloud Budget Fallback) the request drops through to the vLLM path instead and the response carries `X-Budget-Fallback`. The overall daily limit is still enforced at auth, so a user with no budget left anywhere gets the usual 429 either way; `/azure/v1/*` and `/aws/v1/*` never fall back.
+A cloud-bound request then passes `_cloud_budget_gate` (the daily cloud cap, Azure + Bedrock together). Exhausted → 429 by default; with `[app].cloud_budget_fallback = true` (admin panel → Cloud Budget Fallback) the request drops through to the vLLM path instead and the response carries `X-Budget-Fallback`. The overall daily limit is still enforced at auth, so a user with no budget left anywhere gets the usual 429 either way; `/azure/v1/*` and `/aws/v1/*` never fall back.
 
 **Concurrency limit**: `chat_completions`, `responses` and `messages` (and their `/azure/v1/*` / `/aws/v1/*` counterparts) authenticate through `deps.limited_current_user` / `limited_azure_access` / `limited_bedrock_access` instead of the plain auth dependencies. Those hold a row in `concurrency_leases` until the response — stream included — has been sent, and 429 an account already at `[app].concurrency_limit` in-flight requests when the mode is `enforce` (admin panel → Concurrency Limit; admins and waived accounts exempt). `count_tokens`, `tokenize`, `render`, `models`, embeddings, rerank and systemone are not counted. See `app/services/concurrency.py`.
 

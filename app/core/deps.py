@@ -15,7 +15,7 @@ from sqlmodel import Session, func, select
 from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import AccountDisabledError
-from app.core.config import get_concurrency_settings
+from app.core.config import get_cloud_daily_limit, get_concurrency_settings
 from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
@@ -93,7 +93,18 @@ def _check_daily_limit(session: Session, user: User) -> None:
     )
 
 
-_BACKEND_LABELS: dict[str, str] = {"azure": "Azure", "bedrock": "Bedrock"}
+_CLOUD_LABEL = "Cloud (Azure + Bedrock)"
+_CLOUD_BACKENDS: tuple[str, ...] = ("azure", "bedrock")
+
+
+def effective_cloud_limit(user: User) -> float | None:
+    """The user's cloud cap: their own ``cloud_daily_limit_usd`` when set
+    (0 included), else the gateway-wide ``[app].cloud_daily_limit_usd``.
+    None = no cloud cap. Only consulted for users who may reach a cloud
+    backend: without access a request never gets this far."""
+    if user.cloud_daily_limit_usd is not None:
+        return max(0.0, user.cloud_daily_limit_usd)
+    return get_cloud_daily_limit()
 
 
 def _check_backend_daily_limit(
@@ -103,14 +114,15 @@ def _check_backend_daily_limit(
     *,
     allow_fallback: bool = False,
 ) -> bool:
-    """Enforce the user's per-backend daily sub-limit for ``backend``.
+    """Enforce the cloud cap for a request bound to ``backend``.
 
-    The sub-limit (``users.azure_daily_limit_usd`` / ``bedrock_daily_limit_usd``)
-    is an *additional* cap on that backend's portion of today's spend — cloud
-    spend always counts toward the overall ``daily_limit_usd`` as well (checked
-    in ``_check_daily_limit``); it is not a parallel budget. ``None`` means
-    "no separate cap" (bounded by the overall limit only) — the default for
-    every user. ``0`` is a $0 cap: the backend is refused (or, with
+    One cap covers Azure and Bedrock together (``effective_cloud_limit``):
+    the user's own ``cloud_daily_limit_usd`` when set, else the gateway-wide
+    ``[app].cloud_daily_limit_usd``. Today's spend on both backends counts
+    against it, so a user splits it between them however they like. Cloud spend also counts toward
+    the overall ``daily_limit_usd`` (checked in ``_check_daily_limit``); this
+    is not a parallel budget. No cap configured = cloud is bounded by the
+    overall limit only. ``0`` is a $0 cap: cloud is refused (or, with
     ``allow_fallback``, served on-prem).
 
     Returns True when the request may proceed to the cloud backend.
@@ -128,13 +140,9 @@ def _check_backend_daily_limit(
     overall check: in soft mode the overage is logged and the request stays
     on the cloud backend (there is no 429 for the fallback to replace).
     """
-    label = _BACKEND_LABELS.get(backend, backend)
-    if backend == "azure":
-        limit = user.azure_daily_limit_usd
-    elif backend == "bedrock":
-        limit = user.bedrock_daily_limit_usd
-    else:  # pragma: no cover - programming error, not a runtime condition
+    if backend not in _CLOUD_BACKENDS:  # pragma: no cover - programming error
         raise ValueError(f"unknown cloud backend {backend!r}")
+    limit = effective_cloud_limit(user)
     if limit is None:
         return True
 
@@ -143,17 +151,18 @@ def _check_backend_daily_limit(
         select(func.coalesce(func.sum(UsageLog.cost_usd), 0))
         .where(UsageLog.user_id == user.id)
         .where(UsageLog.created_at >= today_start)
-        .where(UsageLog.backend == backend)
+        .where(UsageLog.backend.in_(_CLOUD_BACKENDS))
     )
     spent = float(session.exec(stmt).one())
     if spent < limit:
         return True
 
+    label = _CLOUD_LABEL
     if _enforce_daily_limit():
         if allow_fallback:
             return False
         if limit <= 0:
-            detail = f"{label} daily spending limit is $0 for this account."
+            detail = f"{label} daily spending limit is $0."
         else:
             detail = (
                 f"{label} daily spending limit (${limit}) exceeded. "
@@ -172,25 +181,25 @@ def _check_backend_daily_limit(
 
 
 def _check_azure_daily_limit(session: Session, user: User) -> None:
-    """Reject (429) if the user has exceeded their Azure daily sub-limit.
+    """Reject (429) if the user's cloud cap is spent, for an Azure request.
     See ``_check_backend_daily_limit``."""
     _check_backend_daily_limit(session, user, "azure")
 
 
 def _check_bedrock_daily_limit(session: Session, user: User) -> None:
-    """Reject (429) if the user has exceeded their Bedrock daily sub-limit.
+    """Reject (429) if the user's cloud cap is spent, for a Bedrock request.
     See ``_check_backend_daily_limit``."""
     _check_backend_daily_limit(session, user, "bedrock")
 
 
 def check_cloud_budget(user: User, backend: str, *, allow_fallback: bool = False) -> bool:
-    """Standalone sub-limit check for call sites without a request-scoped
+    """Standalone cloud-cap check for call sites without a request-scoped
     session — i.e. the unified ``/v1/*`` handlers, which only learn the request
     is cloud-bound after peeking the model alias. Opens a short-lived session;
     blocking, so async callers should wrap it in ``run_in_threadpool``.
 
     Returns True to proceed to ``backend``; False (only with
-    ``allow_fallback=True``) when the sub-limit is exhausted and the request
+    ``allow_fallback=True``) when the cloud cap is exhausted and the request
     should be served on-prem instead; raises HTTP 429 otherwise.
     """
     with Session(engine) as session:
@@ -200,13 +209,13 @@ def check_cloud_budget(user: User, backend: str, *, allow_fallback: bool = False
 
 
 def ensure_azure_budget(user: User) -> None:
-    """Raise HTTP 429 when the user's Azure sub-limit is exhausted
+    """Raise HTTP 429 when the user's cloud cap is exhausted
     (``check_cloud_budget(user, "azure")`` without fallback)."""
     check_cloud_budget(user, "azure")
 
 
 def ensure_bedrock_budget(user: User) -> None:
-    """Raise HTTP 429 when the user's Bedrock sub-limit is exhausted
+    """Raise HTTP 429 when the user's cloud cap is exhausted
     (same shape/contract as ``ensure_azure_budget``)."""
     check_cloud_budget(user, "bedrock")
 
@@ -318,7 +327,7 @@ def require_azure_access(
     user: User = Depends(get_current_user),
 ) -> User:
     """Dependency for /azure/v1/* endpoints — additionally checks the Azure
-    access flag and the per-user Azure daily sub-limit.
+    access flag and the cloud daily cap.
 
     Uses ``ensure_azure_budget`` (short-lived session) rather than a
     request-scoped ``Depends(get_session)`` for the same reason as
@@ -337,7 +346,7 @@ def require_bedrock_access(
     user: User = Depends(get_current_user),
 ) -> User:
     """Dependency for /aws/v1/* endpoints — additionally checks the Bedrock
-    access flag and the per-user Bedrock daily sub-limit (short-lived
+    access flag and the cloud daily cap (short-lived
     session via ``ensure_bedrock_budget``, see ``get_current_user``)."""
     if not user.can_use_bedrock and not user.is_admin:
         logger.warning("Bedrock access denied for user '{}'", user.username)

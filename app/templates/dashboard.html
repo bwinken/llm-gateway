@@ -49,8 +49,10 @@
 {% endif %}
 
 {# ── Today: budget hero + this month ── #}
-{% set show_azure_row = azure_today_cost > 0 or (azure_access and azure_limit is not none) %}
-{% set show_bedrock_row = bedrock_today_cost > 0 or (bedrock_access and bedrock_limit is not none) %}
+{# Cloud columns only for backends the user may use (admins always): no access, no column. #}
+{% set show_azure_row = azure_access %}
+{% set show_bedrock_row = bedrock_access %}
+{% set show_cloud_row = cloud_limit is not none and (azure_access or bedrock_access) %}
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-6">
     <div class="gw-card p-6 lg:col-span-2 gw-anim gw-d1" style="border-color:{{ band.edge }};background:linear-gradient(135deg, {{ band.soft }}, transparent 55%), #16171e">
         <div class="flex flex-wrap items-start justify-between gap-6">
@@ -85,7 +87,7 @@
             </div>
         </div>
 
-        {% if show_azure_row or show_bedrock_row %}
+        {% if show_azure_row or show_bedrock_row or show_cloud_row %}
         <div class="mt-5 pt-4 grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs" style="border-top:1px solid rgba(255,255,255,0.05)">
             <div>
                 <div class="text-t4 uppercase tracking-wider text-[10px] font-bold">On-prem</div>
@@ -94,25 +96,25 @@
             {% if show_azure_row %}
             <div>
                 <div class="uppercase tracking-wider text-[10px] font-bold gw-tip gw-tip-wide" style="color:#cab9ff"
-                     data-tip="Azure portion of today's spend{{ '. Azure requests get 429 once this sub-limit is reached.' if azure_limit is not none }}">Azure</div>
-                <div class="mt-1 font-mono text-t1 text-sm">{{ money(azure_today_cost) }}{% if azure_limit is not none %} <span class="text-t4">/ ${{ '%g'|format(azure_limit) }}</span>{% endif %}</div>
-                {% if azure_limit is not none %}
-                <div class="mt-1.5 w-full h-1.5 rounded-full overflow-hidden bg-n3">
-                    <div class="h-1.5 rounded-full" style="width:{{ azure_usage_percent }}%;background:{{ '#ff5c5c' if azure_usage_percent >= 90 else '#a78bfa' }}"></div>
-                </div>
-                {% endif %}
+                     data-tip="Azure portion of today's spend">Azure</div>
+                <div class="mt-1 font-mono text-t1 text-sm">{{ money(azure_today_cost) }}</div>
             </div>
             {% endif %}
             {% if show_bedrock_row %}
             <div>
                 <div class="uppercase tracking-wider text-[10px] font-bold gw-tip gw-tip-wide" style="color:#ffcb8a"
-                     data-tip="AWS Bedrock portion of today's spend{{ '. Bedrock requests get 429 once this sub-limit is reached.' if bedrock_limit is not none }}">AWS Bedrock</div>
-                <div class="mt-1 font-mono text-t1 text-sm">{{ money(bedrock_today_cost) }}{% if bedrock_limit is not none %} <span class="text-t4">/ ${{ '%g'|format(bedrock_limit) }}</span>{% endif %}</div>
-                {% if bedrock_limit is not none %}
+                     data-tip="AWS Bedrock portion of today's spend">AWS Bedrock</div>
+                <div class="mt-1 font-mono text-t1 text-sm">{{ money(bedrock_today_cost) }}</div>
+            </div>
+            {% endif %}
+            {% if show_cloud_row %}
+            <div class="sm:col-span-3">
+                <div class="uppercase tracking-wider text-[10px] font-bold gw-tip gw-tip-wide text-t3"
+                     data-tip="Azure + AWS spend today, combined. Split it between the two however you like; cloud requests get 429 once it is reached.">Cloud (Azure + AWS)</div>
+                <div class="mt-1 font-mono text-t1 text-sm">{{ money(cloud_today_cost) }} <span class="text-t4">/ ${{ '%g'|format(cloud_limit) }}</span></div>
                 <div class="mt-1.5 w-full h-1.5 rounded-full overflow-hidden bg-n3">
-                    <div class="h-1.5 rounded-full" style="width:{{ bedrock_usage_percent }}%;background:{{ '#ff5c5c' if bedrock_usage_percent >= 90 else '#ff9933' }}"></div>
+                    <div class="h-1.5 rounded-full" style="width:{{ cloud_usage_percent }}%;background:{{ '#ff5c5c' if cloud_usage_percent >= 90 else '#c4c9d4' }}"></div>
                 </div>
-                {% endif %}
             </div>
             {% endif %}
         </div>

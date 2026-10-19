@@ -15,6 +15,7 @@ from sqlmodel import Session, select
 from app.models.schema import AppOwner, User
 
 from app.core.auth import get_web_user
+from app.core.deps import effective_cloud_limit
 from app.core.config import (
     APP_TITLE,
     get_azure_models_snapshot,
@@ -97,17 +98,35 @@ def _price_sort_key(m: dict):
     return (m["input_price"] + m["output_price"], m.get("name") or m.get("alias") or "")
 
 
+def _hidden_cloud_backends(user: User) -> frozenset[str]:
+    """Cloud backends this user may not use: the dashboard shows nothing of
+    them (spend columns, Cost by Model groups, model tables), even when spend
+    from before an admin revoked access remains. Admins see everything."""
+    hidden = set()
+    if not (user.can_use_azure or user.is_admin):
+        hidden.add("azure")
+    if not (user.can_use_bedrock or user.is_admin):
+        hidden.add("bedrock")
+    return frozenset(hidden)
+
+
 def _build_model_breakdown(
-    session: Session, user_id: int, period: str = "month",
+    session: Session, user: User, period: str = "month",
 ) -> tuple[list[dict], float]:
     """Per-model cost breakdown grouped per backend, plus the period total.
 
     Group order is fixed (on-prem first) with unknown backend values appended
-    so no spend can vanish from the breakdown. Each row gets its share of the
-    period total. Shared by the dashboard page render and the refresh API so
-    both always agree.
+    so no spend can vanish from the breakdown — except the cloud backends the
+    user has no access to (``_hidden_cloud_backends``), which are left out of
+    the rows and the total alike. Each row gets its share of that total.
+    Shared by the dashboard page render and the refresh API so both always
+    agree.
     """
-    breakdown_rows = get_model_breakdown(session, user_id, period=period)
+    hidden = _hidden_cloud_backends(user)
+    breakdown_rows = [
+        r for r in get_model_breakdown(session, user.id, period=period)
+        if r["backend"] not in hidden
+    ]
     total_cost = sum(r["cost_usd"] for r in breakdown_rows)
     backend_labels = {"vllm": "On-Prem", "azure": "Azure", "bedrock": "AWS Bedrock"}
     backend_order = ["vllm", "azure", "bedrock"]
@@ -212,7 +231,7 @@ async def dashboard(
 
     # Monthly cost split by model alias, grouped per backend so on-prem and
     # cloud spend read separately (same data the refresh API serves).
-    model_breakdown_groups, _ = _build_model_breakdown(session, user.id)
+    model_breakdown_groups, _ = _build_model_breakdown(session, user)
 
     # Build grouped server status keyed by raw type (skip hidden models).
     # Each entry carries optional metadata for capability badges next to the
@@ -261,19 +280,15 @@ async def dashboard(
     usage_percent = _usage_percent(today_cost, user.daily_limit_usd)
     budget_state = _budget_state(user.daily_limit_usd, today_cost)
 
-    # Azure sub-budget: shown only when an azure_daily_limit_usd is set
-    # (None = no separate cap; 0 is a real $0 cap and is shown).
     azure_today_cost = today["azure_cost_usd"]
-    azure_limit = user.azure_daily_limit_usd
-    azure_usage_percent = (
-        _usage_percent(azure_today_cost, azure_limit) if azure_limit is not None else 0.0
-    )
-
-    # Bedrock sub-budget — same contract as the Azure one above.
     bedrock_today_cost = today["bedrock_cost_usd"]
-    bedrock_limit = user.bedrock_daily_limit_usd
-    bedrock_usage_percent = (
-        _usage_percent(bedrock_today_cost, bedrock_limit) if bedrock_limit is not None else 0.0
+
+    # Cloud cap (the user's own, else the gateway-wide default): Azure +
+    # Bedrock spend together. None = no cap, row hidden.
+    cloud_limit = effective_cloud_limit(user)
+    cloud_today_cost = azure_today_cost + bedrock_today_cost
+    cloud_usage_percent = (
+        _usage_percent(cloud_today_cost, cloud_limit) if cloud_limit is not None else 0.0
     )
 
     claude_code_available = (_SETUP_DIR / "install-claude-code.bat").is_file()
@@ -339,10 +354,9 @@ async def dashboard(
             azure_today_cost=round(azure_today_cost, 4),
             bedrock_today_cost=round(bedrock_today_cost, 4),
             vllm_today_cost=round(today["vllm_cost_usd"], 4),
-            azure_limit=azure_limit,
-            azure_usage_percent=round(azure_usage_percent, 1),
-            bedrock_limit=bedrock_limit,
-            bedrock_usage_percent=round(bedrock_usage_percent, 1),
+            cloud_limit=cloud_limit,
+            cloud_today_cost=round(cloud_today_cost, 4),
+            cloud_usage_percent=round(cloud_usage_percent, 1),
             trend_data=trend_data,
             model_breakdown_groups=model_breakdown_groups,
             today_str=datetime.now(LOCAL_TZ).strftime("%Y-%m-%d"),
@@ -368,7 +382,7 @@ async def model_breakdown_api(
     card updates in place without a full page reload."""
     if period not in ("month", "day"):
         raise HTTPException(status_code=400, detail="period must be 'month' or 'day'.")
-    groups, total_cost = _build_model_breakdown(session, user.id, period=period)
+    groups, total_cost = _build_model_breakdown(session, user, period=period)
     return JSONResponse({
         "period": period,
         "groups": groups,

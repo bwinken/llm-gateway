@@ -1,15 +1,16 @@
 """Tests for the cloud-budget fallback (``[app].cloud_budget_fallback``).
 
 Semantics under test:
-  - Default (flag off): an exhausted Azure/Bedrock daily sub-limit on the
-    unified ``/v1/*`` surface is a 429 — unchanged.
+  - Default (flag off): an exhausted cloud cap (``[app].cloud_daily_limit_usd``,
+    Azure + Bedrock together) on the unified ``/v1/*`` surface is a 429.
   - Flag on: the same request is served by the on-prem vLLM default
     instead (``_resolve_model`` fallback), tagged with ``X-Budget-Fallback``
     and billed as ``backend="vllm"``.
   - The overall ``daily_limit_usd`` is untouched by the flag: once that is
     exhausted too, the request is refused with the usual 429.
   - The dedicated ``/azure/v1/*`` / ``/aws/v1/*`` surfaces never fall back.
-  - Under the sub-limit nothing changes (request stays on the cloud backend).
+  - Under the cap, or with no cap, nothing changes (request stays on the
+    cloud backend).
   - ENFORCE_DAILY_LIMIT=false (soft mode) keeps the request on the cloud
     backend — there is no 429 for the fallback to replace.
   - Admin: ``POST /admin/cloud-budget-fallback`` persists the flag and the
@@ -28,8 +29,10 @@ from app.core.config import get_cloud_budget_fallback
 from app.models.schema import UsageLog, User
 from tests.conftest import auth_header, make_httpx_response, web_auth_header
 
-_FLAG_ON = {"cloud_budget_fallback": True}
-_FLAG_OFF = {"cloud_budget_fallback": False}
+# Every scenario runs with a $10 cloud cap; _exhaust_* spends it.
+_FLAG_ON = {"cloud_budget_fallback": True, "cloud_daily_limit_usd": 10.0}
+_FLAG_OFF = {"cloud_budget_fallback": False, "cloud_daily_limit_usd": 10.0}
+_CLOUD_CAP_429 = "Cloud (Azure + Bedrock) daily spending limit"
 
 
 def _burn(db_session: Session, user: User, amount: Decimal, backend: str) -> None:
@@ -49,16 +52,11 @@ def _burn(db_session: Session, user: User, amount: Decimal, backend: str) -> Non
 
 
 def _exhaust_azure(db_session: Session, user: User) -> None:
-    user.azure_daily_limit_usd = 10.0
-    db_session.add(user)
-    db_session.commit()
+    """Spend the $10 cloud cap (_FLAG_ON / _FLAG_OFF) on Azure."""
     _burn(db_session, user, Decimal("10.00"), "azure")
 
 
 def _exhaust_bedrock(db_session: Session, user: User) -> None:
-    user.bedrock_daily_limit_usd = 10.0
-    db_session.add(user)
-    db_session.commit()
     _burn(db_session, user, Decimal("10.00"), "bedrock")
 
 
@@ -118,7 +116,7 @@ class TestFlagOffIsUnchanged:
         with patch.dict("app.core.config.APP_CONFIG", _FLAG_OFF):
             resp = _chat(client)
         assert resp.status_code == 429
-        assert "Azure daily spending limit" in resp.json()["detail"]
+        assert _CLOUD_CAP_429 in resp.json()["detail"]
         assert "X-Budget-Fallback" not in resp.headers
 
     def test_bedrock_exhausted_is_429(self, client, db_session, test_user):
@@ -126,7 +124,7 @@ class TestFlagOffIsUnchanged:
         with patch.dict("app.core.config.APP_CONFIG", _FLAG_OFF):
             resp = _messages(client, model="bedrock-claude")
         assert resp.status_code == 429
-        assert "Bedrock daily spending limit" in resp.json()["detail"]
+        assert _CLOUD_CAP_429 in resp.json()["detail"]
 
 
 class TestFlagOnFallsBackToOnPrem:
@@ -198,10 +196,7 @@ class TestFlagOnFallsBackToOnPrem:
         assert captured["url"].endswith("/tokenize")
         assert "azure" in resp.headers["X-Budget-Fallback"]
 
-    def test_under_sublimit_stays_on_cloud(self, client, db_session, test_user):
-        test_user.azure_daily_limit_usd = 10.0
-        db_session.add(test_user)
-        db_session.commit()
+    def test_under_cap_stays_on_cloud(self, client, db_session, test_user):
         _burn(db_session, test_user, Decimal("5.00"), "azure")
         captured = _mock_downstream(client)
         with patch.dict("app.core.config.APP_CONFIG", _FLAG_ON):
@@ -210,11 +205,11 @@ class TestFlagOnFallsBackToOnPrem:
         assert "/openai/v1/responses" in captured["url"]
         assert "X-Budget-Fallback" not in resp.headers
 
-    def test_no_sublimit_stays_on_cloud(self, client, db_session, test_user):
-        """No sub-limit configured → nothing to exhaust → cloud as usual."""
+    def test_no_cap_stays_on_cloud(self, client, db_session, test_user):
+        """No cloud cap configured → nothing to exhaust → cloud as usual."""
         _burn(db_session, test_user, Decimal("50.00"), "azure")
         captured = _mock_downstream(client)
-        with patch.dict("app.core.config.APP_CONFIG", _FLAG_ON):
+        with patch.dict("app.core.config.APP_CONFIG", {"cloud_budget_fallback": True}):
             resp = _chat(client)
         assert resp.status_code == 200
         assert "/openai/v1/responses" in captured["url"]
@@ -224,8 +219,8 @@ class TestOverallLimitStillRefuses:
     """'On-prem 也用完' — once the overall daily limit is gone, no fallback."""
 
     def test_overall_exhausted_is_429_even_with_flag(self, client, db_session, test_user):
-        # test_user: daily_limit_usd=100. Azure sub-limit 10, spent 10 on
-        # Azure and 90 on-prem → overall 100 reached.
+        # test_user: daily_limit_usd=100. Cloud cap 10, spent 10 on Azure
+        # and 90 on-prem → overall 100 reached.
         _exhaust_azure(db_session, test_user)
         _burn(db_session, test_user, Decimal("90.00"), "vllm")
         _mock_downstream(client)
@@ -243,7 +238,7 @@ class TestDedicatedSurfacesNeverFallBack:
         with patch.dict("app.core.config.APP_CONFIG", _FLAG_ON):
             resp = _chat(client, path="/azure/v1/chat/completions")
         assert resp.status_code == 429
-        assert "Azure daily spending limit" in resp.json()["detail"]
+        assert _CLOUD_CAP_429 in resp.json()["detail"]
 
     def test_aws_surface_still_429(self, client, db_session, test_user):
         _exhaust_bedrock(db_session, test_user)
@@ -251,7 +246,7 @@ class TestDedicatedSurfacesNeverFallBack:
         with patch.dict("app.core.config.APP_CONFIG", _FLAG_ON):
             resp = _chat(client, model="bedrock-claude", path="/aws/v1/chat/completions")
         assert resp.status_code == 429
-        assert "Bedrock daily spending limit" in resp.json()["detail"]
+        assert _CLOUD_CAP_429 in resp.json()["detail"]
 
 
 class TestSoftMode:

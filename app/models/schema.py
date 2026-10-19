@@ -47,13 +47,16 @@ class User(SQLModel, table=True):
     password_hash: str = Field(default="")
     api_key: str = Field(index=True, unique=True, default_factory=_generate_api_key)
     daily_limit_usd: float = Field(default=10.0)
-    # Optional Azure-specific sub-limit. Azure spend still counts toward
-    # daily_limit_usd (the overall budget); this additionally caps the Azure
-    # portion on its own. NULL or <= 0 → no separate Azure cap (current
-    # behavior for every existing user).
+    # Retired per-user Azure / Bedrock sub-limits: nothing reads or writes
+    # them any more (cloud spend has one cap for everyone,
+    # [app].cloud_daily_limit_usd). The columns stay until a migration drops
+    # them, so an older release can still run against this database.
     azure_daily_limit_usd: float | None = Field(default=None)
-    # Same convention for AWS Bedrock (the /aws/v1/* surface).
     bedrock_daily_limit_usd: float | None = Field(default=None)
+    # This user's cloud cap (Azure + Bedrock together, per day). NULL is not
+    # "no cap": it follows [app].cloud_daily_limit_usd, the gateway-wide
+    # default (deps.effective_cloud_limit).
+    cloud_daily_limit_usd: float | None = Field(default=None)
     is_admin: bool = Field(default=False)
     is_disabled: bool = Field(default=False)
     can_use_azure: bool = Field(default=False)

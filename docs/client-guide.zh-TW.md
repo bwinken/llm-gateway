@@ -99,9 +99,10 @@ curl http://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
   },
   "backends": {
     "onprem": {"access": true,                        "used_usd": 1.25, "remaining_usd": 6.75},
-    "azure":  {"access": true,  "sub_limit_usd": 3.0, "used_usd": 2.0,  "remaining_usd": 1.0},
+    "azure":  {"access": true,  "used_usd": 2.0,  "remaining_usd": 0.5},
     "aws":    {"access": false,                       "used_usd": 0.0,  "remaining_usd": 0.0}
   },
+  "cloud": {"limit_usd": 2.5, "used_usd": 2.0, "remaining_usd": 0.5},
   "cloud_budget_fallback": false,
   "concurrency": {"mode": "enforce", "limit": 8}
 }
@@ -109,11 +110,11 @@ curl http://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 
 - `daily` 是今日的總額度，所有後端的花費都算在裡面。一天以 `Asia/Taipei` 的日曆日計算。
 - 每個帳號都有每日上限，沒有「不限」。上限為 `0` 代表額度是 $0，所有請求都會被拒絕。
-- `backends.<name>.remaining_usd` 是今天在該後端還能花多少：取該後端自己的上限剩餘和總額度剩餘中較小的那個；沒有權限時為 `0`。各後端的剩餘共用同一份額度，不能相加：以上面的例子，在 Azure 花掉 $1 之後，地端只剩 $5.75。
-- `backends.<name>.sub_limit_usd` 只在管理員替該後端（Azure / AWS）另外設了每日上限時才會出現；`0` 代表這個後端你不能用。沒有這個欄位時，只受 `daily` 總額度約束。地端沒有自己的上限。
+- `backends.<name>.remaining_usd` 是今天在該後端還能花多少：Azure / AWS 取雲端額度剩餘和總額度剩餘中較小的那個，地端就是總額度剩餘；沒有權限時為 `0`。各後端的剩餘共用同一份額度，不能相加：以上面的例子，在 Azure 花掉 $0.50 之後，地端只剩 $6.25。
+- `cloud` 只在你有雲端權限、且有雲端每日上限（管理員設的預設值，或單獨為你設的值）時才會出現：今天 Azure 和 AWS 合計還能花多少，兩邊自由分配。它也會限制兩個雲端後端的 `remaining_usd`（以上面的例子，雲端只剩 $0.50）。沒有這個欄位時，雲端只受 `daily` 總額度約束。地端沒有自己的上限。
 - 只有在 `used_usd` 已達上限時才會拒絕請求，所以當天最後一個請求可能會稍微超出上限。
 - `enforced: false` 代表超額時 gateway 只記 log，不會回 429。
-- `cloud_budget_fallback: true` 代表雲端模型的子額度用完時，`/v1/*` 的請求會改由地端模型回答，而不是回 429。
+- `cloud_budget_fallback: true` 代表雲端每日上限用完時，`/v1/*` 的請求會改由地端模型回答，而不是回 429。
 - `concurrency.limit` 是你的 key 同時可以進行幾個請求。`"mode": "off"` 代表不限，此時不帶 `limit`。
 
 ## Tool calling：選對 client 模式
@@ -150,7 +151,7 @@ Gateway 直接轉送 chat completions，不檢查 tool call 和 tool result 是�
 | 狀態碼 / 標頭 | 意思 | 怎麼處理 |
 |---|---|---|
 | `X-Model-Fallback` 標頭 | 實際回答的模型和你要求的不同（alias 不存在、伺服器離線，或雲端模型被限流） | 檢查模型名稱 |
-| `X-Budget-Fallback` 標頭 | 你的 Azure/Bedrock 每日子額度用完，改由地端模型回答（需管理員開啟此功能） | — |
+| `X-Budget-Fallback` 標頭 | 你的雲端每日額度用完，改由地端模型回答（需管理員開啟此功能） | — |
 | `429` "Daily spending limit … exceeded" | 今日額度已用完，`Retry-After` 指向當地午夜 | 等明天，或請管理員調高額度 |
 | `429` "Daily spending limit is $0" | 你的帳號額度是 $0，等明天也沒用 | 請管理員設定額度 |
 | `429` "Too many concurrent requests" | 你的帳號同時進行中的請求已達上限，`Retry-After: 5` | 稍後重試，Claude Code 會自動重試 |

@@ -865,14 +865,13 @@ class TestUnifiedDispatchToBedrock:
         url = client.__httpx_mock__.post.call_args.args[0]
         assert "bedrock-runtime" not in url  # went to the mocked vLLM downstream
 
-    def test_bedrock_sub_limit_429_on_unified_route(self, client, db_session, test_user):
+    def test_cloud_cap_429_on_unified_route(self, client, db_session, test_user):
         from datetime import datetime, timezone
         from decimal import Decimal
+        from unittest.mock import patch
 
         from app.models.schema import UsageLog
 
-        test_user.bedrock_daily_limit_usd = 0.5
-        db_session.add(test_user)
         db_session.add(UsageLog(
             user_id=test_user.id, model="bedrock-claude", model_type="llm",
             input_tokens=1, output_tokens=1, cost_usd=Decimal("1.0"),
@@ -881,13 +880,14 @@ class TestUnifiedDispatchToBedrock:
         ))
         db_session.commit()
 
-        resp = client.post(
-            "/v1/chat/completions",
-            json={"model": "bedrock-claude", "messages": [{"role": "user", "content": "hi"}]},
-            headers=auth_header(),
-        )
+        with patch.dict("app.core.config.APP_CONFIG", {"cloud_daily_limit_usd": 0.5}):
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "bedrock-claude", "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
         assert resp.status_code == 429
-        assert "Bedrock" in resp.json()["detail"]
+        assert "Cloud (Azure + Bedrock)" in resp.json()["detail"]
 
     def test_vllm_not_affected_by_bedrock_sub_limit(self, client, db_session, test_user):
         from datetime import datetime, timezone
