@@ -40,7 +40,7 @@ endpoints, and the on-disk JSONL under `monitor/` are removed.
 | Phase 2 I/O shape | Send the gateway's **internal OpenAI chat `messages` shape** as `input` (incl. for `/v1/messages` — the Anthropic request is translated via `anthropic_to_openai_request` before sending). Langfuse renders OpenAI chat format as a conversation view natively. |
 | Phase 2 images | **Option B** — pass image content through and let **Langfuse v3 media handling** store/render it (base64 auto-extracted to blob storage; trace stays light, image viewable). Not the `[image]` placeholder. |
 | Score encoding | Boolean signals (`empty_turn`, `fallback_used`) → categorical (`"true"`/`"false"`); `output_tokens` → numeric |
-| Timing | Phase 1 captures **request latency** (monotonic clock at the proxy); **TTFT deferred** (not now) |
+| Timing | **Request latency** (monotonic clock at the proxy) plus per-phase timing: gateway overhead, upstream TTFB, TTFT (`completion_start_time`), generation time, tok/s, attempts, upstream host and request id (see `docs/architecture.md#observability-appservicesobservabilitypy`) |
 | User identity | `userId` = `user.username` (stable login handle, human-readable in the Users view). `user.id` also stored in `metadata.user_id` as the immutable anchor; `display_name` (IdP-synced, mutable) stays in metadata, never the identity key. If usernames ever become reassignable, switch `userId` to `user.id`. |
 | Per-user analysis mechanism | Langfuse **Users view** + **filter-by-userId**, NOT custom `group by user` (userId is high-cardinality → not a Metrics-API group-by dimension). Once filtered to a user, break down by `name` (endpoint), `model`, or the `client` Score; filter further by `backend`/`type` tags. |
 
@@ -108,7 +108,7 @@ class GenerationRecord:
     req_shape: dict          # {msgs, asst, asst_thinking, asst_empty}
     empty_turn: bool         # output_tokens <= 1 on a clean finish
     latency_ms: float | None  # Phase 1 — monotonic clock at the proxy
-    ttft_ms: float | None = None  # DEFERRED — not captured in Phase 1
+    timing: dict | None      # request_timing(): gateway_overhead_ms, upstream_ttfb_ms, ttft_ms, ...
     error: str | None        # statusMessage when downstream/translation failed
     session_id: str | None   # from x-session-id header, else None
     input_payload: Any = None    # Phase 2 only (LANGFUSE_CAPTURE_IO)
@@ -165,7 +165,8 @@ that can actually analyse it — confirmed against Langfuse Metrics API v2:
 | `output_tokens` (for trending) | Score (`scores-numeric`) or usageDetails | — |
 | backend, model_type | **`tags`** (prefixed, low cardinality) | **filtering** only — e.g. `backend:vllm`, `type:llm` |
 | **request latency** (monotonic clock at the proxy) | generation **span duration** (`end_time` extended by the measured latency) + `metadata.latency_ms` | drives Langfuse's "Latency" column. The generation is emitted at the post-request `_log_usage` seam, and v4's `start_observation` can't backdate a span's start, so the span END is extended by the measured latency instead — duration is exact, absolute timestamp is the request-completion instant |
-| fallback_reason, `req_shape` (asst_thinking/asst_empty), org_code | `metadata` | filterable/displayable; not relied on for group-by (ttft_ms deferred) |
+| **phase timing** (`request_timing()`) | `metadata` (all fields) + `completion_start_time` (from `ttft_ms`, placed `ttft_ms` after the span start) + NUMERIC scores `gateway_overhead_ms`, `upstream_ttfb_ms`, `output_tps` | Langfuse's TTFT column; the scores chart per model / backend tag |
+| fallback_reason, `req_shape` (asst_thinking/asst_empty), org_code | `metadata` | filterable/displayable; not relied on for group-by |
 | downstream error / truncation / empty-turn | `level` + `statusMessage` | error surfacing |
 
 > **Rule of thumb — where a field goes depends on how you'll use it:**

@@ -25,6 +25,8 @@ import os
 
 import httpx
 
+from app.services.observability import UPSTREAM_EVENT_HOOKS
+
 _client: httpx.AsyncClient | None = None
 _health_client: httpx.AsyncClient | None = None
 _azure_client: httpx.AsyncClient | None = None
@@ -53,6 +55,7 @@ def _make_cloud_client(proxy: str, insecure: bool) -> httpx.AsyncClient:
         timeout=httpx.Timeout(30.0, connect=10.0),
         follow_redirects=True,
         transport=httpx.AsyncHTTPTransport(**transport_kwargs),
+        event_hooks=UPSTREAM_EVENT_HOOKS,
     )
 
 
@@ -77,6 +80,8 @@ async def init_client() -> None:
     # retries=1 on the transport retries CONNECTION ESTABLISHMENT only — a
     # request that was already sent is never replayed — so a transient TCP
     # blip on the LAN costs one silent reconnect instead of a 502.
+    # The event hooks stamp per-request phase timing (observability); the
+    # health client below has none, its probes belong to no request.
     _client = httpx.AsyncClient(
         timeout=httpx.Timeout(30.0, connect=10.0),
         follow_redirects=True,
@@ -87,6 +92,7 @@ async def init_client() -> None:
                 max_keepalive_connections=_env_int("DOWNSTREAM_MAX_KEEPALIVE_CONNECTIONS", 100),
             ),
         ),
+        event_hooks=UPSTREAM_EVENT_HOOKS,
     )
     # Dedicated health-probe client: its pool must never be starved by user
     # traffic, so a probe failure always means the downstream itself is bad.
