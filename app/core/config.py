@@ -713,7 +713,7 @@ def get_cloud_daily_limit() -> float | None:
     """Daily cap on each user's combined cloud spend (Azure + Bedrock), USD.
 
     [app].cloud_daily_limit_usd, applied to every account on top of its
-    overall daily limit and of any per-backend sub-limit. None (key absent,
+    overall daily limit. None (key absent,
     blank or not a finite number) means no combined cap; 0 is a $0 cap.
     """
     _check_auto_reload()
@@ -766,7 +766,7 @@ def set_site_links(support_bot_url: str, install_guide_url: str) -> None:
     })
 
 
-# Cloud-budget fallback: when a user's Azure / Bedrock daily sub-limit is
+# Cloud-budget fallback: when a user's daily cloud cap is
 # exhausted, a request on the unified ``/v1/*`` surface can be served by the
 # on-prem vLLM default instead of being refused with 429. Off by default — the
 # 429 is the longstanding contract ("you get the model you asked for, or an
@@ -776,13 +776,13 @@ _CLOUD_BUDGET_FALLBACK_KEY = "cloud_budget_fallback"
 
 
 def get_cloud_budget_fallback() -> bool:
-    """Whether an exhausted Azure/Bedrock sub-limit falls back to on-prem.
+    """Whether an exhausted cloud cap falls back to on-prem.
 
     Reads ``[app].cloud_budget_fallback`` (bool; string spellings such as
     ``"true"`` / ``"yes"`` / ``"1"`` are tolerated). Missing or invalid →
     ``False``, i.e. the pre-feature 429. Auto-reloads on file change.
 
-    Only the sub-limit is bypassed: the overall ``daily_limit_usd`` is checked
+    Only the cloud cap is bypassed: the overall ``daily_limit_usd`` is checked
     at auth for every request, so a user whose whole budget is gone still gets
     the usual 429 with or without this flag.
     """

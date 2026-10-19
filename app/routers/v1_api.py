@@ -38,13 +38,13 @@ from app.core.config import (
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
     get_cloud_budget_fallback,
+    get_cloud_daily_limit,
     get_concurrency_settings,
     get_model_routing_snapshot,
 )
 from app.core.deps import (
     _enforce_daily_limit,
     check_cloud_budget,
-    effective_cloud_limit,
     get_current_user,
     get_current_user_unmetered,
     get_today_usage,
@@ -151,7 +151,7 @@ def _route_to_bedrock(alias: str, user: User) -> bool:
 
 
 # Response header set when a cloud-bound request was served on-prem because
-# the user's Azure/Bedrock daily sub-limit was exhausted (see
+# the user's daily cloud cap was exhausted (see
 # ``_cloud_budget_gate``). Distinct from ``X-Model-Fallback`` (which the vLLM
 # resolver adds for the alias → default rewrite) so a client can tell "the
 # server you asked for was down" from "your cloud budget is spent".
@@ -159,12 +159,12 @@ _BUDGET_FALLBACK_HEADER = "X-Budget-Fallback"
 
 
 async def _cloud_budget_gate(user: User, backend: str, alias: str, endpoint: str) -> bool:
-    """Enforce the per-user cloud daily sub-limit for a ``/v1/*`` request
+    """Enforce the daily cloud cap for a ``/v1/*`` request
     that ``_route_to_azure`` / ``_route_to_bedrock`` has already claimed.
 
     Returns True when the request may go to ``backend``.
 
-    When the sub-limit is exhausted, the outcome is the operator's call
+    When the cap is exhausted, the outcome is the operator's call
     (``[app].cloud_budget_fallback``, admin panel → Cloud Budget Fallback):
       - off (default): HTTP 429, so the caller knows their cloud budget is
         gone rather than silently getting a different model's output;
@@ -190,7 +190,7 @@ async def _cloud_budget_gate(user: User, backend: str, alias: str, endpoint: str
 
 
 def _tag_budget_fallback(response: Response, backend: str) -> Response:
-    """Mark a response served on-prem because the cloud sub-limit was spent."""
+    """Mark a response served on-prem because the cloud cap was spent."""
     response.headers[_BUDGET_FALLBACK_HEADER] = (
         f"{backend} daily limit exceeded; served by on-prem"
     )
@@ -303,16 +303,14 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
 
     Per backend (``onprem`` = vLLM, ``azure``, ``aws`` = Bedrock):
       - ``access``: may this key reach it (admins bypass the cloud flags);
-      - ``sub_limit_usd``: only when an admin set a separate cap for it
-        (0 included: a $0 cap);
       - ``used_usd``: today's spend there;
-      - ``remaining_usd``: what can still be spent there today — the tightest
-        of the sub-limit, the combined cloud cap (azure / aws) and the overall
-        daily limit (cloud spend counts toward all of them), 0 without access.
+      - ``remaining_usd``: what can still be spent there today — the tighter
+        of the cloud cap (azure / aws) and the overall daily limit (cloud
+        spend counts toward both), 0 without access.
 
-    ``cloud`` appears only when the caller may use a cloud backend and has a
-    combined cloud cap (``effective_cloud_limit``): Azure + AWS spend today
-    against it.
+    ``cloud`` appears only when the caller may use a cloud backend and a
+    cloud cap is configured (``[app].cloud_daily_limit_usd``, the same for
+    everyone): Azure + AWS spend today against it.
 
     Limits are those the gateway enforces; with ``ENFORCE_DAILY_LIMIT=false``
     they are only logged (``daily.enforced`` = false).
@@ -325,24 +323,19 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
     azure_access = user.can_use_azure or user.is_admin
     bedrock_access = user.can_use_bedrock or user.is_admin
     # The cap only means something to a user who may reach a cloud backend.
-    cloud_limit = effective_cloud_limit(user) if (azure_access or bedrock_access) else None
+    cloud_limit = get_cloud_daily_limit() if (azure_access or bedrock_access) else None
     cloud_used = today["azure_cost_usd"] + today["bedrock_cost_usd"]
     cloud_remaining = (
         daily_remaining if cloud_limit is None
         else min(daily_remaining, _remaining(cloud_limit, cloud_used))
     )
 
-    def _backend(access: bool, used: float, sub_limit: float | None,
-                 cap_remaining: float = daily_remaining) -> dict:
-        out: dict[str, object] = {"access": access}
-        if sub_limit is not None:
-            out["sub_limit_usd"] = max(0.0, sub_limit)
-        remaining = cap_remaining
-        if sub_limit is not None:
-            remaining = min(remaining, _remaining(sub_limit, used))
-        out["used_usd"] = _usd(used)
-        out["remaining_usd"] = remaining if access else 0.0
-        return out
+    def _backend(access: bool, used: float, remaining: float) -> dict:
+        return {
+            "access": access,
+            "used_usd": _usd(used),
+            "remaining_usd": remaining if access else 0.0,
+        }
 
     mode, limit = get_concurrency_settings()
     concurrency_applies = mode != "off" and not user.is_admin and not user.concurrency_waived
@@ -366,17 +359,15 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
             "resets_in_seconds": seconds_until_local_midnight(),
         },
         "backends": {
-            "onprem": _backend(True, today["vllm_cost_usd"], None),
+            "onprem": _backend(True, today["vllm_cost_usd"], daily_remaining),
             "azure": _backend(
                 azure_access,
                 today["azure_cost_usd"],
-                user.azure_daily_limit_usd,
                 cloud_remaining,
             ),
             "aws": _backend(
                 bedrock_access,
                 today["bedrock_cost_usd"],
-                user.bedrock_daily_limit_usd,
                 cloud_remaining,
             ),
         },
@@ -398,14 +389,14 @@ async def chat_completions(request: Request, user: User = Depends(limited_curren
     alias = await _peek_model_alias(request)
     budget_fallback: str | None = None
     if alias and _route_to_azure(alias, user):
-        # Azure-bound: enforce the per-user Azure daily sub-limit. On exceed
+        # Azure-bound: enforce the daily cloud cap. On exceed
         # this is a 429 unless the operator enabled cloud_budget_fallback,
         # in which case the request drops through to the vLLM path below.
         if await _cloud_budget_gate(user, "azure", alias, "/v1/chat/completions"):
             return await azure_forward_chat_completions(request, user)
         budget_fallback = "azure"
     elif alias and _route_to_bedrock(alias, user):
-        # Same contract as the Azure gate above, for the Bedrock sub-limit.
+        # Same contract as the Azure gate above, for Bedrock.
         if await _cloud_budget_gate(user, "bedrock", alias, "/v1/chat/completions"):
             return await bedrock_forward_chat_completions(request, user)
         budget_fallback = "bedrock"
@@ -744,7 +735,7 @@ async def responses(request: Request, user: User = Depends(limited_current_user)
     alias = await _peek_model_alias(request)
     budget_fallback: str | None = None
     if alias and _route_to_azure(alias, user):
-        # Same Azure sub-limit gate as /v1/chat/completions.
+        # Same cloud-cap gate as /v1/chat/completions.
         if await _cloud_budget_gate(user, "azure", alias, "/v1/responses"):
             return await azure_forward_responses(request, user)
         budget_fallback = "azure"
@@ -776,7 +767,7 @@ async def messages(request: Request, user: User = Depends(limited_current_user))
     alias = await _peek_model_alias(request)
     budget_fallback: str | None = None
     if alias and _route_to_azure(alias, user):
-        # Same Azure sub-limit gate as /v1/chat/completions.
+        # Same cloud-cap gate as /v1/chat/completions.
         if await _cloud_budget_gate(user, "azure", alias, "/v1/messages"):
             return await azure_forward_messages(request, user)
         budget_fallback = "azure"
@@ -814,7 +805,7 @@ async def messages_count_tokens(
     if alias and _route_to_azure(alias, user):
         # Gated like the billable Azure paths for parity with
         # /azure/v1/messages/count_tokens (whose require_azure_access
-        # dependency also enforces the sub-limit). With the fallback on, the
+        # dependency also enforces the cloud cap). With the fallback on, the
         # count comes from the on-prem tokenizer — the same server the
         # paired /v1/messages call will be served by.
         if await _cloud_budget_gate(user, "azure", alias, "/v1/messages/count_tokens"):

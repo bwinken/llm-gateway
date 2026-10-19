@@ -650,7 +650,7 @@ def _log_usage(
     discounted `cached_input_price_per_1m`; vLLM callers omit it.
 
     `backend` ("vllm" | "azure") is persisted on the usage_logs row (so cloud
-    vs on-prem spend can be split for reporting and the Azure daily sub-limit)
+    vs on-prem spend can be split for reporting and the daily cloud cap)
     and tags the Langfuse generation. Emitting the Langfuse generation happens
     here so every billable path is covered from one seam; it is a no-op when
     Langfuse is unconfigured.

@@ -99,7 +99,7 @@ curl http://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
   },
   "backends": {
     "onprem": {"access": true,                        "used_usd": 1.25, "remaining_usd": 6.75},
-    "azure":  {"access": true,  "sub_limit_usd": 3.0, "used_usd": 2.0,  "remaining_usd": 0.5},
+    "azure":  {"access": true,  "used_usd": 2.0,  "remaining_usd": 0.5},
     "aws":    {"access": false,                       "used_usd": 0.0,  "remaining_usd": 0.0}
   },
   "cloud": {"limit_usd": 2.5, "used_usd": 2.0, "remaining_usd": 0.5},
@@ -110,9 +110,8 @@ curl http://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 
 - `daily` is your overall budget for today; every backend's spend counts toward it. The day is the `Asia/Taipei` calendar day.
 - Every account has a daily limit; there is no "unlimited". A limit of `0` is a $0 budget: every request is refused.
-- `backends.<name>.remaining_usd` is what you can still spend there today: the tighter of that backend's own cap and your overall remaining budget, `0` without access. The remainders share one budget and don't add up: in the example, spending $1 on Azure leaves $5.75 for on-prem.
-- `backends.<name>.sub_limit_usd` appears only when an admin set a separate daily cap for that backend (Azure / AWS); `0` means that backend is closed to you. Without it, the backend is bounded by `daily` only. On-prem has no cap of its own.
-- `cloud` appears only when you have cloud access and a combined cloud budget: what you may spend on Azure and AWS together today, split between them however you like. It also bounds both cloud backends' `remaining_usd` (in the example, Azure's own cap would leave $1.00, but only $0.50 of the cloud budget is left).
+- `backends.<name>.remaining_usd` is what you can still spend there today: for Azure / AWS the tighter of the cloud budget and your overall remaining budget, for on-prem the overall remaining budget; `0` without access. The remainders share one budget and don't add up: in the example, spending $0.50 on Azure leaves $6.25 for on-prem.
+- `cloud` appears only when you have cloud access and the gateway has a cloud budget: what you may spend on Azure and AWS together today, split between them however you like. It also bounds both cloud backends' `remaining_usd` (in the example, only $0.50 of the cloud budget is left). Without it, cloud is bounded by `daily` only. On-prem has no cap of its own.
 - A request is refused only once `used_usd` reaches the limit, so the last request of the day can overshoot it slightly.
 - `enforced: false` means the gateway only logs overages instead of returning 429.
 - `cloud_budget_fallback: true` means a `/v1/*` request for a cloud model whose cap is spent is answered by an on-prem model instead of a 429.
@@ -152,7 +151,7 @@ Every Azure call goes through the Responses API, which rejects (400) any `functi
 | Status / header | Meaning | What to do |
 |---|---|---|
 | `X-Model-Fallback` header | Served by a different model than requested (unknown alias, server down, or rate-limited cloud model) | Check the model name |
-| `X-Budget-Fallback` header | Your Azure/Bedrock daily sub-limit or combined cloud budget is spent, so an on-prem model answered (only when the admin enabled it) | — |
+| `X-Budget-Fallback` header | Your daily cloud budget is spent, so an on-prem model answered (only when the admin enabled it) | — |
 | `429` "Daily spending limit … exceeded" | Today's budget is used up; `Retry-After` points to local midnight | Wait, or ask an admin to raise the limit |
 | `429` "Daily spending limit is $0" | Your account has a $0 budget; waiting won't help | Ask an admin for a limit |
 | `429` "Too many concurrent requests" | Your account already has the maximum number of requests in flight; `Retry-After: 5` | Retry shortly. Claude Code does this automatically |

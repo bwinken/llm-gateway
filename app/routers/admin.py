@@ -72,8 +72,29 @@ templates.env.globals["get_site_links"] = get_site_links
 _PAGE_SIZE = 15
 
 
+# Per-user cloud amounts are gone: cloud spend has one gateway-wide cap
+# ([app].cloud_daily_limit_usd) and per user only the access toggles. A
+# script still sending these gets told rather than silently ignored.
+_RETIRED_LIMIT_FIELDS: tuple[str, ...] = (
+    "azure_daily_limit_usd", "bedrock_daily_limit_usd", "cloud_daily_limit_usd",
+)
+
+
+def _reject_retired_limits(body: dict) -> None:
+    retired = [f for f in _RETIRED_LIMIT_FIELDS if f in body]
+    if retired:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{', '.join(retired)} no longer exist: cloud spend has one cap for "
+                "everyone (admin panel → Cloud Daily Limit); per user, grant or revoke "
+                "Azure / AWS access."
+            ),
+        )
+
+
 def _limit_usd(raw: object, field: str) -> float:
-    """A daily limit (or sub-limit) in USD: a finite number >= 0.
+    """A daily limit (or the cloud cap) in USD: a finite number >= 0.
 
     There is no "unlimited": 0 is a $0 budget (every request refused), and
     negative / inf / nan are rejected rather than quietly meaning "no cap".
@@ -171,9 +192,6 @@ async def admin_page(
             # The modal fetches the real key from /users/{id}/api-key.
             "api_key": mask_api_key(u.api_key),
             "daily_limit_usd": u.daily_limit_usd,
-            "azure_daily_limit_usd": u.azure_daily_limit_usd,
-            "bedrock_daily_limit_usd": u.bedrock_daily_limit_usd,
-            "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
             "is_admin": u.is_admin,
             "is_disabled": u.is_disabled,
             "can_use_azure": u.can_use_azure,
@@ -390,93 +408,6 @@ async def update_user_limit(
     return RedirectResponse(url="/admin", status_code=303)
 
 
-@router.post("/users/{user_id}/azure-limit")
-async def update_user_azure_limit(
-    user_id: int,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    """Set the user's Azure-specific daily sub-limit.
-
-    Empty value clears the sub-limit (NULL → Azure spend only bounded by the
-    overall daily_limit_usd). 0 is a $0 cap: Azure requests are refused.
-    """
-    target = session.exec(select(User).where(User.id == user_id)).first()
-    if not target:
-        raise HTTPException(status_code=404, detail="User not found.")
-
-    form = await request.form()
-    raw = form.get("new_azure_limit")
-    if raw is not None:
-        raw = str(raw).strip()
-        if raw == "":
-            target.azure_daily_limit_usd = None
-        else:
-            target.azure_daily_limit_usd = _limit_usd(raw, "new_azure_limit")
-        session.add(target)
-        session.commit()
-
-    return RedirectResponse(url="/admin", status_code=303)
-
-
-@router.post("/users/{user_id}/bedrock-limit")
-async def update_user_bedrock_limit(
-    user_id: int,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    """Set the user's Bedrock-specific daily sub-limit.
-
-    Empty value clears the sub-limit (NULL → Bedrock spend only bounded by
-    the overall daily_limit_usd). Same contract as the Azure sub-limit.
-    """
-    target = session.exec(select(User).where(User.id == user_id)).first()
-    if not target:
-        raise HTTPException(status_code=404, detail="User not found.")
-
-    form = await request.form()
-    raw = form.get("new_bedrock_limit")
-    if raw is not None:
-        raw = str(raw).strip()
-        if raw == "":
-            target.bedrock_daily_limit_usd = None
-        else:
-            target.bedrock_daily_limit_usd = _limit_usd(raw, "new_bedrock_limit")
-        session.add(target)
-        session.commit()
-
-    return RedirectResponse(url="/admin", status_code=303)
-
-
-@router.post("/users/{user_id}/cloud-limit")
-async def update_user_cloud_limit(
-    user_id: int,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    """Set the user's own combined cloud cap (Azure + Bedrock per day).
-
-    Empty value clears it (NULL → the user follows the gateway-wide default,
-    [app].cloud_daily_limit_usd); 0 is a $0 cap.
-    """
-    target = session.exec(select(User).where(User.id == user_id)).first()
-    if not target:
-        raise HTTPException(status_code=404, detail="User not found.")
-
-    form = await request.form()
-    raw = form.get("new_cloud_limit")
-    if raw is not None:
-        raw = str(raw).strip()
-        if raw == "":
-            target.cloud_daily_limit_usd = None
-        else:
-            target.cloud_daily_limit_usd = _limit_usd(raw, "new_cloud_limit")
-        session.add(target)
-        session.commit()
-
-    return RedirectResponse(url="/admin", status_code=303)
-
-
 @router.post("/default-limit")
 async def update_default_limit(
     request: Request,
@@ -513,11 +444,9 @@ async def update_default_limit(
 
 @router.post("/cloud-limit")
 async def update_cloud_limit(request: Request):
-    """Set the default combined cloud cap: each account's Azure + Bedrock
-    spend per day, for every user without their own value
-    (users.cloud_daily_limit_usd). Blank removes the default (no combined
-    cap); 0 is a $0 cap. It applies on top of the overall daily limit and any
-    per-backend sub-limit."""
+    """Set the cloud cap: each user's Azure + Bedrock spend per day, the
+    same for every user with cloud access. Blank removes it (cloud bounded
+    by the overall daily limit only); 0 is a $0 cap."""
     form = await request.form()
     raw = str(form.get("new_cloud_limit") or "").strip()
     value = None if raw == "" else _limit_usd(raw, "new_cloud_limit")
@@ -564,8 +493,8 @@ async def update_cloud_budget_fallback(
 ):
     """Enable/disable the cloud-budget fallback (``[app].cloud_budget_fallback``).
 
-    When on, a ``/v1/*`` request for an Azure/Bedrock alias whose per-user
-    daily sub-limit is exhausted is served by the on-prem vLLM default
+    When on, a ``/v1/*`` request for an Azure/Bedrock alias whose daily
+    cloud cap is exhausted is served by the on-prem vLLM default
     instead of being refused with 429. The overall ``daily_limit_usd`` is
     unaffected — once that is gone the request is refused as before.
 
@@ -815,9 +744,6 @@ async def list_users_api(
             # The modal fetches the real key from /users/{id}/api-key.
             "api_key": mask_api_key(u.api_key),
             "daily_limit_usd": u.daily_limit_usd,
-            "azure_daily_limit_usd": u.azure_daily_limit_usd,
-            "bedrock_daily_limit_usd": u.bedrock_daily_limit_usd,
-            "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
             "is_admin": u.is_admin,
             "concurrency_waived": u.concurrency_waived,
             "owner_ids": app_owners_map.get(u.id, []),
@@ -843,26 +769,12 @@ async def create_user_api(
     if existing:
         raise HTTPException(status_code=409, detail=f"User '{username}' already exists.")
 
+    _reject_retired_limits(body)
     # App accounts start waived from the concurrency limit; an explicit
     # "concurrency_waived" in the body (handled below) still wins.
     new_user = User(username=username, concurrency_waived=is_app_account(username))
     if "daily_limit_usd" in body:
         new_user.daily_limit_usd = _limit_usd(body["daily_limit_usd"], "daily_limit_usd")
-    if "azure_daily_limit_usd" in body:
-        raw = body["azure_daily_limit_usd"]
-        new_user.azure_daily_limit_usd = (
-            None if raw is None else _limit_usd(raw, "azure_daily_limit_usd")
-        )
-    if "bedrock_daily_limit_usd" in body:
-        raw = body["bedrock_daily_limit_usd"]
-        new_user.bedrock_daily_limit_usd = (
-            None if raw is None else _limit_usd(raw, "bedrock_daily_limit_usd")
-        )
-    if "cloud_daily_limit_usd" in body:
-        raw = body["cloud_daily_limit_usd"]
-        new_user.cloud_daily_limit_usd = (
-            None if raw is None else _limit_usd(raw, "cloud_daily_limit_usd")
-        )
     if "is_admin" in body:
         new_user.is_admin = bool(body["is_admin"])
     if "concurrency_waived" in body:
@@ -908,23 +820,9 @@ async def update_user_api(
     if not target:
         raise HTTPException(status_code=404, detail="User not found.")
 
+    _reject_retired_limits(body)
     if "daily_limit_usd" in body:
         target.daily_limit_usd = _limit_usd(body["daily_limit_usd"], "daily_limit_usd")
-    if "azure_daily_limit_usd" in body:
-        raw = body["azure_daily_limit_usd"]
-        target.azure_daily_limit_usd = (
-            None if raw is None else _limit_usd(raw, "azure_daily_limit_usd")
-        )
-    if "bedrock_daily_limit_usd" in body:
-        raw = body["bedrock_daily_limit_usd"]
-        target.bedrock_daily_limit_usd = (
-            None if raw is None else _limit_usd(raw, "bedrock_daily_limit_usd")
-        )
-    if "cloud_daily_limit_usd" in body:
-        raw = body["cloud_daily_limit_usd"]
-        target.cloud_daily_limit_usd = (
-            None if raw is None else _limit_usd(raw, "cloud_daily_limit_usd")
-        )
     if "is_admin" in body:
         target.is_admin = bool(body["is_admin"])
     if "concurrency_waived" in body:

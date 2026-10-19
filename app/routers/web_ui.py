@@ -15,11 +15,11 @@ from sqlmodel import Session, select
 from app.models.schema import AppOwner, User
 
 from app.core.auth import get_web_user
-from app.core.deps import effective_cloud_limit
 from app.core.config import (
     APP_TITLE,
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
+    get_cloud_daily_limit,
     get_model_routing_snapshot,
     get_pricing_snapshot,
     get_site_links,
@@ -280,24 +280,12 @@ async def dashboard(
     usage_percent = _usage_percent(today_cost, user.daily_limit_usd)
     budget_state = _budget_state(user.daily_limit_usd, today_cost)
 
-    # Azure sub-budget: shown only when an azure_daily_limit_usd is set
-    # (None = no separate cap; 0 is a real $0 cap and is shown).
     azure_today_cost = today["azure_cost_usd"]
-    azure_limit = user.azure_daily_limit_usd
-    azure_usage_percent = (
-        _usage_percent(azure_today_cost, azure_limit) if azure_limit is not None else 0.0
-    )
-
-    # Bedrock sub-budget — same contract as the Azure one above.
     bedrock_today_cost = today["bedrock_cost_usd"]
-    bedrock_limit = user.bedrock_daily_limit_usd
-    bedrock_usage_percent = (
-        _usage_percent(bedrock_today_cost, bedrock_limit) if bedrock_limit is not None else 0.0
-    )
 
-    # Combined cloud cap (the user's own, else the gateway-wide default):
-    # Azure + Bedrock spend together. None = no combined cap, row hidden.
-    cloud_limit = effective_cloud_limit(user)
+    # Cloud cap ([app].cloud_daily_limit_usd, the same for everyone):
+    # Azure + Bedrock spend together. None = no cap, row hidden.
+    cloud_limit = get_cloud_daily_limit()
     cloud_today_cost = azure_today_cost + bedrock_today_cost
     cloud_usage_percent = (
         _usage_percent(cloud_today_cost, cloud_limit) if cloud_limit is not None else 0.0
@@ -366,10 +354,6 @@ async def dashboard(
             azure_today_cost=round(azure_today_cost, 4),
             bedrock_today_cost=round(bedrock_today_cost, 4),
             vllm_today_cost=round(today["vllm_cost_usd"], 4),
-            azure_limit=azure_limit,
-            azure_usage_percent=round(azure_usage_percent, 1),
-            bedrock_limit=bedrock_limit,
-            bedrock_usage_percent=round(bedrock_usage_percent, 1),
             cloud_limit=cloud_limit,
             cloud_today_cost=round(cloud_today_cost, 4),
             cloud_usage_percent=round(cloud_usage_percent, 1),

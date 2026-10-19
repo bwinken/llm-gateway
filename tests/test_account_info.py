@@ -79,7 +79,6 @@ class TestAccountInfo:
         assert _me(client, "/me")["username"] == "testuser"
 
     def test_spend_split_by_backend(self, client, db_session, test_user):
-        _update(db_session, test_user, azure_daily_limit_usd=5.0)
         _spend(db_session, test_user, "10")
         _spend(db_session, test_user, "3", backend="azure")
         _spend(db_session, test_user, "1.5", backend="bedrock")
@@ -96,17 +95,18 @@ class TestAccountInfo:
             "access": True, "used_usd": 10.0, "remaining_usd": 85.5,
         }
         assert backends["azure"] == {
-            "access": True, "sub_limit_usd": 5.0, "used_usd": 3.0, "remaining_usd": 2.0,
+            "access": True, "used_usd": 3.0, "remaining_usd": 85.5,
         }
         assert backends["aws"]["used_usd"] == 1.5
         assert backends["aws"]["remaining_usd"] == 85.5
 
     def test_cloud_remaining_capped_by_overall_limit(self, client, db_session, test_user):
         # Cloud spend counts toward the overall limit too, so a generous
-        # sub-limit can't promise more than the overall budget has left.
-        _update(db_session, test_user, daily_limit_usd=10.0, bedrock_daily_limit_usd=50.0)
+        # cloud cap can't promise more than the overall budget has left.
+        _update(db_session, test_user, daily_limit_usd=10.0)
         _spend(db_session, test_user, "8")
-        assert _me(client)["backends"]["aws"]["remaining_usd"] == 2.0
+        with patch.dict("app.core.config.APP_CONFIG", {"cloud_daily_limit_usd": 50.0}):
+            assert _me(client)["backends"]["aws"]["remaining_usd"] == 2.0
 
     def test_yesterday_not_counted(self, client, db_session, test_user):
         _spend(
@@ -124,14 +124,12 @@ class TestAccountInfo:
         for name in ("onprem", "azure", "aws"):
             assert body["backends"][name]["remaining_usd"] == 0.0
 
-    def test_zero_sub_limit_is_zero(self, client, db_session, test_user):
-        _update(db_session, test_user, azure_daily_limit_usd=0.0)
-        backends = _me(client)["backends"]
-        assert backends["azure"] == {
-            "access": True, "sub_limit_usd": 0.0, "used_usd": 0.0, "remaining_usd": 0.0,
-        }
-        assert backends["onprem"]["remaining_usd"] == 100.0
-        assert "sub_limit_usd" not in backends["aws"]
+    def test_zero_cloud_cap_is_zero(self, client, db_session, test_user):
+        with patch.dict("app.core.config.APP_CONFIG", {"cloud_daily_limit_usd": 0}):
+            body = _me(client)
+        assert body["cloud"] == {"limit_usd": 0.0, "used_usd": 0.0, "remaining_usd": 0.0}
+        assert body["backends"]["azure"] == {"access": True, "used_usd": 0.0, "remaining_usd": 0.0}
+        assert body["backends"]["onprem"]["remaining_usd"] == 100.0
 
     def test_no_cloud_access(self, client, db_session, test_user):
         _update(db_session, test_user, can_use_azure=False, can_use_bedrock=False)
