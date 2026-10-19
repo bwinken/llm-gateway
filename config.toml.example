@@ -289,19 +289,29 @@ api_key = ""                        # decider's server checks no key
 # Nova, Llama, Mistral, ...) shares one code path:
 #  - `region` builds the default endpoint
 #    https://bedrock-runtime.{region}.amazonaws.com; set `endpoint` to
-#    override it (VPC endpoints, gov regions).
+#    override it (VPC endpoints, gov regions). Omit it to use BEDROCK_REGION
+#    from .env (else us-east-1).
 #  - `model_id` is the Bedrock model ID or inference-profile ID, e.g.
 #    "anthropic.claude-sonnet-4-20250514-v1:0" or "us.anthropic....".
-#  - `api_key` is a long-term Bedrock API key (sent as Authorization:
-#    Bearer). IAM/SigV4 signing is not implemented yet.
+#  - Credentials, first match wins:
+#      `aws_access_key_id` + `aws_secret_access_key`: IAM credentials; every
+#        request is SigV4-signed and the secret is never sent
+#      `api_key`: a long-term Bedrock API key (sent as Authorization: Bearer)
+#      neither: the IAM pair shared in .env (BEDROCK_AWS_ACCESS_KEY_ID /
+#        BEDROCK_AWS_SECRET_ACCESS_KEY) — set once for every model.
+#    The signature is scoped to the region, so it must be the endpoint's
+#    region even when overriding `endpoint`.
 #  - Routed by model_id (no health-check). Type-aware fallback for unknown
 #    aliases via [bedrock_fallback] above. Same metadata and per-model
 #    pricing override fields as [models.*] are accepted.
 #  - Converse does not cover embeddings; `/aws/v1/embeddings` is
 #    intentionally not exposed. Configure embeddings on a vLLM backend.
 #  - Mark Claude models `is_reasoning = true` to translate Anthropic /
-#    OpenAI reasoning-effort requests into Bedrock extended thinking
-#    (budget_tokens bucketed by effort).
+#    OpenAI reasoning-effort requests into Bedrock extended thinking. The
+#    shape follows the generation parsed from model_id: Claude 4.6+ (e.g.
+#    "global.anthropic.claude-haiku-5-5") gets adaptive thinking with the
+#    effort level; older models a budget_tokens bucket. Claude 4.7+ never
+#    receives temperature / top_p (any non-default value is a 400).
 #  - `rate_limit_fallback` (optional): another [bedrock_models.*] alias that
 #    takes the request when this model answers 429 (ThrottlingException).
 #    Same chain rules as on [azure_models.*]; never crosses backends.
@@ -310,6 +320,9 @@ api_key = ""                        # decider's server checks no key
 # region = "us-east-1"
 # model_id = "anthropic.claude-sonnet-4-20250514-v1:0"
 # api_key = "your-bedrock-api-key"
+# # or, instead of api_key, IAM credentials (SigV4):
+# # aws_access_key_id = "AKIA..."
+# # aws_secret_access_key = "..."
 # display_name = "Claude Sonnet (Bedrock)"
 # context_window = 200000
 # max_output_tokens = 8192

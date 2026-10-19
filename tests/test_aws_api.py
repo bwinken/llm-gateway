@@ -226,6 +226,58 @@ class TestConverseRequestTranslation:
         assert "additionalModelRequestFields" not in out
         assert out["inferenceConfig"]["temperature"] == 0.7
 
+    def test_claude_version_parsed_from_model_id(self):
+        from app.services.converse_adapter import _claude_version
+        for model_id, expected in [
+            ("anthropic.claude-sonnet-4-20250514-v1:0", (4, 0)),
+            ("us.anthropic.claude-haiku-4-5-20251001-v1:0", (4, 5)),
+            ("anthropic.claude-3-7-sonnet-20250219-v1:0", (3, 7)),
+            ("anthropic.claude-opus-4-6-v1", (4, 6)),
+            ("global.anthropic.claude-haiku-5-5", (5, 5)),
+            ("anthropic.claude-opus-5", (5, 0)),
+            ("arn:aws:bedrock:us-east-1:123:application-inference-profile/abc", None),
+        ]:
+            assert _claude_version(model_id) == expected, model_id
+
+    def test_adaptive_claude_gets_adaptive_thinking_and_effort(self):
+        """Claude 4.6+ thinks adaptively; budget_tokens is a 400 from 4.7 on.
+        The requested level is forwarded verbatim as output_config.effort."""
+        for model_id in ("anthropic.claude-opus-4-6-v1", "global.anthropic.claude-haiku-5-5"):
+            for effort in ("low", "xhigh", "max"):
+                out = self._xlate({
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "reasoning_effort": effort,
+                }, model_id=model_id)
+                assert out["additionalModelRequestFields"] == {
+                    "thinking": {"type": "adaptive"},
+                    "output_config": {"effort": effort},
+                }, (model_id, effort)
+
+    def test_adaptive_claude_without_effort_sends_no_thinking(self):
+        """No effort asked → nothing sent; the model's own default applies.
+        "none" also sends nothing (`disabled` is a 400 on several 5.x models)."""
+        for body_extra in ({}, {"reasoning_effort": "none"}):
+            out = self._xlate({
+                "messages": [{"role": "user", "content": "hi"}], **body_extra,
+            }, model_id="global.anthropic.claude-haiku-5-5")
+            assert "additionalModelRequestFields" not in out
+
+    def test_claude_4_7_plus_drops_sampling_overrides(self):
+        """Claude 4.7+ rejects non-default temperature / top_p with a 400,
+        with or without thinking; stop sequences and max tokens survive."""
+        out = self._xlate({
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 100, "temperature": 0.7, "top_p": 0.9, "stop": "END",
+        }, model_id="global.anthropic.claude-haiku-5-5")
+        assert out["inferenceConfig"] == {"maxTokens": 100, "stopSequences": ["END"]}
+
+    def test_claude_4_6_keeps_sampling_without_thinking(self):
+        out = self._xlate({
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.7,
+        }, model_id="anthropic.claude-sonnet-4-6")
+        assert out["inferenceConfig"]["temperature"] == 0.7
+
     def test_effort_passthrough_for_openai_family(self):
         out = self._xlate({
             "messages": [{"role": "user", "content": "hi"}],
@@ -435,7 +487,7 @@ class TestBedrockChatCompletions:
         async def fake_post(url, **kwargs):
             captured["url"] = url
             captured["headers"] = kwargs.get("headers")
-            captured["json"] = kwargs.get("json")
+            captured["json"] = json.loads(kwargs["content"])
             return make_httpx_response(200, _converse_payload("ok", 1, 1))
 
         client.__httpx_mock__.post = AsyncMock(side_effect=fake_post)
@@ -454,6 +506,133 @@ class TestBedrockChatCompletions:
         # Body carries Converse shape, no model field (model is in the URL).
         assert "model" not in captured["json"]
         assert captured["json"]["messages"][0]["content"] == [{"text": "hi"}]
+
+    def test_iam_credentials_sign_with_sigv4(self, client):
+        """An entry with IAM credentials is SigV4-signed over the exact bytes
+        sent, and neither the secret nor a Bearer token goes on the wire."""
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+        from app.services.aws_sigv4 import sign_request
+        from tests.conftest import TEST_BEDROCK_MODELS
+
+        iam = {
+            "type": "llm", "region": "ap-northeast-1",
+            "model_id": "global.anthropic.claude-haiku-5-5", "api_key": "",
+            "aws_access_key_id": "AKIDEXAMPLE",
+            "aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+        }
+        captured: dict = {}
+
+        async def fake_post(url, **kwargs):
+            captured.update(url=url, headers=kwargs["headers"], content=kwargs["content"])
+            return make_httpx_response(200, _converse_payload("ok", 1, 1))
+
+        with patch.dict(TEST_BEDROCK_MODELS, {"bedrock-iam": iam}), \
+             patch.object(client.__httpx_mock__, "post", side_effect=fake_post):
+            resp = client.post(
+                "/aws/v1/chat/completions",
+                json={"model": "bedrock-iam", "messages": [{"role": "user", "content": "日本語"}]},
+                headers=auth_header(),
+            )
+        assert resp.status_code == 200
+        headers = captured["headers"]
+        auth = headers["Authorization"]
+        assert auth.startswith(
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/"
+        ) and "/ap-northeast-1/bedrock/aws4_request" in auth
+        assert iam["aws_secret_access_key"] not in json.dumps(headers)
+        # Re-signing the captured bytes at the captured timestamp reproduces
+        # the signature: the body on the wire is the body that was signed.
+        when = datetime.strptime(headers["X-Amz-Date"], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        expected = sign_request(
+            "POST", captured["url"], captured["content"],
+            access_key=iam["aws_access_key_id"], secret_key=iam["aws_secret_access_key"],
+            region="ap-northeast-1", service="bedrock", now=when,
+        )
+        assert auth == expected["Authorization"]
+
+    def _capture_post(self, client, entry, monkeypatch, env):
+        from unittest.mock import patch
+        from tests.conftest import TEST_BEDROCK_MODELS
+
+        for name in ("BEDROCK_REGION", "BEDROCK_AWS_ACCESS_KEY_ID", "BEDROCK_AWS_SECRET_ACCESS_KEY"):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        captured: dict = {}
+
+        async def fake_post(url, **kwargs):
+            captured.update(url=url, headers=kwargs["headers"])
+            return make_httpx_response(200, _converse_payload("ok", 1, 1))
+
+        with patch.dict(TEST_BEDROCK_MODELS, {"bedrock-x": entry}), \
+             patch.object(client.__httpx_mock__, "post", side_effect=fake_post):
+            resp = client.post(
+                "/aws/v1/chat/completions",
+                json={"model": "bedrock-x", "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+        assert resp.status_code == 200, resp.text
+        return captured
+
+    _SHARED = {"BEDROCK_REGION": "ap-northeast-1",
+               "BEDROCK_AWS_ACCESS_KEY_ID": "AKIASHARED", "BEDROCK_AWS_SECRET_ACCESS_KEY": "s"}
+
+    def test_shared_env_credentials_and_region_apply_to_a_bare_entry(self, client, monkeypatch):
+        bare = {"type": "llm", "model_id": "global.anthropic.claude-haiku-5-5", "api_key": ""}
+        captured = self._capture_post(client, bare, monkeypatch, self._SHARED)
+        assert captured["url"].startswith("https://bedrock-runtime.ap-northeast-1.amazonaws.com/")
+        assert "Credential=AKIASHARED/" in captured["headers"]["Authorization"]
+        assert "/ap-northeast-1/bedrock/aws4_request" in captured["headers"]["Authorization"]
+
+    def test_entry_settings_win_over_shared_env(self, client, monkeypatch):
+        own_iam = {"type": "llm", "model_id": "m", "api_key": "", "region": "us-west-2",
+                   "aws_access_key_id": "AKIAOWN", "aws_secret_access_key": "s2"}
+        captured = self._capture_post(client, own_iam, monkeypatch, self._SHARED)
+        assert captured["url"].startswith("https://bedrock-runtime.us-west-2.amazonaws.com/")
+        assert "Credential=AKIAOWN/" in captured["headers"]["Authorization"]
+        assert "/us-west-2/bedrock/" in captured["headers"]["Authorization"]
+
+        own_key = {"type": "llm", "model_id": "m", "api_key": "bedrock-key"}
+        captured = self._capture_post(client, own_key, monkeypatch, self._SHARED)
+        assert captured["headers"]["Authorization"] == "Bearer bedrock-key"
+
+    def test_region_defaults_to_us_east_1_without_shared_region(self, client, monkeypatch):
+        bare = {"type": "llm", "model_id": "m", "api_key": "k"}
+        captured = self._capture_post(client, bare, monkeypatch, {})
+        assert captured["url"].startswith("https://bedrock-runtime.us-east-1.amazonaws.com/")
+
+    def test_iam_credentials_sign_the_stream_request(self, client):
+        from unittest.mock import patch
+        from tests.conftest import TEST_BEDROCK_MODELS
+
+        iam = {
+            "type": "llm", "region": "us-east-1",
+            "model_id": "anthropic.claude-sonnet-4-20250514-v1:0", "api_key": "",
+            "aws_access_key_id": "AKIDEXAMPLE", "aws_secret_access_key": "secret",
+        }
+        captured: dict = {}
+
+        def build_request(method, url, **kwargs):
+            captured.update(url=url, headers=kwargs["headers"], content=kwargs["content"])
+            return None
+
+        mock = client.__httpx_mock__
+        with patch.dict(TEST_BEDROCK_MODELS, {"bedrock-iam": iam}), \
+             patch.object(mock, "build_request", side_effect=build_request), \
+             patch.object(mock, "send", AsyncMock(
+                 return_value=FakeBedrockStreamResponse(_stream_events(["ok"])))):
+            resp = client.post(
+                "/aws/v1/messages",
+                json={"model": "bedrock-iam", "max_tokens": 64, "stream": True,
+                      "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+            assert resp.status_code == 200
+        assert captured["url"].endswith("/converse-stream")
+        assert captured["headers"]["Authorization"].startswith("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
+        assert "X-Amz-Date" in captured["headers"]
+        assert json.loads(captured["content"])["messages"][0]["content"] == [{"text": "hi"}]
 
     def test_unknown_alias_falls_back_with_header(self, client):
         client.__httpx_mock__.post = AsyncMock(
@@ -533,6 +712,46 @@ class TestBedrockMessages:
         assert data["content"][0]["type"] == "text"
         assert data["content"][0]["text"] == "hello there"
         assert data["usage"] == {"input_tokens": 7, "output_tokens": 3}
+
+    def test_claude_code_adaptive_request_reaches_converse_as_adaptive(self, client):
+        """Claude Code on a 5.x model sends adaptive thinking + output_config
+        effort + temperature; Converse must get adaptive thinking with that
+        effort and no sampling override (budget_tokens / temperature 400)."""
+        from unittest.mock import patch
+        from tests.conftest import TEST_BEDROCK_MODELS
+
+        haiku = {
+            "type": "llm", "region": "ap-northeast-1",
+            "model_id": "global.anthropic.claude-haiku-5-5",
+            "api_key": "bedrock-test-key", "is_reasoning": True,
+        }
+        captured = {}
+
+        async def fake_post(url, **kwargs):
+            captured["url"] = url
+            captured["json"] = json.loads(kwargs["content"])
+            return make_httpx_response(200, _converse_payload("ok", 1, 1))
+
+        with patch.dict(TEST_BEDROCK_MODELS, {"bedrock-haiku": haiku}), \
+             patch.object(client.__httpx_mock__, "post", side_effect=fake_post):
+            resp = client.post(
+                "/aws/v1/messages",
+                json={"model": "bedrock-haiku", "max_tokens": 64, "temperature": 0.5,
+                      "thinking": {"type": "adaptive"},
+                      "output_config": {"effort": "high"},
+                      "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+        assert resp.status_code == 200
+        assert captured["url"] == (
+            "https://bedrock-runtime.ap-northeast-1.amazonaws.com/model/"
+            "global.anthropic.claude-haiku-5-5/converse"
+        )
+        assert captured["json"]["additionalModelRequestFields"] == {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "high"},
+        }
+        assert "temperature" not in captured["json"].get("inferenceConfig", {})
 
     def test_stream_messages_emits_anthropic_events(self, client):
         client.__httpx_mock__.send = AsyncMock(

@@ -40,6 +40,7 @@ Converse constraints handled here:
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from typing import Any, Iterator
@@ -69,6 +70,29 @@ _EFFORT_TO_BUDGET = {
     "minimal": 1024, "low": 2048, "medium": 8192,
     "high": 16384, "xhigh": 32768, "max": 32768,
 }
+
+# Claude generation from the Bedrock model ID, e.g. "4-5" in
+# "anthropic.claude-haiku-4-5-20251001-v1:0", "5-5" in
+# "global.anthropic.claude-haiku-5-5", "3-7" in "...claude-3-7-sonnet-...".
+# The minor is at most two digits so a date stamp is never read as one
+# ("claude-sonnet-4-20250514" is 4.0).
+_CLAUDE_VERSION_RE = re.compile(r"claude-(?:[a-z]+-)?(\d+)(?:-(\d{1,2}))?(?!\d)")
+
+# Claude 4.6 introduced adaptive thinking with an `effort` ladder; from 4.7
+# on (Opus 4.7/4.8, Sonnet 5/5.5, Haiku 5.5, Opus 5/5.5, Fable)
+# `budget_tokens` is a 400, and so is any non-default temperature / top_p.
+_CLAUDE_ADAPTIVE_FROM = (4, 6)
+_CLAUDE_NO_SAMPLING_FROM = (4, 7)
+
+
+def _claude_version(model_id: str) -> tuple[int, int] | None:
+    """(major, minor) of a Claude Bedrock model ID; None when unparseable
+    (e.g. an application-inference-profile ARN), which keeps the
+    budget_tokens behavior."""
+    m = _CLAUDE_VERSION_RE.search(model_id)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2) or 0)
 
 
 def _image_part_to_converse(part: dict[str, Any]) -> dict[str, Any] | None:
@@ -226,10 +250,14 @@ def openai_chat_to_converse_request(
 
     Unlike the Azure path, sampling knobs (`temperature`, `top_p`, `stop`)
     ARE forwarded: Converse normalizes them across model families in
-    ``inferenceConfig`` and ignores what a family doesn't support, so there
-    is no per-deployment 400 risk to defend against. They are dropped only
-    when Claude extended thinking is enabled (Anthropic rejects sampling
-    overrides alongside thinking).
+    ``inferenceConfig`` and ignores what a family doesn't support. They are
+    dropped when Claude extended thinking is enabled (Anthropic rejects
+    sampling overrides alongside thinking), and always on Claude 4.7+,
+    which rejects any non-default temperature / top_p.
+
+    Claude thinking takes the model's own shape: 4.6+ gets
+    ``{"type": "adaptive"}`` plus ``output_config.effort`` (the requested
+    level, verbatim), older models a ``budget_tokens`` bucket.
     """
     system_parts: list[str] = []
     converse_msgs: list[dict[str, Any]] = []
@@ -269,17 +297,31 @@ def openai_chat_to_converse_request(
     if stop:
         inference["stopSequences"] = [stop] if isinstance(stop, str) else list(stop)
 
+    mid = (model_id or "").lower()
+    claude_version = _claude_version(mid) if "anthropic" in mid else None
+    if claude_version is not None and claude_version >= _CLAUDE_NO_SAMPLING_FROM:
+        inference.pop("temperature", None)
+        inference.pop("topP", None)
+
     # Fold the xhigh spellings before the bucket lookup: an unrecognized
     # level lands on the medium budget below, so "extra-high" would buy
     # *less* thinking than "xhigh" on this path.
     effort = canonical_effort(body.get("reasoning_effort"))
     if effort:
-        mid = (model_id or "").lower()
         if "anthropic" in mid:
             if effort == "none":
                 # "none" = thinking off — omit the thinking block entirely
                 # (sampling overrides stay usable without extended thinking).
+                # On adaptive models this sends nothing: their own default
+                # applies, since `disabled` is a 400 on several of them.
                 pass
+            elif claude_version is not None and claude_version >= _CLAUDE_ADAPTIVE_FROM:
+                out["additionalModelRequestFields"] = {
+                    "thinking": {"type": "adaptive"},
+                    "output_config": {"effort": effort},
+                }
+                inference.pop("temperature", None)
+                inference.pop("topP", None)
             else:
                 out["additionalModelRequestFields"] = {
                     "thinking": {

@@ -123,6 +123,35 @@ def _warn_bad_rate_limit_fallbacks(label: str, models: dict[str, dict[str, Any]]
             )
 
 
+def _warn_bedrock_credentials(models: dict[str, dict[str, Any]]) -> None:
+    """Flag Bedrock credentials that can only produce 403s, at load time
+    rather than on a user's first request. Only a WARNING, like the check
+    above; never prints a key."""
+    shared = bedrock_shared_settings()
+    shared_halves = (bool(shared["aws_access_key_id"]), bool(shared["aws_secret_access_key"]))
+    if shared_halves[0] != shared_halves[1]:
+        logger.warning(
+            ".env: BEDROCK_AWS_ACCESS_KEY_ID and BEDROCK_AWS_SECRET_ACCESS_KEY must both be set; "
+            "the shared IAM pair is ignored",
+        )
+    shared_iam = all(shared_halves)
+    for alias, entry in models.items():
+        has_key_id = bool(entry.get("aws_access_key_id"))
+        if has_key_id != bool(entry.get("aws_secret_access_key")):
+            logger.warning(
+                "config.toml: [bedrock_models.{}] needs both aws_access_key_id and "
+                "aws_secret_access_key; the half pair is ignored",
+                alias,
+            )
+        elif not (has_key_id or entry.get("api_key") or shared_iam):
+            logger.warning(
+                "config.toml: [bedrock_models.{}] has no credentials (api_key, an IAM pair, or "
+                "BEDROCK_AWS_ACCESS_KEY_ID / BEDROCK_AWS_SECRET_ACCESS_KEY in .env); "
+                "Bedrock will reject its requests",
+                alias,
+            )
+
+
 def _active_config_path() -> Path:
     """Return the config file to read: config.toml, else the example.
 
@@ -169,11 +198,31 @@ _AZURE_DEFAULT_API_VERSION = "2024-08-01-preview"
 # `model_id` is the Bedrock model ID or inference-profile ID (e.g.
 # "anthropic.claude-sonnet-4-20250514-v1:0" or "us.anthropic...."). `region`
 # builds the default endpoint (https://bedrock-runtime.{region}.amazonaws.com);
-# `endpoint` overrides it (VPC endpoints, gov regions). `api_key` is a
-# long-term Bedrock API key sent as `Authorization: Bearer` — IAM/SigV4 is
-# not implemented yet (auth is isolated in bedrock_proxy._build_headers so it
-# can be added without touching routing).
+# `endpoint` overrides it (VPC endpoints, gov regions). Credentials are either
+# `api_key` (a long-term Bedrock API key sent as `Authorization: Bearer`) or
+# IAM `aws_access_key_id` + `aws_secret_access_key`, which SigV4-sign every
+# request and win when both are set (bedrock_proxy._build_headers). The
+# signature is scoped to `region`, which must match the endpoint's region.
+# `region` and the IAM pair can instead be set once for every entry in .env
+# (bedrock_shared_settings); an entry's own value wins.
 _BEDROCK_DEFAULT_REGION = "us-east-1"
+_BEDROCK_IAM_KEYS: tuple[str, ...] = ("aws_access_key_id", "aws_secret_access_key")
+_BEDROCK_SHARED_ENV: tuple[tuple[str, str], ...] = (
+    ("region", "BEDROCK_REGION"),
+    ("aws_access_key_id", "BEDROCK_AWS_ACCESS_KEY_ID"),
+    ("aws_secret_access_key", "BEDROCK_AWS_SECRET_ACCESS_KEY"),
+)
+
+
+def bedrock_shared_settings() -> dict[str, str]:
+    """Defaults every [bedrock_models.*] entry inherits, from .env (read on
+    each call; .env itself is loaded once, so a change needs a restart)."""
+    return {key: os.getenv(env, "").strip() for key, env in _BEDROCK_SHARED_ENV}
+
+
+def bedrock_region(entry: dict[str, Any]) -> str:
+    """The entry's region, else BEDROCK_REGION, else us-east-1."""
+    return entry.get("region") or bedrock_shared_settings()["region"] or _BEDROCK_DEFAULT_REGION
 
 
 def _build_config(raw: dict[str, Any]) -> tuple[
@@ -290,14 +339,19 @@ def _build_config(raw: dict[str, Any]) -> tuple[
             continue
         entry: dict[str, Any] = {
             "type": cfg.get("type", "llm"),
-            "region": cfg.get("region", _BEDROCK_DEFAULT_REGION),
             "model_id": cfg.get("model_id", ""),
             "api_key": cfg.get("api_key", ""),
         }
+        # Left unset when absent so BEDROCK_REGION applies (bedrock_region).
+        if cfg.get("region"):
+            entry["region"] = str(cfg["region"])
         # Optional endpoint override (VPC endpoint / gov region); when absent
         # bedrock_proxy builds https://bedrock-runtime.{region}.amazonaws.com.
         if cfg.get("endpoint"):
             entry["endpoint"] = str(cfg["endpoint"]).rstrip("/")
+        for iam_key in _BEDROCK_IAM_KEYS:
+            if cfg.get(iam_key):
+                entry[iam_key] = str(cfg[iam_key])
         for meta_key in _MODEL_METADATA_KEYS:
             if meta_key in cfg:
                 entry[meta_key] = cfg[meta_key]
@@ -325,6 +379,7 @@ def _build_config(raw: dict[str, Any]) -> tuple[
 
     _warn_bad_rate_limit_fallbacks("azure_models", azure_models)
     _warn_bad_rate_limit_fallbacks("bedrock_models", bedrock_models)
+    _warn_bedrock_credentials(bedrock_models)
 
     # Unified `/v1/*` dispatch (v1_api) routes a request by looking up the
     # `model` alias across MODEL_ROUTING / AZURE_MODELS / BEDROCK_MODELS.
@@ -541,12 +596,16 @@ def save_config(
         for alias, info in bedrock_models.items():
             entry: dict[str, Any] = {
                 "type": info.get("type", "llm"),
-                "region": info.get("region") or _BEDROCK_DEFAULT_REGION,
                 "model_id": info.get("model_id", ""),
                 "api_key": info.get("api_key", ""),
             }
+            if info.get("region"):
+                entry["region"] = str(info["region"])
             if info.get("endpoint"):
                 entry["endpoint"] = str(info["endpoint"]).rstrip("/")
+            for iam_key in _BEDROCK_IAM_KEYS:
+                if info.get(iam_key):
+                    entry[iam_key] = str(info[iam_key])
             for meta_key in _MODEL_METADATA_KEYS:
                 if meta_key in info:
                     entry[meta_key] = info[meta_key]
@@ -603,6 +662,16 @@ def get_config_data() -> dict[str, Any]:
         "azure_fallback": dict(AZURE_FALLBACK_MAP),
         "bedrock_models": dict(BEDROCK_MODELS),
         "bedrock_fallback": dict(BEDROCK_FALLBACK_MAP),
+        # What blank Bedrock fields fall back to. Never the secret itself.
+        "bedrock_shared": _bedrock_shared_summary(),
+    }
+
+
+def _bedrock_shared_summary() -> dict[str, Any]:
+    shared = bedrock_shared_settings()
+    return {
+        "region": shared["region"],   # "" when unset: us-east-1 applies
+        "iam_credentials": bool(shared["aws_access_key_id"] and shared["aws_secret_access_key"]),
     }
 
 

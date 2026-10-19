@@ -22,6 +22,7 @@ from app.core.config import (
     _MODEL_PRICING_KEYS,
     APP_TITLE,
     CONCURRENCY_MODES,
+    bedrock_shared_settings,
     get_cloud_budget_fallback,
     get_concurrency_settings,
     get_config_data,
@@ -1139,7 +1140,7 @@ async def save_config_api(
     # reasoning / rate-limit rules; only the connection fields differ).
     for backend, cloud_models, required_fields in (
         ("Azure", azure_models, ("type", "endpoint", "deployment", "api_key")),
-        ("Bedrock", bedrock_models, ("type", "model_id", "api_key")),
+        ("Bedrock", bedrock_models, ("type", "model_id")),
     ):
         if not cloud_models:
             continue
@@ -1152,11 +1153,25 @@ async def save_config_api(
                         status_code=400,
                         detail=f"{backend} model '{alias}' missing required field '{required}'.",
                     )
-            if backend == "Bedrock" and not (info.get("region") or info.get("endpoint")):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Bedrock model '{alias}' needs a region or an endpoint.",
-                )
+            if backend == "Bedrock":
+                has_key_id = bool(info.get("aws_access_key_id"))
+                has_secret = bool(info.get("aws_secret_access_key"))
+                if has_key_id != has_secret:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Bedrock model '{alias}' needs both aws_access_key_id and aws_secret_access_key.",
+                    )
+                shared = bedrock_shared_settings()
+                shared_iam = bool(shared["aws_access_key_id"] and shared["aws_secret_access_key"])
+                if not (info.get("api_key") or has_key_id or shared_iam):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Bedrock model '{alias}' needs an api_key or aws_access_key_id + "
+                            "aws_secret_access_key (or BEDROCK_AWS_ACCESS_KEY_ID / "
+                            "BEDROCK_AWS_SECRET_ACCESS_KEY in .env)."
+                        ),
+                    )
             for key in _MODEL_METADATA_KEYS:
                 if key not in info:
                     continue

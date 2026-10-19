@@ -10,6 +10,8 @@ faithful pass-through.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.services.reasoning_effort import (
@@ -459,7 +461,8 @@ class TestBedrockAdaptation:
         captured: dict = {}
 
         async def fake_post(url, **kwargs):
-            captured["json"] = kwargs.get("json", {})
+            # Bedrock bodies go out as signed bytes (content=), never json=.
+            captured["json"] = json.loads(kwargs["content"])
             return make_httpx_response(200, {
                 "output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
                 "stopReason": "end_turn",
