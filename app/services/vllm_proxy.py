@@ -50,10 +50,14 @@ from app.services.observability import (
     GenerationRecord,
     StreamingChatOutput,
     capture_io_enabled,
+    first_output_seen,
     get_langfuse,
     get_request_meta,
+    is_output_sse_line,
+    mark_first_output,
     record_generation,
     request_latency_ms,
+    request_timing,
     set_io_input,
 )
 from app.services.reasoning_effort import apply_to_openai_body
@@ -134,7 +138,11 @@ async def _pump_sse_lines(
         try:
             resp = await send_coro
             resp_holder.append(resp)
+            watch = not first_output_seen()  # TTFT, see request_timing
             async for line in resp.aiter_lines():
+                if watch and is_output_sse_line(line):
+                    mark_first_output()
+                    watch = False
                 await queue.put(("line", line))
         except BaseException as e:
             await queue.put(("err", e))
@@ -426,6 +434,7 @@ def _emit_observation(
     backend: str,
     breakdown: dict[str, Decimal],
     output_payload: Any = None,
+    timing: dict[str, Any] | None = None,
 ) -> None:
     """Build a GenerationRecord and hand it to Langfuse. No-op when unconfigured."""
     # Short-circuit before building anything when Langfuse is off (cached after
@@ -459,6 +468,7 @@ def _emit_observation(
         output_tokens=output_tokens,
         empty_turn=empty_turn,
         latency_ms=request_latency_ms(),
+        timing=timing,
         user_agent=meta.get("user_agent"),
         x_app=meta.get("x_app"),
         session_id=meta.get("session_id"),
@@ -506,6 +516,7 @@ def _log_error(
             error=f"{status_code}: {str(error)[:500]}",
             is_error=True,
             latency_ms=request_latency_ms(),
+            timing=request_timing(),
             user_agent=meta.get("user_agent"),
             x_app=meta.get("x_app"),
             session_id=meta.get("session_id"),
@@ -537,6 +548,7 @@ def _slow_request_threshold_s() -> float:
 def _warn_if_slow(
     user: User, model: str, model_type: str, endpoint: str, backend: str,
     input_tokens: int, output_tokens: int, latency_ms: float | None,
+    timing: dict[str, Any] | None = None,
 ) -> None:
     """Emit one WARNING line for a request that took longer than the threshold.
 
@@ -546,6 +558,8 @@ def _warn_if_slow(
     ``usage_logs`` stores no duration. Diagnosing "is the cloud backend slow
     today" therefore needed Langfuse or nginx logs. This line makes slow
     requests greppable (``Slow request``) without enabling INFO logging.
+    The measured phases (``request_timing``) are appended, so the line also
+    says which part was slow.
     """
     if latency_ms is None:
         return
@@ -555,11 +569,12 @@ def _warn_if_slow(
     seconds = latency_ms / 1000.0
     if seconds < threshold:
         return
+    phases = "".join(f" {k}={v}" for k, v in (timing or {}).items())
     logger.warning(
         "Slow request | user={} model={} type={} endpoint={} backend={} "
-        "duration={:.1f}s input_tokens={} output_tokens={} threshold={:.0f}s",
+        "duration={:.1f}s input_tokens={} output_tokens={} threshold={:.0f}s{}",
         user.username, model, model_type, endpoint, backend,
-        seconds, input_tokens, output_tokens, threshold,
+        seconds, input_tokens, output_tokens, threshold, phases,
     )
 
 
@@ -649,12 +664,20 @@ def _log_usage(
     breakdown = _calc_cost_breakdown(route, model_type, input_tokens, output_tokens, cached_tokens)
     cost = breakdown["total"]
 
+    # Phase durations for Langfuse and the slow-request line. Read here, on
+    # the request's own task, for the same reason as the latency below.
+    try:
+        timing = request_timing(output_tokens)
+    except Exception as exc:  # defensive — timing must never break billing
+        logger.warning("request timing failed: {}", exc)
+        timing = None
+
     # Observability (no-op when Langfuse unconfigured; never raises).
     try:
         _emit_observation(
             user, model, model_type, input_tokens, output_tokens,
             endpoint, route, cached_tokens, backend, breakdown,
-            output_payload=output_payload,
+            output_payload=output_payload, timing=timing,
         )
     except Exception as exc:  # defensive — must never break logging/billing
         logger.warning("observability hook failed: {}", exc)
@@ -665,7 +688,7 @@ def _log_usage(
     try:
         _warn_if_slow(
             user, model, model_type, endpoint, backend,
-            input_tokens, output_tokens, request_latency_ms(),
+            input_tokens, output_tokens, request_latency_ms(), timing,
         )
     except Exception as exc:  # defensive — a log line must never break billing
         logger.warning("slow-request hook failed: {}", exc)

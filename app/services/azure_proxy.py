@@ -62,6 +62,7 @@ from app.services.responses_adapter import (
 from app.services.observability import (
     StreamingChatOutput,
     capture_io_enabled,
+    mark_first_output,
     set_io_input,
 )
 from app.services.vllm_proxy import (
@@ -460,6 +461,8 @@ async def _peek_stream_start(resp) -> tuple[_PeekedStream, dict | None]:
             error = event
             break
         if etype not in _PRE_OUTPUT_EVENTS:
+            # Stamped here: the pump only sees this line once it is replayed.
+            mark_first_output()
             break
     return _PeekedStream(resp, it, buffered, pending, eof), error
 

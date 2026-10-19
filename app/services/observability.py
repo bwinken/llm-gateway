@@ -12,10 +12,12 @@ the request path free of Langfuse import cost.
 from __future__ import annotations
 
 import contextvars
+import json
 import os
 import random
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
@@ -59,6 +61,167 @@ def request_latency_ms() -> float | None:
     if start is None:
         return None
     return (time.monotonic() - start) * 1000.0
+
+
+# ---------------------------------------------------------------------------
+# Phase timing — where a request's wall time went
+#
+# Marks are monotonic timestamps stored in the request-meta dict:
+#   upstream_first_sent / upstream_sent  — first / latest downstream request
+#   upstream_headers                     — latest downstream response headers
+#   first_output                         — first output event of a stream
+# The send / headers marks come from httpx event hooks on the user-traffic
+# clients (one wiring point for every backend and route); the first-output
+# mark from the stream pumps. request_timing() turns them into durations at
+# the _log_usage / _log_error seam. Field names are backend-neutral on
+# purpose: the backend is already a tag on the generation.
+# ---------------------------------------------------------------------------
+
+# Response headers that carry the downstream's own request id (Azure APIM,
+# OpenAI-style, AWS), first match wins. Worth having on a slow generation
+# when filing a ticket with the provider.
+_UPSTREAM_REQUEST_ID_HEADERS = ("apim-request-id", "x-request-id", "x-amzn-requestid")
+
+# Stream events sent before the model produces anything: Responses API
+# lifecycle, Anthropic `message_start` / `ping`, Converse `messageStart`.
+# The first event NOT in this set is the first output (TTFT).
+_PRE_OUTPUT_EVENT_TYPES = frozenset({
+    "response.created", "response.in_progress", "response.queued",
+    "message_start", "ping",
+    "messageStart",
+})
+
+
+def _live_meta() -> dict | None:
+    """The current request's meta dict, or None outside a request. The
+    contextvar default is one shared dict, so it must never be mutated."""
+    meta = _request_meta.get()
+    return meta if meta.get("start_monotonic") is not None else None
+
+
+async def _on_upstream_request(request) -> None:
+    """httpx request hook: a downstream call is about to be sent."""
+    try:
+        meta = _live_meta()
+        if meta is None:
+            return
+        now = time.monotonic()
+        meta.setdefault("upstream_first_sent", now)
+        meta["upstream_sent"] = now
+        meta["upstream_attempts"] = meta.get("upstream_attempts", 0) + 1
+        # host[:port] only: netloc would carry user:pass@ from a base URL.
+        url = request.url
+        meta["upstream_host"] = f"{url.host}:{url.port}" if url.port else url.host
+    except Exception:
+        pass
+
+
+async def _on_upstream_response(response) -> None:
+    """httpx response hook: downstream response headers arrived."""
+    try:
+        meta = _live_meta()
+        if meta is None:
+            return
+        meta["upstream_headers"] = time.monotonic()
+        meta.pop("upstream_request_id", None)
+        for h in _UPSTREAM_REQUEST_ID_HEADERS:
+            value = response.headers.get(h)
+            if value:
+                meta["upstream_request_id"] = value[:128]
+                break
+    except Exception:
+        pass
+
+
+# Passed as `event_hooks=` to the user-traffic httpx clients (server_state).
+UPSTREAM_EVENT_HOOKS = {
+    "request": [_on_upstream_request],
+    "response": [_on_upstream_response],
+}
+
+
+def mark_first_output() -> None:
+    """Stamp the first output of a stream (first call wins)."""
+    meta = _live_meta()
+    if meta is not None:
+        meta.setdefault("first_output", time.monotonic())
+
+
+def is_output_event_type(event_type: str | None) -> bool:
+    return event_type not in _PRE_OUTPUT_EVENT_TYPES
+
+
+def is_output_sse_line(line: str) -> bool:
+    """Whether a downstream SSE line is model output (not a separator,
+    `event:` line, `[DONE]`, comment or pre-output lifecycle event)."""
+    if not line.startswith("data: "):
+        return False
+    data = line[6:].strip()
+    if not data or data == "[DONE]":
+        return False
+    try:
+        event = json.loads(data)
+    except ValueError:
+        return False
+    if not isinstance(event, dict):
+        return False
+    return is_output_event_type(event.get("type"))
+
+
+def first_output_seen() -> bool:
+    meta = _live_meta()
+    return meta is None or "first_output" in meta
+
+
+def request_timing(output_tokens: int = 0) -> dict[str, Any]:
+    """Phase durations of the current request, from the marks above. Only
+    phases that were observed are included (a non-stream call has no TTFT).
+
+      gateway_overhead_ms  request entry → first downstream send (auth, DB,
+                           concurrency lease, body parse and translation)
+      upstream_attempts    downstream calls made (> 1: failover or fallback)
+      retry_ms             first → last send, time lost to earlier attempts
+      upstream_ttfb_ms     last send → its response headers
+      ttft_ms              request entry → first output event (streams)
+      generation_ms        first output → now
+      output_tps           output tokens / generation time
+      upstream_host        host:port the last attempt went to
+      upstream_request_id  the downstream's request id header
+    """
+    meta = _live_meta()
+    if meta is None:
+        return {}
+    now = time.monotonic()
+    t0 = meta["start_monotonic"]
+
+    def ms(seconds: float) -> float:
+        return round(seconds * 1000.0, 1)
+
+    out: dict[str, Any] = {}
+    first_sent = meta.get("upstream_first_sent")
+    sent = meta.get("upstream_sent")
+    headers = meta.get("upstream_headers")
+    first_output = meta.get("first_output")
+    if first_sent is not None:
+        out["gateway_overhead_ms"] = ms(first_sent - t0)
+        attempts = meta.get("upstream_attempts", 1)
+        out["upstream_attempts"] = attempts
+        if attempts > 1:
+            out["retry_ms"] = ms(sent - first_sent)
+    # headers < sent: the latest attempt never got a response.
+    if headers is not None and sent is not None and headers >= sent:
+        out["upstream_ttfb_ms"] = ms(headers - sent)
+    if first_output is not None:
+        out["ttft_ms"] = ms(first_output - t0)
+        gen_s = now - first_output
+        out["generation_ms"] = ms(gen_s)
+        # Below 100 ms the rate is noise (a one-chunk reply).
+        if output_tokens > 0 and gen_s >= 0.1:
+            out["output_tps"] = round(output_tokens / gen_s, 1)
+    for key in ("upstream_host", "upstream_request_id"):
+        if meta.get(key):
+            out[key] = meta[key]
+    return out
 
 
 def set_io_input(payload: Any) -> None:
@@ -154,6 +317,10 @@ def classify_client(
     return "other"
 
 
+# Phase durations also emitted as NUMERIC scores (chartable).
+_TIMING_SCORES = ("gateway_overhead_ms", "upstream_ttfb_ms", "output_tps")
+
+
 def build_scores(
     *,
     empty_turn: bool,
@@ -161,6 +328,7 @@ def build_scores(
     client: str,
     output_tokens: int,
     is_error: bool = False,
+    timing: dict | None = None,
 ) -> list[dict]:
     """Build the per-request Langfuse scores.
 
@@ -173,18 +341,27 @@ def build_scores(
     For a failed request (`is_error`) the per-response signals are meaningless,
     so only `client` and a `request_error=true` categorical are emitted — the
     latter lets you chart error rate per model / endpoint / user.
+
+    The phase durations in ``_TIMING_SCORES`` that were measured (see
+    request_timing) are added as NUMERIC scores, so they can be charted per
+    model / backend; metadata alone only filters. TTFT needs no score: it
+    is the generation's ``completion_start_time``.
     """
     if is_error:
         return [
             {"name": "request_error", "value": "true", "data_type": "CATEGORICAL"},
             {"name": "client", "value": client, "data_type": "CATEGORICAL"},
         ]
-    return [
+    scores = [
         {"name": "empty_turn", "value": "true" if empty_turn else "false", "data_type": "CATEGORICAL"},
         {"name": "fallback_used", "value": "true" if fallback_used else "false", "data_type": "CATEGORICAL"},
         {"name": "client", "value": client, "data_type": "CATEGORICAL"},
         {"name": "output_tokens", "value": output_tokens, "data_type": "NUMERIC"},
     ]
+    for name in _TIMING_SCORES:
+        if timing and timing.get(name) is not None:
+            scores.append({"name": name, "value": timing[name], "data_type": "NUMERIC"})
+    return scores
 
 
 class StreamingChatOutput:
@@ -275,6 +452,7 @@ class GenerationRecord:
     model_parameters: dict | None = None
     req_shape: dict | None = None       # {msgs, asst, asst_thinking, asst_empty}
     latency_ms: float | None = None
+    timing: dict | None = None          # request_timing(): phase durations
     user_agent: str | None = None
     x_app: str | None = None
     session_id: str | None = None
@@ -428,9 +606,22 @@ def record_generation(rec: GenerationRecord) -> None:
             metadata["fallback_reason"] = rec.fallback_reason
         if rec.latency_ms is not None:
             metadata["latency_ms"] = rec.latency_ms
+        if rec.timing:
+            metadata.update(rec.timing)
         if rec.req_shape:
             for k, v in rec.req_shape.items():
                 metadata[f"req_{k}"] = v
+
+        # The span starts "now" (see the end_time comment below), so the
+        # completion start is placed ttft after now: Langfuse's TTFT
+        # (completion_start_time - start) is then exact.
+        anchor_ns = time.time_ns()
+        ttft_ms = (rec.timing or {}).get("ttft_ms")
+        completion_start = None
+        if ttft_ms is not None and rec.latency_ms is not None:
+            completion_start = datetime.fromtimestamp(
+                (anchor_ns + int(ttft_ms * 1_000_000)) / 1e9, tz=timezone.utc,
+            )
 
         # user_id / session_id / tags / trace_name are trace-level → propagate
         # them to the generation span created within this context.
@@ -450,6 +641,7 @@ def record_generation(rec: GenerationRecord) -> None:
                 metadata=metadata,
                 level="ERROR" if rec.error else "DEFAULT",
                 status_message=rec.error,
+                completion_start_time=completion_start,
                 input=rec.input_payload,
                 output=rec.output_payload,
             )
@@ -462,7 +654,7 @@ def record_generation(rec: GenerationRecord) -> None:
             # the request-completion instant rather than the request-start
             # instant. The raw number is also kept in metadata["latency_ms"].
             if rec.latency_ms is not None:
-                gen.end(end_time=time.time_ns() + int(rec.latency_ms * 1_000_000))
+                gen.end(end_time=anchor_ns + int(rec.latency_ms * 1_000_000))
             else:
                 gen.end()
             for s in build_scores(
@@ -471,6 +663,7 @@ def record_generation(rec: GenerationRecord) -> None:
                 client=client_label,
                 output_tokens=rec.output_tokens,
                 is_error=rec.is_error,
+                timing=rec.timing,
             ):
                 gen.score(name=s["name"], value=s["value"], data_type=s["data_type"])
     except Exception as exc:  # never break the proxy

@@ -62,6 +62,9 @@ from app.services.converse_adapter import (
 from app.services.observability import (
     StreamingChatOutput,
     capture_io_enabled,
+    first_output_seen,
+    is_output_event_type,
+    mark_first_output,
     set_io_input,
 )
 from app.services.rate_limit_fallback import (
@@ -257,12 +260,16 @@ async def _pump_bedrock_events(
             resp = await send_coro
             resp_holder.append(resp)
             decoder = EventStreamDecoder()
+            watch = not first_output_seen()  # TTFT, see request_timing
             async for chunk in resp.aiter_bytes():
                 for msg in decoder.feed(chunk):
                     if msg.message_type == "exception":
                         etype = msg.exception_type or "exception"
                     else:
                         etype = msg.event_type
+                        if watch and is_output_event_type(etype):
+                            mark_first_output()
+                            watch = False
                     try:
                         payload = json.loads(msg.payload) if msg.payload else {}
                     except json.JSONDecodeError:
