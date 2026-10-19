@@ -123,6 +123,35 @@ def _warn_bad_rate_limit_fallbacks(label: str, models: dict[str, dict[str, Any]]
             )
 
 
+def _warn_bedrock_credentials(models: dict[str, dict[str, Any]]) -> None:
+    """Flag Bedrock credentials that can only produce 403s, at load time
+    rather than on a user's first request. Only a WARNING, like the check
+    above; never prints a key."""
+    shared = bedrock_shared_settings()
+    shared_halves = (bool(shared["aws_access_key_id"]), bool(shared["aws_secret_access_key"]))
+    if shared_halves[0] != shared_halves[1]:
+        logger.warning(
+            ".env: BEDROCK_AWS_ACCESS_KEY_ID and BEDROCK_AWS_SECRET_ACCESS_KEY must both be set; "
+            "the shared IAM pair is ignored",
+        )
+    shared_iam = all(shared_halves)
+    for alias, entry in models.items():
+        has_key_id = bool(entry.get("aws_access_key_id"))
+        if has_key_id != bool(entry.get("aws_secret_access_key")):
+            logger.warning(
+                "config.toml: [bedrock_models.{}] needs both aws_access_key_id and "
+                "aws_secret_access_key; the half pair is ignored",
+                alias,
+            )
+        elif not (has_key_id or entry.get("api_key") or shared_iam):
+            logger.warning(
+                "config.toml: [bedrock_models.{}] has no credentials (api_key, an IAM pair, or "
+                "BEDROCK_AWS_ACCESS_KEY_ID / BEDROCK_AWS_SECRET_ACCESS_KEY in .env); "
+                "Bedrock will reject its requests",
+                alias,
+            )
+
+
 def _active_config_path() -> Path:
     """Return the config file to read: config.toml, else the example.
 
@@ -350,6 +379,7 @@ def _build_config(raw: dict[str, Any]) -> tuple[
 
     _warn_bad_rate_limit_fallbacks("azure_models", azure_models)
     _warn_bad_rate_limit_fallbacks("bedrock_models", bedrock_models)
+    _warn_bedrock_credentials(bedrock_models)
 
     # Unified `/v1/*` dispatch (v1_api) routes a request by looking up the
     # `model` alias across MODEL_ROUTING / AZURE_MODELS / BEDROCK_MODELS.

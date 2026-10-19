@@ -98,3 +98,45 @@ class TestBedrockIamCredentials:
         # No region set → none written, so BEDROCK_REGION keeps applying.
         assert "region" not in saved["bearer"]
         assert "region" not in cfg._build_config({"bedrock_models": {"b": {"model_id": "m"}}})[6]["b"]
+
+
+class TestBedrockCredentialWarnings:
+    """Credentials that can only end in a 403 are flagged at load time."""
+
+    @staticmethod
+    def _warnings(models, monkeypatch, env=None):
+        from app.core.logger import logger
+
+        for name in ("BEDROCK_AWS_ACCESS_KEY_ID", "BEDROCK_AWS_SECRET_ACCESS_KEY"):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in (env or {}).items():
+            monkeypatch.setenv(name, value)
+        lines: list[str] = []
+        sink_id = logger.add(lambda m: lines.append(m.record["message"]), level="WARNING")
+        try:
+            cfg._warn_bedrock_credentials(models)
+        finally:
+            logger.remove(sink_id)
+        return lines
+
+    def test_valid_setups_are_quiet(self, monkeypatch):
+        models = {
+            "key": {"model_id": "m", "api_key": "k"},
+            "iam": {"model_id": "m", "aws_access_key_id": "AKIA", "aws_secret_access_key": "s"},
+        }
+        assert self._warnings(models, monkeypatch) == []
+        shared = {"BEDROCK_AWS_ACCESS_KEY_ID": "AKIA", "BEDROCK_AWS_SECRET_ACCESS_KEY": "s"}
+        assert self._warnings({"bare": {"model_id": "m", "api_key": ""}}, monkeypatch, shared) == []
+
+    def test_model_without_any_credential(self, monkeypatch):
+        lines = self._warnings({"bare": {"model_id": "m", "api_key": ""}}, monkeypatch)
+        assert len(lines) == 1 and "[bedrock_models.bare] has no credentials" in lines[0]
+
+    def test_half_pairs_and_no_secret_in_the_log(self, monkeypatch):
+        lines = self._warnings(
+            {"half": {"model_id": "m", "api_key": "k", "aws_access_key_id": "AKIAHALF"}},
+            monkeypatch, {"BEDROCK_AWS_SECRET_ACCESS_KEY": "top-secret"},
+        )
+        assert any("BEDROCK_AWS_ACCESS_KEY_ID and BEDROCK_AWS_SECRET_ACCESS_KEY must both be set" in m for m in lines)
+        assert any("[bedrock_models.half] needs both" in m for m in lines)
+        assert not any("top-secret" in m or "AKIAHALF" in m for m in lines)
