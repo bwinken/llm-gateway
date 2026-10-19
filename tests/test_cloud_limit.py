@@ -164,6 +164,14 @@ class TestAccountInfo:
         with _default(30):
             assert self._me(client)["cloud"]["limit_usd"] == 50.0
 
+    def test_no_cloud_key_without_cloud_access(self, client, db_session, test_user):
+        """A default cap means nothing to a user who can't reach the cloud."""
+        test_user.can_use_azure = test_user.can_use_bedrock = False
+        db_session.add(test_user)
+        db_session.commit()
+        with _default(30):
+            assert "cloud" not in self._me(client)
+
     def test_no_cap_means_no_cloud_key(self, client, db_session, test_user):
         with patch.dict("app.core.config.APP_CONFIG", {}, clear=True):
             me = self._me(client)

@@ -310,8 +310,9 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
         of the sub-limit, the combined cloud cap (azure / aws) and the overall
         daily limit (cloud spend counts toward all of them), 0 without access.
 
-    ``cloud`` appears only when the combined cloud cap is set
-    (``[app].cloud_daily_limit_usd``): Azure + AWS spend today against it.
+    ``cloud`` appears only when the caller may use a cloud backend and has a
+    combined cloud cap (``effective_cloud_limit``): Azure + AWS spend today
+    against it.
 
     Limits are those the gateway enforces; with ``ENFORCE_DAILY_LIMIT=false``
     they are only logged (``daily.enforced`` = false).
@@ -321,7 +322,10 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
     daily_limit = max(0.0, user.daily_limit_usd)
     daily_remaining = _remaining(daily_limit, today["total_cost_usd"])
 
-    cloud_limit = effective_cloud_limit(user)
+    azure_access = user.can_use_azure or user.is_admin
+    bedrock_access = user.can_use_bedrock or user.is_admin
+    # The cap only means something to a user who may reach a cloud backend.
+    cloud_limit = effective_cloud_limit(user) if (azure_access or bedrock_access) else None
     cloud_used = today["azure_cost_usd"] + today["bedrock_cost_usd"]
     cloud_remaining = (
         daily_remaining if cloud_limit is None
@@ -364,13 +368,13 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
         "backends": {
             "onprem": _backend(True, today["vllm_cost_usd"], None),
             "azure": _backend(
-                user.can_use_azure or user.is_admin,
+                azure_access,
                 today["azure_cost_usd"],
                 user.azure_daily_limit_usd,
                 cloud_remaining,
             ),
             "aws": _backend(
-                user.can_use_bedrock or user.is_admin,
+                bedrock_access,
                 today["bedrock_cost_usd"],
                 user.bedrock_daily_limit_usd,
                 cloud_remaining,
