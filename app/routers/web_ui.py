@@ -97,17 +97,35 @@ def _price_sort_key(m: dict):
     return (m["input_price"] + m["output_price"], m.get("name") or m.get("alias") or "")
 
 
+def _hidden_cloud_backends(user: User) -> frozenset[str]:
+    """Cloud backends this user may not use: the dashboard shows nothing of
+    them (spend columns, Cost by Model groups, model tables), even when spend
+    from before an admin revoked access remains. Admins see everything."""
+    hidden = set()
+    if not (user.can_use_azure or user.is_admin):
+        hidden.add("azure")
+    if not (user.can_use_bedrock or user.is_admin):
+        hidden.add("bedrock")
+    return frozenset(hidden)
+
+
 def _build_model_breakdown(
-    session: Session, user_id: int, period: str = "month",
+    session: Session, user: User, period: str = "month",
 ) -> tuple[list[dict], float]:
     """Per-model cost breakdown grouped per backend, plus the period total.
 
     Group order is fixed (on-prem first) with unknown backend values appended
-    so no spend can vanish from the breakdown. Each row gets its share of the
-    period total. Shared by the dashboard page render and the refresh API so
-    both always agree.
+    so no spend can vanish from the breakdown — except the cloud backends the
+    user has no access to (``_hidden_cloud_backends``), which are left out of
+    the rows and the total alike. Each row gets its share of that total.
+    Shared by the dashboard page render and the refresh API so both always
+    agree.
     """
-    breakdown_rows = get_model_breakdown(session, user_id, period=period)
+    hidden = _hidden_cloud_backends(user)
+    breakdown_rows = [
+        r for r in get_model_breakdown(session, user.id, period=period)
+        if r["backend"] not in hidden
+    ]
     total_cost = sum(r["cost_usd"] for r in breakdown_rows)
     backend_labels = {"vllm": "On-Prem", "azure": "Azure", "bedrock": "AWS Bedrock"}
     backend_order = ["vllm", "azure", "bedrock"]
@@ -212,7 +230,7 @@ async def dashboard(
 
     # Monthly cost split by model alias, grouped per backend so on-prem and
     # cloud spend read separately (same data the refresh API serves).
-    model_breakdown_groups, _ = _build_model_breakdown(session, user.id)
+    model_breakdown_groups, _ = _build_model_breakdown(session, user)
 
     # Build grouped server status keyed by raw type (skip hidden models).
     # Each entry carries optional metadata for capability badges next to the
@@ -368,7 +386,7 @@ async def model_breakdown_api(
     card updates in place without a full page reload."""
     if period not in ("month", "day"):
         raise HTTPException(status_code=400, detail="period must be 'month' or 'day'.")
-    groups, total_cost = _build_model_breakdown(session, user.id, period=period)
+    groups, total_cost = _build_model_breakdown(session, user, period=period)
     return JSONResponse({
         "period": period,
         "groups": groups,

@@ -49,8 +49,9 @@
 {% endif %}
 
 {# ── Today: budget hero + this month ── #}
-{% set show_azure_row = azure_today_cost > 0 or (azure_access and azure_limit is not none) %}
-{% set show_bedrock_row = bedrock_today_cost > 0 or (bedrock_access and bedrock_limit is not none) %}
+{# Cloud columns only for backends the user may use (admins always): no access, no column. #}
+{% set show_azure_row = azure_access and (azure_today_cost > 0 or azure_limit is not none) %}
+{% set show_bedrock_row = bedrock_access and (bedrock_today_cost > 0 or bedrock_limit is not none) %}
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-6">
     <div class="gw-card p-6 lg:col-span-2 gw-anim gw-d1" style="border-color:{{ band.edge }};background:linear-gradient(135deg, {{ band.soft }}, transparent 55%), #16171e">
         <div class="flex flex-wrap items-start justify-between gap-6">
