@@ -152,18 +152,50 @@ class TestDashboardCostByModelCard:
         assert 'id="mbRefreshBtn"' in body      # refresh button
         assert "/dashboard/api/model-breakdown" in body  # refresh endpoint wired
 
-    def test_cloud_spend_shows_without_cloud_access(self, client, db_session):
-        # Billing truth wins: Azure spend stays visible in the breakdown even
-        # for a user without can_use_azure (e.g. access revoked mid-month).
+    def test_cloud_spend_hidden_without_cloud_access(self, client, db_session):
+        """No access, no cloud on the dashboard: spend from before access was
+        revoked is left out of the card, and on-prem shares are recomputed."""
         u = User(username="revokedmb", can_use_azure=False, can_use_bedrock=False)
         db_session.add(u)
         db_session.commit()
         db_session.refresh(u)
+        _log(db_session, u.id, model="test-llm", backend="vllm", cost=0.3)
         _log(db_session, u.id, model="azure-gpt-4", backend="azure", cost=0.7)
+        _log(db_session, u.id, model="bedrock-claude", backend="bedrock", cost=0.5)
         db_session.commit()
 
         body = self._get_dashboard(client, "revokedmb").text
+        assert "test-llm" in body
+        assert "azure-gpt-4" not in body
+        assert "bedrock-claude" not in body
+        assert '"share": 100.0' in body
+
+    def test_only_the_backend_without_access_is_hidden(self, client, db_session):
+        u = User(username="azureonly", can_use_azure=True, can_use_bedrock=False)
+        db_session.add(u)
+        db_session.commit()
+        db_session.refresh(u)
+        _log(db_session, u.id, model="azure-gpt-4", backend="azure", cost=0.7)
+        _log(db_session, u.id, model="bedrock-claude", backend="bedrock", cost=0.5)
+        db_session.commit()
+
+        body = self._get_dashboard(client, "azureonly").text
         assert "azure-gpt-4" in body
+        assert "bedrock-claude" not in body
+
+    def test_admin_sees_every_backend(self, client, db_session, admin_user):
+        admin_user.can_use_azure = False
+        admin_user.can_use_bedrock = False
+        db_session.add(admin_user)
+        _log(db_session, admin_user.id, model="bedrock-claude", backend="bedrock", cost=0.5)
+        db_session.commit()
+
+        # Admin is the JWT "admin" scope, which grants every backend.
+        body = client.get(
+            "/dashboard",
+            headers=web_auth_header(sub=admin_user.username, scopes=["read", "admin"]),
+        ).text
+        assert "bedrock-claude" in body
 
 
 class TestModelBreakdownApi:
@@ -224,6 +256,23 @@ class TestModelBreakdownApi:
         assert data["total_cost_usd"] == 0.3
         assert [r["model"] for g in data["groups"] for r in g["rows"]] == ["today-model"]
         # Today's share is relative to today's total, not the month's
+        assert data["groups"][0]["rows"][0]["share"] == 100.0
+
+    def test_hides_backends_without_access(self, client, db_session, test_user):
+        """The refresh API agrees with the page: no rows and no total for a
+        cloud backend the user may not use."""
+        test_user.can_use_bedrock = False
+        db_session.add(test_user)
+        _log(db_session, test_user.id, model="test-llm", backend="vllm", cost=0.3)
+        _log(db_session, test_user.id, model="bedrock-claude", backend="bedrock", cost=0.9)
+        db_session.commit()
+
+        data = client.get(
+            "/dashboard/api/model-breakdown",
+            headers=web_auth_header(sub=test_user.username, scopes=["read"]),
+        ).json()
+        assert [g["backend"] for g in data["groups"]] == ["vllm"]
+        assert data["total_cost_usd"] == 0.3
         assert data["groups"][0]["rows"][0]["share"] == 100.0
 
     def test_invalid_period_rejected(self, client, db_session, test_user):

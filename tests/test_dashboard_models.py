@@ -106,8 +106,8 @@ class TestDashboardModelSections:
 
 class TestCostSplitAccessGating:
     """The Today's Cost backend-split rows must not surface a cloud backend
-    to users without access — a stale sub-limit alone isn't enough. Real
-    spend (access revoked mid-day) stays visible: billing truth wins."""
+    to users without access: neither a stale sub-limit nor spend from before
+    access was revoked shows it."""
 
     def test_stale_limit_without_access_hides_row(self, client, db_session):
         # Sub-limit left behind after access was revoked — no AWS row.
@@ -126,7 +126,7 @@ class TestCostSplitAccessGating:
         body = _get_dashboard(client, "withaccess").text
         assert 'data-tip="AWS Bedrock portion' in body
 
-    def test_todays_spend_shows_even_after_revoke(self, client, db_session):
+    def test_todays_spend_hidden_after_revoke(self, client, db_session):
         from datetime import datetime, timezone
         from app.models.schema import UsageLog
 
@@ -144,5 +144,5 @@ class TestCostSplitAccessGating:
         db_session.commit()
 
         body = _get_dashboard(client, "revoked").text
-        # Spend happened today — the row must stay visible despite no access.
-        assert 'data-tip="AWS Bedrock portion' in body
+        # Spend happened today, but without access the row stays hidden.
+        assert 'data-tip="AWS Bedrock portion' not in body
