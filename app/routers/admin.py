@@ -1139,7 +1139,7 @@ async def save_config_api(
     # reasoning / rate-limit rules; only the connection fields differ).
     for backend, cloud_models, required_fields in (
         ("Azure", azure_models, ("type", "endpoint", "deployment", "api_key")),
-        ("Bedrock", bedrock_models, ("type", "model_id", "api_key")),
+        ("Bedrock", bedrock_models, ("type", "model_id")),
     ):
         if not cloud_models:
             continue
@@ -1157,6 +1157,19 @@ async def save_config_api(
                     status_code=400,
                     detail=f"Bedrock model '{alias}' needs a region or an endpoint.",
                 )
+            if backend == "Bedrock":
+                has_key_id = bool(info.get("aws_access_key_id"))
+                has_secret = bool(info.get("aws_secret_access_key"))
+                if has_key_id != has_secret:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Bedrock model '{alias}' needs both aws_access_key_id and aws_secret_access_key.",
+                    )
+                if not (info.get("api_key") or has_key_id):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Bedrock model '{alias}' needs an api_key or aws_access_key_id + aws_secret_access_key.",
+                    )
             for key in _MODEL_METADATA_KEYS:
                 if key not in info:
                     continue

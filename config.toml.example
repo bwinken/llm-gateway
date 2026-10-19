@@ -292,8 +292,12 @@ api_key = ""                        # decider's server checks no key
 #    override it (VPC endpoints, gov regions).
 #  - `model_id` is the Bedrock model ID or inference-profile ID, e.g.
 #    "anthropic.claude-sonnet-4-20250514-v1:0" or "us.anthropic....".
-#  - `api_key` is a long-term Bedrock API key (sent as Authorization:
-#    Bearer). IAM/SigV4 signing is not implemented yet.
+#  - Credentials, one of:
+#      `api_key`: a long-term Bedrock API key (sent as Authorization: Bearer)
+#      `aws_access_key_id` + `aws_secret_access_key`: IAM credentials; every
+#        request is SigV4-signed and the secret is never sent. Wins when both
+#        kinds are set. The signature is scoped to `region`, so keep it set
+#        to the endpoint's region even when overriding `endpoint`.
 #  - Routed by model_id (no health-check). Type-aware fallback for unknown
 #    aliases via [bedrock_fallback] above. Same metadata and per-model
 #    pricing override fields as [models.*] are accepted.
@@ -313,6 +317,9 @@ api_key = ""                        # decider's server checks no key
 # region = "us-east-1"
 # model_id = "anthropic.claude-sonnet-4-20250514-v1:0"
 # api_key = "your-bedrock-api-key"
+# # or, instead of api_key, IAM credentials (SigV4):
+# # aws_access_key_id = "AKIA..."
+# # aws_secret_access_key = "..."
 # display_name = "Claude Sonnet (Bedrock)"
 # context_window = 200000
 # max_output_tokens = 8192

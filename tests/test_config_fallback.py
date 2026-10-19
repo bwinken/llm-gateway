@@ -68,3 +68,30 @@ class TestExampleConfigIsUsable:
         source = Path(cfg.__file__).read_text(encoding="utf-8")
         assert "os.replace(tmp_path, _EXAMPLE_CONFIG_PATH)" not in source
         assert source.count("os.replace(tmp_path, _CONFIG_PATH)") == 2
+
+
+class TestBedrockIamCredentials:
+    def test_iam_keys_survive_build_and_save(self, tmp_path):
+        """aws_access_key_id / aws_secret_access_key load into BEDROCK_MODELS
+        and an admin save writes them back (blank ones are left out)."""
+        import toml
+
+        raw = {"bedrock_models": {"br": {
+            "type": "llm", "region": "ap-northeast-1", "model_id": "anthropic.x",
+            "aws_access_key_id": "AKIA", "aws_secret_access_key": "s",
+        }}}
+        bedrock = cfg._build_config(raw)[6]
+        assert bedrock["br"]["aws_access_key_id"] == "AKIA"
+        assert bedrock["br"]["aws_secret_access_key"] == "s"
+
+        path = tmp_path / "config.toml"
+        path.write_text("")
+        with patch.object(cfg, "_CONFIG_PATH", path), patch.object(cfg, "reload_config"):
+            cfg.save_config({}, {}, {}, bedrock_models={
+                **bedrock, "bearer": {"type": "llm", "model_id": "m", "api_key": "k",
+                                      "aws_access_key_id": "", "aws_secret_access_key": ""},
+            })
+        saved = toml.load(path)["bedrock_models"]
+        assert saved["br"]["aws_access_key_id"] == "AKIA"
+        assert saved["br"]["aws_secret_access_key"] == "s"
+        assert "aws_access_key_id" not in saved["bearer"]

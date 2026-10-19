@@ -66,7 +66,7 @@ api_key    = ""                        # vLLM --api-key, if set
 | `[app]` | Default daily budget for new users and other runtime settings. Most are editable from the admin panel. |
 | `[models.<type>.<alias>]` | On-prem vLLM models. Optional: per-model pricing, display metadata, `hidden`, reasoning-effort rules. |
 | `[azure_models.<alias>]` | Azure OpenAI deployments (`endpoint`, `deployment`, `api_key`). |
-| `[bedrock_models.<alias>]` | AWS Bedrock models (`region`, `model_id`, long-term Bedrock API key). |
+| `[bedrock_models.<alias>]` | AWS Bedrock models (`region`, `model_id`, and a long-term Bedrock API key or IAM access key + secret). |
 | `[pricing]`, `[pricing.<type>]` | Default and per-type prices in USD per 1M tokens. A model's own price fields override them. |
 | `[fallback]`, `[azure_fallback]`, `[bedrock_fallback]` | Which model to use when a requested one is unknown or down. |
 

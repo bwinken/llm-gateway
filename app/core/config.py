@@ -169,11 +169,13 @@ _AZURE_DEFAULT_API_VERSION = "2024-08-01-preview"
 # `model_id` is the Bedrock model ID or inference-profile ID (e.g.
 # "anthropic.claude-sonnet-4-20250514-v1:0" or "us.anthropic...."). `region`
 # builds the default endpoint (https://bedrock-runtime.{region}.amazonaws.com);
-# `endpoint` overrides it (VPC endpoints, gov regions). `api_key` is a
-# long-term Bedrock API key sent as `Authorization: Bearer` — IAM/SigV4 is
-# not implemented yet (auth is isolated in bedrock_proxy._build_headers so it
-# can be added without touching routing).
+# `endpoint` overrides it (VPC endpoints, gov regions). Credentials are either
+# `api_key` (a long-term Bedrock API key sent as `Authorization: Bearer`) or
+# IAM `aws_access_key_id` + `aws_secret_access_key`, which SigV4-sign every
+# request and win when both are set (bedrock_proxy._build_headers). The
+# signature is scoped to `region`, which must match the endpoint's region.
 _BEDROCK_DEFAULT_REGION = "us-east-1"
+_BEDROCK_IAM_KEYS: tuple[str, ...] = ("aws_access_key_id", "aws_secret_access_key")
 
 
 def _build_config(raw: dict[str, Any]) -> tuple[
@@ -298,6 +300,9 @@ def _build_config(raw: dict[str, Any]) -> tuple[
         # bedrock_proxy builds https://bedrock-runtime.{region}.amazonaws.com.
         if cfg.get("endpoint"):
             entry["endpoint"] = str(cfg["endpoint"]).rstrip("/")
+        for iam_key in _BEDROCK_IAM_KEYS:
+            if cfg.get(iam_key):
+                entry[iam_key] = str(cfg[iam_key])
         for meta_key in _MODEL_METADATA_KEYS:
             if meta_key in cfg:
                 entry[meta_key] = cfg[meta_key]
@@ -547,6 +552,9 @@ def save_config(
             }
             if info.get("endpoint"):
                 entry["endpoint"] = str(info["endpoint"]).rstrip("/")
+            for iam_key in _BEDROCK_IAM_KEYS:
+                if info.get(iam_key):
+                    entry[iam_key] = str(info[iam_key])
             for meta_key in _MODEL_METADATA_KEYS:
                 if meta_key in info:
                     entry[meta_key] = info[meta_key]

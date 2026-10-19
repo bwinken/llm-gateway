@@ -487,7 +487,7 @@ class TestBedrockChatCompletions:
         async def fake_post(url, **kwargs):
             captured["url"] = url
             captured["headers"] = kwargs.get("headers")
-            captured["json"] = kwargs.get("json")
+            captured["json"] = json.loads(kwargs["content"])
             return make_httpx_response(200, _converse_payload("ok", 1, 1))
 
         client.__httpx_mock__.post = AsyncMock(side_effect=fake_post)
@@ -506,6 +506,82 @@ class TestBedrockChatCompletions:
         # Body carries Converse shape, no model field (model is in the URL).
         assert "model" not in captured["json"]
         assert captured["json"]["messages"][0]["content"] == [{"text": "hi"}]
+
+    def test_iam_credentials_sign_with_sigv4(self, client):
+        """An entry with IAM credentials is SigV4-signed over the exact bytes
+        sent, and neither the secret nor a Bearer token goes on the wire."""
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+        from app.services.aws_sigv4 import sign_request
+        from tests.conftest import TEST_BEDROCK_MODELS
+
+        iam = {
+            "type": "llm", "region": "ap-northeast-1",
+            "model_id": "global.anthropic.claude-haiku-5-5", "api_key": "",
+            "aws_access_key_id": "AKIDEXAMPLE",
+            "aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+        }
+        captured: dict = {}
+
+        async def fake_post(url, **kwargs):
+            captured.update(url=url, headers=kwargs["headers"], content=kwargs["content"])
+            return make_httpx_response(200, _converse_payload("ok", 1, 1))
+
+        with patch.dict(TEST_BEDROCK_MODELS, {"bedrock-iam": iam}), \
+             patch.object(client.__httpx_mock__, "post", side_effect=fake_post):
+            resp = client.post(
+                "/aws/v1/chat/completions",
+                json={"model": "bedrock-iam", "messages": [{"role": "user", "content": "日本語"}]},
+                headers=auth_header(),
+            )
+        assert resp.status_code == 200
+        headers = captured["headers"]
+        auth = headers["Authorization"]
+        assert auth.startswith(
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/"
+        ) and "/ap-northeast-1/bedrock/aws4_request" in auth
+        assert iam["aws_secret_access_key"] not in json.dumps(headers)
+        # Re-signing the captured bytes at the captured timestamp reproduces
+        # the signature: the body on the wire is the body that was signed.
+        when = datetime.strptime(headers["X-Amz-Date"], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        expected = sign_request(
+            "POST", captured["url"], captured["content"],
+            access_key=iam["aws_access_key_id"], secret_key=iam["aws_secret_access_key"],
+            region="ap-northeast-1", service="bedrock", now=when,
+        )
+        assert auth == expected["Authorization"]
+
+    def test_iam_credentials_sign_the_stream_request(self, client):
+        from unittest.mock import patch
+        from tests.conftest import TEST_BEDROCK_MODELS
+
+        iam = {
+            "type": "llm", "region": "us-east-1",
+            "model_id": "anthropic.claude-sonnet-4-20250514-v1:0", "api_key": "",
+            "aws_access_key_id": "AKIDEXAMPLE", "aws_secret_access_key": "secret",
+        }
+        captured: dict = {}
+
+        def build_request(method, url, **kwargs):
+            captured.update(url=url, headers=kwargs["headers"], content=kwargs["content"])
+            return None
+
+        mock = client.__httpx_mock__
+        with patch.dict(TEST_BEDROCK_MODELS, {"bedrock-iam": iam}), \
+             patch.object(mock, "build_request", side_effect=build_request), \
+             patch.object(mock, "send", AsyncMock(
+                 return_value=FakeBedrockStreamResponse(_stream_events(["ok"])))):
+            resp = client.post(
+                "/aws/v1/messages",
+                json={"model": "bedrock-iam", "max_tokens": 64, "stream": True,
+                      "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+            assert resp.status_code == 200
+        assert captured["url"].endswith("/converse-stream")
+        assert captured["headers"]["Authorization"].startswith("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
+        assert "X-Amz-Date" in captured["headers"]
+        assert json.loads(captured["content"])["messages"][0]["content"] == [{"text": "hi"}]
 
     def test_unknown_alias_falls_back_with_header(self, client):
         client.__httpx_mock__.post = AsyncMock(
@@ -602,7 +678,7 @@ class TestBedrockMessages:
 
         async def fake_post(url, **kwargs):
             captured["url"] = url
-            captured["json"] = kwargs.get("json")
+            captured["json"] = json.loads(kwargs["content"])
             return make_httpx_response(200, _converse_payload("ok", 1, 1))
 
         with patch.dict(TEST_BEDROCK_MODELS, {"bedrock-haiku": haiku}), \

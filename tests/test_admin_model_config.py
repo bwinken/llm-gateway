@@ -55,6 +55,29 @@ class TestBedrockSave:
         assert "model_id" in resp.json()["detail"]
         save.assert_not_called()
 
+    def test_bedrock_iam_credentials_accepted_without_api_key(self, client, admin_user):
+        iam = {"br1": {"type": "llm", "region": "ap-northeast-1", "model_id": "anthropic.x-v1:0",
+                       "api_key": "", "aws_access_key_id": "AKIA", "aws_secret_access_key": "s"}}
+        resp, save = _put(client, admin_user, bedrock_models=iam)
+        assert resp.status_code == 200, resp.text
+        assert save.call_args.args[5] == iam
+
+    def test_bedrock_needs_some_credential(self, client, admin_user):
+        bad = {"br1": {"type": "llm", "region": "us-east-1", "model_id": "anthropic.x-v1:0", "api_key": ""}}
+        resp, save = _put(client, admin_user, bedrock_models=bad)
+        assert resp.status_code == 400
+        assert "api_key or aws_access_key_id" in resp.json()["detail"]
+        save.assert_not_called()
+
+    def test_bedrock_half_an_iam_pair_rejected(self, client, admin_user):
+        for half in ({"aws_access_key_id": "AKIA"}, {"aws_secret_access_key": "s"}):
+            bad = {"br1": {"type": "llm", "region": "us-east-1", "model_id": "anthropic.x-v1:0",
+                           "api_key": "k", **half}}
+            resp, save = _put(client, admin_user, bedrock_models=bad)
+            assert resp.status_code == 400, half
+            assert "needs both" in resp.json()["detail"]
+            save.assert_not_called()
+
     def test_bedrock_rate_limit_target_must_exist(self, client, admin_user):
         bad = {"br1": {**BEDROCK["br1"], "rate_limit_fallback": "az1"}}
         resp, _ = _put(client, admin_user, azure_models=AZURE, bedrock_models=bad)

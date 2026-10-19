@@ -17,9 +17,11 @@ Key conventions:
     {modelId}/converse[-stream]`` — ``modelId`` is URL-quoted (it contains
     ``.`` and ``:``); a per-entry ``endpoint`` override replaces the host
     (VPC endpoints, gov regions).
-  * Auth: ``Authorization: Bearer <api_key>`` using a long-term Bedrock API
-    key. Isolated in ``_build_headers`` so IAM/SigV4 signing can be added
-    later without touching the forwarding logic.
+  * Auth (``_build_headers``): IAM credentials (``aws_access_key_id`` +
+    ``aws_secret_access_key``) sign each request with SigV4
+    (``aws_sigv4``); otherwise ``Authorization: Bearer <api_key>`` with a
+    long-term Bedrock API key. The body is serialized once and sent as
+    ``content=`` so the bytes on the wire are the bytes that were signed.
   * Streaming is NOT SSE — ConverseStream returns binary
     ``application/vnd.amazon.eventstream`` frames, decoded by
     ``aws_eventstream.EventStreamDecoder`` in ``_pump_bedrock_events``
@@ -53,6 +55,7 @@ from app.services.anthropic_adapter import (
     openai_to_anthropic_response,
 )
 from app.services.aws_eventstream import EventStreamDecoder, EventStreamError
+from app.services.aws_sigv4 import sign_request
 from app.services.converse_adapter import (
     ConverseToChatStreamTranslator,
     cached_tokens_from_converse,
@@ -196,18 +199,30 @@ def _build_converse_url(entry: dict[str, Any], stream: bool) -> str:
     return f"{endpoint}/model/{model_id}/{op}"
 
 
-def _build_headers(entry: dict[str, Any]) -> dict[str, str]:
-    """Bedrock auth: long-term API key as a Bearer token.
+def _encode_body(body: dict[str, Any]) -> bytes:
+    return json.dumps(body, ensure_ascii=False).encode("utf-8")
 
-    This is the single seam for downstream auth — an IAM/SigV4 variant would
-    replace the header set here (and would need the request body for
-    signing, so it would move to a sign(entry, body) shape).
+
+def _build_headers(entry: dict[str, Any], url: str, payload: bytes) -> dict[str, str]:
+    """Bedrock auth, the single seam for downstream credentials.
+
+    IAM credentials win when both halves are set: the request is SigV4-signed
+    over ``payload``, which must be sent unchanged, and signed per attempt
+    right before sending (a signature expires after ~5 minutes). Otherwise
+    the long-term Bedrock API key goes out as a Bearer token.
     """
-    return {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Authorization": f"Bearer {entry.get('api_key', '')}",
-    }
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    access_key = entry.get("aws_access_key_id")
+    secret_key = entry.get("aws_secret_access_key")
+    if access_key and secret_key:
+        headers.update(sign_request(
+            "POST", url, payload,
+            access_key=access_key, secret_key=secret_key,
+            region=entry.get("region") or "us-east-1", service="bedrock",
+        ))
+    else:
+        headers["Authorization"] = f"Bearer {entry.get('api_key', '')}"
+    return headers
 
 
 def _log_bedrock_error(
@@ -341,14 +356,13 @@ async def bedrock_forward_chat_completions(
         converse_body = openai_chat_to_converse_request(body, model_id=entry.get("model_id", ""))
 
         target_url = _build_converse_url(entry, stream=is_stream)
-        headers = _build_headers(entry)
 
         monitor_body = {**body, "model": alias}
         extra_headers = _fallback_headers(fallback_reason)
 
         send = _stream_chat if is_stream else _non_stream_chat
         result = await send(
-            client, target_url, converse_body, headers,
+            client, target_url, converse_body,
             user, alias, model_type, monitor_body, entry, body,
             extra_headers, rate_limit_retry=not last,
         )
@@ -361,13 +375,15 @@ async def bedrock_forward_chat_completions(
 
 
 async def _non_stream_chat(
-    client, url: str, body: dict, headers: dict, user: User,
+    client, url: str, body: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     incoming_body: dict, extra_headers: dict[str, str] | None = None,
     rate_limit_retry: bool = False,
 ) -> JSONResponse:
     try:
-        resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
+        payload = _encode_body(body)
+        resp = await client.post(url, content=payload, headers=_build_headers(route, url, payload),
+                                 timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Bedrock downstream error | user={} model={} endpoint=/aws/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
@@ -398,7 +414,7 @@ async def _non_stream_chat(
 
 
 async def _stream_chat(
-    client, url: str, body: dict, headers: dict, user: User,
+    client, url: str, body: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     incoming_body: dict, extra_headers: dict[str, str] | None = None,
     rate_limit_retry: bool = False,
@@ -406,7 +422,9 @@ async def _stream_chat(
     # Pre-flight: open the stream and check status BEFORE handing it to the
     # event pump — a Bedrock 4xx arrives as a plain JSON body, not an
     # event-stream frame, and would otherwise be dropped silently.
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
+    payload = _encode_body(body)
+    req = client.build_request("POST", url, content=payload, headers=_build_headers(route, url, payload),
+                               timeout=_STREAM_TIMEOUT)
     try:
         resp = await client.send(req, stream=True)
     except Exception as exc:
@@ -550,7 +568,6 @@ async def bedrock_forward_messages(
         )
 
         target_url = _build_converse_url(entry, stream=is_stream)
-        headers = _build_headers(entry)
 
         monitor_body = dict(anthropic_body)
         monitor_body["model"] = alias
@@ -558,7 +575,7 @@ async def bedrock_forward_messages(
 
         send = _stream_messages if is_stream else _non_stream_messages
         result = await send(
-            client, target_url, converse_body, headers,
+            client, target_url, converse_body,
             user, alias, model_type, monitor_body, entry, anthropic_body,
             extra_headers, rate_limit_retry=not last,
         )
@@ -571,13 +588,15 @@ async def bedrock_forward_messages(
 
 
 async def _non_stream_messages(
-    client, url: str, body: dict, headers: dict, user: User,
+    client, url: str, body: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     incoming_body: dict, extra_headers: dict[str, str] | None = None,
     rate_limit_retry: bool = False,
 ) -> JSONResponse:
     try:
-        resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
+        payload = _encode_body(body)
+        resp = await client.post(url, content=payload, headers=_build_headers(route, url, payload),
+                                 timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Bedrock messages downstream error | user={} model={} endpoint=/aws/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
@@ -611,14 +630,16 @@ async def _non_stream_messages(
 
 
 async def _stream_messages(
-    client, url: str, body: dict, headers: dict, user: User,
+    client, url: str, body: dict, user: User,
     alias: str, model_type: str, monitor_body: dict, route: dict,
     incoming_body: dict, extra_headers: dict[str, str] | None = None,
     rate_limit_retry: bool = False,
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight to surface 4xx before opening the stream — same rationale
     # as _stream_chat.
-    req = client.build_request("POST", url, json=body, headers=headers, timeout=_STREAM_TIMEOUT)
+    payload = _encode_body(body)
+    req = client.build_request("POST", url, content=payload, headers=_build_headers(route, url, payload),
+                               timeout=_STREAM_TIMEOUT)
     try:
         resp = await client.send(req, stream=True)
     except Exception as exc:
