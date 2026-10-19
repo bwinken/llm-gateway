@@ -24,6 +24,7 @@ from app.core.config import (
     CONCURRENCY_MODES,
     bedrock_shared_settings,
     get_cloud_budget_fallback,
+    get_cloud_daily_limit,
     get_concurrency_settings,
     get_config_data,
     get_default_daily_limit,
@@ -32,6 +33,7 @@ from app.core.config import (
     save_config,
     set_cloud_budget_fallback,
     set_concurrency_settings,
+    set_cloud_daily_limit,
     set_default_daily_limit,
     set_site_links,
 )
@@ -267,6 +269,7 @@ async def admin_page(
             "dau_data": dau_data,
             "today_dau": today_dau,
             "default_daily_limit": get_default_daily_limit(),
+            "cloud_daily_limit": get_cloud_daily_limit(),
             "cloud_budget_fallback": get_cloud_budget_fallback(),
             "today_totals": today_totals,
             "budget_pressure": budget_pressure,
@@ -475,6 +478,20 @@ async def update_default_limit(
     bumped = result.rowcount or 0
     logger.info("Default daily limit set to ${} — bumped {} users", new_default, bumped)
 
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/cloud-limit")
+async def update_cloud_limit(request: Request):
+    """Set the combined cloud cap: each account's Azure + Bedrock spend per
+    day, shared by every user. Blank removes it (no combined cap); 0 is a $0
+    cap. It applies on top of the overall daily limit and any per-backend
+    sub-limit."""
+    form = await request.form()
+    raw = str(form.get("new_cloud_limit") or "").strip()
+    value = None if raw == "" else _limit_usd(raw, "new_cloud_limit")
+    set_cloud_daily_limit(value)
+    logger.info("Cloud daily limit set to {}", "none" if value is None else f"${value}")
     return RedirectResponse(url="/admin", status_code=303)
 
 

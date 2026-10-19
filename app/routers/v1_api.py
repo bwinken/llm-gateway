@@ -38,6 +38,7 @@ from app.core.config import (
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
     get_cloud_budget_fallback,
+    get_cloud_daily_limit,
     get_concurrency_settings,
     get_model_routing_snapshot,
 )
@@ -305,9 +306,12 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
       - ``sub_limit_usd``: only when an admin set a separate cap for it
         (0 included: a $0 cap);
       - ``used_usd``: today's spend there;
-      - ``remaining_usd``: what can still be spent there today — the tighter
-        of the sub-limit and the overall daily limit (cloud spend counts
-        toward both), 0 without access.
+      - ``remaining_usd``: what can still be spent there today — the tightest
+        of the sub-limit, the combined cloud cap (azure / aws) and the overall
+        daily limit (cloud spend counts toward all of them), 0 without access.
+
+    ``cloud`` appears only when the combined cloud cap is set
+    (``[app].cloud_daily_limit_usd``): Azure + AWS spend today against it.
 
     Limits are those the gateway enforces; with ``ENFORCE_DAILY_LIMIT=false``
     they are only logged (``daily.enforced`` = false).
@@ -317,11 +321,19 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
     daily_limit = max(0.0, user.daily_limit_usd)
     daily_remaining = _remaining(daily_limit, today["total_cost_usd"])
 
-    def _backend(access: bool, used: float, sub_limit: float | None) -> dict:
+    cloud_limit = get_cloud_daily_limit()
+    cloud_used = today["azure_cost_usd"] + today["bedrock_cost_usd"]
+    cloud_remaining = (
+        daily_remaining if cloud_limit is None
+        else min(daily_remaining, _remaining(cloud_limit, cloud_used))
+    )
+
+    def _backend(access: bool, used: float, sub_limit: float | None,
+                 cap_remaining: float = daily_remaining) -> dict:
         out: dict[str, object] = {"access": access}
         if sub_limit is not None:
             out["sub_limit_usd"] = max(0.0, sub_limit)
-        remaining = daily_remaining
+        remaining = cap_remaining
         if sub_limit is not None:
             remaining = min(remaining, _remaining(sub_limit, used))
         out["used_usd"] = _usd(used)
@@ -355,13 +367,20 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
                 user.can_use_azure or user.is_admin,
                 today["azure_cost_usd"],
                 user.azure_daily_limit_usd,
+                cloud_remaining,
             ),
             "aws": _backend(
                 user.can_use_bedrock or user.is_admin,
                 today["bedrock_cost_usd"],
                 user.bedrock_daily_limit_usd,
+                cloud_remaining,
             ),
         },
+        **({"cloud": {
+            "limit_usd": cloud_limit,
+            "used_usd": _usd(cloud_used),
+            "remaining_usd": cloud_remaining,
+        }} if cloud_limit is not None else {}),
         "cloud_budget_fallback": get_cloud_budget_fallback(),
         "concurrency": (
             {"mode": mode, "limit": limit} if concurrency_applies else {"mode": "off"}

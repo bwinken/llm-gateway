@@ -19,6 +19,7 @@ from app.core.config import (
     APP_TITLE,
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
+    get_cloud_daily_limit,
     get_model_routing_snapshot,
     get_pricing_snapshot,
     get_site_links,
@@ -276,6 +277,14 @@ async def dashboard(
         _usage_percent(bedrock_today_cost, bedrock_limit) if bedrock_limit is not None else 0.0
     )
 
+    # Combined cloud cap ([app].cloud_daily_limit_usd, same for everyone):
+    # Azure + Bedrock spend together. None = no combined cap, row hidden.
+    cloud_limit = get_cloud_daily_limit()
+    cloud_today_cost = azure_today_cost + bedrock_today_cost
+    cloud_usage_percent = (
+        _usage_percent(cloud_today_cost, cloud_limit) if cloud_limit is not None else 0.0
+    )
+
     claude_code_available = (_SETUP_DIR / "install-claude-code.bat").is_file()
 
     # Azure access — list configured Azure model aliases when the user has
@@ -343,6 +352,9 @@ async def dashboard(
             azure_usage_percent=round(azure_usage_percent, 1),
             bedrock_limit=bedrock_limit,
             bedrock_usage_percent=round(bedrock_usage_percent, 1),
+            cloud_limit=cloud_limit,
+            cloud_today_cost=round(cloud_today_cost, 4),
+            cloud_usage_percent=round(cloud_usage_percent, 1),
             trend_data=trend_data,
             model_breakdown_groups=model_breakdown_groups,
             today_str=datetime.now(LOCAL_TZ).strftime("%Y-%m-%d"),

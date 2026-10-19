@@ -709,6 +709,37 @@ def set_default_daily_limit(value: float) -> None:
     _save_app_keys({"default_daily_limit_usd": float(value)})
 
 
+def get_cloud_daily_limit() -> float | None:
+    """Daily cap on each user's combined cloud spend (Azure + Bedrock), USD.
+
+    [app].cloud_daily_limit_usd, applied to every account on top of its
+    overall daily limit and of any per-backend sub-limit. None (key absent,
+    blank or not a finite number) means no combined cap; 0 is a $0 cap.
+    """
+    _check_auto_reload()
+    val = APP_CONFIG.get("cloud_daily_limit_usd")
+    if val is None or val == "":
+        return None
+    try:
+        limit = float(val)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, limit) if math.isfinite(limit) else None
+
+
+def set_cloud_daily_limit(value: float | None) -> None:
+    """Persist the combined cloud cap (None removes it) and reload."""
+    if value is None:
+        raw = _load_toml()
+        if "cloud_daily_limit_usd" not in (raw.get("app") or {}):
+            return
+        raw["app"].pop("cloud_daily_limit_usd")
+        _write_toml(raw)
+        reload_config()
+        return
+    _save_app_keys({"cloud_daily_limit_usd": float(value)})
+
+
 # Admin-editable web-UI links, stored in the [app] section. An empty string
 # hides the corresponding UI element (floating support-bot button / navbar
 # install-guide link).
@@ -821,7 +852,12 @@ def _save_app_keys(values: dict[str, Any]) -> None:
     app_section = raw.get("app") or {}
     app_section.update(values)
     raw["app"] = app_section
+    _write_toml(raw)
+    reload_config()
 
+
+def _write_toml(raw: dict[str, Any]) -> None:
+    """Atomically replace config.toml with ``raw``."""
     dir_path = _CONFIG_PATH.parent
     fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix=".toml.tmp")
     try:
@@ -831,5 +867,3 @@ def _save_app_keys(values: dict[str, Any]) -> None:
     except BaseException:
         os.unlink(tmp_path)
         raise
-
-    reload_config()

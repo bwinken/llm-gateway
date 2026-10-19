@@ -15,7 +15,7 @@ from sqlmodel import Session, func, select
 from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import AccountDisabledError
-from app.core.config import get_concurrency_settings
+from app.core.config import get_cloud_daily_limit, get_concurrency_settings
 from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
@@ -94,6 +94,8 @@ def _check_daily_limit(session: Session, user: User) -> None:
 
 
 _BACKEND_LABELS: dict[str, str] = {"azure": "Azure", "bedrock": "Bedrock"}
+_CLOUD_LABEL = "Cloud (Azure + Bedrock)"
+_CLOUD_BACKENDS: tuple[str, ...] = ("azure", "bedrock")
 
 
 def _check_backend_daily_limit(
@@ -103,7 +105,9 @@ def _check_backend_daily_limit(
     *,
     allow_fallback: bool = False,
 ) -> bool:
-    """Enforce the user's per-backend daily sub-limit for ``backend``.
+    """Enforce the cloud caps that apply to ``backend``: the combined cloud
+    cap (``[app].cloud_daily_limit_usd``, Azure + Bedrock spend together,
+    same for every account) and the user's per-backend sub-limit.
 
     The sub-limit (``users.azure_daily_limit_usd`` / ``bedrock_daily_limit_usd``)
     is an *additional* cap on that backend's portion of today's spend — cloud
@@ -128,22 +132,43 @@ def _check_backend_daily_limit(
     overall check: in soft mode the overage is logged and the request stays
     on the cloud backend (there is no 429 for the fallback to replace).
     """
-    label = _BACKEND_LABELS.get(backend, backend)
     if backend == "azure":
-        limit = user.azure_daily_limit_usd
+        backend_limit = user.azure_daily_limit_usd
     elif backend == "bedrock":
-        limit = user.bedrock_daily_limit_usd
+        backend_limit = user.bedrock_daily_limit_usd
     else:  # pragma: no cover - programming error, not a runtime condition
         raise ValueError(f"unknown cloud backend {backend!r}")
-    if limit is None:
-        return True
+    # The combined cloud cap goes first: it is the budget a user spends across
+    # both backends, so when both are gone the 429 names that one.
+    caps = (
+        (_CLOUD_LABEL, get_cloud_daily_limit(), _CLOUD_BACKENDS),
+        (_BACKEND_LABELS[backend], backend_limit, (backend,)),
+    )
+    for label, limit, backends in caps:
+        if limit is not None and not _cloud_cap_allows(
+            session, user, label, limit, backends, allow_fallback=allow_fallback,
+        ):
+            return False
+    return True
 
+
+def _cloud_cap_allows(
+    session: Session,
+    user: User,
+    label: str,
+    limit: float,
+    backends: tuple[str, ...],
+    *,
+    allow_fallback: bool,
+) -> bool:
+    """One cap of ``_check_backend_daily_limit``: today's spend on
+    ``backends`` against ``limit``. True = within it (or soft mode)."""
     today_start = local_day_start_utc()
     stmt = (
         select(func.coalesce(func.sum(UsageLog.cost_usd), 0))
         .where(UsageLog.user_id == user.id)
         .where(UsageLog.created_at >= today_start)
-        .where(UsageLog.backend == backend)
+        .where(UsageLog.backend.in_(backends))
     )
     spent = float(session.exec(stmt).one())
     if spent < limit:
