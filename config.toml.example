@@ -300,8 +300,11 @@ api_key = ""                        # decider's server checks no key
 #  - Converse does not cover embeddings; `/aws/v1/embeddings` is
 #    intentionally not exposed. Configure embeddings on a vLLM backend.
 #  - Mark Claude models `is_reasoning = true` to translate Anthropic /
-#    OpenAI reasoning-effort requests into Bedrock extended thinking
-#    (budget_tokens bucketed by effort).
+#    OpenAI reasoning-effort requests into Bedrock extended thinking. The
+#    shape follows the generation parsed from model_id: Claude 4.6+ (e.g.
+#    "global.anthropic.claude-haiku-5-5") gets adaptive thinking with the
+#    effort level; older models a budget_tokens bucket. Claude 4.7+ never
+#    receives temperature / top_p (any non-default value is a 400).
 #  - `rate_limit_fallback` (optional): another [bedrock_models.*] alias that
 #    takes the request when this model answers 429 (ThrottlingException).
 #    Same chain rules as on [azure_models.*]; never crosses backends.

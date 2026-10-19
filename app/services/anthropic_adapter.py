@@ -42,8 +42,9 @@ def _map_stop_reason(openai_finish: str | None) -> str | None:
 
 
 # Anthropic clients express reasoning depth two ways:
-#   - a top-level `effort` string (Claude Code's ladder is low / medium /
-#     high / xhigh / max; xhigh is also spelled extra-high / x-high)
+#   - an `effort` string, in `output_config.effort` (the current Messages
+#     API) or top-level (older clients). Claude Code's ladder is low /
+#     medium / high / xhigh / max; xhigh is also spelled extra-high / x-high
 #   - `thinking: {"type": "enabled", "budget_tokens": N}` — a token budget
 #     we bucket into effort levels.
 # Policy: translate FAITHFULLY, never clamp. A downstream that doesn't know
@@ -65,6 +66,9 @@ def _map_reasoning_effort(body: dict[str, Any]) -> str | None:
     (lowercased) — the downstream is the authority on what it supports.
     """
     effort = body.get("effort")
+    output_config = body.get("output_config")
+    if not (isinstance(effort, str) and effort.strip()) and isinstance(output_config, dict):
+        effort = output_config.get("effort")
     if isinstance(effort, str) and effort.strip():
         normalized = effort.strip().lower()
         return EFFORT_ALIASES.get(normalized, normalized)

@@ -226,6 +226,58 @@ class TestConverseRequestTranslation:
         assert "additionalModelRequestFields" not in out
         assert out["inferenceConfig"]["temperature"] == 0.7
 
+    def test_claude_version_parsed_from_model_id(self):
+        from app.services.converse_adapter import _claude_version
+        for model_id, expected in [
+            ("anthropic.claude-sonnet-4-20250514-v1:0", (4, 0)),
+            ("us.anthropic.claude-haiku-4-5-20251001-v1:0", (4, 5)),
+            ("anthropic.claude-3-7-sonnet-20250219-v1:0", (3, 7)),
+            ("anthropic.claude-opus-4-6-v1", (4, 6)),
+            ("global.anthropic.claude-haiku-5-5", (5, 5)),
+            ("anthropic.claude-opus-5", (5, 0)),
+            ("arn:aws:bedrock:us-east-1:123:application-inference-profile/abc", None),
+        ]:
+            assert _claude_version(model_id) == expected, model_id
+
+    def test_adaptive_claude_gets_adaptive_thinking_and_effort(self):
+        """Claude 4.6+ thinks adaptively; budget_tokens is a 400 from 4.7 on.
+        The requested level is forwarded verbatim as output_config.effort."""
+        for model_id in ("anthropic.claude-opus-4-6-v1", "global.anthropic.claude-haiku-5-5"):
+            for effort in ("low", "xhigh", "max"):
+                out = self._xlate({
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "reasoning_effort": effort,
+                }, model_id=model_id)
+                assert out["additionalModelRequestFields"] == {
+                    "thinking": {"type": "adaptive"},
+                    "output_config": {"effort": effort},
+                }, (model_id, effort)
+
+    def test_adaptive_claude_without_effort_sends_no_thinking(self):
+        """No effort asked → nothing sent; the model's own default applies.
+        "none" also sends nothing (`disabled` is a 400 on several 5.x models)."""
+        for body_extra in ({}, {"reasoning_effort": "none"}):
+            out = self._xlate({
+                "messages": [{"role": "user", "content": "hi"}], **body_extra,
+            }, model_id="global.anthropic.claude-haiku-5-5")
+            assert "additionalModelRequestFields" not in out
+
+    def test_claude_4_7_plus_drops_sampling_overrides(self):
+        """Claude 4.7+ rejects non-default temperature / top_p with a 400,
+        with or without thinking; stop sequences and max tokens survive."""
+        out = self._xlate({
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 100, "temperature": 0.7, "top_p": 0.9, "stop": "END",
+        }, model_id="global.anthropic.claude-haiku-5-5")
+        assert out["inferenceConfig"] == {"maxTokens": 100, "stopSequences": ["END"]}
+
+    def test_claude_4_6_keeps_sampling_without_thinking(self):
+        out = self._xlate({
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.7,
+        }, model_id="anthropic.claude-sonnet-4-6")
+        assert out["inferenceConfig"]["temperature"] == 0.7
+
     def test_effort_passthrough_for_openai_family(self):
         out = self._xlate({
             "messages": [{"role": "user", "content": "hi"}],
@@ -533,6 +585,46 @@ class TestBedrockMessages:
         assert data["content"][0]["type"] == "text"
         assert data["content"][0]["text"] == "hello there"
         assert data["usage"] == {"input_tokens": 7, "output_tokens": 3}
+
+    def test_claude_code_adaptive_request_reaches_converse_as_adaptive(self, client):
+        """Claude Code on a 5.x model sends adaptive thinking + output_config
+        effort + temperature; Converse must get adaptive thinking with that
+        effort and no sampling override (budget_tokens / temperature 400)."""
+        from unittest.mock import patch
+        from tests.conftest import TEST_BEDROCK_MODELS
+
+        haiku = {
+            "type": "llm", "region": "ap-northeast-1",
+            "model_id": "global.anthropic.claude-haiku-5-5",
+            "api_key": "bedrock-test-key", "is_reasoning": True,
+        }
+        captured = {}
+
+        async def fake_post(url, **kwargs):
+            captured["url"] = url
+            captured["json"] = kwargs.get("json")
+            return make_httpx_response(200, _converse_payload("ok", 1, 1))
+
+        with patch.dict(TEST_BEDROCK_MODELS, {"bedrock-haiku": haiku}), \
+             patch.object(client.__httpx_mock__, "post", side_effect=fake_post):
+            resp = client.post(
+                "/aws/v1/messages",
+                json={"model": "bedrock-haiku", "max_tokens": 64, "temperature": 0.5,
+                      "thinking": {"type": "adaptive"},
+                      "output_config": {"effort": "high"},
+                      "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+        assert resp.status_code == 200
+        assert captured["url"] == (
+            "https://bedrock-runtime.ap-northeast-1.amazonaws.com/model/"
+            "global.anthropic.claude-haiku-5-5/converse"
+        )
+        assert captured["json"]["additionalModelRequestFields"] == {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "high"},
+        }
+        assert "temperature" not in captured["json"].get("inferenceConfig", {})
 
     def test_stream_messages_emits_anthropic_events(self, client):
         client.__httpx_mock__.send = AsyncMock(

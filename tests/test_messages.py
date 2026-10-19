@@ -414,6 +414,18 @@ class TestRequestTranslation:
             out = anthropic_to_openai_request(body, is_reasoning=True)
             assert out["reasoning_effort"] == expected, f"effort={eff}"
 
+    def test_output_config_effort_mapped(self):
+        """The current Messages API carries effort in `output_config.effort`
+        (Claude Code sends it with `thinking: {"type": "adaptive"}`)."""
+        body = {
+            "model": "x",
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "Extra-High"},
+        }
+        out = anthropic_to_openai_request(body, is_reasoning=True)
+        assert out["reasoning_effort"] == "xhigh"
+
     def test_unknown_effort_passes_through(self):
         """Unrecognized spellings pass through verbatim (lowercased) — the
         downstream is the authority on what it supports."""
