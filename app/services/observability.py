@@ -140,37 +140,47 @@ UPSTREAM_EVENT_HOOKS = {
 }
 
 
+# The three helpers below run inside the stream pumps' reader tasks, where
+# any exception becomes a stream error: they must never raise.
+
 def mark_first_output() -> None:
     """Stamp the first output of a stream (first call wins)."""
-    meta = _live_meta()
-    if meta is not None:
-        meta.setdefault("first_output", time.monotonic())
+    try:
+        meta = _live_meta()
+        if meta is not None:
+            meta.setdefault("first_output", time.monotonic())
+    except Exception:
+        pass
 
 
-def is_output_event_type(event_type: str | None) -> bool:
-    return event_type not in _PRE_OUTPUT_EVENT_TYPES
+def is_output_event_type(event_type: Any) -> bool:
+    # Chat chunks carry no `type` (None) and are output.
+    return not isinstance(event_type, str) or event_type not in _PRE_OUTPUT_EVENT_TYPES
 
 
 def is_output_sse_line(line: str) -> bool:
     """Whether a downstream SSE line is model output (not a separator,
     `event:` line, `[DONE]`, comment or pre-output lifecycle event)."""
-    if not line.startswith("data: "):
-        return False
-    data = line[6:].strip()
-    if not data or data == "[DONE]":
-        return False
     try:
+        if not line.startswith("data: "):
+            return False
+        data = line[6:].strip()
+        if not data or data == "[DONE]":
+            return False
         event = json.loads(data)
-    except ValueError:
+        if not isinstance(event, dict):
+            return False
+        return is_output_event_type(event.get("type"))
+    except Exception:
         return False
-    if not isinstance(event, dict):
-        return False
-    return is_output_event_type(event.get("type"))
 
 
 def first_output_seen() -> bool:
-    meta = _live_meta()
-    return meta is None or "first_output" in meta
+    try:
+        meta = _live_meta()
+        return meta is None or "first_output" in meta
+    except Exception:
+        return True
 
 
 def request_timing(output_tokens: int = 0) -> dict[str, Any]:

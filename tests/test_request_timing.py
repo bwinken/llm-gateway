@@ -130,6 +130,11 @@ class TestOutputDetection:
         assert not f(": ping")
         assert not f("")
         assert not f("data: not json")
+        # A non-string `type` must not raise inside the pump (it would
+        # become a stream error); it is simply not a lifecycle event.
+        assert f('data: {"type":{"x":1}}')
+        assert f('data: {"type":[1]}')
+        assert not f("data: " + "[" * 100_000)
 
     def test_event_types(self):
         assert not obs.is_output_event_type("messageStart")
