@@ -111,7 +111,7 @@ curl http://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 - `daily` is your overall budget for today; every backend's spend counts toward it. The day is the `Asia/Taipei` calendar day.
 - Every account has a daily limit; there is no "unlimited". A limit of `0` is a $0 budget: every request is refused.
 - `backends.<name>.remaining_usd` is what you can still spend there today: for Azure / AWS the tighter of the cloud budget and your overall remaining budget, for on-prem the overall remaining budget; `0` without access. The remainders share one budget and don't add up: in the example, spending $0.50 on Azure leaves $6.25 for on-prem.
-- `cloud` appears only when you have cloud access and the gateway has a cloud budget: what you may spend on Azure and AWS together today, split between them however you like. It also bounds both cloud backends' `remaining_usd` (in the example, only $0.50 of the cloud budget is left). Without it, cloud is bounded by `daily` only. On-prem has no cap of its own.
+- `cloud` appears only when you have cloud access and a cloud budget (the admin's default, or one set for you): what you may spend on Azure and AWS together today, split between them however you like. It also bounds both cloud backends' `remaining_usd` (in the example, only $0.50 of the cloud budget is left). Without it, cloud is bounded by `daily` only. On-prem has no cap of its own.
 - A request is refused only once `used_usd` reaches the limit, so the last request of the day can overshoot it slightly.
 - `enforced: false` means the gateway only logs overages instead of returning 429.
 - `cloud_budget_fallback: true` means a `/v1/*` request for a cloud model whose cap is spent is answered by an on-prem model instead of a 429.

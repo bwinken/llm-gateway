@@ -26,10 +26,11 @@ install_guide_url = ""
 # /azure/v1/* and /aws/v1/* surfaces never fall back. Default: false.
 cloud_budget_fallback = false
 
-# Cloud cap (admin panel → "Cloud Daily Limit" card): the most each user may
-# spend on Azure + Bedrock together per day, split between the two however
-# they like. The same for everyone; per user there is only Azure / AWS
-# access. It sits inside daily_limit_usd. Omit for no cap; 0 refuses cloud.
+# Default cloud cap (admin panel → "Cloud Daily Limit" card): the most a user
+# with Azure or AWS access may spend on the two together per day, split
+# however they like. A user's own value (admin users table → Cloud $)
+# replaces it for them. It sits inside daily_limit_usd. Omit for no default
+# cap; 0 refuses cloud.
 # cloud_daily_limit_usd = 30.0
 
 # Per-user concurrency limit (admin panel → "Concurrency Limit" card): how

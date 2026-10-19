@@ -1,15 +1,15 @@
-"""Cloud cap: one daily budget for Azure + Bedrock together, the same for
-everyone.
+"""Cloud cap: one daily budget for Azure + Bedrock together.
 
 Semantics under test:
-  - ``[app].cloud_daily_limit_usd`` caps each user's Azure + Bedrock spend
-    per day. Per user there are only the access flags: no amounts. Absent =
-    cloud bounded by the overall daily limit only; 0 refuses cloud.
+  - A user's cap is their own ``users.cloud_daily_limit_usd`` when set (0
+    included), else the default ``[app].cloud_daily_limit_usd``. Neither =
+    cloud bounded by the overall daily limit only; 0 refuses cloud. It only
+    matters to users with Azure or AWS access.
   - Spend on both backends counts against it, so users split it however
     they like; once it is gone, both backends 429 (or fall back on-prem on
     ``/v1/*`` with ``cloud_budget_fallback``) while on-prem keeps working.
-  - The retired per-user sub-limit columns are ignored, and the admin JSON
-    API rejects the retired fields rather than silently dropping them.
+  - The retired per-backend sub-limit columns are ignored, and the admin
+    JSON API rejects those fields rather than silently dropping them.
   - ``/v1/me`` reports the cap (never as null, never to a user without cloud
     access) and bounds Azure / AWS ``remaining_usd`` by it; the dashboard
     shows the combined row.
@@ -24,6 +24,7 @@ import pytest
 
 from app.core import config as cfg
 from app.core.config import get_cloud_daily_limit
+from app.core.deps import effective_cloud_limit
 from tests.conftest import auth_header, web_auth_header
 from tests.test_cloud_budget_fallback import _burn, _chat, _messages, _mock_downstream
 
@@ -49,6 +50,19 @@ class TestConfig:
     def test_absent_means_no_cap(self):
         with _no_cap():
             assert get_cloud_daily_limit() is None
+
+    def test_own_value_wins_and_null_follows_the_default(self, test_user):
+        with _cap(30):
+            assert effective_cloud_limit(test_user) == 30.0
+            test_user.cloud_daily_limit_usd = 50.0
+            assert effective_cloud_limit(test_user) == 50.0
+            test_user.cloud_daily_limit_usd = 0.0
+            assert effective_cloud_limit(test_user) == 0.0
+        with _no_cap():
+            test_user.cloud_daily_limit_usd = None
+            assert effective_cloud_limit(test_user) is None
+            test_user.cloud_daily_limit_usd = 12.0
+            assert effective_cloud_limit(test_user) == 12.0
 
     def test_set_and_clear(self, tmp_path):
         """set_cloud_daily_limit writes [app] and None removes the key."""
@@ -93,6 +107,22 @@ class TestEnforcement:
         assert resp.status_code == 429
         assert resp.json()["detail"] == "Cloud (Azure + Bedrock) daily spending limit is $0."
 
+    def test_own_value_overrides_the_default(self, client, db_session, test_user):
+        _mock_downstream(client)
+        _burn(db_session, test_user, Decimal("30.00"), "azure")
+        test_user.cloud_daily_limit_usd = 50.0
+        db_session.add(test_user)
+        db_session.commit()
+        with _cap(30):
+            assert _chat(client).status_code == 200
+        test_user.cloud_daily_limit_usd = 20.0
+        db_session.add(test_user)
+        db_session.commit()
+        with _no_cap():
+            resp = _chat(client)
+        assert resp.status_code == 429
+        assert "($20.0)" in resp.json()["detail"]
+
     def test_no_cap_leaves_cloud_to_the_daily_limit(self, client, db_session, test_user):
         _mock_downstream(client)
         _burn(db_session, test_user, Decimal("60.00"), "azure")
@@ -135,6 +165,13 @@ class TestAccountInfo:
         assert me["backends"]["aws"]["remaining_usd"] == 10.0
         assert me["backends"]["onprem"]["remaining_usd"] == 80.0
 
+    def test_own_value_is_reported(self, client, db_session, test_user):
+        test_user.cloud_daily_limit_usd = 50.0
+        db_session.add(test_user)
+        db_session.commit()
+        with _cap(30):
+            assert self._me(client)["cloud"]["limit_usd"] == 50.0
+
     def test_no_cloud_block_without_cloud_access(self, client, db_session, test_user):
         """The cap means nothing to a user who can't reach the cloud."""
         test_user.can_use_azure = test_user.can_use_bedrock = False
@@ -161,6 +198,13 @@ class TestDashboard:
             body = self._body(client, test_user)
         assert "Cloud (Azure + AWS)" in body
         assert "/ $30" in body
+
+    def test_cloud_row_shows_the_own_value(self, client, db_session, test_user):
+        test_user.cloud_daily_limit_usd = 45.0
+        db_session.add(test_user)
+        db_session.commit()
+        with _cap(30):
+            assert "/ $45" in self._body(client, test_user)
 
     def test_no_cloud_row_without_cloud_access(self, client, db_session, test_user):
         test_user.can_use_azure = test_user.can_use_bedrock = False
@@ -190,10 +234,8 @@ class TestAdmin:
         assert resp.status_code == 400
         mock_set.assert_not_called()
 
-    @pytest.mark.parametrize("field", [
-        "azure_daily_limit_usd", "bedrock_daily_limit_usd", "cloud_daily_limit_usd",
-    ])
-    def test_retired_per_user_fields_rejected(self, client, admin_user, test_user, field):
+    @pytest.mark.parametrize("field", ["azure_daily_limit_usd", "bedrock_daily_limit_usd"])
+    def test_retired_per_backend_fields_rejected(self, client, admin_user, test_user, field):
         resp = client.patch(f"/admin/users/{test_user.id}", json={field: 5.0},
                             headers=self._hdr(admin_user))
         assert resp.status_code == 400
@@ -202,18 +244,55 @@ class TestAdmin:
                            headers=self._hdr(admin_user))
         assert resp.status_code == 400
 
-    def test_per_user_amount_endpoints_are_gone(self, client, admin_user, test_user):
-        for kind in ("azure", "bedrock", "cloud"):
+    def test_per_backend_endpoints_are_gone(self, client, admin_user, test_user):
+        for kind in ("azure", "bedrock"):
             resp = client.post(f"/admin/users/{test_user.id}/{kind}-limit",
                                data={f"new_{kind}_limit": "5"},
                                headers=self._hdr(admin_user), follow_redirects=False)
             assert resp.status_code in (404, 405), kind
 
-    def test_admin_page_has_only_the_global_cap(self, client, admin_user, test_user):
+    def test_per_user_form_sets_and_clears(self, client, db_session, admin_user, test_user):
+        for raw, expected in (("45", 45.0), ("0", 0.0), ("", None)):
+            resp = client.post(f"/admin/users/{test_user.id}/cloud-limit",
+                               data={"new_cloud_limit": raw},
+                               headers=self._hdr(admin_user), follow_redirects=False)
+            assert resp.status_code == 303
+            db_session.refresh(test_user)
+            assert test_user.cloud_daily_limit_usd == expected, raw
+
+    def test_per_user_form_rejects_negative(self, client, admin_user, test_user):
+        resp = client.post(f"/admin/users/{test_user.id}/cloud-limit",
+                           data={"new_cloud_limit": "-1"},
+                           headers=self._hdr(admin_user), follow_redirects=False)
+        assert resp.status_code == 400
+
+    def test_json_api_and_listing(self, client, db_session, admin_user, test_user):
+        resp = client.patch(f"/admin/users/{test_user.id}",
+                            json={"cloud_daily_limit_usd": 12.5},
+                            headers=self._hdr(admin_user))
+        assert resp.status_code == 200, resp.text
+        db_session.refresh(test_user)
+        assert test_user.cloud_daily_limit_usd == 12.5
+        listing = client.get("/admin/users", headers=self._hdr(admin_user)).json()
+        assert next(u for u in listing if u["id"] == test_user.id)["cloud_daily_limit_usd"] == 12.5
+        resp = client.post("/admin/users", json={"username": "app_svc", "cloud_daily_limit_usd": None},
+                           headers=self._hdr(admin_user))
+        assert resp.status_code in (200, 201), resp.text
+
+    def test_admin_page_cloud_field_only_for_cloud_users(self, client, db_session, admin_user, test_user):
+        from app.models.schema import User
+
+        onprem = User(username="onprem_only", can_use_azure=False, can_use_bedrock=False)
+        db_session.add(onprem)
+        db_session.commit()
+        db_session.refresh(onprem)
         with _cap(30):
             body = client.get("/admin", headers=self._hdr(admin_user)).text
         assert 'action="/admin/cloud-limit"' in body
-        for kind in ("azure", "bedrock", "cloud"):
+        assert f'action="/admin/users/{test_user.id}/cloud-limit"' in body
+        assert f'action="/admin/users/{onprem.id}/cloud-limit"' not in body
+        # Admins reach the cloud regardless of the toggles, so they get the field.
+        assert f'action="/admin/users/{admin_user.id}/cloud-limit"' in body
+        assert "30 (default)" in body
+        for kind in ("azure", "bedrock"):
             assert f'/admin/users/{test_user.id}/{kind}-limit"' not in body
-        assert f'/admin/users/{test_user.id}/toggle-azure"' in body
-        assert f'/admin/users/{test_user.id}/toggle-bedrock"' in body

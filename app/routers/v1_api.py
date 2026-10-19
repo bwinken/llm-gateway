@@ -38,13 +38,13 @@ from app.core.config import (
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
     get_cloud_budget_fallback,
-    get_cloud_daily_limit,
     get_concurrency_settings,
     get_model_routing_snapshot,
 )
 from app.core.deps import (
     _enforce_daily_limit,
     check_cloud_budget,
+    effective_cloud_limit,
     get_current_user,
     get_current_user_unmetered,
     get_today_usage,
@@ -308,9 +308,9 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
         of the cloud cap (azure / aws) and the overall daily limit (cloud
         spend counts toward both), 0 without access.
 
-    ``cloud`` appears only when the caller may use a cloud backend and a
-    cloud cap is configured (``[app].cloud_daily_limit_usd``, the same for
-    everyone): Azure + AWS spend today against it.
+    ``cloud`` appears only when the caller may use a cloud backend and has a
+    cloud cap (``effective_cloud_limit``: their own, else the gateway-wide
+    default): Azure + AWS spend today against it.
 
     Limits are those the gateway enforces; with ``ENFORCE_DAILY_LIMIT=false``
     they are only logged (``daily.enforced`` = false).
@@ -323,7 +323,7 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
     azure_access = user.can_use_azure or user.is_admin
     bedrock_access = user.can_use_bedrock or user.is_admin
     # The cap only means something to a user who may reach a cloud backend.
-    cloud_limit = get_cloud_daily_limit() if (azure_access or bedrock_access) else None
+    cloud_limit = effective_cloud_limit(user) if (azure_access or bedrock_access) else None
     cloud_used = today["azure_cost_usd"] + today["bedrock_cost_usd"]
     cloud_remaining = (
         daily_remaining if cloud_limit is None

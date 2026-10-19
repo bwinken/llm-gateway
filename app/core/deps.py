@@ -97,6 +97,16 @@ _CLOUD_LABEL = "Cloud (Azure + Bedrock)"
 _CLOUD_BACKENDS: tuple[str, ...] = ("azure", "bedrock")
 
 
+def effective_cloud_limit(user: User) -> float | None:
+    """The user's cloud cap: their own ``cloud_daily_limit_usd`` when set
+    (0 included), else the gateway-wide ``[app].cloud_daily_limit_usd``.
+    None = no cloud cap. Only consulted for users who may reach a cloud
+    backend: without access a request never gets this far."""
+    if user.cloud_daily_limit_usd is not None:
+        return max(0.0, user.cloud_daily_limit_usd)
+    return get_cloud_daily_limit()
+
+
 def _check_backend_daily_limit(
     session: Session,
     user: User,
@@ -106,10 +116,10 @@ def _check_backend_daily_limit(
 ) -> bool:
     """Enforce the cloud cap for a request bound to ``backend``.
 
-    One cap covers Azure and Bedrock together: ``[app].cloud_daily_limit_usd``,
-    the same for every user with cloud access (per user there are only the
-    access flags). Today's spend on both backends counts against it, so a user
-    splits it between them however they like. Cloud spend also counts toward
+    One cap covers Azure and Bedrock together (``effective_cloud_limit``):
+    the user's own ``cloud_daily_limit_usd`` when set, else the gateway-wide
+    ``[app].cloud_daily_limit_usd``. Today's spend on both backends counts
+    against it, so a user splits it between them however they like. Cloud spend also counts toward
     the overall ``daily_limit_usd`` (checked in ``_check_daily_limit``); this
     is not a parallel budget. No cap configured = cloud is bounded by the
     overall limit only. ``0`` is a $0 cap: cloud is refused (or, with
@@ -132,7 +142,7 @@ def _check_backend_daily_limit(
     """
     if backend not in _CLOUD_BACKENDS:  # pragma: no cover - programming error
         raise ValueError(f"unknown cloud backend {backend!r}")
-    limit = get_cloud_daily_limit()
+    limit = effective_cloud_limit(user)
     if limit is None:
         return True
 

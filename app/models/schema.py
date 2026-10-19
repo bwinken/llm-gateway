@@ -53,6 +53,10 @@ class User(SQLModel, table=True):
     # them, so an older release can still run against this database.
     azure_daily_limit_usd: float | None = Field(default=None)
     bedrock_daily_limit_usd: float | None = Field(default=None)
+    # This user's cloud cap (Azure + Bedrock together, per day). NULL is not
+    # "no cap": it follows [app].cloud_daily_limit_usd, the gateway-wide
+    # default (deps.effective_cloud_limit).
+    cloud_daily_limit_usd: float | None = Field(default=None)
     is_admin: bool = Field(default=False)
     is_disabled: bool = Field(default=False)
     can_use_azure: bool = Field(default=False)

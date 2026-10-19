@@ -520,6 +520,17 @@ function submitExportCsv() {
                                        class="gw-input w-20 text-sm font-mono py-1 px-2">
                                 <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
                             </form>
+                            {% if u.can_use_azure or u.can_use_bedrock or u.is_admin %}
+                            <form action="/admin/users/{{ u.id }}/cloud-limit" method="POST" class="flex items-center gap-2 mt-1"
+                                  title="This user's Azure + AWS daily cap. Empty = the default from Cloud Daily Limit; 0 = no cloud spend.">
+                                <span class="text-xs text-t3">Cloud $</span>
+                                <input type="number" step="0.1" min="0" name="new_cloud_limit"
+                                       value="{{ u.cloud_daily_limit_usd if u.cloud_daily_limit_usd is not none else '' }}"
+                                       placeholder="{{ ('%g'|format(cloud_daily_limit)) ~ ' (default)' if cloud_daily_limit is not none else 'no cap' }}"
+                                       class="gw-input w-36 text-sm font-mono py-1 px-2">
+                                <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
+                            </form>
+                            {% endif %}
                         </td>
                         <td class="whitespace-nowrap text-right">
                             <div class="flex items-center justify-end gap-2">
@@ -637,6 +648,17 @@ function submitExportCsv() {
                                        class="gw-input w-20 text-sm font-mono py-1 px-2">
                                 <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
                             </form>
+                            {% if u.can_use_azure or u.can_use_bedrock or u.is_admin %}
+                            <form action="/admin/users/{{ u.id }}/cloud-limit" method="POST" class="flex items-center gap-2 mt-1"
+                                  title="This user's Azure + AWS daily cap. Empty = the default from Cloud Daily Limit; 0 = no cloud spend.">
+                                <span class="text-xs text-t3">Cloud $</span>
+                                <input type="number" step="0.1" min="0" name="new_cloud_limit"
+                                       value="{{ u.cloud_daily_limit_usd if u.cloud_daily_limit_usd is not none else '' }}"
+                                       placeholder="{{ ('%g'|format(cloud_daily_limit)) ~ ' (default)' if cloud_daily_limit is not none else 'no cap' }}"
+                                       class="gw-input w-36 text-sm font-mono py-1 px-2">
+                                <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
+                            </form>
+                            {% endif %}
                         </td>
                         <td class="whitespace-nowrap text-right">
                             <div class="flex items-center justify-end gap-2">
@@ -779,8 +801,8 @@ function submitExportCsv() {
     <div class="flex flex-wrap items-center justify-between gap-4">
         <div>
             <h2 class="text-sm font-bold text-t2 mb-1">Cloud Daily Limit</h2>
-            <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="Each user's Azure + AWS spend per day, combined: users split it between the two however they like. The same for every user with cloud access; who has access is the Azure / AWS buttons in the users table. It sits inside each user's overall daily limit (cloud spend counts toward both). Blank = no cloud cap; 0 = $0, cloud refused.">
-                Cap on each user's combined Azure + AWS spend per day (USD), same for everyone with cloud access. Blank = no cloud cap.
+            <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="Each user's Azure + AWS spend per day, combined: users split it between the two however they like. Applies to every user with Azure or AWS access who has no Cloud $ of their own in the users table; a user's own value wins. It sits inside each user's overall daily limit (cloud spend counts toward both). Blank = no default cap; 0 = $0, cloud refused.">
+                Default cap on Azure + AWS spend per day (USD) for users with cloud access. A user's own Cloud $ overrides it. Blank = no default cap.
             </p>
         </div>
         <form action="/admin/cloud-limit" method="POST" class="flex items-end gap-3">
@@ -1090,7 +1112,7 @@ function submitExportCsv() {
        input = saved, red flash + alert = rejected. Everything else on the
        page (toggles, deletes, search) still round-trips as before. */
     (function(){
-        var LIMIT_ACTION = /\/admin\/users\/\d+\/limit$/;
+        var LIMIT_ACTION = /\/admin\/users\/\d+\/(limit|cloud-limit)$/;
 
         function flash(el, ok) {
             if (!el) return;

@@ -72,11 +72,11 @@ templates.env.globals["get_site_links"] = get_site_links
 _PAGE_SIZE = 15
 
 
-# Per-user cloud amounts are gone: cloud spend has one gateway-wide cap
-# ([app].cloud_daily_limit_usd) and per user only the access toggles. A
-# script still sending these gets told rather than silently ignored.
+# The per-backend (Azure / Bedrock) amounts are gone: cloud spend has one
+# cap for both, cloud_daily_limit_usd. A script still sending them gets told
+# rather than silently ignored.
 _RETIRED_LIMIT_FIELDS: tuple[str, ...] = (
-    "azure_daily_limit_usd", "bedrock_daily_limit_usd", "cloud_daily_limit_usd",
+    "azure_daily_limit_usd", "bedrock_daily_limit_usd",
 )
 
 
@@ -86,9 +86,9 @@ def _reject_retired_limits(body: dict) -> None:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"{', '.join(retired)} no longer exist: cloud spend has one cap for "
-                "everyone (admin panel → Cloud Daily Limit); per user, grant or revoke "
-                "Azure / AWS access."
+                f"{', '.join(retired)} no longer exist: Azure and AWS share one cloud "
+                "cap, cloud_daily_limit_usd (per user; blank follows the default "
+                "in admin panel → Cloud Daily Limit)."
             ),
         )
 
@@ -192,6 +192,7 @@ async def admin_page(
             # The modal fetches the real key from /users/{id}/api-key.
             "api_key": mask_api_key(u.api_key),
             "daily_limit_usd": u.daily_limit_usd,
+            "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
             "is_admin": u.is_admin,
             "is_disabled": u.is_disabled,
             "can_use_azure": u.can_use_azure,
@@ -408,6 +409,35 @@ async def update_user_limit(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.post("/users/{user_id}/cloud-limit")
+async def update_user_cloud_limit(
+    user_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Set the user's own cloud cap (Azure + Bedrock per day).
+
+    Empty value clears it (NULL → the user follows the gateway-wide default,
+    [app].cloud_daily_limit_usd); 0 is a $0 cap.
+    """
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    form = await request.form()
+    raw = form.get("new_cloud_limit")
+    if raw is not None:
+        raw = str(raw).strip()
+        if raw == "":
+            target.cloud_daily_limit_usd = None
+        else:
+            target.cloud_daily_limit_usd = _limit_usd(raw, "new_cloud_limit")
+        session.add(target)
+        session.commit()
+
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 @router.post("/default-limit")
 async def update_default_limit(
     request: Request,
@@ -444,9 +474,9 @@ async def update_default_limit(
 
 @router.post("/cloud-limit")
 async def update_cloud_limit(request: Request):
-    """Set the cloud cap: each user's Azure + Bedrock spend per day, the
-    same for every user with cloud access. Blank removes it (cloud bounded
-    by the overall daily limit only); 0 is a $0 cap."""
+    """Set the default cloud cap: each user's Azure + Bedrock spend per day,
+    for every user with Azure or AWS access and no cap of their own
+    (users.cloud_daily_limit_usd). Blank removes the default; 0 is a $0 cap."""
     form = await request.form()
     raw = str(form.get("new_cloud_limit") or "").strip()
     value = None if raw == "" else _limit_usd(raw, "new_cloud_limit")
@@ -744,6 +774,7 @@ async def list_users_api(
             # The modal fetches the real key from /users/{id}/api-key.
             "api_key": mask_api_key(u.api_key),
             "daily_limit_usd": u.daily_limit_usd,
+            "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
             "is_admin": u.is_admin,
             "concurrency_waived": u.concurrency_waived,
             "owner_ids": app_owners_map.get(u.id, []),
@@ -775,6 +806,11 @@ async def create_user_api(
     new_user = User(username=username, concurrency_waived=is_app_account(username))
     if "daily_limit_usd" in body:
         new_user.daily_limit_usd = _limit_usd(body["daily_limit_usd"], "daily_limit_usd")
+    if "cloud_daily_limit_usd" in body:
+        raw = body["cloud_daily_limit_usd"]
+        new_user.cloud_daily_limit_usd = (
+            None if raw is None else _limit_usd(raw, "cloud_daily_limit_usd")
+        )
     if "is_admin" in body:
         new_user.is_admin = bool(body["is_admin"])
     if "concurrency_waived" in body:
@@ -823,6 +859,11 @@ async def update_user_api(
     _reject_retired_limits(body)
     if "daily_limit_usd" in body:
         target.daily_limit_usd = _limit_usd(body["daily_limit_usd"], "daily_limit_usd")
+    if "cloud_daily_limit_usd" in body:
+        raw = body["cloud_daily_limit_usd"]
+        target.cloud_daily_limit_usd = (
+            None if raw is None else _limit_usd(raw, "cloud_daily_limit_usd")
+        )
     if "is_admin" in body:
         target.is_admin = bool(body["is_admin"])
     if "concurrency_waived" in body:

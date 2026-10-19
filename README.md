@@ -27,7 +27,7 @@ Clients ──▶ LLM Gateway ──────────┼──▶ Azure O
 - **One base URL for every backend.** `/v1/*` serves vLLM, Azure, and Bedrock models side by side; the model name picks the backend. Dedicated `/azure/v1/*` and `/aws/v1/*` surfaces exist for clients that must stay on one backend.
 - **OpenAI and Anthropic APIs.** Chat completions, Responses, Messages (works with Claude Code), embeddings, rerank, and token counting, streaming included, on every backend that supports them.
 - **Reliable under load.** Health checks every 30 seconds, automatic failover to another server of the same model type, and keepalive pings so long reasoning turns don't time out.
-- **Cost control.** Per-user daily budgets with one shared daily cap on cloud (Azure + Bedrock) spend, per-user concurrency limits, and per-model pricing (including prompt-cache discounts).
+- **Cost control.** Per-user daily budgets with a daily cap on cloud (Azure + Bedrock) spend, per-user concurrency limits, and per-model pricing (including prompt-cache discounts).
 - **Access control.** Disable accounts, and grant Azure or Bedrock access per user.
 - **Web UI.** Users see their usage, remaining budget, and live server load. Admins manage users, models, pricing, and limits without editing files, and can export monthly cost reports.
 - **Observability.** Optional [Langfuse](https://langfuse.com) tracing per request, plus `/healthz` and `/readyz` probes for load balancers.
@@ -114,7 +114,7 @@ The **[Client Guide](docs/client-guide.md)** covers the rest: every endpoint, Az
 
 Open `http://your-gateway` and sign in through SSO. Accounts with the `admin` scope in AuthCenter see the admin panel, where they can:
 
-- set each user's daily budget and grant Azure or AWS access, plus one daily cloud cap for everyone;
+- set each user's daily budget and grant Azure or AWS access, plus a daily cloud cap (a default, overridable per user);
 - grant Azure or Bedrock access, or disable an account;
 - set the per-user **concurrency limit** (Off, Monitor, or Enforce) and waive it for individual accounts (app accounts start out waived);
 - choose whether a spent cloud cap falls back to on-prem models instead of returning 429;
