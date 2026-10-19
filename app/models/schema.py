@@ -54,6 +54,10 @@ class User(SQLModel, table=True):
     azure_daily_limit_usd: float | None = Field(default=None)
     # Same convention for AWS Bedrock (the /aws/v1/* surface).
     bedrock_daily_limit_usd: float | None = Field(default=None)
+    # Combined Azure + Bedrock cap for this user. Unlike the two sub-limits,
+    # NULL does not mean "no cap": it follows [app].cloud_daily_limit_usd,
+    # the gateway-wide default (deps.effective_cloud_limit).
+    cloud_daily_limit_usd: float | None = Field(default=None)
     is_admin: bool = Field(default=False)
     is_disabled: bool = Field(default=False)
     can_use_azure: bool = Field(default=False)

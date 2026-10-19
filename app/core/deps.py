@@ -98,6 +98,15 @@ _CLOUD_LABEL = "Cloud (Azure + Bedrock)"
 _CLOUD_BACKENDS: tuple[str, ...] = ("azure", "bedrock")
 
 
+def effective_cloud_limit(user: User) -> float | None:
+    """The user's combined Azure + Bedrock cap: their own
+    ``cloud_daily_limit_usd`` when set (0 included), else the gateway-wide
+    ``[app].cloud_daily_limit_usd``. None = no combined cap."""
+    if user.cloud_daily_limit_usd is not None:
+        return max(0.0, user.cloud_daily_limit_usd)
+    return get_cloud_daily_limit()
+
+
 def _check_backend_daily_limit(
     session: Session,
     user: User,
@@ -106,8 +115,9 @@ def _check_backend_daily_limit(
     allow_fallback: bool = False,
 ) -> bool:
     """Enforce the cloud caps that apply to ``backend``: the combined cloud
-    cap (``[app].cloud_daily_limit_usd``, Azure + Bedrock spend together,
-    same for every account) and the user's per-backend sub-limit.
+    cap (Azure + Bedrock spend together; ``effective_cloud_limit``: the
+    user's own value, else the gateway-wide default) and the user's
+    per-backend sub-limit.
 
     The sub-limit (``users.azure_daily_limit_usd`` / ``bedrock_daily_limit_usd``)
     is an *additional* cap on that backend's portion of today's spend — cloud
@@ -141,7 +151,7 @@ def _check_backend_daily_limit(
     # The combined cloud cap goes first: it is the budget a user spends across
     # both backends, so when both are gone the 429 names that one.
     caps = (
-        (_CLOUD_LABEL, get_cloud_daily_limit(), _CLOUD_BACKENDS),
+        (_CLOUD_LABEL, effective_cloud_limit(user), _CLOUD_BACKENDS),
         (_BACKEND_LABELS[backend], backend_limit, (backend,)),
     )
     for label, limit, backends in caps:

@@ -15,11 +15,11 @@ from sqlmodel import Session, select
 from app.models.schema import AppOwner, User
 
 from app.core.auth import get_web_user
+from app.core.deps import effective_cloud_limit
 from app.core.config import (
     APP_TITLE,
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
-    get_cloud_daily_limit,
     get_model_routing_snapshot,
     get_pricing_snapshot,
     get_site_links,
@@ -295,9 +295,9 @@ async def dashboard(
         _usage_percent(bedrock_today_cost, bedrock_limit) if bedrock_limit is not None else 0.0
     )
 
-    # Combined cloud cap ([app].cloud_daily_limit_usd, same for everyone):
+    # Combined cloud cap (the user's own, else the gateway-wide default):
     # Azure + Bedrock spend together. None = no combined cap, row hidden.
-    cloud_limit = get_cloud_daily_limit()
+    cloud_limit = effective_cloud_limit(user)
     cloud_today_cost = azure_today_cost + bedrock_today_cost
     cloud_usage_percent = (
         _usage_percent(cloud_today_cost, cloud_limit) if cloud_limit is not None else 0.0

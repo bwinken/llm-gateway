@@ -38,13 +38,13 @@ from app.core.config import (
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
     get_cloud_budget_fallback,
-    get_cloud_daily_limit,
     get_concurrency_settings,
     get_model_routing_snapshot,
 )
 from app.core.deps import (
     _enforce_daily_limit,
     check_cloud_budget,
+    effective_cloud_limit,
     get_current_user,
     get_current_user_unmetered,
     get_today_usage,
@@ -321,7 +321,7 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
     daily_limit = max(0.0, user.daily_limit_usd)
     daily_remaining = _remaining(daily_limit, today["total_cost_usd"])
 
-    cloud_limit = get_cloud_daily_limit()
+    cloud_limit = effective_cloud_limit(user)
     cloud_used = today["azure_cost_usd"] + today["bedrock_cost_usd"]
     cloud_remaining = (
         daily_remaining if cloud_limit is None

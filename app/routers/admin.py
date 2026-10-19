@@ -173,6 +173,7 @@ async def admin_page(
             "daily_limit_usd": u.daily_limit_usd,
             "azure_daily_limit_usd": u.azure_daily_limit_usd,
             "bedrock_daily_limit_usd": u.bedrock_daily_limit_usd,
+            "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
             "is_admin": u.is_admin,
             "is_disabled": u.is_disabled,
             "can_use_azure": u.can_use_azure,
@@ -447,6 +448,35 @@ async def update_user_bedrock_limit(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.post("/users/{user_id}/cloud-limit")
+async def update_user_cloud_limit(
+    user_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Set the user's own combined cloud cap (Azure + Bedrock per day).
+
+    Empty value clears it (NULL → the user follows the gateway-wide default,
+    [app].cloud_daily_limit_usd); 0 is a $0 cap.
+    """
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    form = await request.form()
+    raw = form.get("new_cloud_limit")
+    if raw is not None:
+        raw = str(raw).strip()
+        if raw == "":
+            target.cloud_daily_limit_usd = None
+        else:
+            target.cloud_daily_limit_usd = _limit_usd(raw, "new_cloud_limit")
+        session.add(target)
+        session.commit()
+
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 @router.post("/default-limit")
 async def update_default_limit(
     request: Request,
@@ -483,10 +513,11 @@ async def update_default_limit(
 
 @router.post("/cloud-limit")
 async def update_cloud_limit(request: Request):
-    """Set the combined cloud cap: each account's Azure + Bedrock spend per
-    day, shared by every user. Blank removes it (no combined cap); 0 is a $0
-    cap. It applies on top of the overall daily limit and any per-backend
-    sub-limit."""
+    """Set the default combined cloud cap: each account's Azure + Bedrock
+    spend per day, for every user without their own value
+    (users.cloud_daily_limit_usd). Blank removes the default (no combined
+    cap); 0 is a $0 cap. It applies on top of the overall daily limit and any
+    per-backend sub-limit."""
     form = await request.form()
     raw = str(form.get("new_cloud_limit") or "").strip()
     value = None if raw == "" else _limit_usd(raw, "new_cloud_limit")
@@ -786,6 +817,7 @@ async def list_users_api(
             "daily_limit_usd": u.daily_limit_usd,
             "azure_daily_limit_usd": u.azure_daily_limit_usd,
             "bedrock_daily_limit_usd": u.bedrock_daily_limit_usd,
+            "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
             "is_admin": u.is_admin,
             "concurrency_waived": u.concurrency_waived,
             "owner_ids": app_owners_map.get(u.id, []),
@@ -825,6 +857,11 @@ async def create_user_api(
         raw = body["bedrock_daily_limit_usd"]
         new_user.bedrock_daily_limit_usd = (
             None if raw is None else _limit_usd(raw, "bedrock_daily_limit_usd")
+        )
+    if "cloud_daily_limit_usd" in body:
+        raw = body["cloud_daily_limit_usd"]
+        new_user.cloud_daily_limit_usd = (
+            None if raw is None else _limit_usd(raw, "cloud_daily_limit_usd")
         )
     if "is_admin" in body:
         new_user.is_admin = bool(body["is_admin"])
@@ -882,6 +919,11 @@ async def update_user_api(
         raw = body["bedrock_daily_limit_usd"]
         target.bedrock_daily_limit_usd = (
             None if raw is None else _limit_usd(raw, "bedrock_daily_limit_usd")
+        )
+    if "cloud_daily_limit_usd" in body:
+        raw = body["cloud_daily_limit_usd"]
+        target.cloud_daily_limit_usd = (
+            None if raw is None else _limit_usd(raw, "cloud_daily_limit_usd")
         )
     if "is_admin" in body:
         target.is_admin = bool(body["is_admin"])
