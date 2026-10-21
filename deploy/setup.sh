@@ -361,7 +361,13 @@ header "Step 9/9  Nginx 設定"
 if ! command -v nginx &>/dev/null; then
     warn "nginx 未安裝，跳過此步驟"
     info "請手動安裝 nginx 並設定反向代理"
-    info "  設定檔模板：$DEPLOY_DIR/llm-gateway.nginx.conf"
+    info "  設定檔模板：$DEPLOY_DIR/llm-gateway-example.nginx.conf"
+elif [ ! -s "$DEPLOY_DIR/llm-gateway.nginx.conf" ]; then
+    # The site copy is gitignored and made by hand. Without this check the
+    # sed | tee below writes an empty site file and nginx -t still passes.
+    err "找不到 $DEPLOY_DIR/llm-gateway.nginx.conf（或檔案是空的），跳過 Nginx 設定"
+    info "  請先從範本複製並依環境修改，再重新執行 setup.sh："
+    info "  cp $DEPLOY_DIR/llm-gateway-example.nginx.conf $DEPLOY_DIR/llm-gateway.nginx.conf"
 else
     # 讀取域名（優先從 deploy/.env 取得）
     DOMAIN_FROM_ENV=$(grep '^OAUTH2_REDIRECT_URL=' "$DEPLOY_DIR/.env" | sed 's|.*://||;s|/.*||')

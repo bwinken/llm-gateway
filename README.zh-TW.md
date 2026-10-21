@@ -66,7 +66,7 @@ api_key    = ""                        # vLLM 的 --api-key（有設才填）
 | `[app]` | 新使用者的預設每日預算等執行期設定，多數可在管理面板調整 |
 | `[models.<type>.<alias>]` | 地端 vLLM 模型。可選：逐模型價格、顯示用 metadata、`hidden`、reasoning effort 規則 |
 | `[azure_models.<alias>]` | Azure OpenAI 部署（`endpoint`、`deployment`、`api_key`） |
-| `[bedrock_models.<alias>]` | AWS Bedrock 模型（`region`、`model_id`、長期 Bedrock API key） |
+| `[bedrock_models.<alias>]` | AWS Bedrock 模型（`region`、`model_id`，以及長期 Bedrock API key 或 IAM access key + secret；region 與 IAM key 可在 `.env` 設一次，供所有模型共用）。 |
 | `[pricing]`、`[pricing.<type>]` | 預設與各類型價格（USD / 每百萬 token），模型自己的價格欄位優先 |
 | `[fallback]`、`[azure_fallback]`、`[bedrock_fallback]` | 要求的模型不存在或離線時改用哪個模型 |
 
