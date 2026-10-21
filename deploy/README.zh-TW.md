@@ -54,7 +54,7 @@ bash deploy/setup.sh
 6. **AuthCenter 公鑰**：現在貼上 PEM 內容，或稍後手動放置
 7. **alembic upgrade head**：遷移失敗時腳本會停止且**不會**重啟 gateway，線上維持舊版運行（檢查點）
 8. **systemd**：安裝並（重新）啟動 `llm-gateway.service`、啟用每小時異常掃描 timer、安裝但**不啟用** cleanup timer、啟用 lingering（檢查點）
-9. **Nginx**：把 `deploy/llm-gateway.nginx.conf` 套用到 `/etc/nginx/sites-available/llm-gateway`，再 `nginx -t` 並 reload（未安裝 nginx 則略過）
+9. **Nginx**：把 `deploy/llm-gateway.nginx.conf` 套用到 `/etc/nginx/sites-available/llm-gateway`，再 `nginx -t` 並 reload（未安裝 nginx，或該檔不存在、內容為空時略過）
 
 最後顯示**部署狀態摘要**：各服務狀態與待辦事項。
 

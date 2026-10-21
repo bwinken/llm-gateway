@@ -54,7 +54,7 @@ The script interactively guides you through all setup steps. It starts with **pr
 6. **AuthCenter public key**: paste the PEM now or place it later
 7. **alembic upgrade head**: if the migration fails, the script stops **without** restarting the gateway, so the old version keeps serving (checkpoint)
 8. **systemd**: installs and (re)starts `llm-gateway.service`, enables the hourly scan timer, installs the cleanup timer **without** enabling it, enables lingering (checkpoint)
-9. **Nginx**: renders `deploy/llm-gateway.nginx.conf` into `/etc/nginx/sites-available/llm-gateway`, then `nginx -t` and reload (skipped if nginx is not installed)
+9. **Nginx**: renders `deploy/llm-gateway.nginx.conf` into `/etc/nginx/sites-available/llm-gateway`, then `nginx -t` and reload (skipped if nginx is not installed, or if that site copy is missing or empty)
 
 It ends with a **deployment summary**: service status and remaining tasks.
 
