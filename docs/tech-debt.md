@@ -23,7 +23,7 @@ Pick items off as time allows. New entries go to the top.
 - The loader still emits a default value, so the in-memory route dict carries dead data.
 
 **Suggested fix.** One PR that touches three places together:
-1. `app/core/config.py` — drop `_AZURE_OPTIONAL_KEYS`, `_AZURE_DEFAULT_API_VERSION`, and the two `api_version` assignments in `_build_config` and `apply_runtime_config`.
+1. `app/core/config.py` — drop `_AZURE_OPTIONAL_KEYS`, `_AZURE_DEFAULT_API_VERSION`, and the two `api_version` assignments in `_build_config` and `save_config`.
 2. `app/templates/admin_models.html` — remove the `API Version` column, the `AZURE_DEFAULT_API_VERSION` JS constant, and the `api_version` field write-back.
 3. `app/core/README.md` / `app/core/README.zh-TW.md` — drop the `api_version` mention from the `AZURE_MODELS` schema description.
 

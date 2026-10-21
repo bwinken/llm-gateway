@@ -1,6 +1,6 @@
 # Spec: Langfuse Observability Integration
 
-> Status: **DRAFT — awaiting approval**. Spec-driven workflow: SPECIFY → PLAN → TASKS → IMPLEMENT. Do not start IMPLEMENT until this is approved.
+> Status: **Implemented.** This is the original design spec, kept for its rationale; code samples are illustrative and some names differ from `app/services/observability.py`. Current behavior (including per-phase request timing) is documented in [architecture.md § Observability](architecture.md#observability-appservicesobservabilitypy).
 
 ## Objective
 

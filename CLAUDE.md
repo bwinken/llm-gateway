@@ -36,7 +36,7 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | `app/models/schema.py` | `User`, `UsageLog`, `AppOwner`, `AnomalyEvent`, `ConcurrencyLease` |
 | `app/templates/` | `dashboard.html`, `admin.html`, `admin_models.html` (model-config SPA), `base.html` |
 | `alembic/versions/` | Migrations (PostgreSQL-only: they do not run on SQLite) |
-| `scripts/` | `scan_anomalies.py` (hourly timer), `cleanup_usage_logs.py`, SQLite → PG migration, dev PG helper |
+| `scripts/` | `scan_anomalies.py` (hourly timer), `cleanup_usage_logs.py`, `azure_latency_probe.py` (per-phase Azure latency, direct vs. via gateway), SQLite → PG migration, legacy `add_owner_id.py`, dev PG helper |
 | `deploy/` | systemd units, nginx example, docker-compose (PG + oauth2-proxy), `setup.sh` |
 | `setup/install-claude-code-example.bat` | Windows Claude Code installer, personalized with the user's key by `/dashboard/install-claude-code.bat` |
 
