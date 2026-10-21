@@ -111,7 +111,7 @@ Each user / app row has these buttons, left to right:
 | **Disable / Enable** | `POST /admin/users/{id}/toggle-disable` | non-admin user rows, every app row | Flips `is_disabled` (warn-yellow "Enable" when disabled). The server refuses self-disable. Full POST → redirect |
 | **Delete** | `POST /admin/users/{id}/delete` | non-admin user rows, every app row | Deletes the user and every row referencing it (usage logs, ownerships, anomalies, leases); cannot delete self. Full POST → redirect |
 
-Disable / Enable and Delete ask for confirmation first. The in-place toggles (Azure, AWS, Waive) POST with `Accept: application/json`, get the new flag back as JSON and repaint only that button; without that header the endpoints answer with the classic 303 → `/admin`.
+Every Actions button asks for confirmation first. The in-place toggles (Azure, AWS, Waive) listen in the bubble phase, after the form's own `onsubmit` confirm, so Cancel sends nothing; on OK they POST with `Accept: application/json`, get the new flag back as JSON and repaint only that button; without that header the endpoints answer with the classic 303 → `/admin`.
 
 ### Other Actions
 

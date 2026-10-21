@@ -1213,9 +1213,12 @@ function submitExportCsv() {
             });
         }
 
+        // Bubble phase, so the form's own onsubmit="return confirm(...)" runs
+        // first: Cancel leaves defaultPrevented set and nothing is sent.
         document.addEventListener('submit', function(e){
             var form = e.target;
             if (!(form instanceof HTMLFormElement) || !TOGGLE_ACTION.test(form.action)) return;
+            if (e.defaultPrevented) return;
             e.preventDefault();
             var btn = form.querySelector('button[type="submit"]');
             var backend = form.dataset.backend;
@@ -1226,7 +1229,7 @@ function submitExportCsv() {
                 })
                 .catch(function(err){ alert('Update failed — ' + err.message); })
                 .then(function(){ if (btn) btn.disabled = false; });
-        }, true);
+        });
 
         var fbForm = document.getElementById('cloud-budget-fallback-form');
         if (fbForm) {
