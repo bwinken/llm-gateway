@@ -322,6 +322,14 @@ api_key = ""                        # decider's server checks no key
 #  - `rate_limit_fallback` (optional): another [bedrock_models.*] alias that
 #    takes the request when this model answers 429 (ThrottlingException).
 #    Same chain rules as on [azure_models.*]; never crosses backends.
+#  - `native_messages = true` (Claude model IDs only): Anthropic /v1/messages
+#    requests (Claude Code) go as-is to Bedrock's Anthropic endpoint
+#    (https://bedrock-runtime.{region}.amazonaws.com/anthropic/v1/messages)
+#    instead of being translated to Converse, so prompt caching and thinking
+#    replay work. Same credentials and IAM actions. Beta features are turned
+#    off (the anthropic-beta header is not forwarded). Chat completions on
+#    the entry keep using Converse. Use the model ID that endpoint takes,
+#    e.g. "anthropic.claude-sonnet-4-6".
 # [bedrock_models."claude-sonnet"]
 # type = "llm"
 # region = "us-east-1"

@@ -35,7 +35,9 @@ covers both shapes an effort level can travel in: OpenAI
 ``reasoning_effort`` (the gateway's internal pivot, and what the vLLM and
 Bedrock paths send) and the Azure Responses ``reasoning.effort`` object.
 The Anthropic ``/v1/messages`` surface feeds the first of those through the
-translation in ``anthropic_adapter``; the vLLM-native pass-through needs no
+translation in ``anthropic_adapter``; the Bedrock-native pass-through adapts
+``output_config.effort`` in place (``apply_to_anthropic_body``); the
+vLLM-native pass-through needs no
 pass of its own, since ``sanitize_native_messages_body`` already strips the
 non-schema ``effort`` field and ``thinking.budget_tokens`` is a token budget
 the downstream clamps for itself, not a level it can reject.
@@ -231,6 +233,34 @@ def apply_to_openai_body(
         body.pop("reasoning_effort", None)
     else:
         body["reasoning_effort"] = value
+    _log(alias, endpoint, note)
+
+
+def apply_to_anthropic_body(
+    body: dict[str, Any] | None, route: dict[str, Any] | None,
+    alias: str = "", endpoint: str = "",
+) -> None:
+    """Adapt ``body["output_config"]["effort"]`` in place (Anthropic Messages
+    shape, for the Bedrock-native pass-through).
+
+    Same contract as ``apply_to_openai_body``: a no-op unless the model
+    declares ``reasoning_efforts``, so an undeclared route is byte-faithful.
+    """
+    if not isinstance(body, dict) or declared_efforts(route) is None:
+        return
+    output_config = body.get("output_config")
+    if not isinstance(output_config, dict) or "effort" not in output_config:
+        return
+    value, note = adapt_effort(output_config.get("effort"), route)
+    output_config = dict(output_config)  # the client's dict may be shared
+    if value is None:
+        output_config.pop("effort", None)
+    else:
+        output_config["effort"] = value
+    if output_config:
+        body["output_config"] = output_config
+    else:
+        body.pop("output_config", None)
     _log(alias, endpoint, note)
 
 

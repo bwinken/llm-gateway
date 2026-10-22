@@ -87,7 +87,9 @@ _MODEL_REASONING_KEYS: tuple[str, ...] = (
 # `native_messages`: the downstream vLLM server (>= v0.11.1) exposes the
 # native Anthropic /v1/messages endpoint — forward Anthropic requests as-is
 # instead of translating through the OpenAI pivot. Per-model opt-in because
-# a mixed fleet may run older vLLM versions on some servers.
+# a mixed fleet may run older vLLM versions on some servers. On a Claude
+# [bedrock_models.*] entry it means the same thing against Bedrock's
+# Anthropic endpoint (/anthropic/v1/messages) instead of Converse.
 _MODEL_INTERNAL_KEYS: tuple[str, ...] = (
     "hidden",
     "native_messages",
@@ -148,6 +150,19 @@ def _warn_bedrock_credentials(models: dict[str, dict[str, Any]]) -> None:
                 "config.toml: [bedrock_models.{}] has no credentials (api_key, an IAM pair, or "
                 "BEDROCK_AWS_ACCESS_KEY_ID / BEDROCK_AWS_SECRET_ACCESS_KEY in .env); "
                 "Bedrock will reject its requests",
+                alias,
+            )
+
+
+def _warn_bedrock_native_messages(models: dict[str, dict[str, Any]]) -> None:
+    """`native_messages` on a Bedrock entry routes Messages requests to
+    Bedrock's Anthropic endpoint, which only serves Claude. On any other
+    model ID the proxy ignores the flag and keeps using Converse."""
+    for alias, entry in models.items():
+        if entry.get("native_messages") and "anthropic" not in str(entry.get("model_id") or "").lower():
+            logger.warning(
+                "config.toml: [bedrock_models.{}] native_messages needs a Claude model_id "
+                "(one containing 'anthropic'); ignored, Messages requests use Converse",
                 alias,
             )
 
@@ -380,6 +395,7 @@ def _build_config(raw: dict[str, Any]) -> tuple[
     _warn_bad_rate_limit_fallbacks("azure_models", azure_models)
     _warn_bad_rate_limit_fallbacks("bedrock_models", bedrock_models)
     _warn_bedrock_credentials(bedrock_models)
+    _warn_bedrock_native_messages(bedrock_models)
 
     # Unified `/v1/*` dispatch (v1_api) routes a request by looking up the
     # `model` alias across MODEL_ROUTING / AZURE_MODELS / BEDROCK_MODELS.

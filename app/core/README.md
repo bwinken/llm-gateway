@@ -55,7 +55,7 @@ Aliases must be unique across `[models.*]`, `[azure_models.*]` and `[bedrock_mod
 **Optional per-model fields** (each set is a tuple; a new key must go in the right one):
 
 - `_MODEL_METADATA_KEYS` — surfaced via `GET /v1/models`, `/azure/v1/models`, `/aws/v1/models`: `display_name`, `context_window`, `max_output_tokens`, `supports_tools`, `supports_vision`, `supports_prompt_caching`, `is_reasoning`
-- `_MODEL_INTERNAL_KEYS` — not surfaced: `hidden` (left out of listings, still served when named), `native_messages` (vLLM-native Anthropic `/v1/messages` pass-through)
+- `_MODEL_INTERNAL_KEYS` — not surfaced: `hidden` (left out of listings, still served when named), `native_messages` (native Anthropic `/v1/messages` pass-through: vLLM ≥ 0.11.1, or Bedrock's `/anthropic/v1/messages` on a Claude `[bedrock_models.*]` entry)
 - `_MODEL_REASONING_KEYS` — not surfaced: `reasoning_efforts` (levels the downstream accepts) and `reasoning_effort_map` (explicit per-level override). Consumed by `app/services/reasoning_effort.py`; omitting them forwards whatever was requested.
 - `_MODEL_PRICING_KEYS` — `input_price_per_1m`, `output_price_per_1m`, optional `cached_input_price_per_1m`. They take priority over `[pricing.<type>]`, which falls back to the `[pricing]` defaults (`_default`).
 - `_CLOUD_ROUTING_KEYS` — `[azure_models.*]` / `[bedrock_models.*]` only, not surfaced: `rate_limit_fallback` (alias on the **same** backend that takes a 429)

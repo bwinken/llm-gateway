@@ -1202,6 +1202,19 @@ async def save_config_api(
                         status_code=400,
                         detail=f"{backend} model '{alias}' field '{key}' has wrong type.",
                     )
+            # Bedrock's Anthropic endpoint only serves Claude; the proxy
+            # would ignore the flag on any other model.
+            if (
+                backend == "Bedrock" and info.get("native_messages")
+                and "anthropic" not in str(info.get("model_id") or "").lower()
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Bedrock model '{alias}': native_messages needs a Claude model_id "
+                        "(one containing 'anthropic')."
+                    ),
+                )
             for key in _MODEL_PRICING_KEYS:
                 if key not in info:
                     continue
