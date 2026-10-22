@@ -1,7 +1,7 @@
 """
-AWS Bedrock proxy — Converse API edition.
+AWS Bedrock proxy — Converse API, plus native Anthropic Messages for Claude.
 
-All Bedrock LLM/VLM traffic from the gateway goes to the Converse API
+By default Bedrock LLM/VLM traffic goes to the Converse API
 (``{endpoint}/model/{modelId}/converse`` and ``/converse-stream``). Clients
 still speak OpenAI chat completions (on ``/aws/v1/chat/completions``) or
 Anthropic Messages (on ``/aws/v1/messages``); the translation to/from
@@ -11,6 +11,13 @@ Why Converse: it is the one API surface every Bedrock model family shares
 (Anthropic, Nova, Llama, Mistral, DeepSeek, ...), so a mixed-family model
 list keeps a single code path — the same decision the Azure proxy made by
 collapsing everything onto the Responses API.
+
+The exception: a Claude entry with ``native_messages = true`` serves
+Anthropic Messages requests from Bedrock's own Anthropic endpoint
+(``{endpoint}/anthropic/v1/messages``: the first-party body shape, SSE
+streaming), so prompt caching, thinking-block replay and the rest of the
+Messages surface survive. Chat completions on that entry still use Converse.
+See ``bedrock_forward_messages``.
 
 Key conventions:
   * URL pattern: ``https://bedrock-runtime.{region}.amazonaws.com/model/
@@ -57,13 +64,18 @@ from app.services.anthropic_adapter import (
     AnthropicStreamTranslator,
     anthropic_request_io,
     anthropic_to_openai_request,
+    empty_turn_warning,
+    normalize_anthropic_messages,
     openai_message_to_anthropic,
     openai_to_anthropic_response,
+    summarize_request_shape,
 )
 from app.services.aws_eventstream import EventStreamDecoder, EventStreamError
 from app.services.aws_sigv4 import sign_request
 from app.services.converse_adapter import (
+    _CLAUDE_NO_SAMPLING_FROM,
     ConverseToChatStreamTranslator,
+    _claude_version,
     cached_tokens_from_converse,
     converse_to_openai_chat_response,
     openai_chat_to_converse_request,
@@ -82,7 +94,7 @@ from app.services.rate_limit_fallback import (
     rate_limit_chain,
     rate_limit_log_note,
 )
-from app.services.reasoning_effort import apply_to_openai_body
+from app.services.reasoning_effort import apply_to_anthropic_body, apply_to_openai_body
 from app.services.redact import summarize_body
 from app.services.vllm_proxy import (
     _SSE_MAX_IDLE,
@@ -90,10 +102,12 @@ from app.services.vllm_proxy import (
     _SSE_PING_INTERVAL,
     _NON_STREAM_TIMEOUT,
     _STREAM_TIMEOUT,
+    _anthropic_content_chars,
     _approx_token_count,
     _error_response,
     _log_error,
     _log_usage,
+    _relay_native_anthropic_sse,
     _release_stream,
     _warn_if_slow_headers,
 )
@@ -194,14 +208,29 @@ def _rate_limit_chain(
     )
 
 
-def _build_converse_url(entry: dict[str, Any], stream: bool) -> str:
+def _bedrock_endpoint(entry: dict[str, Any]) -> str:
     endpoint = (entry.get("endpoint") or "").rstrip("/")
-    if not endpoint:
-        endpoint = f"https://bedrock-runtime.{bedrock_region(entry)}.amazonaws.com"
+    return endpoint or f"https://bedrock-runtime.{bedrock_region(entry)}.amazonaws.com"
+
+
+def _build_converse_url(entry: dict[str, Any], stream: bool) -> str:
     # model_id contains '.' and ':' (and '/' for ARNs) — quote everything.
     model_id = quote(entry.get("model_id", ""), safe="")
     op = "converse-stream" if stream else "converse"
-    return f"{endpoint}/model/{model_id}/{op}"
+    return f"{_bedrock_endpoint(entry)}/model/{model_id}/{op}"
+
+
+def _build_messages_url(entry: dict[str, Any]) -> str:
+    # Native Anthropic endpoint: the model goes in the body, streaming is
+    # the body's `stream` flag, so one URL serves both.
+    return f"{_bedrock_endpoint(entry)}/anthropic/v1/messages"
+
+
+def _uses_native_messages(entry: dict[str, Any]) -> bool:
+    """True when Messages requests for this entry go to Bedrock's native
+    Anthropic endpoint. Only Claude model IDs qualify: other families have
+    no Anthropic endpoint, so the flag is ignored on them (config load warns)."""
+    return bool(entry.get("native_messages")) and "anthropic" in (entry.get("model_id") or "").lower()
 
 
 def _encode_body(body: dict[str, Any]) -> bytes:
@@ -564,27 +593,32 @@ async def bedrock_forward_messages(
     for i, (alias, entry) in enumerate(chain):
         last = i == len(chain) - 1
         # Translation depends on the entry (`is_reasoning`, effort policy,
-        # model family), so every attempt re-translates the client's request.
+        # model family, native or Converse), so every attempt rebuilds its
+        # body from the client's request.
         source = anthropic_body if len(chain) == 1 else copy.deepcopy(anthropic_body)
         model_type = entry.get("type", "llm")
 
-        openai_body = anthropic_to_openai_request(
-            source, is_reasoning=bool(entry.get("is_reasoning")),
-        )
-        apply_to_openai_body(openai_body, entry, alias, "/aws/v1/messages")
-        converse_body = openai_chat_to_converse_request(
-            openai_body, model_id=entry.get("model_id", ""),
-        )
-
-        target_url = _build_converse_url(entry, stream=is_stream)
+        if _uses_native_messages(entry):
+            downstream_body = _native_messages_body(source, entry, alias, user)
+            target_url = _build_messages_url(entry)
+            send = _stream_messages_native if is_stream else _non_stream_messages_native
+        else:
+            openai_body = anthropic_to_openai_request(
+                source, is_reasoning=bool(entry.get("is_reasoning")),
+            )
+            apply_to_openai_body(openai_body, entry, alias, "/aws/v1/messages")
+            downstream_body = openai_chat_to_converse_request(
+                openai_body, model_id=entry.get("model_id", ""),
+            )
+            target_url = _build_converse_url(entry, stream=is_stream)
+            send = _stream_messages if is_stream else _non_stream_messages
 
         monitor_body = dict(anthropic_body)
         monitor_body["model"] = alias
         extra_headers = _fallback_headers(fallback_reason)
 
-        send = _stream_messages if is_stream else _non_stream_messages
         result = await send(
-            client, target_url, converse_body,
+            client, target_url, downstream_body,
             user, alias, model_type, monitor_body, entry, anthropic_body,
             extra_headers, rate_limit_retry=not last,
         )
@@ -770,6 +804,279 @@ async def _stream_messages(
 
     return StreamingResponse(
         event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            **(extra_headers or {}),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Native Anthropic Messages (`native_messages = true` on a Claude entry)
+# ---------------------------------------------------------------------------
+
+# Sent on every native request. Pinned rather than forwarded: Bedrock's
+# ARN-versioned models (Claude 4.6 and earlier) 400 on newer API versions,
+# and the request shape the gateway forwards is valid under this one.
+_ANTHROPIC_VERSION = "2023-06-01"
+
+# Top-level request fields forwarded to Bedrock: the GA Messages schema,
+# which Bedrock's Anthropic endpoint takes as-is. Everything else Claude Code
+# attaches is a beta capability (`context_management`, `mcp_servers`,
+# `container`, `betas`, `speed`, ...). The gateway does not forward the
+# `anthropic-beta` header, because Bedrock 400s a beta flag it does not
+# serve, so the body field goes with it: the feature turns off instead of
+# failing the request (same rule as the vLLM-native path). `metadata` is
+# dropped too: the gateway tracks users itself.
+_NATIVE_TOP_LEVEL_KEYS: frozenset[str] = frozenset({
+    "model", "messages", "system", "max_tokens", "stop_sequences", "stream",
+    "temperature", "top_k", "top_p", "tools", "tool_choice", "thinking",
+    "output_config", "cache_control",
+})
+
+# Per-tool fields that need a beta header (tool search's deferred loading,
+# tool input examples), or that some Bedrock deployments reject
+# (programmatic tool calling, eager input streaming on Claude 4.6 and older).
+_NATIVE_DROPPED_TOOL_KEYS: frozenset[str] = frozenset({
+    "defer_loading", "input_examples", "allowed_callers", "eager_input_streaming",
+})
+# With `defer_loading` gone, a tool-search tool has nothing to search.
+_TOOL_SEARCH_TYPE_PREFIX = "tool_search_tool_"
+
+_SAMPLING_KEYS: tuple[str, ...] = ("temperature", "top_p", "top_k")
+
+
+def _sanitize_native_tools(tools: Any, dropped: set[str]) -> Any:
+    if not isinstance(tools, list):
+        return tools
+    out = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            out.append(tool)
+            continue
+        if str(tool.get("type") or "").startswith(_TOOL_SEARCH_TYPE_PREFIX):
+            dropped.add(f"tools[type={tool['type']}]")
+            continue
+        extra = [k for k in tool if k in _NATIVE_DROPPED_TOOL_KEYS]
+        if extra:
+            dropped.update(f"tools[].{k}" for k in extra)
+            tool = {k: v for k, v in tool.items() if k not in _NATIVE_DROPPED_TOOL_KEYS}
+        out.append(tool)
+    return out
+
+
+def _native_messages_body(
+    anthropic_body: dict[str, Any], entry: dict[str, Any], alias: str, user: User,
+) -> dict[str, Any]:
+    """The client's Anthropic request, as Bedrock's Anthropic endpoint takes it.
+
+    Passed through except for: the system-role normalization shared with the
+    vLLM-native path (``normalize_anthropic_messages``: mid-conversation
+    system entries become ``<system-reminder>`` text, ``tool_reference``
+    blocks become text); beta-only fields (see ``_NATIVE_TOP_LEVEL_KEYS``);
+    ``model`` (alias -> Bedrock model ID); the per-model effort pass; and
+    the sampling knobs Claude rejects, the same rule as the Converse path
+    (dropped with thinking on, and always on Claude 4.7+).
+    """
+    normalized = normalize_anthropic_messages(anthropic_body)
+    dropped: set[str] = {k for k in normalized if k not in _NATIVE_TOP_LEVEL_KEYS}
+    body = {k: v for k, v in normalized.items() if k in _NATIVE_TOP_LEVEL_KEYS}
+    if "tools" in body:
+        body["tools"] = _sanitize_native_tools(body["tools"], dropped)
+    if dropped:
+        logger.info(
+            "Bedrock native messages: dropped field(s) {} | user={} model={}",
+            sorted(dropped), user.username, alias,
+        )
+
+    model_id = entry.get("model_id", "")
+    body["model"] = model_id
+    apply_to_anthropic_body(body, entry, alias, "/aws/v1/messages")
+
+    thinking = body.get("thinking")
+    thinking_on = isinstance(thinking, dict) and thinking.get("type") in ("enabled", "adaptive")
+    version = _claude_version(model_id.lower())
+    if thinking_on or (version is not None and version >= _CLAUDE_NO_SAMPLING_FROM):
+        for key in _SAMPLING_KEYS:
+            body.pop(key, None)
+    return body
+
+
+def _native_downstream_headers(
+    entry: dict[str, Any], url: str, payload: bytes, stream: bool,
+) -> dict[str, str]:
+    headers = _build_headers(entry, url, payload)
+    headers["anthropic-version"] = _ANTHROPIC_VERSION
+    if stream:
+        headers["Accept"] = "text/event-stream"
+    return headers
+
+
+def _native_usage_tokens(usage: dict[str, Any]) -> tuple[int, int]:
+    """``(input_tokens, cached_tokens)`` for billing, from an Anthropic usage.
+
+    Anthropic's ``input_tokens`` counts only the uncached input after the
+    last cache breakpoint; cache reads and cache writes are reported beside
+    it. The gateway bills ``input_tokens`` as the whole prompt with cached
+    tokens a subset of it, so all three are added up. Cache writes are
+    billed at the normal input rate (there is no cache-write price).
+    """
+    def _n(key: str) -> int:
+        value = usage.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    cached = _n("cache_read_input_tokens")
+    return _n("input_tokens") + cached + _n("cache_creation_input_tokens"), cached
+
+
+_ANTHROPIC_ERROR_TYPES: dict[int, str] = {
+    400: "invalid_request_error",
+    401: "authentication_error",
+    403: "permission_error",
+    404: "not_found_error",
+    413: "request_too_large",
+    429: "rate_limit_error",
+    500: "api_error",
+    503: "overloaded_error",
+    529: "overloaded_error",
+}
+
+
+def _anthropic_error_content(status: int, text: str) -> dict[str, Any]:
+    """An Anthropic-shaped error body for a non-200 Bedrock answer.
+
+    Bedrock's Anthropic endpoint may answer in Anthropic's own error shape
+    (passed through) or in AWS's ``{"message": ...}`` shape (wrapped), and
+    Claude Code only understands the former.
+    """
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, dict) and parsed.get("type") == "error" and isinstance(parsed.get("error"), dict):
+        return parsed
+    message = ""
+    if isinstance(parsed, dict):
+        message = str(parsed.get("message") or parsed.get("Message") or "")
+    return {
+        "type": "error",
+        "error": {
+            "type": _ANTHROPIC_ERROR_TYPES.get(status, "api_error"),
+            "message": message or text[:500] or f"Bedrock returned HTTP {status}",
+        },
+    }
+
+
+async def _non_stream_messages_native(
+    client, url: str, body: dict, user: User,
+    alias: str, model_type: str, monitor_body: dict, route: dict,
+    incoming_body: dict, extra_headers: dict[str, str] | None = None,
+    rate_limit_retry: bool = False,
+) -> JSONResponse:
+    payload = _encode_body(body)
+    try:
+        resp = await client.post(
+            url, content=payload,
+            headers=_native_downstream_headers(route, url, payload, stream=False),
+            timeout=_NON_STREAM_TIMEOUT,
+        )
+    except Exception as exc:
+        logger.error("Bedrock native messages downstream error | user={} model={} endpoint=/aws/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
+        _log_error(user, monitor_body, str(exc), 502, alias, "/aws/v1/messages", model_type)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+
+    if resp.status_code != 200:
+        if not (rate_limit_retry and resp.status_code == 429):
+            _log_bedrock_error(incoming_body, body, resp.text, resp.status_code,
+                               alias, "/aws/v1/messages")
+        _log_error(user, monitor_body, resp.text[:500], resp.status_code,
+                   alias, "/aws/v1/messages", model_type)
+        if rate_limit_retry and resp.status_code == 429:
+            return RATE_LIMITED
+        return JSONResponse(
+            status_code=resp.status_code,
+            content=_anthropic_error_content(resp.status_code, resp.text),
+        )
+
+    data = resp.json()
+    data["model"] = alias
+    usage = data.get("usage") or {}
+    input_tk, cached_tk = _native_usage_tokens(usage)
+    output_tk = usage.get("output_tokens", 0) or 0
+    text_chars, thinking_chars = _anthropic_content_chars(data.get("content") or [])
+    diag = empty_turn_warning(
+        alias, input_tk, output_tk, data.get("stop_reason"),
+        text_chars, thinking_chars, summarize_request_shape(incoming_body),
+    )
+    if diag:
+        logger.warning(diag)
+    obs_output = (
+        {"role": "assistant", "content": data.get("content", [])}
+        if capture_io_enabled() else None
+    )
+    _log_usage(user, alias, model_type, input_tk, output_tk,
+               "/aws/v1/messages", route=route, cached_tokens=cached_tk,
+               backend="bedrock", output_payload=obs_output)
+    return JSONResponse(content=data, headers=extra_headers or None)
+
+
+async def _stream_messages_native(
+    client, url: str, body: dict, user: User,
+    alias: str, model_type: str, monitor_body: dict, route: dict,
+    incoming_body: dict, extra_headers: dict[str, str] | None = None,
+    rate_limit_retry: bool = False,
+) -> StreamingResponse | JSONResponse:
+    # Pre-flight: check status before the pump, since a 4xx is a plain JSON
+    # body and the SSE relay would drop it.
+    payload = _encode_body(body)
+    req = client.build_request(
+        "POST", url, content=payload,
+        headers=_native_downstream_headers(route, url, payload, stream=True),
+        timeout=_STREAM_TIMEOUT,
+    )
+    try:
+        resp = await client.send(req, stream=True)
+    except Exception as exc:
+        logger.error("Bedrock native messages stream connect error | user={} model={} endpoint=/aws/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
+        _log_error(user, monitor_body, str(exc), 502, alias, "/aws/v1/messages", model_type)
+        raise HTTPException(status_code=502, detail=f"Downstream error: {exc}")
+    _warn_if_slow_headers(user, alias, "/aws/v1/messages", "bedrock")
+
+    if resp.status_code != 200:
+        err_bytes = await resp.aread()
+        await resp.aclose()
+        err_text = err_bytes.decode("utf-8", "replace")
+        if not (rate_limit_retry and resp.status_code == 429):
+            _log_bedrock_error(incoming_body, body, err_text, resp.status_code,
+                               alias, "/aws/v1/messages")
+        _log_error(user, monitor_body, err_text[:500], resp.status_code,
+                   alias, "/aws/v1/messages", model_type)
+        if rate_limit_retry and resp.status_code == 429:
+            return RATE_LIMITED
+        return JSONResponse(
+            status_code=resp.status_code,
+            content=_anthropic_error_content(resp.status_code, err_text),
+        )
+
+    logger.info("Stream start (native) | user={} model={} endpoint=/aws/v1/messages",
+                user.username, alias)
+
+    async def _resp_coro():
+        return resp
+
+    def _bill(usage: dict[str, int], obs_output: Any) -> None:
+        input_tk, cached_tk = _native_usage_tokens(usage)
+        _log_usage(user, alias, model_type, input_tk, usage.get("output_tokens", 0),
+                   "/aws/v1/messages", route=route, cached_tokens=cached_tk,
+                   backend="bedrock", output_payload=obs_output)
+
+    return StreamingResponse(
+        _relay_native_anthropic_sse(
+            _resp_coro(), alias, summarize_request_shape(incoming_body),
+            capture_io_enabled(), _bill,
+        ),
         media_type="text/event-stream",
         headers={
             "X-Accel-Buffering": "no",

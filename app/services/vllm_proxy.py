@@ -1284,6 +1284,131 @@ def _anthropic_content_chars(content: list) -> tuple[int, int]:
     return text_chars, thinking_chars
 
 
+def _merge_native_usage(merged: dict[str, int], usage: Any) -> None:
+    """Fold one Anthropic ``usage`` object into ``merged``. A later non-zero
+    counter wins: ``message_delta`` usage is cumulative, and some servers
+    repeat a counter there as 0."""
+    if not isinstance(usage, dict):
+        return
+    for key, value in usage.items():
+        if isinstance(value, int) and not isinstance(value, bool) and value:
+            merged[key] = value
+
+
+async def _relay_native_anthropic_sse(
+    send_coro,
+    model_alias: str,
+    req_shape: str,
+    capture_io: bool,
+    on_finish: Callable[[dict[str, int], Any], None],
+):
+    """Relay a native Anthropic SSE stream to the client, line by line.
+
+    Shared by the vLLM-native and Bedrock-native Messages paths. Events pass
+    through unchanged except ``message_start``'s ``model`` (real model →
+    alias). Pings go out only at event boundaries. A stream that ends
+    without ``message_stop`` and without an error event of its own gets a
+    trailing ``overloaded_error``, so Claude Code retries instead of taking
+    the turn as complete.
+
+    ``on_finish(usage, output)`` runs once at the end, with the usage
+    counters merged from ``message_start`` and ``message_delta`` (see
+    ``_merge_native_usage``) and the rebuilt assistant message when I/O
+    capture is on. It does the billing.
+    """
+    usage: dict[str, int] = {}
+    stop_reason = None
+    saw_message_stop = False
+    saw_error_event = False
+    failed = False
+    text_chars = 0
+    thinking_chars = 0
+    capture = _NativeAnthropicCapture() if capture_io else None
+    # True whenever the previous yielded line completed an SSE event
+    # (blank separator) — the only place a ping can be injected without
+    # splitting an `event:`/`data:` pair.
+    at_boundary = True
+
+    async for kind, data in _pump_sse_lines(send_coro):
+        if kind == "ping":
+            if at_boundary:
+                yield _ANTHROPIC_PING_EVENT
+            continue
+        if kind == "err":
+            logger.error("Stream error: {}: {}", type(data).__name__, data)
+            failed = True
+            break
+        if kind == "done":
+            break
+
+        line = data
+        if not line:
+            at_boundary = True
+            yield "\n"
+            continue
+
+        if line.startswith("data: "):
+            try:
+                chunk = json.loads(line[6:])
+            except json.JSONDecodeError:
+                chunk = None
+            if isinstance(chunk, dict):
+                ctype = chunk.get("type")
+                if ctype == "message_start":
+                    msg = chunk.get("message") or {}
+                    _merge_native_usage(usage, msg.get("usage"))
+                    if msg.get("model"):
+                        # Hide the downstream real model behind the alias.
+                        msg["model"] = model_alias
+                        line = "data: " + json.dumps(chunk, ensure_ascii=False)
+                elif ctype == "message_delta":
+                    _merge_native_usage(usage, chunk.get("usage"))
+                    stop_reason = (chunk.get("delta") or {}).get("stop_reason", stop_reason)
+                elif ctype == "message_stop":
+                    saw_message_stop = True
+                elif ctype == "error":
+                    saw_error_event = True
+                elif ctype == "content_block_delta":
+                    delta = chunk.get("delta") or {}
+                    if delta.get("type") == "text_delta":
+                        text_chars += len(delta.get("text", ""))
+                    elif delta.get("type") == "thinking_delta":
+                        thinking_chars += len(delta.get("thinking", ""))
+                if capture is not None:
+                    capture.handle(chunk)
+
+        at_boundary = False
+        yield f"{line}\n"
+
+    if failed or not (saw_message_stop or saw_error_event):
+        # Same contract as AnthropicStreamTranslator.fail(): a stream that
+        # dies without message_stop must NOT look complete — emit an
+        # overloaded_error so Claude Code retries with backoff.
+        if not failed:
+            logger.warning(
+                "Native Anthropic stream ended without message_stop | model={} — truncated",
+                model_alias,
+            )
+        if not at_boundary:
+            yield "\n"
+        err_payload = json.dumps({
+            "type": "error",
+            "error": {
+                "type": "overloaded_error",
+                "message": "Downstream stream ended prematurely; the response may be incomplete.",
+            },
+        })
+        yield f"event: error\ndata: {err_payload}\n\n"
+
+    diag = empty_turn_warning(
+        model_alias, usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+        stop_reason, text_chars, thinking_chars, req_shape,
+    )
+    if diag:
+        logger.warning(diag)
+    on_finish(usage, capture.as_message() if capture is not None else None)
+
+
 async def _forward_messages_native(
     client, anthropic_body: dict, user: User,
     model_alias: str, model_type: str, route: dict[str, Any],
@@ -1398,109 +1523,18 @@ async def _forward_messages_native(
     async def _resp_coro():
         return resp
 
-    async def event_generator():
-        input_tokens = 0
-        output_tokens = 0
-        cached_tokens = 0
-        stop_reason = None
-        saw_message_stop = False
-        failed = False
-        text_chars = 0
-        thinking_chars = 0
-        capture = _NativeAnthropicCapture() if _capture_io else None
-        # True whenever the previous yielded line completed an SSE event
-        # (blank separator) — the only place a ping can be injected without
-        # splitting an `event:`/`data:` pair.
-        at_boundary = True
-
-        async for kind, data in _pump_sse_lines(_resp_coro()):
-            if kind == "ping":
-                if at_boundary:
-                    yield _ANTHROPIC_PING_EVENT
-                continue
-            if kind == "err":
-                logger.error("Stream error: {}: {}", type(data).__name__, data)
-                failed = True
-                break
-            if kind == "done":
-                break
-
-            line = data
-            if not line:
-                at_boundary = True
-                yield "\n"
-                continue
-
-            if line.startswith("data: "):
-                try:
-                    chunk = json.loads(line[6:])
-                except json.JSONDecodeError:
-                    chunk = None
-                if isinstance(chunk, dict):
-                    ctype = chunk.get("type")
-                    if ctype == "message_start":
-                        msg = chunk.get("message") or {}
-                        usage = msg.get("usage") or {}
-                        input_tokens = usage.get("input_tokens", input_tokens) or input_tokens
-                        cached_tokens = usage.get("cache_read_input_tokens", 0) or cached_tokens
-                        if msg.get("model"):
-                            # Hide the downstream real_model behind the alias.
-                            msg["model"] = model_alias
-                            line = "data: " + json.dumps(chunk, ensure_ascii=False)
-                    elif ctype == "message_delta":
-                        usage = chunk.get("usage") or {}
-                        output_tokens = usage.get("output_tokens", output_tokens) or output_tokens
-                        stop_reason = (chunk.get("delta") or {}).get("stop_reason", stop_reason)
-                    elif ctype == "message_stop":
-                        saw_message_stop = True
-                    elif ctype == "content_block_delta":
-                        delta = chunk.get("delta") or {}
-                        if delta.get("type") == "text_delta":
-                            text_chars += len(delta.get("text", ""))
-                        elif delta.get("type") == "thinking_delta":
-                            thinking_chars += len(delta.get("thinking", ""))
-                    if capture is not None:
-                        capture.handle(chunk)
-
-            at_boundary = False
-            yield f"{line}\n"
-
-        if failed or not saw_message_stop:
-            # Same contract as AnthropicStreamTranslator.fail(): a stream that
-            # dies without message_stop must NOT look complete — emit an
-            # overloaded_error so Claude Code retries with backoff.
-            if not failed:
-                logger.warning(
-                    "Native Anthropic stream ended without message_stop | model={} — truncated",
-                    model_alias,
-                )
-            if not at_boundary:
-                yield "\n"
-            err_payload = json.dumps({
-                "type": "error",
-                "error": {
-                    "type": "overloaded_error",
-                    "message": "Downstream stream ended prematurely; the response may be incomplete.",
-                },
-            })
-            yield f"event: error\ndata: {err_payload}\n\n"
-
-        diag = empty_turn_warning(
-            model_alias, input_tokens, output_tokens, stop_reason,
-            text_chars, thinking_chars, req_shape,
-        )
-        if diag:
-            logger.warning(diag)
-        obs_output = capture.as_message() if capture is not None else None
+    def _bill(usage: dict[str, int], obs_output: Any) -> None:
         _log_usage(
-            user, model_alias, model_type, input_tokens, output_tokens, "/v1/messages",
-            route=route, cached_tokens=cached_tokens, output_payload=obs_output,
+            user, model_alias, model_type,
+            usage.get("input_tokens", 0), usage.get("output_tokens", 0), "/v1/messages",
+            route=route, cached_tokens=usage.get("cache_read_input_tokens", 0),
+            output_payload=obs_output,
         )
 
     resp_headers = {"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
     resp_headers.update(extra_headers)
     return StreamingResponse(
-        event_generator(),
+        _relay_native_anthropic_sse(_resp_coro(), model_alias, req_shape, _capture_io, _bill),
         media_type="text/event-stream",
         headers=resp_headers,
     )

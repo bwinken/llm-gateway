@@ -528,9 +528,18 @@ function renderRouting(kind, alias, info) {
     const tip = `When ${BACKENDS[kind].short} answers 429 (rate limit) for this model, retry the request on the chosen `
         + `${BACKENDS[kind].short} model instead. That model's own setting continues the chain (up to 3 hops). `
         + 'Streams switch before anything is sent to the client. Other errors are never retried.';
+    const nativeRow = kind === 'bedrock'
+        ? checkRow(kind, alias, 'native_messages', info.native_messages === true,
+            'Native Anthropic /v1/messages pass-through (Claude only)',
+            'Send Anthropic /v1/messages requests as-is to Bedrock\'s Anthropic endpoint '
+            + '(/anthropic/v1/messages) instead of translating them to Converse, so prompt caching and '
+            + 'thinking replay work. Needs a Claude model_id (e.g. anthropic.claude-sonnet-4-6). '
+            + 'Chat completions requests keep using Converse.')
+        : '';
     return `
         <div class="space-y-3">
             ${visibleRow}
+            ${nativeRow}
             <div class="flex flex-col gap-1">
                 <span class="mc-label gw-tip gw-tip-wide" data-tip="${escAttr(tip)}">When rate limited (429), retry on</span>
                 <div class="flex items-center gap-3 flex-wrap">
