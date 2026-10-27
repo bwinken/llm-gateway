@@ -14,7 +14,7 @@ import httpx
 
 from app.core.server_state import is_alive as real_is_alive, set_alive
 from app.services import health
-from app.services.vllm_proxy import _pump_sse_lines
+from app.services.vllm_proxy import _next_queued, _pump_sse_lines
 
 
 class _StalledResponse:
@@ -84,6 +84,35 @@ class TestPumpMaxIdle:
             ("done", None),
         ]
         assert resp.closed
+
+
+class TestNextQueued:
+    """The pumps' queue read: a queued item is taken without
+    ``asyncio.wait_for`` (a new Task per call on Python 3.11, i.e. per SSE
+    line); only an empty queue waits with the idle timeout."""
+
+    def test_queued_item_skips_wait_for(self):
+        async def scenario():
+            q: asyncio.Queue = asyncio.Queue()
+            q.put_nowait("a")
+            with patch("app.services.vllm_proxy.asyncio.wait_for") as wait_for:
+                item = await _next_queued(q, 10.0)
+            return item, wait_for.called
+
+        assert asyncio.run(scenario()) == ("a", False)
+
+    def test_empty_queue_waits_then_times_out(self):
+        async def scenario():
+            q: asyncio.Queue = asyncio.Queue()
+            asyncio.get_running_loop().call_later(0.01, q.put_nowait, "late")
+            first = await _next_queued(q, 1.0)
+            try:
+                await _next_queued(q, 0.01)
+            except asyncio.TimeoutError:
+                return first, "timeout"
+            return first, "no timeout"
+
+        assert asyncio.run(scenario()) == ("late", "timeout")
 
 
 class _PoolStarvedClient:

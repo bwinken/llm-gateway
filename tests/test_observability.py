@@ -227,6 +227,18 @@ class TestStreamingChatOutput:
     """Reassembles streamed OpenAI deltas into one assistant message so a
     tool-call-only turn is captured (the empty-output regression guard)."""
 
+    def test_argument_fragments_join_per_index(self):
+        acc = StreamingChatOutput()
+        acc.add_delta({"tool_calls": [
+            {"index": 0, "id": "a", "function": {"name": "f", "arguments": '{"x"'}},
+            {"index": 1, "id": "b", "function": {"name": "g", "arguments": "{"}},
+        ]})
+        for _ in range(3):
+            acc.add_delta({"tool_calls": [{"index": 0, "function": {"arguments": ", "}}]})
+        acc.add_delta({"tool_calls": [{"index": 1, "function": {"arguments": "}"}}]})
+        calls = acc.as_message()["tool_calls"]
+        assert [c["function"]["arguments"] for c in calls] == ['{"x", , , ', "{}"]
+
     def test_text_only(self):
         acc = StreamingChatOutput()
         for piece in ("Hel", "lo ", "world"):
@@ -485,3 +497,40 @@ class TestSampleRate:
             with patch("app.services.observability.random.random", return_value=0.4):
                 record_generation(_make_record())
             assert client.start_observation.call_count == 1
+
+
+class TestNativeAnthropicCapture:
+    """Native /v1/messages SSE → the assistant turn, for I/O capture."""
+
+    def test_reassembles_every_streamed_field(self):
+        from app.services.vllm_proxy import _NativeAnthropicCapture
+
+        cap = _NativeAnthropicCapture()
+        events = [
+            {"type": "content_block_start", "index": 0,
+             "content_block": {"type": "thinking", "thinking": ""}},
+            *({"type": "content_block_delta", "index": 0,
+               "delta": {"type": "thinking_delta", "thinking": t}} for t in ("Let ", "me ", "think")),
+            {"type": "content_block_delta", "index": 0,
+             "delta": {"type": "signature_delta", "signature": "sig"}},
+            {"type": "content_block_start", "index": 1,
+             "content_block": {"type": "text", "text": ""}},
+            *({"type": "content_block_delta", "index": 1,
+               "delta": {"type": "text_delta", "text": t}} for t in ("Hi", " there")),
+            {"type": "content_block_start", "index": 2,
+             "content_block": {"type": "tool_use", "id": "t1", "name": "Write", "input": {}}},
+            *({"type": "content_block_delta", "index": 2,
+               "delta": {"type": "input_json_delta", "partial_json": p}} for p in ('{"pa', 'th": "a"}')),
+            {"type": "content_block_start", "index": 3,
+             "content_block": {"type": "tool_use", "id": "t2", "name": "Noop", "input": {}}},
+        ]
+        for e in events:
+            cap.handle(e)
+        expected = {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "Let me think", "signature": "sig"},
+            {"type": "text", "text": "Hi there"},
+            {"type": "tool_use", "id": "t1", "name": "Write", "input": {"path": "a"}},
+            {"type": "tool_use", "id": "t2", "name": "Noop", "input": {}},
+        ]}
+        assert cap.as_message() == expected
+        assert cap.as_message() == expected  # reading it twice changes nothing

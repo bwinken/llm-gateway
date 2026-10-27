@@ -315,3 +315,31 @@ class TestClientWiring:
                 await server_state.close_client()
 
         _run(go())
+
+    def test_cloud_clients_are_dedicated_and_keep_idle_connections(self, monkeypatch):
+        """Even without a proxy, Azure and Bedrock get their own clients whose
+        idle connections outlive httpx's 5 s default: a pause between agent
+        turns must not cost a fresh TLS handshake to the cloud. The shared
+        (vLLM) client keeps the default, below uvicorn's keep-alive."""
+        from app.core import server_state
+
+        for name in ("AZURE_HTTP_PROXY", "AZURE_INSECURE", "BEDROCK_HTTP_PROXY", "BEDROCK_INSECURE"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("CLOUD_KEEPALIVE_EXPIRY_S", "45")
+
+        async def go():
+            await server_state.init_client()
+            try:
+                pools = {
+                    name: getattr(server_state, name)._transport._pool
+                    for name in ("_client", "_azure_client", "_bedrock_client")
+                }
+                assert server_state._azure_client is not server_state._client
+                assert server_state._bedrock_client is not server_state._client
+                assert pools["_azure_client"]._keepalive_expiry == 45.0
+                assert pools["_bedrock_client"]._keepalive_expiry == 45.0
+                assert pools["_client"]._keepalive_expiry == 5.0
+            finally:
+                await server_state.close_client()
+
+        _run(go())

@@ -93,6 +93,30 @@ class TestCreateUserAPI:
         # app_* accounts excluded
         assert "app_billing" not in body
 
+    def test_export_users_csv_last_active(self, client, db_session, admin_user):
+        """last_active_at is each user's latest usage row; blank without any."""
+        from datetime import datetime, timezone
+
+        from app.models.schema import UsageLog, User
+
+        alice = User(username="alice")
+        carol = User(username="carol")
+        db_session.add_all([alice, carol])
+        db_session.commit()
+        for when in (datetime(2026, 3, 1, 8, tzinfo=timezone.utc),
+                     datetime(2026, 5, 2, 9, 30, tzinfo=timezone.utc),
+                     datetime(2026, 4, 1, tzinfo=timezone.utc)):
+            db_session.add(UsageLog(user_id=alice.id, created_at=when))
+        db_session.commit()
+
+        resp = client.get(
+            "/admin/api/export/users.csv",
+            headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
+        )
+        rows = {line.split(",")[0]: line.split(",") for line in resp.content.decode("utf-8-sig").splitlines()}
+        assert rows["alice"][-1] == "2026-05-02 09:30:00"
+        assert rows["carol"][-1] == ""
+
     def test_export_users_csv_requires_admin(self, client, db_session):
         resp = client.get(
             "/admin/api/export/users.csv",

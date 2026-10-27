@@ -167,7 +167,7 @@ def _common_ctx(request: Request, **extra) -> dict:
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(
+def index(
     request: Request,
     user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
@@ -216,7 +216,7 @@ async def index(
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(
+def dashboard(
     request: Request,
     user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
@@ -372,7 +372,7 @@ async def dashboard(
 
 
 @router.get("/dashboard/api/model-breakdown")
-async def model_breakdown_api(
+def model_breakdown_api(
     period: str = "month",
     user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
@@ -391,7 +391,7 @@ async def model_breakdown_api(
 
 
 @router.post("/dashboard/refresh-key")
-async def refresh_own_key(
+def refresh_own_key(
     request: Request,
     user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
@@ -408,7 +408,7 @@ async def refresh_own_key(
 
 
 @router.post("/dashboard/app/{app_id}/refresh-key")
-async def refresh_owned_app_key(
+def refresh_owned_app_key(
     app_id: int,
     request: Request,
     user: User = Security(get_web_user, scopes=["read"]),
@@ -435,7 +435,7 @@ async def refresh_owned_app_key(
 
 
 @router.get("/dashboard/install-claude-code.bat")
-async def personalized_claude_installer(
+def personalized_claude_installer(
     user: User = Security(get_web_user, scopes=["read"]),
 ):
     """Serve install-claude-code.bat with the user's API key inlined.
@@ -466,7 +466,7 @@ async def personalized_claude_installer(
 # ── Setup page (requires SSO login) ──
 
 @router.get("/setup", response_class=HTMLResponse)
-async def setup_page(
+def setup_page(
     request: Request,
     user: User = Security(get_web_user, scopes=["read"]),
 ):

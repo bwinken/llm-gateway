@@ -28,9 +28,9 @@ Usage:
     uv run python scripts/scan_anomalies.py --execute   # persist to DB
 
 Designed to run hourly from a systemd timer (deploy/llm-gateway-scan.timer)
-or cron. Opens its own DB connection with a 30s statement timeout so a
-pathological query can never linger; it shares nothing with the gateway
-processes.
+or cron. Opens its own DB engine whose connections carry a 30s statement
+timeout so a pathological query can never linger; it shares nothing with the
+gateway processes.
 """
 
 from __future__ import annotations
@@ -48,14 +48,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import sqlalchemy as sa  # noqa: E402
 from sqlmodel import Session, func, select  # noqa: E402
 
-from app.core.database import engine  # noqa: E402
-from app.core.timeutil import LOCAL_TZ, local_day_start_utc  # noqa: E402
-from app.models.schema import AnomalyEvent, UsageLog, User  # noqa: E402
+from app.core.config import DATABASE_URL  # noqa: E402
+from app.core.timeutil import local_day_start_utc  # noqa: E402
+from app.models.schema import AnomalyEvent, UsageLog, User, is_app_account  # noqa: E402
 
 # ── Tunables ──
 COST_SPIKE_RATIO = 5.0          # today > N × 30d daily median
 COST_SPIKE_FLOOR_USD = 1.0      # ignore spikes below this absolute spend
 OFF_HOURS_MIN_REQUESTS = 50     # 00:00-06:00 local requests to flag a human
+OFF_HOURS_END = timedelta(hours=6)  # off-hours = local midnight to 06:00
 BURST_PER_HOUR = 600            # sustained ~10 req/min for an hour
 BURST_CRITICAL_PER_HOUR = 1500
 BEHAVIOR_SHIFT_MIN_REQUESTS = 100
@@ -64,6 +65,7 @@ EMPTY_TURN_RATE_RATIO = 3.0     # …and 3× the model's 30d baseline
 EMPTY_TURN_MIN_REQUESTS = 20    # need volume before the rate means anything
 BASELINE_DAYS = 30
 RESOLVED_RETENTION_DAYS = 90
+STATEMENT_TIMEOUT_MS = 30_000
 
 
 def _finding(scope: str, rule: str, *, severity: str, window_start: datetime,
@@ -81,7 +83,7 @@ def _finding(scope: str, rule: str, *, severity: str, window_start: datetime,
 
 def _human_user_ids(session: Session) -> dict[int, str]:
     rows = session.exec(select(User.id, User.username)).all()
-    return {int(uid): name for uid, name in rows if not str(name).startswith("app_")}
+    return {int(uid): name for uid, name in rows if not is_app_account(str(name))}
 
 
 def detect_cost_spike(session: Session, now: datetime) -> list[dict]:
@@ -132,18 +134,15 @@ def detect_cost_spike(session: Session, now: datetime) -> list[dict]:
 def detect_off_hours(session: Session, now: datetime) -> list[dict]:
     humans = _human_user_ids(session)
     day_start = local_day_start_utc()
+    # Counted in SQL over just the off-hours window: pulling every row of the
+    # day into Python to look at its hour is the whole day's traffic.
     rows = session.exec(
-        select(UsageLog.user_id, UsageLog.created_at)
+        select(UsageLog.user_id, func.count(UsageLog.id))
         .where(UsageLog.created_at >= day_start)
+        .where(UsageLog.created_at < day_start + OFF_HOURS_END)
+        .group_by(UsageLog.user_id)
     ).all()
-    counts: dict[int, int] = defaultdict(int)
-    for uid, created in rows:
-        if int(uid) not in humans:
-            continue
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-        if created.astimezone(LOCAL_TZ).hour < 6:
-            counts[int(uid)] += 1
+    counts = {int(uid): int(n) for uid, n in rows if int(uid) in humans}
 
     return [
         _finding(
@@ -267,6 +266,10 @@ def detect_all(session: Session, now: datetime | None = None) -> list[dict]:
         try:
             findings.extend(det(session, now))
         except Exception as exc:  # one broken rule must not kill the scan
+            # A failed statement (e.g. the statement timeout) aborts the
+            # PostgreSQL transaction; without the rollback every later rule
+            # — and persist() — would fail with "transaction is aborted".
+            session.rollback()
             print(f"[scan] rule {det.__name__} failed: {exc}", file=sys.stderr)
     return findings
 
@@ -319,19 +322,25 @@ def prune_resolved(session: Session) -> int:
     return len(stale)
 
 
+def _scan_engine() -> sa.Engine:
+    """The scan's own engine. On PostgreSQL every connection carries the
+    statement timeout as a startup option — a ``SET`` inside the session's
+    transaction would be undone by the rollback after a failed rule."""
+    if DATABASE_URL.startswith("postgresql"):
+        return sa.create_engine(
+            DATABASE_URL,
+            connect_args={"options": f"-c statement_timeout={STATEMENT_TIMEOUT_MS}"},
+        )
+    return sa.create_engine(DATABASE_URL)  # SQLite (dev): no statement_timeout
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scan usage_logs for anomalous usage patterns.")
     parser.add_argument("--execute", action="store_true",
                         help="Persist findings to anomaly_events (default: dry-run, print only).")
     args = parser.parse_args()
 
-    with Session(engine) as session:
-        # Never let a pathological query linger on the shared database.
-        try:
-            session.connection().execute(sa.text("SET statement_timeout = '30s'"))
-        except Exception:
-            session.rollback()  # SQLite (dev) has no statement_timeout — clear the failed txn
-
+    with Session(_scan_engine()) as session:
         findings = detect_all(session)
         for f in findings:
             print(f"[{f['severity']:>8}] {f['rule']:<16} {f['scope']:<16} "

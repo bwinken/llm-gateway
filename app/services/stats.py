@@ -10,7 +10,7 @@ from sqlalchemy import case as sa_case
 from sqlmodel import Session, func, select
 
 from app.core.timeutil import LOCAL_TZ, local_day_start_utc
-from app.models.schema import AppOwner, UsageLog, User
+from app.models.schema import AppOwner, UsageLog, User, app_account_clause, is_app_account
 
 
 def _local_date(session: Session, col):
@@ -142,106 +142,12 @@ def get_dau_trends(session: Session, days: int = 30) -> list[dict]:
         )
         .join(User, UsageLog.user_id == User.id)
         .where(UsageLog.created_at >= cutoff)
-        .where(~User.username.startswith("app_"))
+        .where(~app_account_clause())
         .group_by(day)
         .order_by(day)
     )
     rows = session.exec(stmt).all()
     return [{"date": str(row[0]), "dau": int(row[1])} for row in rows]
-
-
-def get_all_users_usage(session: Session) -> dict[int, dict]:
-    """Return total cost and total tokens per user for the current month."""
-    now = datetime.now(timezone.utc)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-    stmt = (
-        select(
-            UsageLog.user_id,
-            func.coalesce(func.sum(UsageLog.cost_usd), 0),
-            func.coalesce(
-                func.sum(UsageLog.input_tokens) + func.sum(UsageLog.output_tokens), 0
-            ),
-        )
-        .where(UsageLog.created_at >= month_start)
-        .group_by(UsageLog.user_id)
-    )
-    rows = session.exec(stmt).all()
-    return {
-        int(row[0]): {
-            "total_cost": round(float(row[1]), 6),
-            "total_tokens": int(row[2]),
-        }
-        for row in rows
-    }
-
-
-def get_monthly_totals(session: Session) -> dict:
-    """Return aggregate monthly totals across all users (single row query)."""
-    now = datetime.now(timezone.utc)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-    stmt = select(
-        func.coalesce(func.sum(UsageLog.cost_usd), 0),
-        func.coalesce(func.sum(UsageLog.input_tokens), 0),
-        func.coalesce(func.sum(UsageLog.output_tokens), 0),
-        func.count(UsageLog.id),
-    ).where(UsageLog.created_at >= month_start)
-    row = session.exec(stmt).first()
-    return {
-        "cost": round(float(row[0]), 4) if row else 0.0,
-        "input_tokens": int(row[1]) if row else 0,
-        "output_tokens": int(row[2]) if row else 0,
-        "requests": int(row[3]) if row else 0,
-    }
-
-
-def get_leaderboard(
-    session: Session, *, is_app: bool, limit: int = 10,
-) -> list[dict]:
-    """Return top-N users/apps by monthly cost with their usage stats."""
-    now = datetime.now(timezone.utc)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-    prefix_filter = (
-        User.username.startswith("app_") if is_app
-        else ~User.username.startswith("app_")
-    )
-
-    stmt = (
-        select(
-            User.id,
-            User.username,
-            User.display_name,
-            User.org_code,
-            User.is_admin,
-            func.coalesce(func.sum(UsageLog.cost_usd), 0),
-            func.coalesce(func.sum(UsageLog.input_tokens), 0),
-            func.coalesce(func.sum(UsageLog.output_tokens), 0),
-            func.count(UsageLog.id),
-        )
-        .join(UsageLog, UsageLog.user_id == User.id)
-        .where(UsageLog.created_at >= month_start)
-        .where(prefix_filter)
-        .group_by(User.id, User.username, User.display_name, User.org_code, User.is_admin)
-        .order_by(func.sum(UsageLog.cost_usd).desc())
-        .limit(limit)
-    )
-    rows = session.exec(stmt).all()
-    return [
-        {
-            "id": int(row[0]),
-            "username": row[1],
-            "display_name": row[2],
-            "org_code": row[3],
-            "is_admin": row[4],
-            "monthly_cost": round(float(row[5]), 6),
-            "monthly_input": int(row[6]),
-            "monthly_output": int(row[7]),
-            "monthly_reqs": int(row[8]),
-        }
-        for row in rows
-    ]
 
 
 def get_monthly_all_users_usage(session: Session) -> dict[int, dict]:
@@ -269,6 +175,83 @@ def get_monthly_all_users_usage(session: Session) -> dict[int, dict]:
             "requests": int(row[4]),
         }
         for row in rows
+    }
+
+
+def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
+    """Everything the admin page shows about the current month, from ONE
+    per-user aggregate over ``usage_logs`` (``get_monthly_all_users_usage``)
+    plus a ``users`` lookup.
+
+    The month window is the largest scan the page does — millions of rows on
+    a busy month — so the totals, both leaderboards and the department table
+    are derived here in Python instead of each re-scanning it. Returns:
+
+      ``totals``            cost / input_tokens / output_tokens / requests
+      ``per_user``          the per-user map (``get_monthly_all_users_usage``)
+      ``app_leaderboard`` / ``user_leaderboard``  top-N by monthly cost
+      ``departments``       people (app accounts excluded) grouped by
+                            ``org_code`` ("Unknown" when blank), by cost desc
+    """
+    per_user = get_monthly_all_users_usage(session)
+    # Every user, unfiltered: ``users`` is small next to ``usage_logs``, and an
+    # IN list of every active id would hit bind-parameter limits.
+    users = {
+        int(uid): (username, display_name, org_code, is_admin)
+        for uid, username, display_name, org_code, is_admin in session.exec(
+            select(User.id, User.username, User.display_name, User.org_code, User.is_admin)
+        ).all()
+    } if per_user else {}
+
+    totals = {"cost": 0.0, "input_tokens": 0, "output_tokens": 0, "requests": 0}
+    apps: list[dict] = []
+    people: list[dict] = []
+    departments: dict[str, dict] = {}
+    for uid, u in per_user.items():
+        totals["cost"] += u["cost"]
+        totals["input_tokens"] += u["input_tokens"]
+        totals["output_tokens"] += u["output_tokens"]
+        totals["requests"] += u["requests"]
+        if uid not in users:
+            continue  # rows of a since-deleted account count only in the totals
+        username, display_name, org_code, is_admin = users[uid]
+        row = {
+            "id": uid,
+            "username": username,
+            "display_name": display_name,
+            "org_code": org_code,
+            "is_admin": is_admin,
+            "monthly_cost": u["cost"],
+            "monthly_input": u["input_tokens"],
+            "monthly_output": u["output_tokens"],
+            "monthly_reqs": u["requests"],
+        }
+        if is_app_account(username):
+            apps.append(row)
+            continue
+        people.append(row)
+        dept = departments.setdefault(org_code or "Unknown", {
+            "department": org_code or "Unknown", "user_count": 0, "cost": 0.0,
+            "input_tokens": 0, "output_tokens": 0, "requests": 0,
+        })
+        dept["user_count"] += 1
+        dept["cost"] += u["cost"]
+        dept["input_tokens"] += u["input_tokens"]
+        dept["output_tokens"] += u["output_tokens"]
+        dept["requests"] += u["requests"]
+
+    def _top(rows: list[dict]) -> list[dict]:
+        return sorted(rows, key=lambda r: r["monthly_cost"], reverse=True)[:leaderboard_size]
+
+    totals["cost"] = round(totals["cost"], 4)
+    for dept in departments.values():
+        dept["cost"] = round(dept["cost"], 6)
+    return {
+        "totals": totals,
+        "per_user": per_user,
+        "app_leaderboard": _top(apps),
+        "user_leaderboard": _top(people),
+        "departments": sorted(departments.values(), key=lambda d: d["cost"], reverse=True),
     }
 
 
@@ -318,40 +301,6 @@ def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
             "monthly_reqs": usage_by_id.get(app.id, {}).get("requests", 0),
         }
         for app in apps
-    ]
-
-
-def get_department_usage(session: Session) -> list[dict]:
-    """Return aggregated monthly usage grouped by org_code (department)."""
-    now = datetime.now(timezone.utc)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-    stmt = (
-        select(
-            func.coalesce(User.org_code, "Unknown"),
-            func.count(func.distinct(UsageLog.user_id)),
-            func.coalesce(func.sum(UsageLog.cost_usd), 0),
-            func.coalesce(func.sum(UsageLog.input_tokens), 0),
-            func.coalesce(func.sum(UsageLog.output_tokens), 0),
-            func.count(UsageLog.id),
-        )
-        .join(User, UsageLog.user_id == User.id)
-        .where(UsageLog.created_at >= month_start)
-        .where(~User.username.startswith("app_"))
-        .group_by(func.coalesce(User.org_code, "Unknown"))
-        .order_by(func.sum(UsageLog.cost_usd).desc())
-    )
-    rows = session.exec(stmt).all()
-    return [
-        {
-            "department": str(row[0]) if row[0] else "Unknown",
-            "user_count": int(row[1]),
-            "cost": round(float(row[2]), 6),
-            "input_tokens": int(row[3]),
-            "output_tokens": int(row[4]),
-            "requests": int(row[5]),
-        }
-        for row in rows
     ]
 
 
@@ -418,7 +367,7 @@ def get_today_totals(session: Session) -> dict:
         select(func.count(func.distinct(UsageLog.user_id)))
         .join(User, UsageLog.user_id == User.id)
         .where(UsageLog.created_at >= today_start)
-        .where(~User.username.startswith("app_"))
+        .where(~app_account_clause())
     ).one()
     return {
         "cost": round(float(row[0]), 4) if row else 0.0,

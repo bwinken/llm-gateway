@@ -20,6 +20,7 @@ billing goes through ``_log_usage`` (decoupled from any specific route map).
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 from decimal import Decimal
@@ -115,6 +116,19 @@ _SSE_PING_INTERVAL = 10.0
 _ANTHROPIC_PING_EVENT = 'event: ping\ndata: {"type": "ping"}\n\n'
 
 
+async def _next_queued(queue: asyncio.Queue, timeout: float):
+    """``queue.get()`` bounded by ``timeout`` (raises ``asyncio.TimeoutError``).
+
+    An item already queued is taken directly: ``asyncio.wait_for`` wraps every
+    call in a new Task (~15 µs on Python 3.11), which the pumps would otherwise
+    pay for every SSE line of every stream. Only an empty queue waits, so the
+    idle-tick timing is unchanged."""
+    try:
+        return queue.get_nowait()
+    except asyncio.QueueEmpty:
+        return await asyncio.wait_for(queue.get(), timeout=timeout)
+
+
 async def _pump_sse_lines(
     send_coro,
     ping_interval: float = _SSE_PING_INTERVAL,
@@ -154,7 +168,7 @@ async def _pump_sse_lines(
     try:
         while True:
             try:
-                kind, data = await asyncio.wait_for(queue.get(), timeout=ping_interval)
+                kind, data = await _next_queued(queue, ping_interval)
             except asyncio.TimeoutError:
                 idle += ping_interval
                 if idle >= max_idle:
@@ -374,7 +388,6 @@ def _calc_cost(
 def _log_usage_sync(
     user_id: int,
     username: str,
-    daily_limit: float,
     model: str,
     model_type: str,
     input_tokens: int,
@@ -398,22 +411,9 @@ def _log_usage_sync(
             )
             session.add(log)
             session.commit()
-
-            # Post-write daily limit check (soft protection for TOCTOU race)
-            from sqlmodel import func, select as sel
-            from app.core.timeutil import local_day_start_utc
-            today_start = local_day_start_utc()
-            stmt = (
-                sel(func.coalesce(func.sum(UsageLog.cost_usd), 0))
-                .where(UsageLog.user_id == user_id)
-                .where(UsageLog.created_at >= today_start)
-            )
-            today_cost = float(session.exec(stmt).one())
-            if today_cost > daily_limit:
-                logger.warning(
-                    "Daily limit exceeded after request | user={} limit=${} actual=${}",
-                    username, daily_limit, today_cost,
-                )
+            # No post-write "today" SUM: the next request's auth check
+            # (deps._check_daily_limit) already enforces the limit, and a
+            # second aggregate per request only fed a log line.
         logger.info(
             "Usage | user={} model={} in={} out={} cost=${}",
             username, model, input_tokens, output_tokens, cost,
@@ -458,7 +458,9 @@ def _emit_observation(
     if capture_io_enabled():
         input_payload = meta.get("input_payload")
         out_payload = output_payload
-    record_generation(GenerationRecord(
+    # Off the event loop: with LANGFUSE_CAPTURE_IO on, the SDK JSON-encodes
+    # the whole prompt synchronously (~35 ms for a 1 MB Claude Code body).
+    _submit_background(record_generation, GenerationRecord(
         username=user.username,
         user_id=str(user.id),
         endpoint=endpoint,
@@ -610,25 +612,27 @@ def _warn_if_slow_headers(user: User, model: str, endpoint: str, backend: str) -
         logger.warning("slow-headers hook failed: {}", exc)
 
 
-def _submit_usage_write(fn: Any, *args: Any) -> None:
-    """Dispatch the usage-log DB write off the event loop, fire-and-forget.
+def _submit_background(fn: Any, *args: Any) -> None:
+    """Run ``fn(*args)`` off the event loop, fire-and-forget: the usage-log
+    DB write and the Langfuse generation.
 
-    Billing must not add latency to the response, so the write is handed to
-    the default thread executor and never awaited — the request returns
-    before the row lands. With no running loop (sync context, scripts) the
-    write happens inline instead.
+    Neither may add latency to the response, so the call is handed to the
+    default thread executor and never awaited — the request returns before
+    the row lands. It runs in a copy of the caller's context, so contextvars
+    read inside it still see this request. With no running loop (sync
+    context, scripts) it runs inline instead.
 
-    This is a seam on purpose: tests patch it to run the write inline, so an
-    assertion on `usage_logs` right after a request is deterministic instead
-    of racing the executor thread. The dispatch itself is covered by
-    tests/test_usage_write_dispatch.py.
+    This is a seam on purpose: tests patch it to run inline, so an assertion
+    on `usage_logs` (or a captured generation) right after a request is
+    deterministic instead of racing the executor thread. The dispatch itself
+    is covered by tests/test_background_dispatch.py.
     """
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         fn(*args)
         return
-    loop.run_in_executor(None, fn, *args)
+    loop.run_in_executor(None, contextvars.copy_context().run, fn, *args)
 
 
 def _log_usage(
@@ -696,9 +700,9 @@ def _log_usage(
     except Exception as exc:  # defensive — a log line must never break billing
         logger.warning("slow-request hook failed: {}", exc)
 
-    _submit_usage_write(
+    _submit_background(
         _log_usage_sync,
-        user.id, user.username, user.daily_limit_usd,
+        user.id, user.username,
         model, model_type, input_tokens, output_tokens, cost, endpoint,
         backend,
     )
@@ -1233,11 +1237,24 @@ async def _passthrough_non_stream(
 class _NativeAnthropicCapture:
     """Rebuild the Anthropic assistant turn from native /v1/messages SSE
     events (Phase 2 I/O capture only). Best-effort: any malformed event is
-    skipped rather than breaking the stream."""
+    skipped rather than breaking the stream.
+
+    Deltas are collected as lists of parts and joined once in ``as_message``:
+    re-concatenating a string held in a dict copies it on every delta, which
+    is quadratic over a long thinking block or a large tool input."""
+
+    # delta type -> (field it streams into, key carrying the fragment)
+    _STREAMED = {
+        "text_delta": ("text", "text"),
+        "thinking_delta": ("thinking", "thinking"),
+        "signature_delta": ("signature", "signature"),
+        "input_json_delta": ("input", "partial_json"),
+    }
 
     def __init__(self):
         self._blocks: dict[int, dict[str, Any]] = {}
-        self._json_frag: dict[int, str] = {}
+        # (block index, field) -> fragments
+        self._parts: dict[tuple[int, str], list[str]] = {}
 
     def handle(self, chunk: dict[str, Any]) -> None:
         try:
@@ -1248,26 +1265,26 @@ class _NativeAnthropicCapture:
             elif ctype == "content_block_delta":
                 idx = int(chunk.get("index", 0))
                 delta = chunk.get("delta") or {}
-                block = self._blocks.setdefault(idx, {"type": "text", "text": ""})
-                dtype = delta.get("type")
-                if dtype == "text_delta":
-                    block["text"] = block.get("text", "") + delta.get("text", "")
-                elif dtype == "thinking_delta":
-                    block["thinking"] = block.get("thinking", "") + delta.get("thinking", "")
-                elif dtype == "input_json_delta":
-                    self._json_frag[idx] = self._json_frag.get(idx, "") + delta.get("partial_json", "")
-                elif dtype == "signature_delta":
-                    block["signature"] = block.get("signature", "") + delta.get("signature", "")
+                self._blocks.setdefault(idx, {"type": "text", "text": ""})
+                streamed = self._STREAMED.get(delta.get("type"))
+                if streamed is not None:
+                    field, key = streamed
+                    self._parts.setdefault((idx, field), []).append(delta.get(key, ""))
         except Exception:
             pass
 
     def as_message(self) -> dict[str, Any]:
         blocks = []
         for idx in sorted(self._blocks):
-            block = self._blocks[idx]
-            if idx in self._json_frag:
+            block = dict(self._blocks[idx])
+            for field in ("text", "thinking", "signature"):
+                parts = self._parts.get((idx, field))
+                if parts:
+                    block[field] = block.get(field, "") + "".join(parts)
+            json_parts = self._parts.get((idx, "input"))
+            if json_parts is not None:
                 try:
-                    block["input"] = json.loads(self._json_frag[idx])
+                    block["input"] = json.loads("".join(json_parts))
                 except Exception:
                     block["input"] = {}
             blocks.append(block)

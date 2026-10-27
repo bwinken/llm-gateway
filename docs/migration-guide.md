@@ -168,7 +168,7 @@ User 的 `api_key` 會原樣搬移，客戶端不需要更換 key。
 ```sql
 -- 遷移後手動設定 app 帳號的 owner
 UPDATE users SET owner_id = (SELECT id FROM users WHERE username = 'owner_name')
-WHERE username LIKE 'app_%';
+WHERE username LIKE 'app\_%';  -- `_` 是 LIKE 萬用字元，要跳脫
 ```
 
 ### 不要同時運行兩個資料庫

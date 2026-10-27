@@ -10,13 +10,16 @@ Four clients:
                         PoolTimeout and flips all servers to DOWN even though
                         the containers are healthy.
   - `_azure_client`   — used for Azure OpenAI; routed through a corporate
-                        HTTP proxy when AZURE_HTTP_PROXY is set, otherwise
-                        falls back to the shared `_client`.
+                        HTTP proxy when AZURE_HTTP_PROXY is set.
   - `_bedrock_client` — used for AWS Bedrock; same convention with
                         BEDROCK_HTTP_PROXY / BEDROCK_INSECURE.
 
 Keeping them separate means internal vLLM traffic never goes through the
 corporate proxy, while external cloud calls can when the deployment needs it.
+The cloud clients also keep idle connections far longer than the shared one
+(CLOUD_KEEPALIVE_EXPIRY_S): a TLS handshake over the WAN — plus a CONNECT
+through the proxy — costs hundreds of ms, and agentic clients routinely pause
+longer than httpx's 5 s default between turns.
 """
 
 from __future__ import annotations
@@ -44,9 +47,16 @@ def _make_cloud_client(proxy: str, insecure: bool) -> httpx.AsyncClient:
     # retries=1 covers connection ESTABLISHMENT only (httpx never re-sends a
     # request that already went out), so a transient TCP blip costs one silent
     # reconnect instead of a user-visible 502.
+    # Idle connections are kept for CLOUD_KEEPALIVE_EXPIRY_S (default 30 s,
+    # below the cloud load balancers' own idle timeouts) instead of httpx's
+    # 5 s, so the next turn of a conversation reuses the TLS session.
     transport_kwargs: dict = dict(
         retries=1,
-        limits=httpx.Limits(max_connections=200, max_keepalive_connections=40),
+        limits=httpx.Limits(
+            max_connections=_env_int("CLOUD_MAX_CONNECTIONS", 200),
+            max_keepalive_connections=_env_int("CLOUD_MAX_KEEPALIVE_CONNECTIONS", 100),
+            keepalive_expiry=float(_env_int("CLOUD_KEEPALIVE_EXPIRY_S", 30)),
+        ),
         verify=not insecure,
     )
     if proxy:
@@ -101,21 +111,19 @@ async def init_client() -> None:
         limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
         follow_redirects=True,
     )
-    # Dedicated Azure client. Created when either a corporate HTTP proxy is
-    # configured (AZURE_HTTP_PROXY) or SSL verification needs to be disabled
-    # (AZURE_INSECURE=true, e.g. when traversing a corporate TLS-inspecting
-    # proxy that re-signs certificates with an untrusted CA).
-    # AZURE_HTTP_PROXY accepts inline credentials: http://user:pass@host:port
-    azure_proxy = os.getenv("AZURE_HTTP_PROXY", "").strip()
-    azure_insecure = _env_flag("AZURE_INSECURE")
-    if azure_proxy or azure_insecure:
-        _azure_client = _make_cloud_client(azure_proxy, azure_insecure)
+    # Dedicated Azure client, routed through a corporate HTTP proxy when
+    # AZURE_HTTP_PROXY is set (inline credentials allowed:
+    # http://user:pass@host:port) and with SSL verification disabled when
+    # AZURE_INSECURE=true (a corporate TLS-inspecting proxy that re-signs
+    # certificates with an untrusted CA).
+    _azure_client = _make_cloud_client(
+        os.getenv("AZURE_HTTP_PROXY", "").strip(), _env_flag("AZURE_INSECURE"),
+    )
 
     # Dedicated Bedrock client — same convention as Azure above.
-    bedrock_proxy = os.getenv("BEDROCK_HTTP_PROXY", "").strip()
-    bedrock_insecure = _env_flag("BEDROCK_INSECURE")
-    if bedrock_proxy or bedrock_insecure:
-        _bedrock_client = _make_cloud_client(bedrock_proxy, bedrock_insecure)
+    _bedrock_client = _make_cloud_client(
+        os.getenv("BEDROCK_HTTP_PROXY", "").strip(), _env_flag("BEDROCK_INSECURE"),
+    )
 
 
 async def close_client() -> None:
@@ -174,22 +182,16 @@ def pool_snapshot() -> dict[str, int] | None:
 
 
 def get_azure_client() -> httpx.AsyncClient:
-    """Return the Azure-bound client.
-
-    Uses the dedicated proxied client when AZURE_HTTP_PROXY is set, otherwise
-    falls back to the shared client (Azure reachable directly).
-    """
+    """Return the dedicated Azure-bound client (proxied when AZURE_HTTP_PROXY
+    is set). Falls back to the shared client when uninitialised."""
     if _azure_client is not None:
         return _azure_client
     return get_client()
 
 
 def get_bedrock_client() -> httpx.AsyncClient:
-    """Return the Bedrock-bound client.
-
-    Uses the dedicated proxied client when BEDROCK_HTTP_PROXY /
-    BEDROCK_INSECURE is set, otherwise falls back to the shared client.
-    """
+    """Return the dedicated Bedrock-bound client (same convention as
+    ``get_azure_client``)."""
     if _bedrock_client is not None:
         return _bedrock_client
     return get_client()

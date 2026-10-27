@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, func, select
 
-from app.models.schema import AppOwner, UsageLog, User
+from app.models.schema import AppOwner, UsageLog, User, app_account_clause, is_app_account
 
 
 @dataclass
@@ -72,30 +72,76 @@ def _month_bounds(year: int, month: int) -> tuple[datetime, datetime]:
 
 
 # ── Per-month aggregations ──
+#
+# A month is scanned ONCE, grouped by (user, backend) — ``_month_usage`` —
+# and every section of the report is derived from those per-user rows in
+# Python. Only the DAU figures need a second, per-day query. ``usage_logs``
+# holds millions of rows a month, and a 24-month export used to run seven
+# range scans per month.
 
-def _summary(session: Session, start: datetime, end: datetime) -> dict:
-    # Totals over everything (humans + apps)
-    totals_stmt = select(
-        func.count(UsageLog.id),
-        func.coalesce(func.sum(UsageLog.input_tokens), 0),
-        func.coalesce(func.sum(UsageLog.output_tokens), 0),
-        func.coalesce(func.sum(UsageLog.cost_usd), 0),
-        func.count(func.distinct(UsageLog.user_id)),
-    ).where(UsageLog.created_at >= start).where(UsageLog.created_at < end)
-    row = session.exec(totals_stmt).first()
-    reqs, inp, out, cost, distinct_users = row if row else (0, 0, 0, 0, 0)
+# Backends a usage_logs row can carry today. Rows written before backend
+# tagging existed were backfilled/server-defaulted to "vllm", so unknown
+# values can't occur in practice; the pivot still guards by counting any
+# unrecognized value under "vllm" (on-prem) so a future backend added
+# without updating this tuple degrades to a visible on-prem number rather
+# than silently vanishing from the per-backend columns.
+_KNOWN_BACKENDS = ("vllm", "azure", "bedrock")
 
-    # MAU = distinct human users with activity this month
-    mau_stmt = (
-        select(func.count(func.distinct(UsageLog.user_id)))
-        .join(User, UsageLog.user_id == User.id)
+
+@dataclass
+class _UserInfo:
+    username: str
+    display_name: str
+    org_code: str
+
+    @property
+    def is_app(self) -> bool:
+        return is_app_account(self.username)
+
+
+def _load_users(session: Session) -> dict[int, _UserInfo]:
+    """Every account's identity columns (``users`` is small)."""
+    return {
+        int(uid): _UserInfo(str(username), display_name or "", org_code or "")
+        for uid, username, display_name, org_code in session.exec(
+            select(User.id, User.username, User.display_name, User.org_code)
+        ).all()
+    }
+
+
+def _month_usage(session: Session, start: datetime, end: datetime) -> dict[int, dict]:
+    """Per-user totals for one month, with cost split by backend: the
+    month's single scan of ``usage_logs``. ``cost`` is unrounded."""
+    rows = session.exec(
+        select(
+            UsageLog.user_id,
+            UsageLog.backend,
+            func.count(UsageLog.id),
+            func.coalesce(func.sum(UsageLog.input_tokens), 0),
+            func.coalesce(func.sum(UsageLog.output_tokens), 0),
+            func.coalesce(func.sum(UsageLog.cost_usd), 0),
+        )
         .where(UsageLog.created_at >= start)
         .where(UsageLog.created_at < end)
-        .where(~User.username.startswith("app_"))
-    )
-    mau = int(session.exec(mau_stmt).one() or 0)
+        .group_by(UsageLog.user_id, UsageLog.backend)
+    ).all()
+    per_user: dict[int, dict] = {}
+    for uid, backend, reqs, inp, out, cost in rows:
+        entry = per_user.setdefault(int(uid), {
+            "requests": 0, "input_tokens": 0, "output_tokens": 0, "cost": 0.0,
+            "backend_cost": {b: 0.0 for b in _KNOWN_BACKENDS},
+        })
+        cost = float(cost or 0)
+        entry["requests"] += int(reqs)
+        entry["input_tokens"] += int(inp)
+        entry["output_tokens"] += int(out)
+        entry["cost"] += cost
+        entry["backend_cost"][backend if backend in _KNOWN_BACKENDS else "vllm"] += cost
+    return per_user
 
-    # Daily distinct-user counts (humans only) to compute avg/peak DAU.
+
+def _daily_active_humans(session: Session, start: datetime, end: datetime) -> list[int]:
+    """Distinct human users per (UTC) day with any activity in the month."""
     dau_stmt = (
         select(
             func.date(UsageLog.created_at),
@@ -104,79 +150,61 @@ def _summary(session: Session, start: datetime, end: datetime) -> dict:
         .join(User, UsageLog.user_id == User.id)
         .where(UsageLog.created_at >= start)
         .where(UsageLog.created_at < end)
-        .where(~User.username.startswith("app_"))
+        .where(~app_account_clause())
         .group_by(func.date(UsageLog.created_at))
     )
-    daily_counts = [int(r[1]) for r in session.exec(dau_stmt).all()]
+    return [int(r[1]) for r in session.exec(dau_stmt).all()]
+
+
+def _summary(
+    usage: dict[int, dict], users: dict[int, _UserInfo],
+    daily_counts: list[int], start: datetime,
+) -> dict:
+    # Totals over everything (humans + apps)
     days_in_month = calendar.monthrange(start.year, start.month)[1]
     avg_dau = (sum(daily_counts) / days_in_month) if days_in_month else 0.0
-    peak_dau = max(daily_counts) if daily_counts else 0
-
     return {
-        "requests": int(reqs or 0),
-        "input_tokens": int(inp or 0),
-        "output_tokens": int(out or 0),
-        "cost_usd": round(float(cost or 0), 6),
-        "distinct_users": int(distinct_users or 0),
-        "mau": mau,
+        "requests": sum(u["requests"] for u in usage.values()),
+        "input_tokens": sum(u["input_tokens"] for u in usage.values()),
+        "output_tokens": sum(u["output_tokens"] for u in usage.values()),
+        "cost_usd": round(sum(u["cost"] for u in usage.values()), 6),
+        "distinct_users": len(usage),
+        # MAU = distinct human users with activity this month
+        "mau": sum(1 for uid in usage if uid in users and not users[uid].is_app),
         "dau_avg": round(avg_dau, 2),
-        "dau_peak": peak_dau,
+        "dau_peak": max(daily_counts, default=0),
         "active_days": len(daily_counts),
         "days_in_month": days_in_month,
     }
 
 
-def _by_department(session: Session, start: datetime, end: datetime) -> list[dict]:
-    stmt = (
-        select(
-            User.org_code,
-            func.count(func.distinct(UsageLog.user_id)),
-            func.count(UsageLog.id),
-            func.coalesce(func.sum(UsageLog.input_tokens), 0),
-            func.coalesce(func.sum(UsageLog.output_tokens), 0),
-            func.coalesce(func.sum(UsageLog.cost_usd), 0),
-        )
-        .join(User, UsageLog.user_id == User.id)
-        .where(UsageLog.created_at >= start)
-        .where(UsageLog.created_at < end)
-        .where(~User.username.startswith("app_"))
-        .group_by(User.org_code)
-        .order_by(func.sum(UsageLog.cost_usd).desc())
-    )
-    rows = session.exec(stmt).all()
-    return [
-        {
-            "department": (r[0] or "Unknown"),
-            "users": int(r[1]),
-            "requests": int(r[2]),
-            "input_tokens": int(r[3]),
-            "output_tokens": int(r[4]),
-            "cost_usd": round(float(r[5]), 6),
-        }
-        for r in rows
-    ]
+def _by_department(usage: dict[int, dict], users: dict[int, _UserInfo]) -> list[dict]:
+    depts: dict[str, dict] = {}
+    for uid, u in usage.items():
+        info = users.get(uid)
+        if info is None or info.is_app:
+            continue
+        name = info.org_code or "Unknown"
+        d = depts.setdefault(name, {
+            "department": name, "users": 0, "requests": 0,
+            "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0,
+        })
+        d["users"] += 1
+        d["requests"] += u["requests"]
+        d["input_tokens"] += u["input_tokens"]
+        d["output_tokens"] += u["output_tokens"]
+        d["cost_usd"] += u["cost"]
+    out = sorted(depts.values(), key=lambda d: d["cost_usd"], reverse=True)
+    for d in out:
+        d["cost_usd"] = round(d["cost_usd"], 6)
+    return out
 
 
-def _by_app(session: Session, start: datetime, end: datetime) -> list[dict]:
-    stmt = (
-        select(
-            User.id,
-            User.username,
-            User.org_code,
-            func.count(UsageLog.id),
-            func.coalesce(func.sum(UsageLog.input_tokens), 0),
-            func.coalesce(func.sum(UsageLog.output_tokens), 0),
-            func.coalesce(func.sum(UsageLog.cost_usd), 0),
-        )
-        .join(User, UsageLog.user_id == User.id)
-        .where(UsageLog.created_at >= start)
-        .where(UsageLog.created_at < end)
-        .where(User.username.startswith("app_"))
-        .group_by(User.id, User.username, User.org_code)
-        .order_by(func.sum(UsageLog.cost_usd).desc())
+def _by_app(session: Session, usage: dict[int, dict], users: dict[int, _UserInfo]) -> list[dict]:
+    app_ids = sorted(
+        (uid for uid in usage if uid in users and users[uid].is_app),
+        key=lambda uid: usage[uid]["cost"], reverse=True,
     )
-    rows = session.exec(stmt).all()
-    app_ids = [int(r[0]) for r in rows]
 
     # Resolve owners per app (small second query, only for the apps in this month)
     owners_by_app: dict[int, list[str]] = {}
@@ -191,66 +219,42 @@ def _by_app(session: Session, start: datetime, end: datetime) -> list[dict]:
 
     return [
         {
-            "app_id": int(r[0]),
-            "app": r[1],
-            "org_code": r[2] or "",
-            "owners": owners_by_app.get(int(r[0]), []),
-            "requests": int(r[3]),
-            "input_tokens": int(r[4]),
-            "output_tokens": int(r[5]),
-            "cost_usd": round(float(r[6]), 6),
+            "app_id": uid,
+            "app": users[uid].username,
+            "org_code": users[uid].org_code,
+            "owners": owners_by_app.get(uid, []),
+            "requests": usage[uid]["requests"],
+            "input_tokens": usage[uid]["input_tokens"],
+            "output_tokens": usage[uid]["output_tokens"],
+            "cost_usd": round(usage[uid]["cost"], 6),
         }
-        for r in rows
+        for uid in app_ids
     ]
 
 
-def _user_ranking(session: Session, start: datetime, end: datetime) -> list[dict]:
+def _user_ranking(usage: dict[int, dict], users: dict[int, _UserInfo]) -> list[dict]:
     """Full ranked list of human users by cost for the month."""
-    stmt = (
-        select(
-            User.id,
-            User.username,
-            User.display_name,
-            User.org_code,
-            func.count(UsageLog.id),
-            func.coalesce(func.sum(UsageLog.input_tokens), 0),
-            func.coalesce(func.sum(UsageLog.output_tokens), 0),
-            func.coalesce(func.sum(UsageLog.cost_usd), 0),
-        )
-        .join(User, UsageLog.user_id == User.id)
-        .where(UsageLog.created_at >= start)
-        .where(UsageLog.created_at < end)
-        .where(~User.username.startswith("app_"))
-        .group_by(User.id, User.username, User.display_name, User.org_code)
-        .order_by(func.sum(UsageLog.cost_usd).desc(), User.id)
+    humans = sorted(
+        (uid for uid in usage if uid in users and not users[uid].is_app),
+        key=lambda uid: (-usage[uid]["cost"], uid),
     )
-    rows = session.exec(stmt).all()
     return [
         {
             "rank": idx + 1,
-            "user_id": int(r[0]),
-            "username": r[1],
-            "display_name": r[2] or "",
-            "org_code": r[3] or "",
-            "requests": int(r[4]),
-            "input_tokens": int(r[5]),
-            "output_tokens": int(r[6]),
-            "cost_usd": round(float(r[7]), 6),
+            "user_id": uid,
+            "username": users[uid].username,
+            "display_name": users[uid].display_name,
+            "org_code": users[uid].org_code,
+            "requests": usage[uid]["requests"],
+            "input_tokens": usage[uid]["input_tokens"],
+            "output_tokens": usage[uid]["output_tokens"],
+            "cost_usd": round(usage[uid]["cost"], 6),
         }
-        for idx, r in enumerate(rows)
+        for idx, uid in enumerate(humans)
     ]
 
 
-# Backends a usage_logs row can carry today. Rows written before backend
-# tagging existed were backfilled/server-defaulted to "vllm", so unknown
-# values can't occur in practice; the pivot still guards by counting any
-# unrecognized value under "vllm" (on-prem) so a future backend added
-# without updating this tuple degrades to a visible on-prem number rather
-# than silently vanishing from the per-backend columns.
-_KNOWN_BACKENDS = ("vllm", "azure", "bedrock")
-
-
-def _by_user_backend(session: Session, start: datetime, end: datetime) -> list[dict]:
+def _by_user_backend(usage: dict[int, dict], users: dict[int, _UserInfo]) -> list[dict]:
     """Per-user cost/token/request split by serving backend for one month.
 
     Covers BOTH human users and app_* accounts (the export needs a complete
@@ -259,71 +263,59 @@ def _by_user_backend(session: Session, start: datetime, end: datetime) -> list[d
     columns pivoted from the `usage_logs.backend` tag, sorted by total cost
     descending.
     """
-    stmt = (
-        select(
-            User.id,
-            User.username,
-            User.display_name,
-            User.org_code,
-            UsageLog.backend,
-            func.count(UsageLog.id),
-            func.coalesce(func.sum(UsageLog.input_tokens), 0),
-            func.coalesce(func.sum(UsageLog.output_tokens), 0),
-            func.coalesce(func.sum(UsageLog.cost_usd), 0),
-        )
-        .join(User, UsageLog.user_id == User.id)
-        .where(UsageLog.created_at >= start)
-        .where(UsageLog.created_at < end)
-        .group_by(User.id, User.username, User.display_name, User.org_code, UsageLog.backend)
-    )
-    rows = session.exec(stmt).all()
-
-    by_user: dict[int, dict] = {}
-    for r in rows:
-        uid = int(r[0])
-        entry = by_user.setdefault(uid, {
+    rows = [
+        {
             "user_id": uid,
-            "username": r[1],
-            "display_name": r[2] or "",
-            "org_code": r[3] or "",
-            "is_app": str(r[1]).startswith("app_"),
-            "requests": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            **{f"{b}_cost_usd": 0.0 for b in _KNOWN_BACKENDS},
-            "total_cost_usd": 0.0,
-        })
-        backend = r[4] if r[4] in _KNOWN_BACKENDS else "vllm"
-        cost = float(r[8] or 0)
-        entry["requests"] += int(r[5])
-        entry["input_tokens"] += int(r[6])
-        entry["output_tokens"] += int(r[7])
-        entry[f"{backend}_cost_usd"] = round(entry[f"{backend}_cost_usd"] + cost, 6)
-        entry["total_cost_usd"] = round(entry["total_cost_usd"] + cost, 6)
-
-    return sorted(
-        by_user.values(),
-        key=lambda e: (-e["total_cost_usd"], e["user_id"]),
-    )
+            "username": users[uid].username,
+            "display_name": users[uid].display_name,
+            "org_code": users[uid].org_code,
+            "is_app": users[uid].is_app,
+            "requests": u["requests"],
+            "input_tokens": u["input_tokens"],
+            "output_tokens": u["output_tokens"],
+            **{f"{b}_cost_usd": round(c, 6) for b, c in u["backend_cost"].items()},
+            "total_cost_usd": round(u["cost"], 6),
+        }
+        for uid, u in usage.items()
+        if uid in users
+    ]
+    return sorted(rows, key=lambda e: (-e["total_cost_usd"], e["user_id"]))
 
 
-def compute_month(session: Session, year: int, month: int) -> MonthBreakdown:
+def compute_month(
+    session: Session, year: int, month: int,
+    users: dict[int, _UserInfo] | None = None,
+) -> MonthBreakdown:
     start, end = _month_bounds(year, month)
+    if users is None:
+        users = _load_users(session)
+    usage = _month_usage(session, start, end)
     return MonthBreakdown(
         month=f"{year:04d}-{month:02d}",
-        summary=_summary(session, start, end),
-        by_department=_by_department(session, start, end),
-        by_app=_by_app(session, start, end),
-        user_ranking=_user_ranking(session, start, end),
-        by_user_backend=_by_user_backend(session, start, end),
+        summary=_summary(usage, users, _daily_active_humans(session, start, end), start),
+        by_department=_by_department(usage, users),
+        by_app=_by_app(session, usage, users),
+        user_ranking=_user_ranking(usage, users),
+        by_user_backend=_by_user_backend(usage, users),
     )
 
 
 def build_monthly_report(session: Session, from_ym: str, to_ym: str) -> MonthlyReport:
     """Compose a multi-month report for the xlsx export."""
-    months = iter_months(from_ym, to_ym)
-    breakdowns = [compute_month(session, y, m) for y, m in months]
+    users = _load_users(session)
+    breakdowns = [compute_month(session, y, m, users) for y, m in iter_months(from_ym, to_ym)]
     return MonthlyReport(from_ym=from_ym, to_ym=to_ym, breakdowns=breakdowns)
+
+
+def user_backend_costs(session: Session, from_ym: str, to_ym: str) -> list[tuple[str, list[dict]]]:
+    """``(month, by_user_backend rows)`` per month — only the part of the
+    report the per-backend CSV needs (one scan per month, no DAU query)."""
+    users = _load_users(session)
+    out = []
+    for y, m in iter_months(from_ym, to_ym):
+        start, end = _month_bounds(y, m)
+        out.append((f"{y:04d}-{m:02d}", _by_user_backend(_month_usage(session, start, end), users)))
+    return out
 
 
 # ── Top-N with rank delta vs previous month ──
