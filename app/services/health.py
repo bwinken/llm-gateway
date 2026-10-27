@@ -23,6 +23,7 @@ from app.core.server_state import (
     set_alive,
     set_metrics,
 )
+from app.services import metrics
 
 # Consecutive probe failures required before a currently-UP server is marked
 # DOWN. A single failed probe against a healthy server is usually a blip
@@ -177,11 +178,13 @@ async def check_all_servers() -> None:
         if not alive:
             logger.warning("Server DOWN: {}", base_url)
             set_metrics(base_url, None)
+            metrics.set_server_state(base_url, False, None)
             return
         if model_type == _SYSTEMONE_TYPE:
             # Not vLLM: there is no Prometheus /metrics to scrape, and asking
             # would only leave a 404 in its access log every cycle.
             set_metrics(base_url, None)
+            metrics.set_server_state(base_url, True, None)
             return
 
         # Scrape the load snapshot. Best-effort: any failure (endpoint
@@ -191,13 +194,14 @@ async def check_all_servers() -> None:
             mresp = await client.get(
                 _metrics_url(base_url), headers=headers, timeout=5.0,
             )
-            metrics = (
+            load = (
                 _parse_vllm_metrics(mresp.text)
                 if mresp.status_code == 200 else None
             )
         except Exception:
-            metrics = None
-        set_metrics(base_url, metrics)
+            load = None
+        set_metrics(base_url, load)
+        metrics.set_server_state(base_url, True, load)
 
     await asyncio.gather(*[_ping(url, key, mtype) for url, (key, mtype) in seen.items()])
     prune_cache(set(seen.keys()))

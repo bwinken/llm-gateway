@@ -25,8 +25,8 @@ from loguru import logger
 # Per-request header context — set by the auth dependency (which has the
 # Request), read at the `_log_usage` seam. A contextvar (not threading through
 # every proxy function) keeps the wiring to a single touch-point, and it is
-# visible at the seam because record_generation runs in the request's own
-# async task, not a worker thread.
+# visible at the seam because `_emit_observation` reads it in the request's
+# own async task; only the finished GenerationRecord goes to a worker thread.
 _request_meta: contextvars.ContextVar[dict] = contextvars.ContextVar(
     "langfuse_request_meta", default={}
 )
@@ -384,6 +384,9 @@ class StreamingChatOutput:
         self._reasoning: list[str] = []
         # index -> {"id", "type", "function": {"name", "arguments"}}
         self._tool_calls: dict[int, dict] = {}
+        # index -> streamed argument fragments, joined in as_message (a
+        # string re-concatenated in a dict is copied on every fragment)
+        self._tool_args: dict[int, list[str]] = {}
 
     def add_delta(self, delta: Any) -> None:
         if not isinstance(delta, dict):
@@ -410,7 +413,7 @@ class StreamingChatOutput:
                 slot["function"]["name"] = fn["name"]
             args = fn.get("arguments")
             if isinstance(args, str) and args:
-                slot["function"]["arguments"] += args
+                self._tool_args.setdefault(tc.get("index", 0), []).append(args)
 
     def as_message(self) -> dict | None:
         """The assembled assistant message, or None when nothing was captured
@@ -424,6 +427,8 @@ class StreamingChatOutput:
         if self._reasoning:
             msg["reasoning_content"] = "".join(self._reasoning)
         if self._tool_calls:
+            for i, parts in self._tool_args.items():
+                self._tool_calls[i]["function"]["arguments"] = "".join(parts)
             msg["tool_calls"] = [self._tool_calls[i] for i in sorted(self._tool_calls)]
         return msg
 

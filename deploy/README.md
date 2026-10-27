@@ -147,6 +147,19 @@ curl -s localhost:8050/readyz
 
 The example nginx config exposes both paths without `auth_request`, so an external monitor can poll them; probes local to the host should hit `127.0.0.1:8050` directly and skip nginx entirely.
 
+## Prometheus Metrics (optional)
+
+Off until `METRICS_ENABLED=true` is set in `.env`, then on after a restart (`systemctl --user restart llm-gateway`): `GET /metrics` serves request counts, tokens, spend, latency / TTFT, 429 rejections, in-flight requests and on-prem server health, summed over all workers. Optional `METRICS_DIR` (default `<tmp>/llm-gateway-metrics`) holds the per-worker files.
+
+Scrape it on the host, not through nginx (the example config returns 404 for `/metrics`):
+
+```yaml
+scrape_configs:
+  - job_name: llm-gateway
+    static_configs:
+      - targets: ["127.0.0.1:8050"]
+```
+
 ## Log Privacy
 
 Two settings decide whether user prompts reach durable storage:

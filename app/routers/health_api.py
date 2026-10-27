@@ -12,6 +12,9 @@ no user data, no downstream URLs.
                           stops answering.
     /readyz   readiness — the process can actually serve requests, i.e. the
                           database answers. 200 or 503.
+    /metrics  Prometheus exposition (app/services/metrics.py), only when
+              METRICS_ENABLED; 404 otherwise. Aggregates, no user names —
+              but keep it off the public listener (see the nginx example).
 
 `/readyz` gates on the database only. The vLLM health cache is reported for
 operators to look at but never fails the probe, for two reasons: it is
@@ -25,7 +28,7 @@ clients still get a real error) into a total one.
 from __future__ import annotations
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
@@ -33,6 +36,7 @@ from app.core.config import APP_TITLE
 from app.core.database import engine
 from app.core.logger import logger
 from app.core.server_state import all_health
+from app.services import metrics
 
 router = APIRouter(tags=["health"])
 
@@ -74,3 +78,14 @@ async def readyz() -> JSONResponse:
     return JSONResponse(
         {"status": "ok", "database": "ok", "downstreams": downstreams}
     )
+
+
+@router.get("/metrics", include_in_schema=False)
+def prometheus_metrics() -> Response:
+    """Prometheus scrape target, summed over every worker. Plain ``def``:
+    collecting reads the workers' metric files."""
+    rendered = metrics.render()
+    if rendered is None:
+        return Response(status_code=404)
+    body, content_type = rendered
+    return Response(content=body, media_type=content_type)

@@ -20,6 +20,7 @@ from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
 from app.models.schema import UsageLog, User
+from app.services import metrics
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -77,6 +78,7 @@ def _check_daily_limit(session: Session, user: User) -> None:
         return
 
     if _enforce_daily_limit():
+        metrics.observe_rejection("daily_limit")
         if user.daily_limit_usd <= 0:
             detail = "Daily spending limit is $0 for this account. Contact your administrator."
         else:
@@ -161,6 +163,7 @@ def _check_backend_daily_limit(
     if _enforce_daily_limit():
         if allow_fallback:
             return False
+        metrics.observe_rejection("cloud_limit")
         if limit <= 0:
             detail = f"{label} daily spending limit is $0."
         else:
@@ -409,6 +412,7 @@ async def _concurrency_slot(user: User, endpoint: str) -> AsyncIterator[None]:
             user.username, active + (0 if lease_id is None else 1), limit, endpoint,
         )
         if lease_id is None:
+            metrics.observe_rejection("concurrency_limit")
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=(

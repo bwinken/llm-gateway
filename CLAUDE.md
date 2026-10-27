@@ -32,7 +32,7 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | `app/services/vllm_proxy.py` | vLLM forwarding, failover, SSE pump, `_log_usage` (billing + Langfuse seam) |
 | `app/services/azure_proxy.py`, `bedrock_proxy.py` | Cloud forwarding; translation via `responses_adapter.py` / `converse_adapter.py` |
 | `app/services/anthropic_adapter.py` | Anthropic Messages ↔ OpenAI chat (the internal pivot format) |
-| `app/services/` (rest) | `concurrency`, `rate_limit_fallback`, `reasoning_effort`, `health`, `observability`, `redact`, `stats`, `analytics` / `usage_export`, `aws_eventstream` |
+| `app/services/` (rest) | `concurrency`, `rate_limit_fallback`, `reasoning_effort`, `health`, `observability`, `metrics` (Prometheus), `redact`, `stats`, `analytics` / `usage_export`, `aws_eventstream` |
 | `app/models/schema.py` | `User`, `UsageLog`, `AppOwner`, `AnomalyEvent`, `ConcurrencyLease` |
 | `app/templates/` | `dashboard.html`, `admin.html`, `admin_models.html` (model-config SPA), `base.html` |
 | `alembic/versions/` | Migrations (PostgreSQL-only: they do not run on SQLite) |
@@ -63,6 +63,8 @@ Each of these has broken production or a test before. The parenthesized test pin
 - That same exit timing is what keeps a concurrency lease held for a whole stream. If a FastAPI upgrade ever changes it, the limit silently stops limiting (`TestLeaseSpansTheResponse`).
 - Teardown that runs on client disconnect must survive anyio's repeated cancellation: detach it (`_release_stream`) or shield it (`anyio.CancelScope(shield=True)`). Otherwise connections and leases leak (`test_stream_disconnect_cleanup.py`, `TestClientDisconnect`).
 - Never hold a DB connection across a stream: no advisory locks, no long transactions.
+- A web/admin handler that queries the DB and never `await`s is a plain `def` (FastAPI's threadpool). An `async def` running a `usage_logs` aggregate blocks the event loop and stalls every stream on the worker (`TestReportPagesRunOffTheEventLoop`).
+- Select app accounts in SQL with `schema.app_account_clause()`, never `User.username.startswith("app_")`: that compiles to `LIKE 'app_%'`, where `_` is a wildcard (`TestAppAccountClause`).
 - `delete_user` clears every row referencing `users.id` before deleting the user: `app_owners`, the legacy `users.owner_id`, `anomaly_events`, `usage_logs`, leases. Add any new FK there too; PostgreSQL turns a missed one into a 500 that SQLite tests miss unless `PRAGMA foreign_keys` is on (`TestDeleteUser`).
 
 **Streams**
@@ -72,9 +74,10 @@ Each of these has broken production or a test before. The parenthesized test pin
 - Failover or rate-limit fallback may switch servers only before the client has received a byte.
 
 **Side effects never break a request**
-- Billing (`_log_usage`), Langfuse, slow-request logging and the concurrency store are wrapped so their failure can't fail the request. The concurrency store fails **open**. The blind `except Exception` around them is intentional.
+- Billing (`_log_usage`), Langfuse, Prometheus metrics, slow-request logging and the concurrency store are wrapped so their failure can't fail the request. The concurrency store fails **open**. The blind `except Exception` around them is intentional.
 - Every user-traffic httpx client is built with `event_hooks=UPSTREAM_EVENT_HOOKS` (phase timing); the health client is not. A new client without them silently drops `gateway_overhead_ms` / `upstream_ttfb_ms` for its backend (`test_request_timing.py`).
 - `_log_usage` is the single billing and observability seam. Debug and metadata calls (`render`, `tokenize`, `count_tokens`) must never reach it.
+- Prometheus labels never carry a user identity or a client-sent string: `model` goes through `metrics._model_label` (unknown → `other`). Per-user numbers belong in `usage_logs`, not in a label (`test_unknown_model_is_reported_as_other`).
 - The Langfuse `usage_details` always carries an explicit `total` = input + output. `input` already includes the cached tokens, so without it Langfuse sums every key and counts cache reads twice (`TestSystemOneObservability`).
 
 **Routing and config**
@@ -124,6 +127,7 @@ One paragraph each. Follow the link for the full behavior.
 - **[Concurrency limit](docs/architecture.md#per-user-concurrency-limit-appservicesconcurrencypy)**: `[app].concurrency_limit_mode` (`off` / `monitor` / `enforce`) + `concurrency_limit` (≥ 1; "unlimited" is `off`, never `0`). Leases live in `concurrency_leases`, taken by `deps.limited_*` on chat/responses/messages only. The heartbeat renews leases and sweeps those of dead workers, including once at startup. Admins and `users.concurrency_waived` are exempt; app accounts (`app_*`, `schema.is_app_account`) are created waived, and migration `e4b7c2d91a58` waived the existing ones.
 - **[Health and metrics](docs/architecture.md#runtime-patterns-http-clients-health-loop-logging-export)**: 30 s loop on a dedicated client, with hysteresis (2 failures to go DOWN). Scrapes vLLM `/metrics` with an **exact** metric-name match (vLLM ≥ 0.20's `*_waiting_by_reason` would double-count). `PoolTimeout` keeps the previous state.
 - **[Observability](docs/architecture.md#observability-appservicesobservabilitypy)**: one Langfuse generation per billable request, emitted from `_log_usage`. Errors are recorded via `_log_error`. Request headers are captured by `RequestMetaMiddleware` (pure ASGI). Phase timing (gateway overhead, upstream TTFB, TTFT, tok/s) comes from httpx event hooks plus the stream pumps, under backend-neutral names. I/O capture (`LANGFUSE_CAPTURE_IO`) records the endpoint's own shape.
+- **[Prometheus metrics](docs/architecture.md#prometheus-metrics-appservicesmetricspy)**: opt-in `METRICS_ENABLED`; `GET /metrics` (404 when off). Multiprocess mode, one directory per server run under `METRICS_DIR`, summed over workers. Recorded at `_log_usage`, `_log_error`, the 429 sites in `deps.py`, the health loop and `InFlightMiddleware`.
 - **[Logging](docs/architecture.md#error-log-redaction-appservicesredactpy)**: per-worker log files. `Slow request` / `Slow response headers` warnings above `SLOW_REQUEST_WARN_S`.
 - **[Admin Model Config](docs/architecture.md#admin-model-config-page-apptemplatesadmin_modelshtml)**: master–detail editor over `GET/PUT /admin/api/config`. Selection lives in the URL hash; dirty tracking compares JSON snapshots.
 - **[Database](docs/architecture.md#database)**: `users`, `usage_logs`, `app_owners`, `anomaly_events`, `concurrency_leases`. The hourly anomaly scan is detection only, never blocking. The usage-log retention timer ships disabled on purpose.

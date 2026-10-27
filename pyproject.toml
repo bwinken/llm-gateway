@@ -22,6 +22,7 @@ dependencies = [
     # by app/core/timeutil.py's ZoneInfo lookup.
     "tzdata>=2024.1",
     "langfuse>=4.7.1",
+    "prometheus-client>=0.20",
 ]
 
 [dependency-groups]

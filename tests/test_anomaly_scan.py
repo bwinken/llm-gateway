@@ -7,15 +7,20 @@ in-memory SQLite harness directly.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from sqlmodel import Session, select
 
+from app.core.timeutil import local_day_start_utc
 from app.models.schema import AnomalyEvent, UsageLog, User
 from scripts.scan_anomalies import (
     BURST_PER_HOUR,
+    OFF_HOURS_MIN_REQUESTS,
+    detect_all,
     detect_burst_rate,
     detect_cost_spike,
     detect_empty_turn_rate,
+    detect_off_hours,
     persist,
     prune_resolved,
 )
@@ -80,6 +85,41 @@ class TestBurstRate:
         scopes = [f["scope"] for f in findings]
         assert f"user:{human.id}" in scopes
         assert f"user:{app.id}" not in scopes  # app accounts are exempt
+
+
+class TestOffHours:
+
+    def test_counts_only_local_night_requests_of_humans(self, db_session):
+        night_owl = _seed_user(db_session, "night_owl")
+        day_worker = _seed_user(db_session, "day_worker")
+        app = _seed_user(db_session, "app_cron")
+        night = local_day_start_utc() + timedelta(hours=2)      # 02:00 local
+        day = local_day_start_utc() + timedelta(hours=7)        # 07:00 local
+        for _ in range(OFF_HOURS_MIN_REQUESTS + 1):
+            _log(db_session, night_owl, when=night)
+            _log(db_session, app, when=night)
+            _log(db_session, day_worker, when=day)
+        _log(db_session, day_worker, when=night)
+        db_session.commit()
+
+        findings = detect_off_hours(db_session, NOW)
+        assert [(f["scope"], f["observed"]) for f in findings] == [
+            (f"user:{night_owl.id}", OFF_HOURS_MIN_REQUESTS + 1),
+        ]
+
+
+class TestDetectAll:
+
+    def test_a_failed_rule_is_rolled_back_so_later_rules_still_run(self, db_session):
+        """On PostgreSQL a failed statement (e.g. the statement timeout)
+        aborts the transaction; every later rule would then fail too."""
+        def broken(session, now):
+            raise RuntimeError("canceling statement due to statement timeout")
+
+        with patch("scripts.scan_anomalies.detect_cost_spike", broken), \
+             patch.object(db_session, "rollback", wraps=db_session.rollback) as rollback:
+            detect_all(db_session, NOW)
+        rollback.assert_called_once()
 
 
 class TestEmptyTurnRate:

@@ -23,6 +23,13 @@ def is_app_account(username: str) -> bool:
     return username.startswith(APP_ACCOUNT_PREFIX)
 
 
+def app_account_clause():
+    """SQL counterpart of ``is_app_account``. ``autoescape`` matters: a bare
+    ``startswith("app_")`` compiles to ``LIKE 'app_%'``, where ``_`` is a
+    wildcard, so "apple" or "app1" would count as app accounts."""
+    return User.username.startswith(APP_ACCOUNT_PREFIX, autoescape=True)
+
+
 def mask_api_key(key: str) -> str:
     """Render a key for display: enough to identify it, not enough to use it.
 

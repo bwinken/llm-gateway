@@ -107,6 +107,7 @@ from app.services.vllm_proxy import (
     _error_response,
     _log_error,
     _log_usage,
+    _next_queued,
     _relay_native_anthropic_sse,
     _release_stream,
     _warn_if_slow_headers,
@@ -338,7 +339,7 @@ async def _pump_bedrock_events(
     try:
         while True:
             try:
-                kind, data = await asyncio.wait_for(queue.get(), timeout=ping_interval)
+                kind, data = await _next_queued(queue, ping_interval)
             except asyncio.TimeoutError:
                 idle += ping_interval
                 if idle >= max_idle:

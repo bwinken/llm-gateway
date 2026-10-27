@@ -38,20 +38,25 @@ from app.core.config import (
     set_site_links,
 )
 from app.core.database import get_session
-from app.models.schema import AnomalyEvent, AppOwner, User, UsageLog, is_app_account, mask_api_key
+from app.models.schema import (
+    AnomalyEvent,
+    AppOwner,
+    User,
+    UsageLog,
+    app_account_clause,
+    is_app_account,
+    mask_api_key,
+)
 from app.services import concurrency
-from app.services.analytics import build_monthly_report, iter_months, parse_ym
+from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
-    get_all_users_usage,
     get_budget_pressure,
     get_today_totals,
     summarize_server_status,
     get_dau_trends,
-    get_department_usage,
-    get_leaderboard,
     get_monthly_all_users_usage,
-    get_monthly_totals,
+    get_monthly_overview,
 )
 from app.services.usage_export import build_workbook
 
@@ -111,7 +116,7 @@ def _limit_usd(raw: object, field: str) -> float:
 
 
 @router.get("", response_class=HTMLResponse)
-async def admin_page(
+def admin_page(
     request: Request,
     admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
@@ -121,18 +126,22 @@ async def admin_page(
     app_offset: int = 0,
     q: str = "",
 ):
+    # Plain ``def``: FastAPI runs it in the threadpool. The aggregates below
+    # take seconds on a busy month, and inside an ``async def`` they would
+    # block the event loop, stalling every stream this worker is serving.
 
-    # ── Monthly totals (single aggregate query) ──
-    totals = get_monthly_totals(session)
-
-    # ── Leaderboards (top-N queries) ──
-    app_leaderboard = get_leaderboard(session, is_app=True, limit=10)
-    user_leaderboard = get_leaderboard(session, is_app=False, limit=10)
+    # ── Month: totals, leaderboards, per-user and department usage from one
+    # aggregate over usage_logs ──
+    overview = get_monthly_overview(session)
+    totals = overview["totals"]
+    app_leaderboard = overview["app_leaderboard"]
+    user_leaderboard = overview["user_leaderboard"]
+    monthly_map = overview["per_user"]
 
     # ── User Management: paginated queries with optional search ──
     search = q.strip()
-    user_base = select(User).where(~User.username.startswith("app_"))
-    app_base = select(User).where(User.username.startswith("app_"))
+    user_base = select(User).where(~app_account_clause())
+    app_base = select(User).where(app_account_clause())
 
     if search:
         like = f"%{search}%"
@@ -158,10 +167,6 @@ async def admin_page(
         app_base.order_by(User.id).offset(app_offset).limit(app_limit)
     ).all()
 
-    # Usage maps for paginated users only
-    usage_map = get_all_users_usage(session)
-    monthly_map = get_monthly_all_users_usage(session)
-
     # Owner lookup for app accounts
     all_app_owners = session.exec(select(AppOwner)).all()
     user_lookup: dict[int, str] = {}
@@ -181,7 +186,6 @@ async def admin_page(
         )
 
     def _build_user_data(u: User) -> dict:
-        usage = usage_map.get(u.id, {"total_cost": 0.0, "total_tokens": 0})
         monthly = monthly_map.get(u.id, {
             "cost": 0.0, "input_tokens": 0, "output_tokens": 0, "requests": 0,
         })
@@ -201,8 +205,8 @@ async def admin_page(
             "owners": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
-            "total_cost": usage["total_cost"],
-            "total_tokens": usage["total_tokens"],
+            "total_cost": monthly["cost"],
+            "total_tokens": monthly["input_tokens"] + monthly["output_tokens"],
             "monthly_cost": monthly["cost"],
             "monthly_input": monthly["input_tokens"],
             "monthly_output": monthly["output_tokens"],
@@ -217,7 +221,7 @@ async def admin_page(
 
     dau_data = get_dau_trends(session)
     today_dau = dau_data[-1]["dau"] if dau_data else 0
-    dept_usage = get_department_usage(session)
+    dept_usage = overview["departments"]
 
     # Open anomaly findings (populated by scripts/scan_anomalies.py; empty
     # until the scan timer is set up — the card renders only when non-empty).
@@ -597,7 +601,7 @@ def _wants_json(request: Request) -> bool:
 
 
 @router.post("/users/{user_id}/toggle-disable")
-async def toggle_disable(
+def toggle_disable(
     user_id: int,
     admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
@@ -615,7 +619,7 @@ async def toggle_disable(
 
 
 @router.post("/users/{user_id}/toggle-azure")
-async def toggle_azure(
+def toggle_azure(
     user_id: int,
     request: Request,
     admin_user: User = Security(get_web_user, scopes=["admin"]),
@@ -634,7 +638,7 @@ async def toggle_azure(
 
 
 @router.post("/users/{user_id}/toggle-bedrock")
-async def toggle_bedrock(
+def toggle_bedrock(
     user_id: int,
     request: Request,
     admin_user: User = Security(get_web_user, scopes=["admin"]),
@@ -653,7 +657,7 @@ async def toggle_bedrock(
 
 
 @router.post("/users/{user_id}/toggle-concurrency-waive")
-async def toggle_concurrency_waive(
+def toggle_concurrency_waive(
     user_id: int,
     request: Request,
     admin_user: User = Security(get_web_user, scopes=["admin"]),
@@ -678,7 +682,7 @@ async def toggle_concurrency_waive(
 
 
 @router.post("/users/{user_id}/delete")
-async def delete_user(
+def delete_user(
     user_id: int,
     request: Request,
     admin_user: User = Security(get_web_user, scopes=["admin"]),
@@ -712,7 +716,7 @@ async def delete_user(
 
 
 @router.get("/users/{user_id}/api-key")
-async def reveal_user_key(
+def reveal_user_key(
     user_id: int,
     admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
@@ -734,7 +738,7 @@ async def reveal_user_key(
 
 
 @router.post("/users/{user_id}/refresh-key")
-async def refresh_user_key(
+def refresh_user_key(
     user_id: int,
     session: Session = Depends(get_session),
 ):
@@ -755,7 +759,7 @@ async def refresh_user_key(
 # ── API endpoints (Bearer token auth) ──
 
 @router.get("/users")
-async def list_users_api(
+def list_users_api(
     session: Session = Depends(get_session),
 ):
     users = session.exec(select(User)).all()
@@ -786,7 +790,7 @@ async def list_users_api(
 
 
 @router.post("/users")
-async def create_user_api(
+def create_user_api(
     body: dict,
     session: Session = Depends(get_session),
 ):
@@ -847,7 +851,7 @@ def _strict_bool(value: object, field: str) -> bool:
 
 
 @router.patch("/users/{user_id}")
-async def update_user_api(
+def update_user_api(
     user_id: int,
     body: dict,
     session: Session = Depends(get_session),
@@ -948,7 +952,7 @@ def _validate_rate_limit_fallback(
 # ── Model Configuration ──
 
 @router.get("/models", response_class=HTMLResponse)
-async def admin_models_page(
+def admin_models_page(
     request: Request,
     admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
@@ -968,7 +972,7 @@ async def admin_models_page(
 
 
 @router.get("/api/config")
-async def get_config_api():
+def get_config_api():
     return JSONResponse(get_config_data())
 
 
@@ -1240,7 +1244,7 @@ async def save_config_api(
 # ── Anomaly findings (populated by scripts/scan_anomalies.py) ──
 
 @router.get("/api/anomalies")
-async def list_anomalies(
+def list_anomalies(
     status: str = "new",
     limit: int = 50,
     session: Session = Depends(get_session),
@@ -1275,12 +1279,12 @@ def _set_anomaly_status(session: Session, event_id: int, status: str) -> JSONRes
 
 
 @router.post("/api/anomalies/{event_id}/ack")
-async def ack_anomaly(event_id: int, session: Session = Depends(get_session)):
+def ack_anomaly(event_id: int, session: Session = Depends(get_session)):
     return _set_anomaly_status(session, event_id, "acknowledged")
 
 
 @router.post("/api/anomalies/{event_id}/resolve")
-async def resolve_anomaly(event_id: int, session: Session = Depends(get_session)):
+def resolve_anomaly(event_id: int, session: Session = Depends(get_session)):
     return _set_anomaly_status(session, event_id, "resolved")
 
 
@@ -1290,7 +1294,7 @@ _MAX_EXPORT_MONTHS = 24
 
 
 @router.get("/api/export/usage.xlsx")
-async def export_usage_report(
+def export_usage_report(
     session: Session = Depends(get_session),
     from_: str = Query(..., alias="from", description="Start month YYYY-MM (inclusive)"),
     to: str = Query(..., description="End month YYYY-MM (inclusive)"),
@@ -1320,7 +1324,7 @@ async def export_usage_report(
 
 
 @router.get("/api/export/user-backend-costs.csv")
-async def export_user_backend_costs_csv(
+def export_user_backend_costs_csv(
     session: Session = Depends(get_session),
     from_: str = Query(..., alias="from", description="Start month YYYY-MM (inclusive)"),
     to: str = Query(..., description="End month YYYY-MM (inclusive)"),
@@ -1348,7 +1352,7 @@ async def export_user_backend_costs_csv(
             detail=f"Range too wide: {len(months)} months (max {_MAX_EXPORT_MONTHS}).",
         )
 
-    report = build_monthly_report(session, from_, to)
+    months_rows = user_backend_costs(session, from_, to)
 
     buf = io.StringIO()
     buf.write("﻿")  # UTF-8 BOM so Excel opens CJK correctly
@@ -1358,10 +1362,10 @@ async def export_user_backend_costs_csv(
         "requests", "input_tokens", "output_tokens",
         "vllm_cost_usd", "azure_cost_usd", "bedrock_cost_usd", "total_cost_usd",
     ])
-    for bd in report.breakdowns:
-        for u in bd.by_user_backend:
+    for month, rows in months_rows:
+        for u in rows:
             writer.writerow([
-                bd.month,
+                month,
                 u["username"],
                 u["display_name"],
                 u["org_code"],
@@ -1384,23 +1388,29 @@ async def export_user_backend_costs_csv(
 
 
 @router.get("/api/export/users.csv")
-async def export_users_csv(session: Session = Depends(get_session)):
+def export_users_csv(session: Session = Depends(get_session)):
     """Export all real users (excluding app_* accounts) as CSV for mass mailing."""
     import csv
     import io
 
-    users = session.exec(
-        select(User)
-        .where(~User.username.startswith("app_"))
+    # Last activity as a correlated subquery: one backwards probe of
+    # ix_usage_user_date_cost per user, instead of a GROUP BY over the whole
+    # (unbounded) usage_logs table.
+    last_active_col = (
+        select(func.max(UsageLog.created_at))
+        .where(UsageLog.user_id == User.id)
+        .correlate(User)
+        .scalar_subquery()
+    )
+    rows = session.exec(
+        select(User, last_active_col)
+        .where(~app_account_clause())
         .order_by(User.org_code, User.username)
     ).all()
+    users = [u for u, _ in rows]
+    last_active = {u.id: dt for u, dt in rows}
 
     monthly = get_monthly_all_users_usage(session)
-
-    last_active_rows = session.exec(
-        select(UsageLog.user_id, func.max(UsageLog.created_at)).group_by(UsageLog.user_id)
-    ).all()
-    last_active = {int(r[0]): r[1] for r in last_active_rows}
 
     def fmt_dt(dt: datetime | None) -> str:
         if dt is None:

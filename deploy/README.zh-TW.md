@@ -147,6 +147,19 @@ curl -s localhost:8050/readyz
 
 範例 nginx 設定已讓這兩個路徑不經 `auth_request`，外部監控可以直接輪詢；本機的探針則建議直接打 `127.0.0.1:8050`，不必繞 nginx。
 
+## Prometheus 指標（選用）
+
+預設關閉，在 `.env` 設 `METRICS_ENABLED=true` 並重啟（`systemctl --user restart llm-gateway`）後啟用：`GET /metrics` 提供請求數、token、花費、延遲 / TTFT、429 拒絕、進行中請求與地端伺服器健康，自動加總所有 worker。可選 `METRICS_DIR`（預設 `<tmp>/llm-gateway-metrics`）存放各 worker 的檔案。
+
+請在主機上直接抓，不經 nginx（範例設定對 `/metrics` 回 404）：
+
+```yaml
+scrape_configs:
+  - job_name: llm-gateway
+    static_configs:
+      - targets: ["127.0.0.1:8050"]
+```
+
 ## 日誌隱私
 
 有兩個設定決定使用者的 prompt 會不會落到永久儲存：
