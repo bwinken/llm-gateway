@@ -147,16 +147,11 @@ curl -s localhost:8050/readyz
 
 The example nginx config exposes both paths without `auth_request`, so an external monitor can poll them; probes local to the host should hit `127.0.0.1:8050` directly and skip nginx entirely.
 
-## Monitoring and Alerts (optional)
+## Prometheus Metrics (optional)
 
-Both are off until their variable is set in `.env`, then take effect on restart (`systemctl --user restart llm-gateway`):
+Off until `METRICS_ENABLED=true` is set in `.env`, then on after a restart (`systemctl --user restart llm-gateway`): `GET /metrics` serves request counts, tokens, spend, latency / TTFT, 429 rejections, in-flight requests and on-prem server health, summed over all workers. Optional `METRICS_DIR` (default `<tmp>/llm-gateway-metrics`) holds the per-worker files.
 
-| Variable | Effect |
-|---|---|
-| `METRICS_ENABLED=true` | Serves Prometheus metrics at `GET /metrics` (requests, tokens, spend, latency / TTFT, 429 rejections, in-flight requests, on-prem server health), summed over all workers. Optional `METRICS_DIR` (default `<tmp>/llm-gateway-metrics`). |
-| `TEAMS_WEBHOOK_URL=https://...` | Posts to a Teams channel when an on-prem server goes DOWN / comes back UP, an account reaches 80% / 100% of its daily limit, or the hourly anomaly scan finds something new. `TEAMS_ALERTS=health,budget,anomaly` picks a subset. |
-
-Scrape metrics on the host, not through nginx (the example config returns 404 for `/metrics`):
+Scrape it on the host, not through nginx (the example config returns 404 for `/metrics`):
 
 ```yaml
 scrape_configs:
@@ -164,8 +159,6 @@ scrape_configs:
     static_configs:
       - targets: ["127.0.0.1:8050"]
 ```
-
-For the Teams URL, add the **Workflows** app to the channel and pick "Send webhook alerts to a channel" (trigger: *When a Teams webhook request is received*); copy the URL it shows. Anomaly alerts need the scan timer (`llm-gateway-scan.timer`). Run `uv run alembic upgrade head` first: alerts store what they sent in the `alert_state` table.
 
 ## Log Privacy
 

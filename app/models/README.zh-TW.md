@@ -280,15 +280,3 @@ cost_usd = (uncached_input_tokens × input_price_per_1m
 |---|---|---|
 | `ix_concurrency_user_expires` | `user_id`, `expires_at` | 計算使用者的有效 lease 數 |
 | `ix_concurrency_leases_worker_id` | `worker_id` | Heartbeat 續約與已終止 worker 清掃 |
-
-## AlertState 模型
-
-對應 `alert_state` 表。記錄選用的 Teams 告警（`app/services/alerts.py`）最後發出的狀態，所有 worker 與主機共用，讓每個事件只發一次。沒設 `TEAMS_WEBHOOK_URL` 時完全不會碰這張表。
-
-| 欄位 | 型別 | 限制 | 預設值 | 說明 |
-|---|---|---|---|---|
-| `key` | `VARCHAR` | PK | — | `health:<base_url>`（每台伺服器一筆）或 `budget:<user id>:<當地日期>:<百分比>` |
-| `state` | `VARCHAR` | — | `""` | health 為 `up` / `down`，budget 為 `sent` |
-| `updated_at` | `DATETIME` | — | — | 最後更新時間，**naive UTC** |
-
-沒有外鍵：budget 紀錄由異常掃描在 7 天後清除，也沒有任何查詢會 join 它。

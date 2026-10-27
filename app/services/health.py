@@ -16,7 +16,6 @@ import httpx
 from app.core.config import MODEL_ROUTING, _check_auto_reload
 from app.core.logger import logger
 from app.core.server_state import (
-    all_health,
     get_health_client,
     is_alive,
     pool_snapshot,
@@ -24,7 +23,7 @@ from app.core.server_state import (
     set_alive,
     set_metrics,
 )
-from app.services import alerts, metrics
+from app.services import metrics
 
 # Consecutive probe failures required before a currently-UP server is marked
 # DOWN. A single failed probe against a healthy server is usually a blip
@@ -147,16 +146,14 @@ def _last_number(line: str) -> float | None:
 async def check_all_servers() -> None:
     """Ping every unique base_url in MODEL_ROUTING concurrently."""
     seen: dict[str, tuple[str, str]] = {}  # base_url -> (api_key, type) of its first route
-    aliases: dict[str, list[str]] = {}     # base_url -> every alias it serves (for alerts)
     # Dedicated probe client — never contends with user traffic for pool
     # slots, so a failed probe reflects the downstream, not the gateway.
     client = get_health_client()
 
     # Collect unique base_urls with their first api_key (snapshot to avoid mutation during iter)
     _check_auto_reload()
-    for model_name, route in list(MODEL_ROUTING.items()):
+    for _model_name, route in list(MODEL_ROUTING.items()):
         base_url = route["base_url"]
-        aliases.setdefault(base_url, []).append(model_name)
         if base_url not in seen:
             seen[base_url] = (route.get("api_key", ""), route.get("type", ""))
 
@@ -177,10 +174,7 @@ async def check_all_servers() -> None:
             return
         except Exception:
             alive = False
-        previous = all_health().get(base_url)  # None: not probed yet by this worker
         alive = _apply_probe_result(base_url, alive)
-        if alive != previous:
-            alerts.server_state_changed(base_url, alive, aliases.get(base_url, []))
         if not alive:
             logger.warning("Server DOWN: {}", base_url)
             set_metrics(base_url, None)

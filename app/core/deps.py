@@ -20,7 +20,7 @@ from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
 from app.models.schema import UsageLog, User
-from app.services import alerts, metrics
+from app.services import metrics
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -74,7 +74,6 @@ def _check_daily_limit(session: Session, user: User) -> None:
         .where(UsageLog.created_at >= today_start)
     )
     today_cost = float(session.exec(stmt).one())
-    alerts.budget_reached(user, today_cost, user.daily_limit_usd)
     if today_cost < user.daily_limit_usd:
         return
 

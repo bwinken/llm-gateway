@@ -20,7 +20,7 @@ that work:
 | Mechanism | What it does |
 |---|---|
 | In-memory SQLite + `StaticPool` | `DATABASE_URL=sqlite://` is set before any app import; all connections share one DB, and tables are dropped and recreated per test by the `db_session` fixture |
-| `_patch_all` autouse fixture | Applies `_ALL_PATCHES` (an `ExitStack`, since the list is past CPython 3.11's 20-nested-`with` cap) for every test: the routing / pricing / fallback maps (`MODEL_ROUTING`, `PRICING_MAP`, `FALLBACK_MAP`, `AZURE_MODELS`, `AZURE_FALLBACK_MAP`, `BEDROCK_MODELS`, `BEDROCK_FALLBACK_MAP`, plus the `get_*_snapshot` getters); every user-traffic httpx client getter (shared, Azure, Bedrock, in the proxies and in `server_state`) → one shared `AsyncMock`; every module-level `engine` (`vllm_proxy`, `deps`, `concurrency`, `alerts`) → the test engine; `is_alive` → `True`; `_decode_jwt` → an HS256 test decoder; and `_submit_background` → an inline write so `usage_logs` assertions don't race the executor thread |
+| `_patch_all` autouse fixture | Applies `_ALL_PATCHES` (an `ExitStack`, since the list is past CPython 3.11's 20-nested-`with` cap) for every test: the routing / pricing / fallback maps (`MODEL_ROUTING`, `PRICING_MAP`, `FALLBACK_MAP`, `AZURE_MODELS`, `AZURE_FALLBACK_MAP`, `BEDROCK_MODELS`, `BEDROCK_FALLBACK_MAP`, plus the `get_*_snapshot` getters); every user-traffic httpx client getter (shared, Azure, Bedrock, in the proxies and in `server_state`) → one shared `AsyncMock`; every module-level `engine` (`vllm_proxy`, `deps`, `concurrency`) → the test engine; `is_alive` → `True`; `_decode_jwt` → an HS256 test decoder; and `_submit_background` → an inline write so `usage_logs` assertions don't race the executor thread |
 | `_build_test_app` | Imports the routers under the config patches and builds a `FastAPI` app with a no-op lifespan (no DB init, no health loop, no lease heartbeat, no real httpx clients). Mounts every router: `health_api`, `web_ui`, `v1_api`, `azure_api`, `aws_api`, `admin`, and registers the production `AccountDisabledError` handler |
 
 ### What runs real vs. what's swapped
@@ -539,16 +539,6 @@ model is labelled `other`, a daily-limit 429 counts as a rejection, the health
 loop sets `server_up`, the in-flight gauge covers the request and returns to 0,
 each server run gets its own directory (stale ones removed), and a broken
 metrics directory never fails a request.
-
-### `test_teams_alerts.py` — Teams alerts
-
-Nothing posted or stored without `TEAMS_WEBHOOK_URL`; `TEAMS_ALERTS` picks
-kinds. Budget: 80% posts once (also across a second worker's memory), 100%
-posts with the 429, below 80% and $0 budgets stay quiet. Health: first sight UP
-is silent, DOWN and back UP post once each, the health loop reports a dead
-server with its models. Anomalies: only created findings are posted. Delivery:
-card shape, non-2xx and connection errors return False; pruning drops only old
-budget keys.
 
 ## Admin and web UI
 
