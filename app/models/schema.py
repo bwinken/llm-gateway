@@ -138,6 +138,24 @@ class UsageLog(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class AlertState(SQLModel, table=True):
+    """What the Teams alerts (app/services/alerts.py) last announced, shared
+    by every worker and host so each event is posted once.
+
+    ``key`` names the subject: ``health:<base_url>`` keeps that server's
+    last announced state (``up`` / ``down``) and an alert goes out only when
+    a worker sees it change; ``budget:<user id>:<local date>:<percent>`` is
+    inserted once, and the insert that wins sends the alert. Naive UTC like
+    ``concurrency_leases``. No foreign key: budget rows outlive nothing that
+    matters and are pruned by the anomaly scan after a week.
+    """
+    __tablename__ = "alert_state"
+
+    key: str = Field(primary_key=True)
+    state: str = Field(default="")
+    updated_at: datetime = Field()
+
+
 class AnomalyEvent(SQLModel, table=True):
     """Findings from the periodic usage-anomaly scan (scripts/scan_anomalies.py).
 

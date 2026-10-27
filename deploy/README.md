@@ -147,6 +147,26 @@ curl -s localhost:8050/readyz
 
 The example nginx config exposes both paths without `auth_request`, so an external monitor can poll them; probes local to the host should hit `127.0.0.1:8050` directly and skip nginx entirely.
 
+## Monitoring and Alerts (optional)
+
+Both are off until their variable is set in `.env`, then take effect on restart (`systemctl --user restart llm-gateway`):
+
+| Variable | Effect |
+|---|---|
+| `METRICS_ENABLED=true` | Serves Prometheus metrics at `GET /metrics` (requests, tokens, spend, latency / TTFT, 429 rejections, in-flight requests, on-prem server health), summed over all workers. Optional `METRICS_DIR` (default `<tmp>/llm-gateway-metrics`). |
+| `TEAMS_WEBHOOK_URL=https://...` | Posts to a Teams channel when an on-prem server goes DOWN / comes back UP, an account reaches 80% / 100% of its daily limit, or the hourly anomaly scan finds something new. `TEAMS_ALERTS=health,budget,anomaly` picks a subset. |
+
+Scrape metrics on the host, not through nginx (the example config returns 404 for `/metrics`):
+
+```yaml
+scrape_configs:
+  - job_name: llm-gateway
+    static_configs:
+      - targets: ["127.0.0.1:8050"]
+```
+
+For the Teams URL, add the **Workflows** app to the channel and pick "Send webhook alerts to a channel" (trigger: *When a Teams webhook request is received*); copy the URL it shows. Anomaly alerts need the scan timer (`llm-gateway-scan.timer`). Run `uv run alembic upgrade head` first: alerts store what they sent in the `alert_state` table.
+
 ## Log Privacy
 
 Two settings decide whether user prompts reach durable storage:

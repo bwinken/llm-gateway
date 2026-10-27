@@ -51,6 +51,7 @@ from sqlmodel import Session, func, select  # noqa: E402
 from app.core.config import DATABASE_URL  # noqa: E402
 from app.core.timeutil import local_day_start_utc  # noqa: E402
 from app.models.schema import AnomalyEvent, UsageLog, User, is_app_account  # noqa: E402
+from app.services import alerts  # noqa: E402
 
 # ── Tunables ──
 COST_SPIKE_RATIO = 5.0          # today > N × 30d daily median
@@ -274,8 +275,10 @@ def detect_all(session: Session, now: datetime | None = None) -> list[dict]:
     return findings
 
 
-def persist(session: Session, findings: list[dict]) -> tuple[int, int]:
-    """Upsert findings; returns (created, updated).
+def persist(session: Session, findings: list[dict],
+            created_out: list[dict] | None = None) -> tuple[int, int]:
+    """Upsert findings; returns (created, updated). The newly created ones
+    are also appended to ``created_out`` when given (for the Teams alert).
 
     Manual select-then-write keeps this portable across PostgreSQL and the
     SQLite test harness; the timer/flock guarantees a single writer, and the
@@ -303,10 +306,20 @@ def persist(session: Session, findings: list[dict]) -> tuple[int, int]:
         else:
             session.add(AnomalyEvent(**f, created_at=now, updated_at=now))
             created += 1
-            # NOTE: alert side-channels (email/webhook), when added, hook
-            # HERE — on creation only, never on update.
+            # Alert side-channels hook HERE — on creation only, never on
+            # update, so an ongoing anomaly alerts once.
+            if created_out is not None:
+                created_out.append(f)
     session.commit()
     return created, updated
+
+
+def _usernames(session: Session, findings: list[dict]) -> dict[int, str]:
+    ids = {f["user_id"] for f in findings if f.get("user_id") is not None}
+    if not ids:
+        return {}
+    rows = session.exec(select(User.id, User.username).where(User.id.in_(ids))).all()  # type: ignore[attr-defined]
+    return {int(uid): str(name) for uid, name in rows}
 
 
 def prune_resolved(session: Session) -> int:
@@ -348,9 +361,18 @@ def main() -> None:
         print(f"[scan] {len(findings)} finding(s)")
 
         if args.execute:
-            created, updated = persist(session, findings)
+            new_findings: list[dict] = []
+            created, updated = persist(session, findings, new_findings)
             pruned = prune_resolved(session)
             print(f"[scan] persisted: {created} new, {updated} updated; pruned {pruned} old resolved")
+            # Teams (no-op unless TEAMS_WEBHOOK_URL is set).
+            if alerts.post_anomalies(new_findings, _usernames(session, new_findings)):
+                print(f"[scan] posted {len(new_findings)} new finding(s) to Teams")
+            try:
+                alerts.prune(session)
+            except Exception as exc:  # table missing before the migration
+                session.rollback()
+                print(f"[scan] alert_state prune failed: {exc}", file=sys.stderr)
         else:
             print("[scan] dry-run — nothing written (use --execute to persist)")
 

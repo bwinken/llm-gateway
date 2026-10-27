@@ -280,3 +280,15 @@ Timestamps are naive UTC (unlike the aware values other tables use) so a Postgre
 |---|---|---|
 | `ix_concurrency_user_expires` | `user_id`, `expires_at` | Count a user's live leases |
 | `ix_concurrency_leases_worker_id` | `worker_id` | Heartbeat renewal and dead-worker sweep |
+
+## AlertState Model
+
+Maps to `alert_state` table. What the optional Teams alerts (`app/services/alerts.py`) last announced, shared by every worker and host so each event is posted once. Untouched unless `TEAMS_WEBHOOK_URL` is set.
+
+| Field | Type | Constraints | Default | Description |
+|---|---|---|---|---|
+| `key` | `VARCHAR` | PK | — | `health:<base_url>` (one per server) or `budget:<user id>:<local date>:<percent>` |
+| `state` | `VARCHAR` | — | `""` | `up` / `down` for health keys, `sent` for budget keys |
+| `updated_at` | `DATETIME` | — | — | Last change, **naive UTC** |
+
+No foreign key: budget keys are pruned by the anomaly scan after 7 days, and nothing joins on them.

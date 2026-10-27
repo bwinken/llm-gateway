@@ -15,6 +15,13 @@ from unittest.mock import AsyncMock, patch
 
 # Force SQLite for tests so psycopg2 is not required
 os.environ["DATABASE_URL"] = "sqlite://"
+# Opt-in side channels stay off unless a test turns them on (a developer's
+# shell or .env must never make the suite post to Teams or write metrics).
+# Empty rather than unset: load_dotenv() never overrides a variable that
+# exists, so a local .env can't switch them back on.
+os.environ["METRICS_ENABLED"] = ""
+os.environ["TEAMS_WEBHOOK_URL"] = ""
+os.environ["TEAMS_ALERTS"] = ""
 
 import httpx
 import jwt as pyjwt
@@ -374,6 +381,7 @@ _ALL_PATCHES = [
     # short sessions too. The limit defaults to mode "off", so only tests that
     # turn it on ever reach it.
     lambda: patch("app.services.concurrency.engine", _test_engine),
+    lambda: patch("app.services.alerts.engine", _test_engine),
     lambda: patch("app.services.vllm_proxy.is_alive", return_value=True),
     lambda: patch("app.services.azure_proxy.AZURE_MODELS", TEST_AZURE_MODELS),
     lambda: patch("app.services.azure_proxy.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),

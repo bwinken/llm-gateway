@@ -23,6 +23,7 @@ from app.core.database import init_db
 from app.core.logger import logger
 from app.core.server_state import close_client, init_client
 from app.routers import admin, aws_api, azure_api, health_api, v1_api, web_ui
+from app.services import metrics
 from app.services.health import health_check_loop
 
 _templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
@@ -41,6 +42,8 @@ async def lifespan(app: FastAPI):
     # Initialise Langfuse observability (no-op when LANGFUSE_* unset).
     from app.services.observability import get_langfuse
     get_langfuse()
+    # Prometheus metrics (no-op unless METRICS_ENABLED).
+    metrics.startup()
 
     # Concurrency leases: clear the ones left by workers that died without
     # releasing (e.g. SIGKILLed mid-stream during a restart) BEFORE serving,
@@ -65,6 +68,7 @@ async def lifespan(app: FastAPI):
     await close_client()
     from app.services.observability import flush_langfuse
     flush_langfuse()
+    metrics.shutdown()
     logger.info("{} shut down.", APP_TITLE)
 
 
@@ -88,6 +92,9 @@ app.add_middleware(
 # seam). Pure-ASGI so the contextvar survives into streaming response bodies.
 from app.services.observability import RequestMetaMiddleware  # noqa: E402
 app.add_middleware(RequestMetaMiddleware)
+# Open-request gauge for GET /metrics — only when METRICS_ENABLED.
+if metrics.enabled():
+    app.add_middleware(metrics.InFlightMiddleware)
 
 # --- Exception handlers ---
 

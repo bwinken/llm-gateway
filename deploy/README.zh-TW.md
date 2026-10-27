@@ -147,6 +147,26 @@ curl -s localhost:8050/readyz
 
 範例 nginx 設定已讓這兩個路徑不經 `auth_request`，外部監控可以直接輪詢；本機的探針則建議直接打 `127.0.0.1:8050`，不必繞 nginx。
 
+## 監控與告警（選用）
+
+兩者預設關閉，在 `.env` 設定對應變數後重啟（`systemctl --user restart llm-gateway`）才啟用：
+
+| 變數 | 效果 |
+|---|---|
+| `METRICS_ENABLED=true` | 在 `GET /metrics` 提供 Prometheus 指標（請求數、token、花費、延遲 / TTFT、429 拒絕、進行中請求、地端伺服器健康），自動加總所有 worker。可選 `METRICS_DIR`（預設 `<tmp>/llm-gateway-metrics`）。 |
+| `TEAMS_WEBHOOK_URL=https://...` | 地端伺服器 DOWN / 恢復 UP、帳號用到每日額度的 80% / 100%、每小時異常掃描有新發現時，發訊息到 Teams 頻道。`TEAMS_ALERTS=health,budget,anomaly` 可只開部分。 |
+
+指標請在主機上直接抓，不經 nginx（範例設定對 `/metrics` 回 404）：
+
+```yaml
+scrape_configs:
+  - job_name: llm-gateway
+    static_configs:
+      - targets: ["127.0.0.1:8050"]
+```
+
+Teams URL：在頻道加入 **Workflows** app，選「Send webhook alerts to a channel」（觸發條件：*When a Teams webhook request is received*），複製它給的 URL。異常告警需要掃描 timer（`llm-gateway-scan.timer`）。請先跑 `uv run alembic upgrade head`：告警會把已送出的事件記在 `alert_state` 表。
+
 ## 日誌隱私
 
 有兩個設定決定使用者的 prompt 會不會落到永久儲存：

@@ -62,6 +62,7 @@ from app.services.observability import (
     set_io_input,
 )
 from app.services.reasoning_effort import apply_to_openai_body
+from app.services import metrics
 
 
 # Kept just below the nginx `proxy_read_timeout` (300s) so the gateway's own
@@ -499,6 +500,13 @@ def _log_error(
     Langfuse when unconfigured; never raises. Called at every downstream
     error site (connection failure / non-200) in place of inline logging.
     """
+    backend = (
+        "azure" if endpoint.startswith("/azure")
+        else "bedrock" if endpoint.startswith("/aws")
+        else "vllm"
+    )
+    # Prometheus (no-op unless METRICS_ENABLED; never raises).
+    metrics.observe_error(endpoint, backend, model, status_code)
     try:
         if get_langfuse() is None:
             return
@@ -507,11 +515,7 @@ def _log_error(
             username=user.username,
             user_id=str(user.id),
             endpoint=endpoint,
-            backend=(
-                "azure" if endpoint.startswith("/azure")
-                else "bedrock" if endpoint.startswith("/aws")
-                else "vllm"
-            ),
+            backend=backend,
             model_alias=model,
             real_model=model,
             model_type=model_type,
@@ -692,13 +696,20 @@ def _log_usage(
     # Slow-request WARNING (file-visible without INFO logging). Must be read
     # here, on the request's own task — the contextvar holding the request
     # start time is not visible from the usage-write executor thread.
+    latency_ms = request_latency_ms()
     try:
         _warn_if_slow(
             user, model, model_type, endpoint, backend,
-            input_tokens, output_tokens, request_latency_ms(), timing,
+            input_tokens, output_tokens, latency_ms, timing,
         )
     except Exception as exc:  # defensive — a log line must never break billing
         logger.warning("slow-request hook failed: {}", exc)
+
+    # Prometheus (no-op unless METRICS_ENABLED; never raises).
+    metrics.observe_request(
+        endpoint, backend, model, input_tokens, output_tokens, cached_tokens,
+        float(cost), latency_ms, timing,
+    )
 
     _submit_background(
         _log_usage_sync,

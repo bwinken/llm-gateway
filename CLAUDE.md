@@ -32,8 +32,8 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | `app/services/vllm_proxy.py` | vLLM forwarding, failover, SSE pump, `_log_usage` (billing + Langfuse seam) |
 | `app/services/azure_proxy.py`, `bedrock_proxy.py` | Cloud forwarding; translation via `responses_adapter.py` / `converse_adapter.py` |
 | `app/services/anthropic_adapter.py` | Anthropic Messages ↔ OpenAI chat (the internal pivot format) |
-| `app/services/` (rest) | `concurrency`, `rate_limit_fallback`, `reasoning_effort`, `health`, `observability`, `redact`, `stats`, `analytics` / `usage_export`, `aws_eventstream` |
-| `app/models/schema.py` | `User`, `UsageLog`, `AppOwner`, `AnomalyEvent`, `ConcurrencyLease` |
+| `app/services/` (rest) | `concurrency`, `rate_limit_fallback`, `reasoning_effort`, `health`, `observability`, `metrics` (Prometheus), `alerts` (Teams), `redact`, `stats`, `analytics` / `usage_export`, `aws_eventstream` |
+| `app/models/schema.py` | `User`, `UsageLog`, `AppOwner`, `AnomalyEvent`, `ConcurrencyLease`, `AlertState` |
 | `app/templates/` | `dashboard.html`, `admin.html`, `admin_models.html` (model-config SPA), `base.html` |
 | `alembic/versions/` | Migrations (PostgreSQL-only: they do not run on SQLite) |
 | `scripts/` | `scan_anomalies.py` (hourly timer), `cleanup_usage_logs.py`, `azure_latency_probe.py` (per-phase Azure latency, direct vs. via gateway), SQLite → PG migration, legacy `add_owner_id.py`, dev PG helper |
@@ -74,9 +74,11 @@ Each of these has broken production or a test before. The parenthesized test pin
 - Failover or rate-limit fallback may switch servers only before the client has received a byte.
 
 **Side effects never break a request**
-- Billing (`_log_usage`), Langfuse, slow-request logging and the concurrency store are wrapped so their failure can't fail the request. The concurrency store fails **open**. The blind `except Exception` around them is intentional.
+- Billing (`_log_usage`), Langfuse, Prometheus metrics, Teams alerts, slow-request logging and the concurrency store are wrapped so their failure can't fail the request. The concurrency store fails **open**. The blind `except Exception` around them is intentional.
 - Every user-traffic httpx client is built with `event_hooks=UPSTREAM_EVENT_HOOKS` (phase timing); the health client is not. A new client without them silently drops `gateway_overhead_ms` / `upstream_ttfb_ms` for its backend (`test_request_timing.py`).
 - `_log_usage` is the single billing and observability seam. Debug and metadata calls (`render`, `tokenize`, `count_tokens`) must never reach it.
+- Prometheus labels never carry a user identity or a client-sent string: `model` goes through `metrics._model_label` (unknown → `other`). Per-user numbers belong in `usage_logs`, not in a label (`test_unknown_model_is_reported_as_other`).
+- A Teams alert seen by several workers is posted once: claim it in `alert_state` first (`_claim_health` / `_claim_once`), post only on a won claim. Alert jobs run on `alerts._executor`, never inline in a request (`tests/test_teams_alerts.py`).
 - The Langfuse `usage_details` always carries an explicit `total` = input + output. `input` already includes the cached tokens, so without it Langfuse sums every key and counts cache reads twice (`TestSystemOneObservability`).
 
 **Routing and config**
@@ -126,16 +128,18 @@ One paragraph each. Follow the link for the full behavior.
 - **[Concurrency limit](docs/architecture.md#per-user-concurrency-limit-appservicesconcurrencypy)**: `[app].concurrency_limit_mode` (`off` / `monitor` / `enforce`) + `concurrency_limit` (≥ 1; "unlimited" is `off`, never `0`). Leases live in `concurrency_leases`, taken by `deps.limited_*` on chat/responses/messages only. The heartbeat renews leases and sweeps those of dead workers, including once at startup. Admins and `users.concurrency_waived` are exempt; app accounts (`app_*`, `schema.is_app_account`) are created waived, and migration `e4b7c2d91a58` waived the existing ones.
 - **[Health and metrics](docs/architecture.md#runtime-patterns-http-clients-health-loop-logging-export)**: 30 s loop on a dedicated client, with hysteresis (2 failures to go DOWN). Scrapes vLLM `/metrics` with an **exact** metric-name match (vLLM ≥ 0.20's `*_waiting_by_reason` would double-count). `PoolTimeout` keeps the previous state.
 - **[Observability](docs/architecture.md#observability-appservicesobservabilitypy)**: one Langfuse generation per billable request, emitted from `_log_usage`. Errors are recorded via `_log_error`. Request headers are captured by `RequestMetaMiddleware` (pure ASGI). Phase timing (gateway overhead, upstream TTFB, TTFT, tok/s) comes from httpx event hooks plus the stream pumps, under backend-neutral names. I/O capture (`LANGFUSE_CAPTURE_IO`) records the endpoint's own shape.
+- **[Prometheus metrics](docs/architecture.md#prometheus-metrics-appservicesmetricspy)**: opt-in `METRICS_ENABLED`; `GET /metrics` (404 when off). Multiprocess mode, one directory per server run under `METRICS_DIR`, summed over workers. Recorded at `_log_usage`, `_log_error`, the 429 sites in `deps.py`, the health loop and `InFlightMiddleware`.
+- **[Teams alerts](docs/architecture.md#teams-alerts-appservicesalertspy)**: opt-in `TEAMS_WEBHOOK_URL` (`TEAMS_ALERTS` picks `health` / `budget` / `anomaly`). Server DOWN/UP from the health loop, 80% / 100% of the daily limit from the auth check, new findings from the anomaly scan. `alert_state` dedupes across workers and hosts.
 - **[Logging](docs/architecture.md#error-log-redaction-appservicesredactpy)**: per-worker log files. `Slow request` / `Slow response headers` warnings above `SLOW_REQUEST_WARN_S`.
 - **[Admin Model Config](docs/architecture.md#admin-model-config-page-apptemplatesadmin_modelshtml)**: master–detail editor over `GET/PUT /admin/api/config`. Selection lives in the URL hash; dirty tracking compares JSON snapshots.
-- **[Database](docs/architecture.md#database)**: `users`, `usage_logs`, `app_owners`, `anomaly_events`, `concurrency_leases`. The hourly anomaly scan is detection only, never blocking. The usage-log retention timer ships disabled on purpose.
+- **[Database](docs/architecture.md#database)**: `users`, `usage_logs`, `app_owners`, `anomaly_events`, `concurrency_leases`, `alert_state`. The hourly anomaly scan is detection only, never blocking. The usage-log retention timer ships disabled on purpose.
 
 ## Testing
 
 Tests use in-memory SQLite with `StaticPool` (all connections share one DB), set up in `tests/conftest.py`:
 
 - `os.environ["DATABASE_URL"] = "sqlite://"` is set before any app import.
-- The `_patch_all` autouse fixture patches the routing/pricing maps, every httpx client getter, every module-level `engine` (including `app.services.concurrency.engine`), `is_alive`, and the JWT decoder.
+- The `_patch_all` autouse fixture patches the routing/pricing maps, every httpx client getter, every module-level `engine` (including `app.services.concurrency.engine` and `app.services.alerts.engine`), `is_alive`, and the JWT decoder.
 - The `client` fixture builds a test app with a no-op lifespan (no health loop, no lease heartbeat) and mounts every router. Use it with `auth_header()` (API key) or `web_auth_header(sub=..., scopes=["admin"])` (JWT).
 - Mock downstreams on `client.__httpx_mock__.post` (non-stream) or `.send` (stream; `FakeStreamResponse`, `FakeBedrockStreamResponse`).
 
