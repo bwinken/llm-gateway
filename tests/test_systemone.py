@@ -501,7 +501,9 @@ class TestSystemOneObservability:
         assert rec.model_type == "systemone"
         assert rec.endpoint == "/v1/systemone"
         assert rec.model_alias == "test-systemone"
-        assert rec.usage == {"input": 240, "output": 0, "cache_read_input_tokens": 200}
+        # `total` is explicit: Langfuse would otherwise sum all three keys and
+        # count the 200 cached tokens twice (440 instead of 240).
+        assert rec.usage == {"input": 240, "output": 0, "cache_read_input_tokens": 200, "total": 240}
         # output_tokens is 0 by design — not an "empty turn" like a chat model's.
         assert rec.empty_turn is False
         assert rec.input_payload is None and rec.output_payload is None

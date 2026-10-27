@@ -442,9 +442,12 @@ def _emit_observation(
     if get_langfuse() is None:
         return
     meta = get_request_meta()
+    # `input` already includes the cached tokens, so `total` is explicit:
+    # without it Langfuse sums every key and counts cache reads twice.
     usage_details = {"input": input_tokens, "output": output_tokens}
     if cached_tokens:
         usage_details["cache_read_input_tokens"] = cached_tokens
+    usage_details["total"] = input_tokens + output_tokens
     cost_details = {k: float(v) for k, v in breakdown.items()}
     # empty-turn signal only meaningful for chat-like models (embeddings emit 0
     # output tokens legitimately).

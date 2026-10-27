@@ -101,7 +101,7 @@ class GenerationRecord:
     model_alias: str         # user-facing alias  -> Langfuse `model`
     real_model: str          # downstream model/deployment -> metadata
     model_type: str          # llm | vlm | embedding | reranker | systemone | ...
-    usage: dict              # {"input": int, "output": int, "cache_read_input_tokens": int}
+    usage: dict              # {"input": int, "output": int, "cache_read_input_tokens": int, "total": int}
     cost: dict               # {"input": Decimal, "output": Decimal, "cache_read_input_tokens": Decimal, "total": Decimal}
     model_parameters: dict   # {temperature, top_p, max_tokens, reasoning_effort, stream}
     fallback_reason: str | None
@@ -283,7 +283,7 @@ Status: Phase 2 I/O capture wired for all conversational paths on both backends 
 1. With LANGFUSE_* unset: behaviour byte-identical to today; full suite green; no Langfuse import cost on the request path.
 2. With LANGFUSE_* set: each billable request (chat / embeddings / rerank / responses / messages, vLLM + Azure) produces exactly one Langfuse generation.
 3. `costDetails.total` for a request equals the gateway's `_calc_cost` value (incl. prompt-cache discount on Azure).
-4. `usageDetails` carries input/output and cached tokens where available.
+4. `usageDetails` carries input/output and cached tokens where available, plus an explicit `total` = input + output. `input` already includes the cached tokens, and without `total` Langfuse sums every key, counting cache reads twice.
 5. Langfuse Metrics API can group `sum(totalCost)` by model alias and by day.
 6. An `empty_turn` score is attached when `output_tokens <= 1` on a clean finish, queryable as an empty-turn rate per model.
 7. A Langfuse error (e.g. server down) never fails or delays a proxied request.

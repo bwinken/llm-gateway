@@ -75,6 +75,7 @@ Each of these has broken production or a test before. The parenthesized test pin
 - Billing (`_log_usage`), Langfuse, slow-request logging and the concurrency store are wrapped so their failure can't fail the request. The concurrency store fails **open**. The blind `except Exception` around them is intentional.
 - Every user-traffic httpx client is built with `event_hooks=UPSTREAM_EVENT_HOOKS` (phase timing); the health client is not. A new client without them silently drops `gateway_overhead_ms` / `upstream_ttfb_ms` for its backend (`test_request_timing.py`).
 - `_log_usage` is the single billing and observability seam. Debug and metadata calls (`render`, `tokenize`, `count_tokens`) must never reach it.
+- The Langfuse `usage_details` always carries an explicit `total` = input + output. `input` already includes the cached tokens, so without it Langfuse sums every key and counts cache reads twice (`TestSystemOneObservability`).
 
 **Routing and config**
 - Aliases are unique across `[models.*]`, `[azure_models.*]` and `[bedrock_models.*]`. `_build_config` raises at startup; `PUT /admin/api/config` rejects collisions before writing.
