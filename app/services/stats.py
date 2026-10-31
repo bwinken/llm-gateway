@@ -4,24 +4,35 @@ Aggregate DB data for the web dashboard.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from sqlalchemy import case as sa_case
 from sqlmodel import Session, func, select
 
-from app.core.timeutil import LOCAL_TZ, local_day_start_utc
+from app.core.timeutil import local_day_start_utc, local_month_start, local_today
 from app.models.schema import AppOwner, UsageLog, User, app_account_clause, is_app_account
+from app.services.usage_rollup import aggregate
+
+# Days and months are local (Asia/Taipei) calendar days and months, the same
+# day the daily quota resets on. Anything spanning more than today reads
+# through ``usage_rollup.aggregate`` (closed days from ``usage_daily``, the
+# rest from ``usage_logs``); only today-only figures query ``usage_logs``
+# directly.
 
 
-def _local_date(session: Session, col):
-    """SQL expression: Asia/Taipei calendar date of a UTC-wallclock timestamp column.
+def _tomorrow():
+    return local_today() + timedelta(days=1)
 
-    Daily aggregates would otherwise bucket by UTC date, splitting Taipei-morning
-    traffic into the previous day's row.
-    """
-    if session.bind is not None and session.bind.dialect.name == "sqlite":
-        return func.date(col, "+8 hours")
-    return func.date(col + timedelta(hours=8))
+
+def _totals(entry: dict | None) -> dict:
+    """An ``aggregate`` entry as the float/int dict the pages use."""
+    entry = entry or {}
+    return {
+        "cost": float(entry.get("cost_usd", 0) or 0),
+        "input_tokens": int(entry.get("input_tokens", 0)),
+        "output_tokens": int(entry.get("output_tokens", 0)),
+        "requests": int(entry.get("requests", 0)),
+    }
 
 
 def get_user_daily_summary(session: Session, user_id: int) -> dict:
@@ -62,26 +73,15 @@ def get_user_daily_summary(session: Session, user_id: int) -> dict:
 
 
 def get_user_monthly_summary(session: Session, user_id: int) -> dict:
-    """Total tokens and cost for the current calendar month."""
-    now = datetime.now(timezone.utc)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-    stmt = (
-        select(
-            func.coalesce(func.sum(UsageLog.input_tokens), 0).label("total_input"),
-            func.coalesce(func.sum(UsageLog.output_tokens), 0).label("total_output"),
-            func.coalesce(func.sum(UsageLog.cost_usd), 0).label("total_cost"),
-            func.count(UsageLog.id).label("total_requests"),
-        )
-        .where(UsageLog.user_id == user_id)
-        .where(UsageLog.created_at >= month_start)
-    )
-    row = session.exec(stmt).first()
+    """Total tokens and cost for the current local (Asia/Taipei) month."""
+    t = _totals(aggregate(
+        session, local_month_start(), _tomorrow(), user_ids=[user_id],
+    ).get(()))
     return {
-        "total_input_tokens": int(row[0]) if row else 0,
-        "total_output_tokens": int(row[1]) if row else 0,
-        "total_cost_usd": float(row[2]) if row else 0.0,
-        "total_requests": int(row[3]) if row else 0,
+        "total_input_tokens": t["input_tokens"],
+        "total_output_tokens": t["output_tokens"],
+        "total_cost_usd": t["cost"],
+        "total_requests": t["requests"],
     }
 
 
@@ -92,35 +92,19 @@ def get_daily_trends(session: Session, user_id: int, days: int = 30) -> list[dic
     row on an evenly spaced axis, so a skipped day would draw the line
     straight across a quiet weekend and put non-adjacent days side by side.
     """
-    first_day_start = local_day_start_utc() - timedelta(days=days - 1)
-    cutoff = first_day_start
-
-    day = _local_date(session, UsageLog.created_at)
-    stmt = (
-        select(
-            day.label("day"),
-            func.count(UsageLog.id).label("requests"),
-            func.coalesce(func.sum(UsageLog.cost_usd), 0).label("cost"),
-            func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
-        )
-        .where(UsageLog.user_id == user_id)
-        .where(UsageLog.created_at >= cutoff)
-        .group_by(day)
-        .order_by(day)
-    )
-    rows = session.exec(stmt).all()
-    by_day = {
-        str(row[0]): {
-            "date": str(row[0]),
-            "reqs": int(row[1]),
-            "cost": round(float(row[2]), 6),
-            "input_tokens": int(row[3]),
-            "output_tokens": int(row[4]),
+    first = local_today() - timedelta(days=days - 1)
+    by_day = {}
+    for (day,), entry in aggregate(
+        session, first, _tomorrow(), ("day",), user_ids=[user_id],
+    ).items():
+        t = _totals(entry)
+        by_day[day.isoformat()] = {
+            "date": day.isoformat(),
+            "reqs": t["requests"],
+            "cost": round(t["cost"], 6),
+            "input_tokens": t["input_tokens"],
+            "output_tokens": t["output_tokens"],
         }
-        for row in rows
-    }
-    first = datetime.now(LOCAL_TZ).date() - timedelta(days=days - 1)
     out = []
     for i in range(days):
         day_str = (first + timedelta(days=i)).isoformat()
@@ -130,52 +114,45 @@ def get_daily_trends(session: Session, user_id: int, days: int = 30) -> list[dic
     return out
 
 
-def get_dau_trends(session: Session, days: int = 30) -> list[dict]:
-    """Return daily active user counts for the last N days (excludes app accounts)."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+def human_user_ids(session: Session) -> set[int]:
+    """Ids of every existing non-app account (``users`` is small)."""
+    return {int(uid) for uid in session.exec(select(User.id).where(~app_account_clause())).all()}
 
-    day = _local_date(session, UsageLog.created_at)
-    stmt = (
-        select(
-            day.label("day"),
-            func.count(func.distinct(UsageLog.user_id)).label("dau"),
-        )
-        .join(User, UsageLog.user_id == User.id)
-        .where(UsageLog.created_at >= cutoff)
-        .where(~app_account_clause())
-        .group_by(day)
-        .order_by(day)
+
+def count_daily_active(per_day_user: dict[tuple, dict], humans: set[int]) -> dict:
+    """``{day: distinct humans}`` from an ``aggregate`` keyed ``(day, user_id)``.
+
+    Distinct-counting in Python over (day, user) groups replaces a
+    ``count(DISTINCT user_id) ... GROUP BY day``, which made PostgreSQL sort
+    every request row in the window."""
+    out: dict = {}
+    for day, uid in per_day_user:
+        if uid in humans:
+            out[day] = out.get(day, 0) + 1
+    return out
+
+
+def get_dau_trends(session: Session, days: int = 30) -> list[dict]:
+    """Daily active people (app accounts excluded) for the last ``days``
+    local days, today included. Days without activity are left out."""
+    first = local_today() - timedelta(days=days - 1)
+    per_day = count_daily_active(
+        aggregate(session, first, _tomorrow(), ("day", "user_id")),
+        human_user_ids(session),
     )
-    rows = session.exec(stmt).all()
-    return [{"date": str(row[0]), "dau": int(row[1])} for row in rows]
+    return [{"date": day.isoformat(), "dau": n} for day, n in sorted(per_day.items())]
 
 
 def get_monthly_all_users_usage(session: Session) -> dict[int, dict]:
-    """Return per-user usage for the current calendar month."""
-    now = datetime.now(timezone.utc)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-    stmt = (
-        select(
-            UsageLog.user_id,
-            func.coalesce(func.sum(UsageLog.cost_usd), 0),
-            func.coalesce(func.sum(UsageLog.input_tokens), 0),
-            func.coalesce(func.sum(UsageLog.output_tokens), 0),
-            func.count(UsageLog.id),
-        )
-        .where(UsageLog.created_at >= month_start)
-        .group_by(UsageLog.user_id)
-    )
-    rows = session.exec(stmt).all()
-    return {
-        int(row[0]): {
-            "cost": round(float(row[1]), 6),
-            "input_tokens": int(row[2]),
-            "output_tokens": int(row[3]),
-            "requests": int(row[4]),
-        }
-        for row in rows
-    }
+    """Return per-user usage for the current local (Asia/Taipei) month."""
+    out = {}
+    for (uid,), entry in aggregate(
+        session, local_month_start(), _tomorrow(), ("user_id",),
+    ).items():
+        t = _totals(entry)
+        t["cost"] = round(t["cost"], 6)
+        out[int(uid)] = t
+    return out
 
 
 def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
@@ -262,32 +239,14 @@ def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
     if not apps:
         return []
 
-    now = datetime.now(timezone.utc)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-    app_ids = [a.id for a in apps]
-    stmt = (
-        select(
-            UsageLog.user_id,
-            func.coalesce(func.sum(UsageLog.cost_usd), 0),
-            func.coalesce(func.sum(UsageLog.input_tokens), 0),
-            func.coalesce(func.sum(UsageLog.output_tokens), 0),
-            func.count(UsageLog.id),
-        )
-        .where(UsageLog.user_id.in_(app_ids))
-        .where(UsageLog.created_at >= month_start)
-        .group_by(UsageLog.user_id)
-    )
-    rows = session.exec(stmt).all()
-    usage_by_id = {
-        int(row[0]): {
-            "cost": round(float(row[1]), 6),
-            "input_tokens": int(row[2]),
-            "output_tokens": int(row[3]),
-            "requests": int(row[4]),
-        }
-        for row in rows
-    }
+    usage_by_id = {}
+    for (uid,), entry in aggregate(
+        session, local_month_start(), _tomorrow(), ("user_id",),
+        user_ids=[a.id for a in apps],
+    ).items():
+        t = _totals(entry)
+        t["cost"] = round(t["cost"], 6)
+        usage_by_id[int(uid)] = t
 
     return [
         {
@@ -311,46 +270,30 @@ def get_model_breakdown(
 
     Grouped by (model alias, backend) so the dashboard can show which models
     the user's spend went to, with on-prem (vLLM) and cloud (Azure / Bedrock)
-    portions kept separate. ``period`` picks the window: ``"month"`` is UTC
-    month start — the same window as ``get_user_monthly_summary`` so the
-    per-model costs sum to the Monthly Cost card; ``"day"`` is the local
-    (Asia/Taipei) day start — the same window as ``get_user_daily_summary``
-    and the Today's Cost card.
+    portions kept separate. ``period`` picks the window: ``"month"`` is the
+    local (Asia/Taipei) month — the same window as
+    ``get_user_monthly_summary`` so the per-model costs sum to the Monthly
+    Cost card; ``"day"`` is the local day — the same window as
+    ``get_user_daily_summary`` and the Today's Cost card.
     """
-    if period == "day":
-        since = local_day_start_utc()
-    else:
-        now = datetime.now(timezone.utc)
-        since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-    stmt = (
-        select(
-            UsageLog.model,
-            UsageLog.model_type,
-            UsageLog.backend,
-            func.count(UsageLog.id).label("requests"),
-            func.coalesce(func.sum(UsageLog.input_tokens), 0),
-            func.coalesce(func.sum(UsageLog.output_tokens), 0),
-            func.coalesce(func.sum(UsageLog.cost_usd), 0),
-        )
-        .where(UsageLog.user_id == user_id)
-        .where(UsageLog.created_at >= since)
-        .group_by(UsageLog.model, UsageLog.model_type, UsageLog.backend)
-        .order_by(func.sum(UsageLog.cost_usd).desc())
+    start = local_today() if period == "day" else local_month_start()
+    groups = aggregate(
+        session, start, _tomorrow(), ("model", "model_type", "backend"), user_ids=[user_id],
     )
-    rows = session.exec(stmt).all()
-    return [
+    rows = [
         {
-            "model": row[0],
-            "type": row[1],
-            "backend": row[2] or "vllm",
-            "requests": int(row[3]),
-            "input_tokens": int(row[4]),
-            "output_tokens": int(row[5]),
-            "cost_usd": round(float(row[6]), 6),
+            "model": model,
+            "type": model_type,
+            "backend": backend or "vllm",
+            "requests": int(entry["requests"]),
+            "input_tokens": int(entry["input_tokens"]),
+            "output_tokens": int(entry["output_tokens"]),
+            "cost_usd": round(float(entry["cost_usd"]), 6),
         }
-        for row in rows
+        for (model, model_type, backend), entry in groups.items()
     ]
+    rows.sort(key=lambda r: r["cost_usd"], reverse=True)
+    return rows
 
 
 def get_today_totals(session: Session) -> dict:
@@ -363,12 +306,17 @@ def get_today_totals(session: Session) -> dict:
             func.count(UsageLog.id),
         ).where(UsageLog.created_at >= today_start)
     ).first()
-    active = session.exec(
-        select(func.count(func.distinct(UsageLog.user_id)))
+    # Distinct users first, counted outside: lets PostgreSQL hash the
+    # day's user ids instead of sorting every request row of the day.
+    active_ids = (
+        select(UsageLog.user_id)
         .join(User, UsageLog.user_id == User.id)
         .where(UsageLog.created_at >= today_start)
         .where(~app_account_clause())
-    ).one()
+        .distinct()
+        .subquery()
+    )
+    active = session.exec(select(func.count()).select_from(active_ids)).one()
     return {
         "cost": round(float(row[0]), 4) if row else 0.0,
         "requests": int(row[1]) if row else 0,

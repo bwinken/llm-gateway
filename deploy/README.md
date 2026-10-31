@@ -124,6 +124,8 @@ uv run python scripts/cleanup_usage_logs.py --days 180   # custom retention
 uv run python scripts/scan_anomalies.py                  # print findings only
 ```
 
+The daily usage rollup (`usage_logs` → `usage_daily`, which the admin page, dashboard and exports read) needs no timer: the gateway runs it in the background (`USAGE_ROLLUP_INTERVAL_S`, default 600 s), including the one-time backfill after `alembic upgrade head`. `uv run python scripts/rollup_usage_daily.py` shows its progress; `--recompute FROM TO --execute` repairs days after a data correction. See [docs/architecture.md](../docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy).
+
 Other scripts, run by hand from `~/opt/llm-gateway`: `scripts/migrate_sqlite_to_pg.py` (one-off SQLite → PostgreSQL data migration, `--dry-run` / `--sync`) and `scripts/azure_latency_probe.py` (splits Azure latency into phases, direct vs. through the gateway; `--help`).
 
 ## Health Probes

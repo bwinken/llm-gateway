@@ -49,8 +49,9 @@ import sqlalchemy as sa  # noqa: E402
 from sqlmodel import Session, func, select  # noqa: E402
 
 from app.core.config import DATABASE_URL  # noqa: E402
-from app.core.timeutil import local_day_start_utc  # noqa: E402
+from app.core.timeutil import local_day_start_utc, local_today  # noqa: E402
 from app.models.schema import AnomalyEvent, UsageLog, User, is_app_account  # noqa: E402
+from app.services.usage_rollup import aggregate  # noqa: E402
 
 # ── Tunables ──
 COST_SPIKE_RATIO = 5.0          # today > N × 30d daily median
@@ -86,9 +87,14 @@ def _human_user_ids(session: Session) -> dict[int, str]:
     return {int(uid): name for uid, name in rows if not is_app_account(str(name))}
 
 
+def _baseline_window() -> tuple:
+    """The ``BASELINE_DAYS`` local days before today, as ``aggregate`` bounds."""
+    today = local_today()
+    return today - timedelta(days=BASELINE_DAYS), today
+
+
 def detect_cost_spike(session: Session, now: datetime) -> list[dict]:
     day_start = local_day_start_utc()
-    baseline_start = now - timedelta(days=BASELINE_DAYS)
 
     today = session.exec(
         select(UsageLog.user_id, func.coalesce(func.sum(UsageLog.cost_usd), 0))
@@ -96,17 +102,11 @@ def detect_cost_spike(session: Session, now: datetime) -> list[dict]:
         .group_by(UsageLog.user_id)
     ).all()
 
-    # Per-user daily cost history for the median baseline (users × 30 rows).
-    hist = session.exec(
-        select(UsageLog.user_id, func.date(UsageLog.created_at),
-               func.coalesce(func.sum(UsageLog.cost_usd), 0))
-        .where(UsageLog.created_at >= baseline_start)
-        .where(UsageLog.created_at < day_start)
-        .group_by(UsageLog.user_id, func.date(UsageLog.created_at))
-    ).all()
+    # Per-user daily cost history for the median baseline (users × 30 rows),
+    # by local day, from the rollup where it has the days.
     daily: dict[int, list[float]] = defaultdict(list)
-    for uid, _day, cost in hist:
-        daily[int(uid)].append(float(cost))
+    for (uid, _day), agg in aggregate(session, *_baseline_window(), ("user_id", "day")).items():
+        daily[int(uid)].append(float(agg["cost_usd"]))
 
     findings = []
     for uid, cost in today:
@@ -182,16 +182,9 @@ def detect_burst_rate(session: Session, now: datetime) -> list[dict]:
 
 def detect_behavior_shift(session: Session, now: datetime) -> list[dict]:
     day_start = local_day_start_utc()
-    baseline_start = now - timedelta(days=BASELINE_DAYS)
 
-    prior = session.exec(
-        select(UsageLog.user_id, UsageLog.model_type)
-        .where(UsageLog.created_at >= baseline_start)
-        .where(UsageLog.created_at < day_start)
-        .distinct()
-    ).all()
     seen: dict[int, set[str]] = defaultdict(set)
-    for uid, mtype in prior:
+    for uid, mtype in aggregate(session, *_baseline_window(), ("user_id", "model_type")):
         seen[int(uid)].add(str(mtype))
 
     today = session.exec(
@@ -215,9 +208,12 @@ def detect_behavior_shift(session: Session, now: datetime) -> list[dict]:
     return findings
 
 
+_CHATTY_TYPES = ("llm", "vlm")
+
+
 def detect_empty_turn_rate(session: Session, now: datetime) -> list[dict]:
     hour_start = now.replace(minute=0, second=0, microsecond=0)
-    chatty = UsageLog.model_type.in_(("llm", "vlm"))  # type: ignore[attr-defined]
+    chatty = UsageLog.model_type.in_(_CHATTY_TYPES)  # type: ignore[attr-defined]
     empty_case = sa.case((UsageLog.output_tokens <= 1, 1), else_=0)
 
     def rates(since: datetime, until: datetime | None = None):
@@ -236,8 +232,20 @@ def detect_empty_turn_rate(session: Session, now: datetime) -> list[dict]:
         return session.exec(stmt).all()
 
     recent = rates(now - timedelta(hours=1))
-    base = rates(now - timedelta(days=BASELINE_DAYS), now - timedelta(hours=1))
-    base_rate = {str(m): (int(e or 0) / int(n)) for m, n, e in base if int(n) > 0}
+    # Baseline: the BASELINE_DAYS local days before today (rollup's
+    # empty_turns where it has them), plus today up to an hour ago.
+    base_n: dict[str, int] = defaultdict(int)
+    base_e: dict[str, int] = defaultdict(int)
+    for (model, mtype), agg in aggregate(session, *_baseline_window(), ("model", "model_type")).items():
+        if mtype in _CHATTY_TYPES:
+            base_n[str(model)] += int(agg["requests"])
+            base_e[str(model)] += int(agg["empty_turns"])
+    day_start = local_day_start_utc()
+    if now - timedelta(hours=1) > day_start:
+        for m, n, e in rates(day_start, now - timedelta(hours=1)):
+            base_n[str(m)] += int(n)
+            base_e[str(m)] += int(e or 0)
+    base_rate = {m: base_e[m] / n for m, n in base_n.items() if n > 0}
 
     findings = []
     for model, n, empty in recent:

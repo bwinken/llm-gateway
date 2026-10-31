@@ -8,7 +8,7 @@
 
 | 檔案 | 說明 |
 |---|---|
-| `schema.py` | `User`、`AppOwner`、`UsageLog`、`AnomalyEvent`、`ConcurrencyLease` 五個 ORM Model，以及輔助函式 `is_app_account()`（`app_*` 前綴）與 `mask_api_key()`（Admin 列表的金鑰遮罩顯示） |
+| `schema.py` | `User`、`AppOwner`、`UsageLog`、`UsageDaily`、`UsageRollupState`、`AnomalyEvent`、`ConcurrencyLease` 七個 ORM Model，以及輔助函式 `is_app_account()`（`app_*` 前綴）與 `mask_api_key()`（Admin 列表的金鑰遮罩顯示） |
 
 ## ER Diagram
 
@@ -280,3 +280,31 @@ cost_usd = (uncached_input_tokens × input_price_per_1m
 |---|---|---|
 | `ix_concurrency_user_expires` | `user_id`, `expires_at` | 計算使用者的有效 lease 數 |
 | `ix_concurrency_leases_worker_id` | `worker_id` | Heartbeat 續約與已終止 worker 清掃 |
+
+---
+
+## UsageDaily 模型
+
+對應 `usage_daily` 資料表。`usage_logs` 以台北日（Asia/Taipei）為單位的彙總，只由 gateway 背景結算（`app/services/usage_rollup.py`）寫入，且只寫已結束的日子。報表透過 `usage_rollup.aggregate` 讀取：已結算的日子讀這裡，其餘讀 `usage_logs`。詳見 [docs/architecture.md](../../docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy)。
+
+| 欄位 | 型別 | 約束 | 預設值 | 說明 |
+|---|---|---|---|---|
+| `day` | `DATE` | PK | — | 台北日期 |
+| `user_id` | `INTEGER` | PK | — | 無 FK 約束（同 `usage_logs`）；`delete_user` 會明確刪除 |
+| `backend` | `VARCHAR` | PK | — | `vllm`、`azure`、`bedrock` |
+| `model` | `VARCHAR` | PK | — | 模型別名 |
+| `model_type` | `VARCHAR` | PK | — | `llm`、`vlm`、`embedding` 等 |
+| `endpoint` | `VARCHAR` | PK | — | Endpoint 標籤 |
+| `requests` | `BIGINT` | — | `0` | 請求數 |
+| `input_tokens` / `output_tokens` | `BIGINT` | — | `0` | Token 加總 |
+| `cost_usd` | `NUMERIC(16,6)` | — | `0` | 成本加總 |
+| `empty_turns` | `BIGINT` | — | `0` | `output_tokens <= 1` 的請求數 |
+
+| 索引名稱 | 欄位 | 用途 |
+|---|---|---|
+| `usage_daily_pkey` | `day`, `user_id`, `backend`, `model`, `model_type`, `endpoint` | 依日期範圍讀取 |
+| `ix_usage_daily_user_day` | `user_id`, `day` | 單一使用者讀取（dashboard） |
+
+## UsageRollupState 模型
+
+對應 `usage_rollup_state` 資料表。只有一列（`name = "usage_daily"`），`rolled_through`（`DATE`）之前（含）的每一天都已在 `usage_daily` 中，沒有缺漏。沒有這一列代表尚未結算過，報表全部讀 `usage_logs`。

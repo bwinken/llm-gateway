@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import sqlalchemy as sa
@@ -136,6 +136,50 @@ class UsageLog(SQLModel, table=True):
     # spend without parsing the endpoint label.
     backend: str = Field(default="vllm", sa_column=sa.Column(sa.String, nullable=False, server_default="vllm"))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class UsageDaily(SQLModel, table=True):
+    """Per-local-day rollup of ``usage_logs`` (app/services/usage_rollup.py).
+
+    One row per (Asia/Taipei day, user, backend, model, model_type,
+    endpoint): a user produces a handful of rows a day however many requests
+    they make. Written only by ``scripts/rollup_usage_daily.py``, and only
+    for closed days; gateway workers never touch it. Reports read closed
+    days here and the rest from ``usage_logs``
+    (``usage_rollup.aggregate``). ``empty_turns`` counts requests with at
+    most one output token (the anomaly scan's empty-turn baseline).
+
+    No foreign key on ``user_id``, like ``usage_logs``: ``delete_user``
+    removes the rows explicitly.
+    """
+    __tablename__ = "usage_daily"
+    __table_args__ = (
+        Index("ix_usage_daily_user_day", "user_id", "day"),
+    )
+
+    day: date = Field(primary_key=True)
+    user_id: int = Field(primary_key=True)
+    backend: str = Field(primary_key=True)
+    model: str = Field(primary_key=True)
+    model_type: str = Field(primary_key=True)
+    endpoint: str = Field(primary_key=True)
+    requests: int = Field(default=0, sa_column=sa.Column(sa.BigInteger, nullable=False))
+    input_tokens: int = Field(default=0, sa_column=sa.Column(sa.BigInteger, nullable=False))
+    output_tokens: int = Field(default=0, sa_column=sa.Column(sa.BigInteger, nullable=False))
+    cost_usd: Decimal = Field(default=Decimal("0"), sa_column=sa.Column(sa.Numeric(16, 6), nullable=False))
+    empty_turns: int = Field(default=0, sa_column=sa.Column(sa.BigInteger, nullable=False))
+
+
+class UsageRollupState(SQLModel, table=True):
+    """Progress of the ``usage_daily`` rollup: every local day up to and
+    including ``rolled_through`` is in ``usage_daily``, with no gaps. Readers
+    take days after it from ``usage_logs``, so a rollup that never ran or
+    fell behind costs speed, never correctness."""
+    __tablename__ = "usage_rollup_state"
+
+    name: str = Field(primary_key=True)
+    rolled_through: date = Field()
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AnomalyEvent(SQLModel, table=True):

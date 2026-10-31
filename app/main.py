@@ -52,6 +52,11 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(sweep_safely)
     lease_task = asyncio.create_task(lease_heartbeat_loop())
 
+    # Roll closed days of usage_logs into usage_daily (reports read it).
+    # Every worker runs it; an advisory lock lets one do each day.
+    from app.services.usage_rollup import rollup_loop
+    rollup_task = asyncio.create_task(rollup_loop())
+
     # Launch background health checker
     health_task = asyncio.create_task(health_check_loop(interval=30))
     logger.info("{} ready.", APP_TITLE)
@@ -59,7 +64,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    for task in (health_task, lease_task):
+    for task in (health_task, lease_task, rollup_task):
         task.cancel()
         try:
             await task

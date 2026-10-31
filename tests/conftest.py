@@ -379,6 +379,7 @@ _ALL_PATCHES = [
     # short sessions too. The limit defaults to mode "off", so only tests that
     # turn it on ever reach it.
     lambda: patch("app.services.concurrency.engine", _test_engine),
+    lambda: patch("app.services.usage_rollup.engine", _test_engine),
     lambda: patch("app.services.vllm_proxy.is_alive", return_value=True),
     lambda: patch("app.services.azure_proxy.AZURE_MODELS", TEST_AZURE_MODELS),
     lambda: patch("app.services.azure_proxy.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),
@@ -405,6 +406,7 @@ def _patch_all():
     """Apply all patches for every test."""
     import app.services.vllm_proxy  # noqa: F811 — ensure module is loaded before patching
     import app.services.concurrency  # noqa: F401 — same, for the lease-store engine patch
+    import app.services.usage_rollup  # noqa: F401 — same, for the rollup engine patch
     from contextlib import ExitStack
 
     with ExitStack() as stack:

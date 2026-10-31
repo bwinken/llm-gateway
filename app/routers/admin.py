@@ -42,12 +42,13 @@ from app.models.schema import (
     AnomalyEvent,
     AppOwner,
     User,
+    UsageDaily,
     UsageLog,
     app_account_clause,
     is_app_account,
     mask_api_key,
 )
-from app.services import concurrency
+from app.services import concurrency, usage_rollup
 from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
@@ -707,6 +708,11 @@ def delete_user(
     # point at their original owner.
     session.execute(update(User).where(User.owner_id == user_id).values(owner_id=None))
     session.execute(delete(AnomalyEvent).where(AnomalyEvent.user_id == user_id))
+    # The rollup lock keeps a rollup transaction that already read this
+    # user's usage_logs from re-inserting their usage_daily rows after this
+    # delete. Held only until the commit below.
+    usage_rollup.lock(session)
+    session.execute(delete(UsageDaily).where(UsageDaily.user_id == user_id))
     session.execute(delete(UsageLog).where(UsageLog.user_id == user_id))
     concurrency.delete_user_leases(session, user_id)
     session.delete(target)

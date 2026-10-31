@@ -124,6 +124,8 @@ uv run python scripts/cleanup_usage_logs.py --days 180   # 自訂保留天數
 uv run python scripts/scan_anomalies.py                  # 只列出結果
 ```
 
+每日用量彙總（`usage_logs` → `usage_daily`，管理頁面、dashboard 與匯出報表都讀它）不需要 timer：gateway 自己在背景執行（`USAGE_ROLLUP_INTERVAL_S`，預設 600 秒），`alembic upgrade head` 之後的第一次回填也是自動的。`uv run python scripts/rollup_usage_daily.py` 可查看進度；資料修正後用 `--recompute FROM TO --execute` 重算指定日期。詳見 [docs/architecture.md](../docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy)。
+
 其他腳本，需要時在 `~/opt/llm-gateway` 手動執行：`scripts/migrate_sqlite_to_pg.py`（一次性的 SQLite → PostgreSQL 資料遷移，`--dry-run` / `--sync`）與 `scripts/azure_latency_probe.py`（把 Azure 延遲拆成各階段，比較直連與經過 gateway；見 `--help`）。
 
 ## 健康檢查

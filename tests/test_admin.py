@@ -141,7 +141,10 @@ class TestDeleteUser:
 
         from sqlmodel import select
 
-        from app.models.schema import AnomalyEvent, AppOwner, UsageLog, User
+        from datetime import date
+        from decimal import Decimal
+
+        from app.models.schema import AnomalyEvent, AppOwner, UsageDaily, UsageLog, User
 
         now = datetime.now(timezone.utc)
         legacy_app = User(username="app_legacy", owner_id=test_user.id)
@@ -149,6 +152,11 @@ class TestDeleteUser:
         db_session.commit()
         db_session.add(AppOwner(app_id=legacy_app.id, owner_id=test_user.id))
         db_session.add(UsageLog(user_id=test_user.id, model="m", endpoint="/v1/chat/completions"))
+        db_session.add(UsageDaily(
+            day=date(2026, 1, 1), user_id=test_user.id, backend="vllm", model="m",
+            model_type="llm", endpoint="/v1/chat/completions", requests=1,
+            input_tokens=1, output_tokens=1, cost_usd=Decimal("0.1"), empty_turns=0,
+        ))
         db_session.add(AnomalyEvent(
             scope=f"user:{test_user.id}", rule="cost_spike", user_id=test_user.id,
             window_start=now, window_end=now,
@@ -172,3 +180,4 @@ class TestDeleteUser:
         assert db_session.get(User, app_id).owner_id is None
         assert db_session.exec(select(AnomalyEvent).where(AnomalyEvent.user_id == uid)).all() == []
         assert db_session.exec(select(AppOwner)).all() == []
+        assert db_session.exec(select(UsageDaily).where(UsageDaily.user_id == uid)).all() == []

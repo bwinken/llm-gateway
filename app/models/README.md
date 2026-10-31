@@ -8,7 +8,7 @@ Defines PostgreSQL table structures using [SQLModel](https://sqlmodel.tiangolo.c
 
 | File | Description |
 |---|---|
-| `schema.py` | `User`, `AppOwner`, `UsageLog`, `AnomalyEvent`, `ConcurrencyLease` — five ORM models, plus helpers `is_app_account()` (`app_*` prefix) and `mask_api_key()` (key display in admin listings) |
+| `schema.py` | `User`, `AppOwner`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `AnomalyEvent`, `ConcurrencyLease` — seven ORM models, plus helpers `is_app_account()` (`app_*` prefix) and `mask_api_key()` (key display in admin listings) |
 
 ## ER Diagram
 
@@ -280,3 +280,31 @@ Timestamps are naive UTC (unlike the aware values other tables use) so a Postgre
 |---|---|---|
 | `ix_concurrency_user_expires` | `user_id`, `expires_at` | Count a user's live leases |
 | `ix_concurrency_leases_worker_id` | `worker_id` | Heartbeat renewal and dead-worker sweep |
+
+---
+
+## UsageDaily Model
+
+Maps to `usage_daily` table. Per-local-day (Asia/Taipei) rollup of `usage_logs`, written only by the gateway's background rollup (`app/services/usage_rollup.py`) for closed days. Reports read closed days here and the rest from `usage_logs` through `usage_rollup.aggregate`. See [docs/architecture.md](../../docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy).
+
+| Field | Type | Constraints | Default | Description |
+|---|---|---|---|---|
+| `day` | `DATE` | PK | — | Asia/Taipei calendar day |
+| `user_id` | `INTEGER` | PK | — | No FK constraint (like `usage_logs`); `delete_user` removes the rows |
+| `backend` | `VARCHAR` | PK | — | `vllm`, `azure`, `bedrock` |
+| `model` | `VARCHAR` | PK | — | Model alias |
+| `model_type` | `VARCHAR` | PK | — | `llm`, `vlm`, `embedding`, ... |
+| `endpoint` | `VARCHAR` | PK | — | Endpoint label |
+| `requests` | `BIGINT` | — | `0` | Request count |
+| `input_tokens` / `output_tokens` | `BIGINT` | — | `0` | Token sums |
+| `cost_usd` | `NUMERIC(16,6)` | — | `0` | Cost sum |
+| `empty_turns` | `BIGINT` | — | `0` | Requests with `output_tokens <= 1` |
+
+| Index Name | Columns | Purpose |
+|---|---|---|
+| `usage_daily_pkey` | `day`, `user_id`, `backend`, `model`, `model_type`, `endpoint` | Date-range reads |
+| `ix_usage_daily_user_day` | `user_id`, `day` | Per-user reads (dashboard) |
+
+## UsageRollupState Model
+
+Maps to `usage_rollup_state` table. One row (`name = "usage_daily"`) holding `rolled_through` (`DATE`): every day up to it is in `usage_daily`, with no gaps. No row means the rollup has not run yet, and reports read `usage_logs` only.

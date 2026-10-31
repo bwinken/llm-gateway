@@ -1,19 +1,23 @@
 """
 Admin-only usage analytics: month-granular aggregations for the xlsx export.
 
-Queries iterate month-by-month in Python to stay portable across
-PostgreSQL (prod) and SQLite (tests) without date_trunc/to_char.
+Months are local (Asia/Taipei) calendar months. Usage is read through
+``usage_rollup.aggregate`` (closed days from ``usage_daily``, the rest from
+``usage_logs``), month by month, which stays portable across PostgreSQL
+(prod) and SQLite (tests) without date_trunc/to_char.
 """
 
 from __future__ import annotations
 
 import calendar
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date
 
-from sqlmodel import Session, func, select
+from sqlmodel import Session, select
 
-from app.models.schema import AppOwner, UsageLog, User, app_account_clause, is_app_account
+from app.core.timeutil import next_month_first_day
+from app.models.schema import AppOwner, User, is_app_account
+from app.services.usage_rollup import aggregate
 
 
 @dataclass
@@ -62,22 +66,18 @@ def iter_months(from_ym: str, to_ym: str) -> list[tuple[int, int]]:
     return months
 
 
-def _month_bounds(year: int, month: int) -> tuple[datetime, datetime]:
-    start = datetime(year, month, 1, tzinfo=timezone.utc)
-    if month == 12:
-        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
-    else:
-        end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
-    return start, end
+def _month_bounds(year: int, month: int) -> tuple[date, date]:
+    """Local (Asia/Taipei) days ``[first of month, first of next month)``."""
+    return date(year, month, 1), next_month_first_day(year, month)
 
 
 # ── Per-month aggregations ──
 #
-# A month is scanned ONCE, grouped by (user, backend) — ``_month_usage`` —
+# A month is read ONCE, grouped by (user, backend) — ``_month_usage`` —
 # and every section of the report is derived from those per-user rows in
-# Python. Only the DAU figures need a second, per-day query. ``usage_logs``
-# holds millions of rows a month, and a 24-month export used to run seven
-# range scans per month.
+# Python. Only the DAU figures need a second, per-(day, user) read. Both go
+# through ``aggregate``, so a closed month costs a few thousand
+# ``usage_daily`` rows rather than millions of ``usage_logs`` rows.
 
 # Backends a usage_logs row can carry today. Rows written before backend
 # tagging existed were backfilled/server-defaulted to "vllm", so unknown
@@ -109,56 +109,39 @@ def _load_users(session: Session) -> dict[int, _UserInfo]:
     }
 
 
-def _month_usage(session: Session, start: datetime, end: datetime) -> dict[int, dict]:
+def _month_usage(session: Session, start: date, end: date) -> dict[int, dict]:
     """Per-user totals for one month, with cost split by backend: the
-    month's single scan of ``usage_logs``. ``cost`` is unrounded."""
-    rows = session.exec(
-        select(
-            UsageLog.user_id,
-            UsageLog.backend,
-            func.count(UsageLog.id),
-            func.coalesce(func.sum(UsageLog.input_tokens), 0),
-            func.coalesce(func.sum(UsageLog.output_tokens), 0),
-            func.coalesce(func.sum(UsageLog.cost_usd), 0),
-        )
-        .where(UsageLog.created_at >= start)
-        .where(UsageLog.created_at < end)
-        .group_by(UsageLog.user_id, UsageLog.backend)
-    ).all()
+    month's single usage read. ``cost`` is unrounded."""
     per_user: dict[int, dict] = {}
-    for uid, backend, reqs, inp, out, cost in rows:
+    for (uid, backend), agg in aggregate(session, start, end, ("user_id", "backend")).items():
         entry = per_user.setdefault(int(uid), {
             "requests": 0, "input_tokens": 0, "output_tokens": 0, "cost": 0.0,
             "backend_cost": {b: 0.0 for b in _KNOWN_BACKENDS},
         })
-        cost = float(cost or 0)
-        entry["requests"] += int(reqs)
-        entry["input_tokens"] += int(inp)
-        entry["output_tokens"] += int(out)
+        cost = float(agg["cost_usd"])
+        entry["requests"] += int(agg["requests"])
+        entry["input_tokens"] += int(agg["input_tokens"])
+        entry["output_tokens"] += int(agg["output_tokens"])
         entry["cost"] += cost
         entry["backend_cost"][backend if backend in _KNOWN_BACKENDS else "vllm"] += cost
     return per_user
 
 
-def _daily_active_humans(session: Session, start: datetime, end: datetime) -> list[int]:
-    """Distinct human users per (UTC) day with any activity in the month."""
-    dau_stmt = (
-        select(
-            func.date(UsageLog.created_at),
-            func.count(func.distinct(UsageLog.user_id)),
-        )
-        .join(User, UsageLog.user_id == User.id)
-        .where(UsageLog.created_at >= start)
-        .where(UsageLog.created_at < end)
-        .where(~app_account_clause())
-        .group_by(func.date(UsageLog.created_at))
-    )
-    return [int(r[1]) for r in session.exec(dau_stmt).all()]
+def _daily_active_humans(
+    session: Session, start: date, end: date, users: dict[int, _UserInfo],
+) -> list[int]:
+    """Distinct existing human users per local day with any activity in the month."""
+    per_day: dict[date, int] = {}
+    for day, uid in aggregate(session, start, end, ("day", "user_id")):
+        info = users.get(int(uid))
+        if info is not None and not info.is_app:
+            per_day[day] = per_day.get(day, 0) + 1
+    return [n for _, n in sorted(per_day.items())]
 
 
 def _summary(
     usage: dict[int, dict], users: dict[int, _UserInfo],
-    daily_counts: list[int], start: datetime,
+    daily_counts: list[int], start: date,
 ) -> dict:
     # Totals over everything (humans + apps)
     days_in_month = calendar.monthrange(start.year, start.month)[1]
@@ -292,7 +275,7 @@ def compute_month(
     usage = _month_usage(session, start, end)
     return MonthBreakdown(
         month=f"{year:04d}-{month:02d}",
-        summary=_summary(usage, users, _daily_active_humans(session, start, end), start),
+        summary=_summary(usage, users, _daily_active_humans(session, start, end, users), start),
         by_department=_by_department(usage, users),
         by_app=_by_app(session, usage, users),
         user_ranking=_user_ranking(usage, users),

@@ -23,7 +23,7 @@ uv add <package>                           # add a dependency (commit uv.lock to
 
 | Path | What lives there |
 |---|---|
-| `app/main.py` | App, lifespan (DB init, httpx clients, health loop, concurrency-lease heartbeat), middleware, `AccountDisabledError` handler |
+| `app/main.py` | App, lifespan (DB init, httpx clients, health loop, concurrency-lease heartbeat, usage rollup loop), middleware, `AccountDisabledError` handler |
 | `app/core/config.py` | `config.toml` → `MODEL_ROUTING`, `AZURE_MODELS`, `BEDROCK_MODELS`, pricing and fallback maps; `[app]` getters/setters; `save_config` |
 | `app/core/deps.py` | API-key auth, daily limit and cloud cap, concurrency-limited dependencies |
 | `app/core/auth.py` | Web-UI JWT auth (`get_web_user`, scopes) |
@@ -32,11 +32,12 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | `app/services/vllm_proxy.py` | vLLM forwarding, failover, SSE pump, `_log_usage` (billing + Langfuse seam) |
 | `app/services/azure_proxy.py`, `bedrock_proxy.py` | Cloud forwarding; translation via `responses_adapter.py` / `converse_adapter.py` |
 | `app/services/anthropic_adapter.py` | Anthropic Messages ↔ OpenAI chat (the internal pivot format) |
+| `app/services/usage_rollup.py` | `usage_daily` rollup: `aggregate` (the read path for every multi-day report), the in-app `rollup_loop` |
 | `app/services/` (rest) | `concurrency`, `rate_limit_fallback`, `reasoning_effort`, `health`, `observability`, `metrics` (Prometheus), `redact`, `stats`, `analytics` / `usage_export`, `aws_eventstream` |
-| `app/models/schema.py` | `User`, `UsageLog`, `AppOwner`, `AnomalyEvent`, `ConcurrencyLease` |
+| `app/models/schema.py` | `User`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `AppOwner`, `AnomalyEvent`, `ConcurrencyLease` |
 | `app/templates/` | `dashboard.html`, `admin.html`, `admin_models.html` (model-config SPA), `base.html` |
 | `alembic/versions/` | Migrations (PostgreSQL-only: they do not run on SQLite) |
-| `scripts/` | `scan_anomalies.py` (hourly timer), `cleanup_usage_logs.py`, `azure_latency_probe.py` (per-phase Azure latency, direct vs. via gateway), SQLite → PG migration, legacy `add_owner_id.py`, dev PG helper |
+| `scripts/` | `scan_anomalies.py` (hourly timer), `rollup_usage_daily.py` (manual inspect / repair of the in-app rollup), `cleanup_usage_logs.py`, `azure_latency_probe.py` (per-phase Azure latency, direct vs. via gateway), SQLite → PG migration, legacy `add_owner_id.py`, dev PG helper |
 | `deploy/` | systemd units, nginx example, docker-compose (PG + oauth2-proxy), `setup.sh` |
 | `setup/install-claude-code-example.bat` | Windows Claude Code installer, personalized with the user's key by `/dashboard/install-claude-code.bat` |
 
@@ -65,7 +66,13 @@ Each of these has broken production or a test before. The parenthesized test pin
 - Never hold a DB connection across a stream: no advisory locks, no long transactions.
 - A web/admin handler that queries the DB and never `await`s is a plain `def` (FastAPI's threadpool). An `async def` running a `usage_logs` aggregate blocks the event loop and stalls every stream on the worker (`TestReportPagesRunOffTheEventLoop`).
 - Select app accounts in SQL with `schema.app_account_clause()`, never `User.username.startswith("app_")`: that compiles to `LIKE 'app_%'`, where `_` is a wildcard (`TestAppAccountClause`).
-- `delete_user` clears every row referencing `users.id` before deleting the user: `app_owners`, the legacy `users.owner_id`, `anomaly_events`, `usage_logs`, leases. Add any new FK there too; PostgreSQL turns a missed one into a 500 that SQLite tests miss unless `PRAGMA foreign_keys` is on (`TestDeleteUser`).
+- `delete_user` clears every row referencing `users.id` before deleting the user: `app_owners`, the legacy `users.owner_id`, `anomaly_events`, `usage_daily` (under the rollup lock), `usage_logs`, leases. Add any new FK there too; PostgreSQL turns a missed one into a 500 that SQLite tests miss unless `PRAGMA foreign_keys` is on (`TestDeleteUser`).
+
+**Usage reports**
+- Report days and months are **Asia/Taipei** calendar days and months (`timeutil.local_today`, `local_month_start`, `local_day_start_utc_of`), never UTC months.
+- Any figure spanning more than today reads through `usage_rollup.aggregate`, never a new `usage_logs` range scan: that scan is what made `/admin` slow as traffic grew. Today-only figures may query `usage_logs`. Every report must give the same numbers whether the rollup has run or not (`TestSameNumbersEitherWay`).
+- Only the rollup writes `usage_daily`, never the request path: a per-request upsert would make one user's concurrent requests contend on the same row. Days after the watermark are read from `usage_logs`, so the rollup being off or behind costs speed, never correctness.
+- Never DISTINCT-count users per day in SQL over request rows (`count(DISTINCT user_id) ... GROUP BY day` sorts every row); count `(day, user_id)` groups (`stats.count_daily_active`).
 
 **Streams**
 - Every streaming pre-flight uses `_STREAM_TIMEOUT` (time-to-headers is bounded) and checks `status_code` **before** handing the response to the pump. A cloud 4xx is a JSON body that the pump would silently drop (`test_stream_preflight_timeout.py`).
@@ -130,15 +137,16 @@ One paragraph each. Follow the link for the full behavior.
 - **[Prometheus metrics](docs/architecture.md#prometheus-metrics-appservicesmetricspy)**: opt-in `METRICS_ENABLED`; `GET /metrics` (404 when off). Multiprocess mode, one directory per server run under `METRICS_DIR`, summed over workers. Recorded at `_log_usage`, `_log_error`, the 429 sites in `deps.py`, the health loop and `InFlightMiddleware`.
 - **[Logging](docs/architecture.md#error-log-redaction-appservicesredactpy)**: per-worker log files. `Slow request` / `Slow response headers` warnings above `SLOW_REQUEST_WARN_S`.
 - **[Admin Model Config](docs/architecture.md#admin-model-config-page-apptemplatesadmin_modelshtml)**: master–detail editor over `GET/PUT /admin/api/config`. Selection lives in the URL hash; dirty tracking compares JSON snapshots.
-- **[Database](docs/architecture.md#database)**: `users`, `usage_logs`, `app_owners`, `anomaly_events`, `concurrency_leases`. The hourly anomaly scan is detection only, never blocking. The usage-log retention timer ships disabled on purpose.
+- **[Daily usage rollup](docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy)**: closed local days of `usage_logs` are summed into `usage_daily` (one row per day × user × backend × model × model_type × endpoint, plus `empty_turns`). Every worker runs `rollup_loop` from the lifespan (`USAGE_ROLLUP_INTERVAL_S`, default 600, `0` off), one day per transaction under `pg_try_advisory_xact_lock`, so exactly one worker rolls each day and no external scheduler is needed; days are rolled 15 min after they end, and the first run backfills. Reads go through `aggregate`: up to the watermark from `usage_daily`, the rest from `usage_logs`. `scripts/rollup_usage_daily.py` inspects and repairs (`--recompute`).
+- **[Database](docs/architecture.md#database)**: `users`, `usage_logs`, `usage_daily` + `usage_rollup_state`, `app_owners`, `anomaly_events`, `concurrency_leases`. The hourly anomaly scan is detection only, never blocking. The usage-log retention timer ships disabled on purpose.
 
 ## Testing
 
 Tests use in-memory SQLite with `StaticPool` (all connections share one DB), set up in `tests/conftest.py`:
 
 - `os.environ["DATABASE_URL"] = "sqlite://"` is set before any app import.
-- The `_patch_all` autouse fixture patches the routing/pricing maps, every httpx client getter, every module-level `engine` (including `app.services.concurrency.engine`), `is_alive`, and the JWT decoder.
-- The `client` fixture builds a test app with a no-op lifespan (no health loop, no lease heartbeat) and mounts every router. Use it with `auth_header()` (API key) or `web_auth_header(sub=..., scopes=["admin"])` (JWT).
+- The `_patch_all` autouse fixture patches the routing/pricing maps, every httpx client getter, every module-level `engine` (including `app.services.concurrency.engine` and `app.services.usage_rollup.engine`), `is_alive`, and the JWT decoder.
+- The `client` fixture builds a test app with a no-op lifespan (no health loop, no lease heartbeat, no rollup loop) and mounts every router. Tests run the rollup explicitly (`usage_rollup.advance(db_session, now=...)`). Use it with `auth_header()` (API key) or `web_auth_header(sub=..., scopes=["admin"])` (JWT).
 - Mock downstreams on `client.__httpx_mock__.post` (non-stream) or `.send` (stream; `FakeStreamResponse`, `FakeBedrockStreamResponse`).
 
 Pitfalls:

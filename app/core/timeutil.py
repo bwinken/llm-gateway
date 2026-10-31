@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 LOCAL_TZ = ZoneInfo("Asia/Taipei")
@@ -35,3 +35,29 @@ def local_day_start_utc() -> datetime:
     local_now = datetime.now(LOCAL_TZ)
     local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
     return local_midnight.astimezone(timezone.utc)
+
+
+# ── Local (Asia/Taipei) calendar days and months ──
+#
+# Reports bucket usage by local calendar day and local month (the same day
+# the daily quota resets on). ``usage_logs.created_at`` holds UTC wall-clock
+# time, so a local day ``d`` covers ``[local_day_start_utc_of(d),
+# local_day_start_utc_of(d + 1))`` in that column.
+
+def local_today() -> date:
+    """Today's date in Asia/Taipei."""
+    return datetime.now(LOCAL_TZ).date()
+
+
+def local_day_start_utc_of(day: date) -> datetime:
+    """UTC-aware instant of local (Asia/Taipei) midnight starting ``day``."""
+    return datetime(day.year, day.month, day.day, tzinfo=LOCAL_TZ).astimezone(timezone.utc)
+
+
+def next_month_first_day(year: int, month: int) -> date:
+    return date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+
+
+def local_month_start() -> date:
+    """First day of the current local (Asia/Taipei) month."""
+    return local_today().replace(day=1)
