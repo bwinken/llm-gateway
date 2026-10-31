@@ -244,13 +244,17 @@ Every user-traffic client (shared, Azure, Bedrock) is built with `event_hooks=UP
 
 ### `timeutil.py` — Local-Day Helpers
 
-Daily budgets reset at local midnight in `LOCAL_TZ` (`Asia/Taipei`).
+Daily budgets reset at local midnight in `LOCAL_TZ` (`Asia/Taipei`), and reports use the same local days and months.
 
 | Function | Description |
 |---|---|
 | `local_day_start_utc()` | UTC-aware datetime of the latest local midnight; the lower bound of "today's spend" |
 | `next_local_midnight(local_now=None)` | Next local midnight (aware) |
 | `seconds_until_local_midnight()` | Seconds until the reset (≥ 1); the `Retry-After` value on daily-limit 429s |
+| `local_today()` | Today's local date |
+| `local_day_start_utc_of(day)` | UTC-aware instant of the local midnight starting `day`: local day `d` is `[local_day_start_utc_of(d), local_day_start_utc_of(d + 1))` in `created_at` |
+| `local_month_start()` | First day of the current local month (reports' month-to-date window) |
+| `next_month_first_day(year, month)` | First day of the following month (month bounds for exports) |
 
 ---
 

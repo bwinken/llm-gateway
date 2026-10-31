@@ -209,7 +209,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `POST` | `/admin/users/{id}/owner` | 替換 App 帳號的 owner（表單 `owner_usernames`，逗號分隔；有不存在的名稱回 400）。回傳 JSON |
 | `POST` | `/admin/users/{id}/limit` | 修改使用者每日限額（表單 `new_limit`） |
 | `POST` | `/admin/users/{id}/cloud-limit` | 設定使用者自己的雲端上限（表單 `new_cloud_limit`；空白則清除、改依預設值，`0` 為 $0 上限） |
-| `POST` | `/admin/users/{id}/delete` | 先清掉所有參照該使用者的資料（app owner、舊版 `owner_id`、anomaly event、usage log、並行租約）再刪除使用者。不可刪除自己 |
+| `POST` | `/admin/users/{id}/delete` | 先清掉所有參照該使用者的資料（app owner、舊版 `owner_id`、anomaly event、並行租約）再刪除使用者。usage log 與每日彙總保留（計費／稽核紀錄），並在 log 記下 id 對應的帳號。不可刪除自己 |
 | `GET` | `/admin/users/{id}/api-key` | 取得單一帳號的完整 API key，回傳 JSON（列表只顯示遮罩後的 key）。會記錄是誰查了誰的 key |
 | `POST` | `/admin/users/{id}/refresh-key` | 重新產生任意使用者的 API key，回傳 JSON |
 | `POST` | `/admin/users/{id}/toggle-disable` | 翻轉使用者的 `is_disabled` 旗標。禁止停用自己（回 400）；可以重新啟用自己 |
@@ -230,7 +230,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `GET` | `/admin/users` | 列出所有使用者（遮罩後的 `api_key`、`daily_limit_usd`、`cloud_daily_limit_usd`、`is_admin`、`concurrency_waived`、`owner_ids`、`display_name`、`org_code`） |
 | `POST` | `/admin/users` | 建立使用者（JSON body：`username`、`daily_limit_usd`、`cloud_daily_limit_usd` — `null` 表示依預設值、`is_admin`、`concurrency_waived` — 必須是 JSON boolean，`app_*` 帳號預設為 true、`owner_ids`）。username 重複回 409；回應含完整 `api_key` |
 | `PATCH` | `/admin/users/{id}` | 更新使用者（`daily_limit_usd`、`cloud_daily_limit_usd`、`is_admin`、`owner_ids` — 整份替換 owner 清單、`concurrency_waived` — 必須是 JSON boolean） |
-| `GET` | `/admin/api/anomalies` | `scripts/scan_anomalies.py` 寫入的異常紀錄（`?status=new` 為預設，或 `acknowledged`、`resolved`、`all`；`?limit=50`，上限 200） |
+| `GET` | `/admin/api/anomalies` | gateway 每小時異常掃描（`app/services/anomaly_scan.py`）寫入的異常紀錄（`?status=new` 為預設，或 `acknowledged`、`resolved`、`all`；`?limit=50`，上限 200） |
 | `POST` | `/admin/api/anomalies/{id}/ack` | 將異常標為 `acknowledged` |
 | `POST` | `/admin/api/anomalies/{id}/resolve` | 將異常標為 `resolved` |
 

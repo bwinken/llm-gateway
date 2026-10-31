@@ -89,6 +89,9 @@ api_key    = ""                        # vLLM 的 --api-key（有設才填）
 | `LOG_DIR`、`LOG_LEVEL`、`LOG_ROTATION`、`LOG_RETENTION` | Log 檔，每個 worker 一個 | `./logs`、`WARNING`、`100 MB`、`14 days` |
 | `LOG_REQUEST_BODIES` | 下游出錯時記錄原始請求內容。內含使用者 prompt，僅限除錯時暫時開啟 | `false` |
 | `DOWNSTREAM_MAX_CONNECTIONS` | HTTP 連線池大小，每條進行中的串流佔一條連線 | `1000` |
+| `USAGE_ROLLUP_INTERVAL_S` | 背景每日用量彙總（報表讀它）的檢查間隔秒數（`0` 為關閉：報表仍正確，只是較慢） | `600` |
+| `ANOMALY_SCAN_INTERVAL_S` | gateway 內建用量異常掃描的間隔秒數（`0` 為關閉） | `3600` |
+| `USAGE_LOG_RETENTION_DAYS` | 每天刪除超過這個天數的 `usage_logs`（只刪已彙總進每日彙總的日子，報表仍保有）。不設定就永久保留 | 未設定 |
 
 SSO 登入本身（OIDC issuer、client secret）是在 `deploy/.env` 為 oauth2-proxy 設定，詳見 [deploy/README.md](deploy/README.md)。
 

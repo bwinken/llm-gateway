@@ -244,13 +244,17 @@ limited_*：取得併發 lease（推論端點），回應送完後釋放
 
 ### `timeutil.py` — 本地日期工具
 
-每日額度在 `LOCAL_TZ`（`Asia/Taipei`）的午夜重置。
+每日額度在 `LOCAL_TZ`（`Asia/Taipei`）的午夜重置，報表也使用同樣的本地日與本地月。
 
 | 函式 | 說明 |
 |---|---|
 | `local_day_start_utc()` | 最近一次本地午夜的 UTC aware datetime；「今日花費」的起點 |
 | `next_local_midnight(local_now=None)` | 下一個本地午夜（aware） |
 | `seconds_until_local_midnight()` | 距離重置的秒數（≥ 1）；額度 429 的 `Retry-After` 值 |
+| `local_today()` | 今天的本地日期 |
+| `local_day_start_utc_of(day)` | `day` 那天本地午夜的 UTC aware 時間：本地日 `d` 在 `created_at` 中是 `[local_day_start_utc_of(d), local_day_start_utc_of(d + 1))` |
+| `local_month_start()` | 本月（本地）第一天，報表「本月至今」的起點 |
+| `next_month_first_day(year, month)` | 下個月第一天（匯出報表的月份範圍） |
 
 ---
 

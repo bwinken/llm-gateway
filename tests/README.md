@@ -20,8 +20,8 @@ that work:
 | Mechanism | What it does |
 |---|---|
 | In-memory SQLite + `StaticPool` | `DATABASE_URL=sqlite://` is set before any app import; all connections share one DB, and tables are dropped and recreated per test by the `db_session` fixture |
-| `_patch_all` autouse fixture | Applies `_ALL_PATCHES` (an `ExitStack`, since the list is past CPython 3.11's 20-nested-`with` cap) for every test: the routing / pricing / fallback maps (`MODEL_ROUTING`, `PRICING_MAP`, `FALLBACK_MAP`, `AZURE_MODELS`, `AZURE_FALLBACK_MAP`, `BEDROCK_MODELS`, `BEDROCK_FALLBACK_MAP`, plus the `get_*_snapshot` getters); every user-traffic httpx client getter (shared, Azure, Bedrock, in the proxies and in `server_state`) → one shared `AsyncMock`; every module-level `engine` (`vllm_proxy`, `deps`, `concurrency`) → the test engine; `is_alive` → `True`; `_decode_jwt` → an HS256 test decoder; and `_submit_background` → an inline write so `usage_logs` assertions don't race the executor thread |
-| `_build_test_app` | Imports the routers under the config patches and builds a `FastAPI` app with a no-op lifespan (no DB init, no health loop, no lease heartbeat, no real httpx clients). Mounts every router: `health_api`, `web_ui`, `v1_api`, `azure_api`, `aws_api`, `admin`, and registers the production `AccountDisabledError` handler |
+| `_patch_all` autouse fixture | Applies `_ALL_PATCHES` (an `ExitStack`, since the list is past CPython 3.11's 20-nested-`with` cap) for every test: the routing / pricing / fallback maps (`MODEL_ROUTING`, `PRICING_MAP`, `FALLBACK_MAP`, `AZURE_MODELS`, `AZURE_FALLBACK_MAP`, `BEDROCK_MODELS`, `BEDROCK_FALLBACK_MAP`, plus the `get_*_snapshot` getters); every user-traffic httpx client getter (shared, Azure, Bedrock, in the proxies and in `server_state`) → one shared `AsyncMock`; every module-level `engine` (`vllm_proxy`, `deps`, `concurrency`, `usage_rollup`, `scheduler`) → the test engine; `is_alive` → `True`; `_decode_jwt` → an HS256 test decoder; and `_submit_background` → an inline write so `usage_logs` assertions don't race the executor thread |
+| `_build_test_app` | Imports the routers under the config patches and builds a `FastAPI` app with a no-op lifespan (no DB init, no health loop, no lease heartbeat, no rollup or job loops, no real httpx clients). Mounts every router: `health_api`, `web_ui`, `v1_api`, `azure_api`, `aws_api`, `admin`, and registers the production `AccountDisabledError` handler |
 
 ### What runs real vs. what's swapped
 
@@ -547,7 +547,7 @@ metrics directory never fails a request.
 | Test class | What it covers |
 |---|---|
 | `TestCreateUserAPI` | `POST /admin/users` to create app accounts and regular users; duplicate username → 409; empty username → 400; non-admin → 403; users CSV export requires admin |
-| `TestDeleteUser` | `delete_user` clears every row referencing the user, with `PRAGMA foreign_keys` on so SQLite catches a missed reference like PostgreSQL would |
+| `TestDeleteUser` | `delete_user` clears every row referencing the user, with `PRAGMA foreign_keys` on so SQLite catches a missed reference like PostgreSQL would, and keeps the user's `usage_logs` / `usage_daily` rows (billing / audit record) |
 
 ### `test_app_ownership.py` — App account ownership
 
@@ -578,7 +578,7 @@ unknown account, admin scope required).
 
 ### `test_anomaly_scan.py` — usage-anomaly scan
 
-Detectors from `scripts/scan_anomalies.py` run directly on the SQLite session:
+Detectors from `app/services/anomaly_scan.py` run directly on the SQLite session:
 cost spike (with a floor), burst rate (humans only), model-level empty-turn
 rate; persistence is idempotent and prunes resolved events. The admin API
 lists / acks / resolves (admin only) and the admin page shows open anomalies.
@@ -625,6 +625,29 @@ per-user map and the department table (apps excluded) from one aggregate;
 `app_account_clause` treats `_` literally (`apple` is a person); and the
 usage-heavy web/admin handlers are plain `def`, so their DB work runs in the
 threadpool instead of on the event loop.
+
+### `test_usage_rollup.py` — daily usage rollup (`usage_daily`)
+
+| Test class | What it covers |
+|---|---|
+| `TestSameNumbersEitherWay` | Every report that reads through `usage_rollup.aggregate` (admin month view, DAU, dashboard trends / monthly / Cost by Model / owned apps, xlsx and CSV exports, the anomaly baselines) is identical before and after the rollup, and with the watermark in the middle of a month; fixture includes local-midnight boundary rows, an app account and a deleted account's kept usage. Rollup rows past the watermark are ignored |
+| `TestAggregate` | Local-midnight boundary, empty inputs, unknown dimension, `empty_turns` |
+| `TestTaipeiMonths` | 01:00 Taipei on the 1st (17:00 UTC the day before) belongs to the new month |
+| `TestAdvance` | Settle delay, backfill from the oldest row, idempotent, `max_days` and resume, no data, today never rolled |
+| `TestRecompute` | Re-rolls corrected days without moving the watermark; keeps days whose raw rows are gone |
+| `TestInAppLoop` | `roll_next_day` rolls one day and never raises, `0` interval disables the loop, env parsing, lifespan starts it |
+| `TestDauCountsPeopleOnly` | DAU excludes app accounts and deleted accounts |
+
+### `test_scheduled_jobs.py` — in-gateway periodic jobs
+
+| Test class | What it covers |
+|---|---|
+| `TestClaim` | A job is claimed once per interval; jobs are independent |
+| `TestRunIfDue` | Runs and records `ok`; failures recorded as `error`, never raised; claim failures swallowed; disabled jobs never run; env parsing; lifespan starts both jobs |
+| `TestAnomalyScanJob` | Findings for deleted accounts are dropped before persist (FK); scan interval from env |
+| `TestRetention` | Off by default; nothing deleted before the first rollup; cutoff capped at the watermark and aligned to a local midnight; a purge leaves the monthly report unchanged; scheduled run |
+
+Concurrent claims (16 threads, one winner) are verified against PostgreSQL by hand: SQLite serializes writes, so the suite cannot show the race.
 
 ### `test_site_links.py` — admin-editable site links
 

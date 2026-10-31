@@ -72,11 +72,10 @@ class TestGetModelBreakdown:
         assert [r["model"] for r in rows] == ["this-month"]
 
     def test_day_period_only_counts_today(self, db_session, test_user):
-        # Frozen mid-month: the day window starts at local (Asia/Taipei)
-        # midnight while the month window starts at UTC day 1, so on the
-        # first ~8 UTC hours of a month no "yesterday" row can be both
-        # outside today and inside the month — run off the real clock, this
-        # test failed every month in that window.
+        # Frozen mid-month: on the 1st of a month no "yesterday" row can be
+        # both outside today and inside the month, so off the real clock this
+        # test would fail one day a month. Both windows are local
+        # (Asia/Taipei) and come from app.core.timeutil.
         now = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
 
         class _Frozen(datetime):
@@ -89,8 +88,7 @@ class TestGetModelBreakdown:
              created_at=now - timedelta(days=1))
         db_session.commit()
 
-        with patch("app.services.stats.datetime", _Frozen), \
-                patch("app.core.timeutil.datetime", _Frozen):
+        with patch("app.core.timeutil.datetime", _Frozen):
             day_rows = get_model_breakdown(db_session, test_user.id, period="day")
             assert [r["model"] for r in day_rows] == ["today-model"]
             # Month window still includes both

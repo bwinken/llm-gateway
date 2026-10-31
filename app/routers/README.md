@@ -209,7 +209,7 @@ Limits are validated by `_limit_usd`: a finite number ≥ 0, where `0` is a $0 b
 | `POST` | `/admin/users/{id}/owner` | Replace an app account's owners (form `owner_usernames`, comma-separated; 400 on unknown names). Returns JSON |
 | `POST` | `/admin/users/{id}/limit` | Update user daily limit (form `new_limit`) |
 | `POST` | `/admin/users/{id}/cloud-limit` | Set the user's own cloud cap (form `new_cloud_limit`; blank clears it so the user follows the default, `0` is a $0 cap) |
-| `POST` | `/admin/users/{id}/delete` | Delete user after clearing every row referencing it (app owners, legacy `owner_id`, anomaly events, usage logs, concurrency leases). Cannot delete self |
+| `POST` | `/admin/users/{id}/delete` | Delete user after clearing every row referencing it (app owners, legacy `owner_id`, anomaly events, concurrency leases). Usage logs and the daily rollup are kept (billing / audit record); the id → account mapping is logged. Cannot delete self |
 | `GET` | `/admin/users/{id}/api-key` | One account's full API key, JSON (listings only carry masked keys). Logged with who asked for whose key |
 | `POST` | `/admin/users/{id}/refresh-key` | Regenerate any user's API key, returns JSON |
 | `POST` | `/admin/users/{id}/toggle-disable` | Flip the user's `is_disabled` flag. Refuses to disable yourself (400). Allows enabling yourself |
@@ -230,7 +230,7 @@ Limits are validated by `_limit_usd`: a finite number ≥ 0, where `0` is a $0 b
 | `GET` | `/admin/users` | List all users (masked `api_key`, `daily_limit_usd`, `cloud_daily_limit_usd`, `is_admin`, `concurrency_waived`, `owner_ids`, `display_name`, `org_code`) |
 | `POST` | `/admin/users` | Create user (JSON body: `username`, `daily_limit_usd`, `cloud_daily_limit_usd` — `null` follows the default, `is_admin`, `concurrency_waived` — a JSON boolean, defaulting to true for `app_*` accounts, `owner_ids`). 409 on a duplicate username; the reply carries the full `api_key` |
 | `PATCH` | `/admin/users/{id}` | Update user (`daily_limit_usd`, `cloud_daily_limit_usd`, `is_admin`, `owner_ids` — replaces the owner list, `concurrency_waived` — a JSON boolean) |
-| `GET` | `/admin/api/anomalies` | Anomaly findings written by `scripts/scan_anomalies.py` (`?status=new` default, `acknowledged`, `resolved` or `all`; `?limit=50`, max 200) |
+| `GET` | `/admin/api/anomalies` | Anomaly findings written by the gateway's hourly scan (`app/services/anomaly_scan.py`) (`?status=new` default, `acknowledged`, `resolved` or `all`; `?limit=50`, max 200) |
 | `POST` | `/admin/api/anomalies/{id}/ack` | Mark a finding `acknowledged` |
 | `POST` | `/admin/api/anomalies/{id}/resolve` | Mark a finding `resolved` |
 

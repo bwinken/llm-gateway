@@ -8,7 +8,7 @@ Defines PostgreSQL table structures using [SQLModel](https://sqlmodel.tiangolo.c
 
 | File | Description |
 |---|---|
-| `schema.py` | `User`, `AppOwner`, `UsageLog`, `AnomalyEvent`, `ConcurrencyLease` — five ORM models, plus helpers `is_app_account()` (`app_*` prefix) and `mask_api_key()` (key display in admin listings) |
+| `schema.py` | `User`, `AppOwner`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AnomalyEvent`, `ConcurrencyLease` — eight ORM models, plus helpers `is_app_account()` (`app_*` prefix) and `mask_api_key()` (key display in admin listings) |
 
 ## ER Diagram
 
@@ -80,14 +80,43 @@ erDiagram
         DATETIME expires_at "TTL expiry (naive UTC)"
     }
 
+    usage_daily {
+        DATE day PK "Asia/Taipei day"
+        INTEGER user_id PK "No FK constraint; kept after account deletion"
+        VARCHAR backend PK "vllm / azure / bedrock"
+        VARCHAR model PK "Model alias"
+        VARCHAR model_type PK "llm / vlm / embedding ..."
+        VARCHAR endpoint PK "Endpoint label"
+        BIGINT requests "Request count"
+        BIGINT input_tokens "Input token sum"
+        BIGINT output_tokens "Output token sum"
+        NUMERIC cost_usd "Cost sum, NUMERIC(16,6)"
+        BIGINT empty_turns "Requests with output_tokens <= 1"
+    }
+
+    usage_rollup_state {
+        VARCHAR name PK "usage_daily"
+        DATE rolled_through "Watermark: rolled through this day"
+        DATETIME updated_at "Last advance"
+    }
+
+    scheduled_jobs {
+        VARCHAR name PK "Job name"
+        DATETIME last_started_at "Claim time (naive UTC)"
+        DATETIME last_finished_at "Finish time (naive UTC)"
+        VARCHAR last_status "running / ok / error"
+        VARCHAR last_detail "Summary or error"
+    }
+
     users ||--o{ usage_logs : "generates usage logs"
     users ||--o{ app_owners : "owned as app"
     users ||--o{ app_owners : "owns"
     users ||--o{ anomaly_events : "flagged in"
     users ||--o{ concurrency_leases : "holds in-flight slots"
+    users ||--o{ usage_daily : "summarized per day"
 ```
 
-`usage_logs.user_id` and `concurrency_leases.user_id` are logical references without a foreign-key constraint. The admin `delete_user` clears every row that references a user (`app_owners`, the legacy `users.owner_id`, `anomaly_events`, `usage_logs`, leases) before deleting it; add any new reference there too.
+`usage_logs.user_id` and `concurrency_leases.user_id` are logical references without a foreign-key constraint. The admin `delete_user` clears every row that references a user (`app_owners`, the legacy `users.owner_id`, `anomaly_events`, leases) before deleting it; add any new foreign key there too. `usage_logs` and `usage_daily` are deliberately kept: they are the billing and audit record, and the delete logs the id → account mapping.
 
 ## User Model
 
@@ -196,7 +225,7 @@ classDiagram
 | Field | Type | Constraints | Default | Description |
 |---|---|---|---|---|
 | `id` | `INTEGER` | PK, auto-increment | — | Primary key |
-| `user_id` | `INTEGER` | Composite index | — | Requesting user ID. No FK constraint; `delete_user` removes the rows explicitly |
+| `user_id` | `INTEGER` | Composite index | — | Requesting user ID. No FK constraint: the rows outlive a deleted account (`delete_user` keeps them) |
 | `model` | `VARCHAR` | — | `""` | Model alias requested by user (user-facing name, not real_model) |
 | `model_type` | `VARCHAR` | — | `""` | Model type: `llm`, `vlm`, `embedding`, `vision_embedding`, `reranker`, `vision_reranker`, `systemone` |
 | `input_tokens` | `INTEGER` | — | `0` | Input token count (`prompt_tokens`) |
@@ -227,7 +256,7 @@ Prices come from `config.toml`: the model entry's own override, else `[pricing.<
 
 ## AnomalyEvent Model
 
-Maps to `anomaly_events` table. Findings from the hourly usage-anomaly scan (`scripts/scan_anomalies.py`). Detection only: nothing here blocks or throttles a request.
+Maps to `anomaly_events` table. Findings from the hourly usage-anomaly scan the gateway runs (`app/services/anomaly_scan.py`; `scripts/scan_anomalies.py` runs it by hand). Detection only: nothing here blocks or throttles a request.
 
 One row per `(scope, rule, window_start)`: the scan upserts, so re-running a window is idempotent and an ongoing anomaly updates one row (`window_end` / `observed` grow). Alert side-channels must fire only when a row is **created**, never on updates.
 
@@ -280,3 +309,35 @@ Timestamps are naive UTC (unlike the aware values other tables use) so a Postgre
 |---|---|---|
 | `ix_concurrency_user_expires` | `user_id`, `expires_at` | Count a user's live leases |
 | `ix_concurrency_leases_worker_id` | `worker_id` | Heartbeat renewal and dead-worker sweep |
+
+---
+
+## UsageDaily Model
+
+Maps to `usage_daily` table. Per-local-day (Asia/Taipei) rollup of `usage_logs`, written only by the gateway's background rollup (`app/services/usage_rollup.py`) for closed days. Reports read closed days here and the rest from `usage_logs` through `usage_rollup.aggregate`. See [docs/architecture.md](../../docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy).
+
+| Field | Type | Constraints | Default | Description |
+|---|---|---|---|---|
+| `day` | `DATE` | PK | — | Asia/Taipei calendar day |
+| `user_id` | `INTEGER` | PK | — | No FK constraint (like `usage_logs`); kept when the account is deleted |
+| `backend` | `VARCHAR` | PK | — | `vllm`, `azure`, `bedrock` |
+| `model` | `VARCHAR` | PK | — | Model alias |
+| `model_type` | `VARCHAR` | PK | — | `llm`, `vlm`, `embedding`, ... |
+| `endpoint` | `VARCHAR` | PK | — | Endpoint label |
+| `requests` | `BIGINT` | — | `0` | Request count |
+| `input_tokens` / `output_tokens` | `BIGINT` | — | `0` | Token sums |
+| `cost_usd` | `NUMERIC(16,6)` | — | `0` | Cost sum |
+| `empty_turns` | `BIGINT` | — | `0` | Requests with `output_tokens <= 1` |
+
+| Index Name | Columns | Purpose |
+|---|---|---|
+| `usage_daily_pkey` | `day`, `user_id`, `backend`, `model`, `model_type`, `endpoint` | Date-range reads |
+| `ix_usage_daily_user_day` | `user_id`, `day` | Per-user reads (dashboard) |
+
+## UsageRollupState Model
+
+Maps to `usage_rollup_state` table. One row (`name = "usage_daily"`) holding `rolled_through` (`DATE`): every day up to it is in `usage_daily`, with no gaps. No row means the rollup has not run yet, and reports read `usage_logs` only.
+
+## ScheduledJob Model
+
+Maps to `scheduled_jobs` table. One row per in-gateway periodic job (anomaly scan, usage-log retention; `app/services/scheduler.py`): `name` (PK), `last_started_at`, `last_finished_at` (naive UTC), `last_status` (`running` / `ok` / `error`), `last_detail`. Workers claim a run with a conditional UPDATE of `last_started_at`, so each job runs once per interval across every worker and host.

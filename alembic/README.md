@@ -66,7 +66,9 @@ alembic/
     ├── c2e5f8a91d33_add_anomaly_events_table.py
     ├── d9f2a6b14c07_add_concurrency_leases_and_waive_flag.py
     ├── e4b7c2d91a58_waive_concurrency_for_app_accounts.py
-    └── c2d5a8f3e917_add_users_cloud_daily_limit.py
+    ├── c2d5a8f3e917_add_users_cloud_daily_limit.py
+    ├── b81f4c2a6d35_add_usage_daily_rollup.py
+    └── d6e3a9f17b42_add_scheduled_jobs.py
 ```
 
 ## Migration History
@@ -86,7 +88,9 @@ alembic/
 | `c2e5f8a91d33` | Create `anomaly_events` table (unique `(scope, rule, window_start)`, indexes `ix_anomaly_status_created`, `ix_anomaly_events_user_id`) | 2026-08-05 |
 | `d9f2a6b14c07` | Create `concurrency_leases` table (indexes `ix_concurrency_user_expires`, `ix_concurrency_leases_worker_id`) and add `users.concurrency_waived` (`server_default=false`) | 2026-10-02 |
 | `e4b7c2d91a58` | Data-only: set `concurrency_waived = true` on existing `app_*` accounts. Downgrade is a no-op | 2026-10-02 |
-| `c2d5a8f3e917` | Add nullable `users.cloud_daily_limit_usd` (per-user cloud cap; NULL follows `[app].cloud_daily_limit_usd`). **Current head** | 2026-10-19 |
+| `c2d5a8f3e917` | Add nullable `users.cloud_daily_limit_usd` (per-user cloud cap; NULL follows `[app].cloud_daily_limit_usd`) | 2026-10-19 |
+| `b81f4c2a6d35` | Create `usage_daily` (per-local-day rollup of `usage_logs`, composite PK `(day, user_id, backend, model, model_type, endpoint)`, index `ix_usage_daily_user_day`) and `usage_rollup_state` (watermark). Both start empty; the gateway backfills in the background. Pure `CREATE TABLE`, safe under live traffic | 2026-10-31 |
+| `d6e3a9f17b42` | Create `scheduled_jobs` (claims of the in-gateway periodic jobs). **Current head** | 2026-10-31 |
 
 ## Database Schema
 
@@ -160,11 +164,40 @@ erDiagram
         datetime expires_at "Expiry (naive UTC)"
     }
 
+    usage_daily {
+        date day PK "Asia/Taipei day"
+        int user_id PK "users.id (no FK constraint)"
+        varchar backend PK "vllm / azure / bedrock"
+        varchar model PK "Model alias"
+        varchar model_type PK "llm / vlm / embedding ..."
+        varchar endpoint PK "Endpoint"
+        bigint requests "Request count"
+        bigint input_tokens "Input token sum"
+        bigint output_tokens "Output token sum"
+        numeric cost_usd "Cost sum, NUMERIC(16,6)"
+        bigint empty_turns "Requests with output_tokens <= 1"
+    }
+
+    usage_rollup_state {
+        varchar name PK "usage_daily"
+        date rolled_through "Rolled through this day, no gaps"
+        datetime updated_at "Last advance"
+    }
+
+    scheduled_jobs {
+        varchar name PK "anomaly_scan / usage_log_retention"
+        datetime last_started_at "Claim time (naive UTC)"
+        datetime last_finished_at "Finish time (naive UTC)"
+        varchar last_status "running / ok / error"
+        varchar last_detail "Summary or error"
+    }
+
     users ||--o{ usage_logs : "has many"
     users ||--o{ app_owners : "owned apps"
     users ||--o{ app_owners : "owns"
     users ||--o{ anomaly_events : "flagged in"
     users ||--o{ concurrency_leases : "in-flight"
+    users ||--o{ usage_daily : "summarized in"
 ```
 
 ### Table Details
@@ -214,7 +247,7 @@ erDiagram
 | `app_id` | `INTEGER` FK → `users.id` | App account |
 | `owner_id` | `INTEGER` FK → `users.id` | Owning user |
 
-**anomaly_events** — Usage-Anomaly Scan Findings (`scripts/scan_anomalies.py`, detection only)
+**anomaly_events** — Usage-Anomaly Scan Findings (hourly scan run by the gateway, `app/services/anomaly_scan.py`; detection only)
 
 | Column | Type | Description |
 |---|---|---|
@@ -240,6 +273,32 @@ erDiagram
 | `created_at` | `DATETIME` | Acquisition time (naive UTC) |
 | `expires_at` | `DATETIME` | TTL expiry, pushed forward by the worker heartbeat (naive UTC) |
 
+**usage_daily** — Per-Local-Day Usage Rollup (written by the gateway's background rollup; reports read closed days here)
+
+| Column | Type | Description |
+|---|---|---|
+| `day`, `user_id`, `backend`, `model`, `model_type`, `endpoint` | `DATE`, `INTEGER`, `VARCHAR` ×4 | Composite primary key; `day` is an Asia/Taipei calendar day; `user_id` has no FK constraint (rows outlive a deleted account) |
+| `requests`, `input_tokens`, `output_tokens` | `BIGINT` | Sums over the day's `usage_logs` rows |
+| `cost_usd` | `NUMERIC(16,6)` | Cost sum |
+| `empty_turns` | `BIGINT` | Requests with `output_tokens <= 1` (anomaly-scan baseline) |
+
+**usage_rollup_state** — Rollup Watermark
+
+| Column | Type | Description |
+|---|---|---|
+| `name` | `VARCHAR` PK | `usage_daily` |
+| `rolled_through` | `DATE` | Every day up to and including it is in `usage_daily`, with no gaps. No row = never rolled: reports read `usage_logs` only |
+| `updated_at` | `DATETIME` | Last advance |
+
+**scheduled_jobs** — In-Gateway Periodic Job Claims (anomaly scan, usage-log retention)
+
+| Column | Type | Description |
+|---|---|---|
+| `name` | `VARCHAR` PK | Job name |
+| `last_started_at` | `DATETIME` NULL | Claim time (naive UTC); a worker runs the job only if it moves this forward by one interval |
+| `last_finished_at` | `DATETIME` NULL | Finish time (naive UTC) |
+| `last_status`, `last_detail` | `VARCHAR` | `running` / `ok` / `error`, and the job's summary or error |
+
 ### Indexes
 
 | Index Name | Table | Columns | Description |
@@ -256,6 +315,7 @@ erDiagram
 | `ix_anomaly_events_user_id` | `anomaly_events` | `user_id` | Per-user lookup |
 | `ix_concurrency_user_expires` | `concurrency_leases` | `user_id`, `expires_at` | Count a user's live leases |
 | `ix_concurrency_leases_worker_id` | `concurrency_leases` | `worker_id` | Heartbeat renewal, dead-worker sweep |
+| `ix_usage_daily_user_day` | `usage_daily` | `user_id`, `day` | Per-user report reads (the PK, led by `day`, serves date ranges) |
 
 ## Notes
 

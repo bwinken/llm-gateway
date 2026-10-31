@@ -66,7 +66,9 @@ alembic/
     ├── c2e5f8a91d33_add_anomaly_events_table.py
     ├── d9f2a6b14c07_add_concurrency_leases_and_waive_flag.py
     ├── e4b7c2d91a58_waive_concurrency_for_app_accounts.py
-    └── c2d5a8f3e917_add_users_cloud_daily_limit.py
+    ├── c2d5a8f3e917_add_users_cloud_daily_limit.py
+    ├── b81f4c2a6d35_add_usage_daily_rollup.py
+    └── d6e3a9f17b42_add_scheduled_jobs.py
 ```
 
 ## Migration 歷史
@@ -86,7 +88,9 @@ alembic/
 | `c2e5f8a91d33` | 建立 `anomaly_events` 表（`(scope, rule, window_start)` 唯一，索引 `ix_anomaly_status_created`、`ix_anomaly_events_user_id`） | 2026-08-05 |
 | `d9f2a6b14c07` | 建立 `concurrency_leases` 表（索引 `ix_concurrency_user_expires`、`ix_concurrency_leases_worker_id`），並新增 `users.concurrency_waived`（`server_default=false`） | 2026-10-02 |
 | `e4b7c2d91a58` | 僅資料變更：將既有 `app_*` 帳號的 `concurrency_waived` 設為 `true`。Downgrade 不做任何事 | 2026-10-02 |
-| `c2d5a8f3e917` | 新增 nullable 的 `users.cloud_daily_limit_usd`（每人雲端上限；NULL 沿用 `[app].cloud_daily_limit_usd`）。**目前 head** | 2026-10-19 |
+| `c2d5a8f3e917` | 新增 nullable 的 `users.cloud_daily_limit_usd`（每人雲端上限；NULL 沿用 `[app].cloud_daily_limit_usd`） | 2026-10-19 |
+| `b81f4c2a6d35` | 建立 `usage_daily`（`usage_logs` 以台北日為單位的彙總，複合主鍵 `(day, user_id, backend, model, model_type, endpoint)`，索引 `ix_usage_daily_user_day`）與 `usage_rollup_state`（結算進度）。兩張表一開始都是空的，由 gateway 在背景回填。純 `CREATE TABLE`，可在線上流量中執行 | 2026-10-31 |
+| `d6e3a9f17b42` | 建立 `scheduled_jobs`（gateway 內建週期性工作的認領紀錄）。**目前 head** | 2026-10-31 |
 
 ## 資料庫 Schema
 
@@ -160,11 +164,40 @@ erDiagram
         datetime expires_at "到期時間 (naive UTC)"
     }
 
+    usage_daily {
+        date day PK "台北日期"
+        int user_id PK "users.id（無 FK 約束）"
+        varchar backend PK "vllm / azure / bedrock"
+        varchar model PK "模型別名"
+        varchar model_type PK "llm / vlm / embedding ..."
+        varchar endpoint PK "端點"
+        bigint requests "請求數"
+        bigint input_tokens "輸入 token 加總"
+        bigint output_tokens "輸出 token 加總"
+        numeric cost_usd "成本加總，NUMERIC(16,6)"
+        bigint empty_turns "output_tokens <= 1 的請求數"
+    }
+
+    usage_rollup_state {
+        varchar name PK "usage_daily"
+        date rolled_through "已結算到這一天，無缺漏"
+        datetime updated_at "最後推進時間"
+    }
+
+    scheduled_jobs {
+        varchar name PK "anomaly_scan / usage_log_retention"
+        datetime last_started_at "認領時間（naive UTC）"
+        datetime last_finished_at "完成時間（naive UTC）"
+        varchar last_status "running / ok / error"
+        varchar last_detail "摘要或錯誤"
+    }
+
     users ||--o{ usage_logs : "has many"
     users ||--o{ app_owners : "owned apps"
     users ||--o{ app_owners : "owns"
     users ||--o{ anomaly_events : "flagged in"
     users ||--o{ concurrency_leases : "in-flight"
+    users ||--o{ usage_daily : "summarized in"
 ```
 
 ### 表說明
@@ -214,7 +247,7 @@ erDiagram
 | `app_id` | `INTEGER` FK → `users.id` | App 帳號 |
 | `owner_id` | `INTEGER` FK → `users.id` | 擁有者 |
 
-**anomaly_events** — 用量異常掃描結果（`scripts/scan_anomalies.py`，僅偵測）
+**anomaly_events** — 用量異常掃描結果（由 gateway 每小時執行，`app/services/anomaly_scan.py`；僅偵測）
 
 | 欄位 | 類型 | 說明 |
 |---|---|---|
@@ -240,6 +273,32 @@ erDiagram
 | `created_at` | `DATETIME` | 取得時間（naive UTC） |
 | `expires_at` | `DATETIME` | TTL 到期時間，由 worker heartbeat 往後延（naive UTC） |
 
+**usage_daily** — 以台北日為單位的用量彙總（由 gateway 背景結算寫入；報表的已結束日子讀這裡）
+
+| 欄位 | 類型 | 說明 |
+|---|---|---|
+| `day`, `user_id`, `backend`, `model`, `model_type`, `endpoint` | `DATE`、`INTEGER`、`VARCHAR` ×4 | 複合主鍵；`day` 是台北日期；`user_id` 無 FK 約束（帳號刪除後資料仍保留） |
+| `requests`, `input_tokens`, `output_tokens` | `BIGINT` | 當天 `usage_logs` 的加總 |
+| `cost_usd` | `NUMERIC(16,6)` | 成本加總 |
+| `empty_turns` | `BIGINT` | `output_tokens <= 1` 的請求數（異常掃描 baseline 用） |
+
+**usage_rollup_state** — 結算進度（watermark）
+
+| 欄位 | 類型 | 說明 |
+|---|---|---|
+| `name` | `VARCHAR` PK | `usage_daily` |
+| `rolled_through` | `DATE` | 這一天（含）之前的每一天都已在 `usage_daily`，沒有缺漏。沒有這一列 = 尚未結算：報表全部讀 `usage_logs` |
+| `updated_at` | `DATETIME` | 最後推進時間 |
+
+**scheduled_jobs** — gateway 內建週期性工作的認領紀錄（異常掃描、usage log 保留期清理）
+
+| 欄位 | 類型 | 說明 |
+|---|---|---|
+| `name` | `VARCHAR` PK | 工作名稱 |
+| `last_started_at` | `DATETIME` NULL | 認領時間（naive UTC）；worker 必須成功把它往前推一個週期才能執行 |
+| `last_finished_at` | `DATETIME` NULL | 完成時間（naive UTC） |
+| `last_status`, `last_detail` | `VARCHAR` | `running` / `ok` / `error`，以及工作摘要或錯誤 |
+
 ### 索引
 
 | 索引名稱 | 表 | 欄位 | 說明 |
@@ -256,6 +315,7 @@ erDiagram
 | `ix_anomaly_events_user_id` | `anomaly_events` | `user_id` | 依使用者查詢 |
 | `ix_concurrency_user_expires` | `concurrency_leases` | `user_id`, `expires_at` | 計算使用者的有效 lease 數 |
 | `ix_concurrency_leases_worker_id` | `concurrency_leases` | `worker_id` | Heartbeat 續約、已終止 worker 清掃 |
+| `ix_usage_daily_user_day` | `usage_daily` | `user_id`, `day` | 單一使用者的報表讀取（主鍵以 `day` 開頭，負責日期範圍查詢） |
 
 ## 注意事項
 
