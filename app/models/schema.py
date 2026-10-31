@@ -149,8 +149,9 @@ class UsageDaily(SQLModel, table=True):
     (``usage_rollup.aggregate``). ``empty_turns`` counts requests with at
     most one output token (the anomaly scan's empty-turn baseline).
 
-    No foreign key on ``user_id``, like ``usage_logs``: ``delete_user``
-    removes the rows explicitly.
+    No foreign key on ``user_id``, like ``usage_logs``: both are the billing
+    and audit record and outlive a deleted account (``delete_user`` keeps
+    them).
     """
     __tablename__ = "usage_daily"
     __table_args__ = (
@@ -180,6 +181,23 @@ class UsageRollupState(SQLModel, table=True):
     name: str = Field(primary_key=True)
     rolled_through: date = Field()
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ScheduledJob(SQLModel, table=True):
+    """One row per in-gateway periodic job (app/services/scheduler.py):
+    the anomaly scan, usage-log retention.
+
+    A worker runs a job only after claiming it with a conditional UPDATE of
+    ``last_started_at`` (``WHERE last_started_at <= now - interval``), so a
+    job runs once per interval across every worker and host however many
+    try. Timestamps are naive UTC, like ``concurrency_leases``."""
+    __tablename__ = "scheduled_jobs"
+
+    name: str = Field(primary_key=True)
+    last_started_at: datetime | None = Field(default=None)
+    last_finished_at: datetime | None = Field(default=None)
+    last_status: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    last_detail: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
 
 
 class AnomalyEvent(SQLModel, table=True):

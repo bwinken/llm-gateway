@@ -42,13 +42,12 @@ from app.models.schema import (
     AnomalyEvent,
     AppOwner,
     User,
-    UsageDaily,
     UsageLog,
     app_account_clause,
     is_app_account,
     mask_api_key,
 )
-from app.services import concurrency, usage_rollup
+from app.services import concurrency
 from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
@@ -224,8 +223,8 @@ def admin_page(
     today_dau = dau_data[-1]["dau"] if dau_data else 0
     dept_usage = overview["departments"]
 
-    # Open anomaly findings (populated by scripts/scan_anomalies.py; empty
-    # until the scan timer is set up — the card renders only when non-empty).
+    # Open anomaly findings (populated by the gateway's hourly anomaly scan,
+    # app/services/anomaly_scan.py — the card renders only when non-empty).
     anomaly_rows = session.exec(
         select(AnomalyEvent)
         .where(AnomalyEvent.status.in_(("new", "acknowledged")))  # type: ignore[attr-defined]
@@ -700,6 +699,10 @@ def delete_user(
 
     # Clear every row that references users.id, then the user. PostgreSQL
     # enforces these foreign keys, so a missed one fails the delete with a 500.
+    # usage_logs and usage_daily are deliberately KEPT: they are the billing
+    # and audit record (no foreign key, so nothing forces their removal), and
+    # deleting only one of them would make reports disagree with each other.
+    # The log line below keeps the id -> account mapping those rows refer to.
     session.execute(delete(AppOwner).where(
         (AppOwner.app_id == user_id) | (AppOwner.owner_id == user_id)
     ))
@@ -708,15 +711,15 @@ def delete_user(
     # point at their original owner.
     session.execute(update(User).where(User.owner_id == user_id).values(owner_id=None))
     session.execute(delete(AnomalyEvent).where(AnomalyEvent.user_id == user_id))
-    # The rollup lock keeps a rollup transaction that already read this
-    # user's usage_logs from re-inserting their usage_daily rows after this
-    # delete. Held only until the commit below.
-    usage_rollup.lock(session)
-    session.execute(delete(UsageDaily).where(UsageDaily.user_id == user_id))
-    session.execute(delete(UsageLog).where(UsageLog.user_id == user_id))
     concurrency.delete_user_leases(session, user_id)
+    deleted = (target.id, target.username, target.display_name or "", target.org_code or "")
     session.delete(target)
     session.commit()
+    logger.warning(
+        "User deleted | admin={} user_id={} username={} display_name={} org_code={} "
+        "(usage_logs / usage_daily rows kept)",
+        admin_user.username, *deleted,
+    )
 
     return RedirectResponse(url="/admin", status_code=303)
 

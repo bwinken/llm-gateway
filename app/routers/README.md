@@ -209,7 +209,7 @@ Limits are validated by `_limit_usd`: a finite number ≥ 0, where `0` is a $0 b
 | `POST` | `/admin/users/{id}/owner` | Replace an app account's owners (form `owner_usernames`, comma-separated; 400 on unknown names). Returns JSON |
 | `POST` | `/admin/users/{id}/limit` | Update user daily limit (form `new_limit`) |
 | `POST` | `/admin/users/{id}/cloud-limit` | Set the user's own cloud cap (form `new_cloud_limit`; blank clears it so the user follows the default, `0` is a $0 cap) |
-| `POST` | `/admin/users/{id}/delete` | Delete user after clearing every row referencing it (app owners, legacy `owner_id`, anomaly events, usage logs, concurrency leases). Cannot delete self |
+| `POST` | `/admin/users/{id}/delete` | Delete user after clearing every row referencing it (app owners, legacy `owner_id`, anomaly events, concurrency leases). Usage logs and the daily rollup are kept (billing / audit record); the id → account mapping is logged. Cannot delete self |
 | `GET` | `/admin/users/{id}/api-key` | One account's full API key, JSON (listings only carry masked keys). Logged with who asked for whose key |
 | `POST` | `/admin/users/{id}/refresh-key` | Regenerate any user's API key, returns JSON |
 | `POST` | `/admin/users/{id}/toggle-disable` | Flip the user's `is_disabled` flag. Refuses to disable yourself (400). Allows enabling yourself |

@@ -320,18 +320,18 @@ systemctl --user enable llm-gateway
 systemctl --user restart llm-gateway
 ok "llm-gateway.service 已啟動"
 
-# 排程任務（獨立進程,不影響 gateway 服務本體）
-#   - 異常使用掃描（每小時,偵測告警,不會封鎖任何人）→ 自動啟用
-#   - usage_logs 保留期清理（每月,會【刪除】一年前的計費資料）→ 僅安裝
-#     不啟用:刪除帳務底帳是治理決定,PG 在此規模存多年也無壓力。
-#     需要時手動啟用:systemctl --user enable --now llm-gateway-cleanup.timer
-cp "$DEPLOY_DIR/llm-gateway-scan.service"    "$HOME/.config/systemd/user/"
-cp "$DEPLOY_DIR/llm-gateway-scan.timer"      "$HOME/.config/systemd/user/"
-cp "$DEPLOY_DIR/llm-gateway-cleanup.service" "$HOME/.config/systemd/user/"
-cp "$DEPLOY_DIR/llm-gateway-cleanup.timer"   "$HOME/.config/systemd/user/"
+# 排程任務已改由 gateway 自己執行（每日用量彙總、每小時異常掃描、
+# usage_logs 保留期清理；清理預設關閉，設定 USAGE_LOG_RETENTION_DAYS 才會刪），
+# 不再需要 systemd timer。舊版安裝留下的 timer 在此停用並移除，避免重複執行。
+for unit in llm-gateway-scan llm-gateway-cleanup; do
+    if [ -f "$HOME/.config/systemd/user/$unit.timer" ]; then
+        systemctl --user disable --now "$unit.timer" 2>/dev/null || true
+        rm -f "$HOME/.config/systemd/user/$unit.timer" "$HOME/.config/systemd/user/$unit.service"
+        info "已移除舊的 $unit.timer（改由 gateway 執行）"
+    fi
+done
 systemctl --user daemon-reload
-systemctl --user enable --now llm-gateway-scan.timer
-ok "異常掃描 timer 已啟用（hourly）；cleanup timer 僅安裝未啟用"
+ok "排程任務由 gateway 內建執行，無需 systemd timer"
 
 # lingering
 if loginctl show-user "$(whoami)" 2>/dev/null | grep -q "Linger=yes"; then

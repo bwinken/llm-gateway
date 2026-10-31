@@ -8,7 +8,7 @@ Defines PostgreSQL table structures using [SQLModel](https://sqlmodel.tiangolo.c
 
 | File | Description |
 |---|---|
-| `schema.py` | `User`, `AppOwner`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `AnomalyEvent`, `ConcurrencyLease` — seven ORM models, plus helpers `is_app_account()` (`app_*` prefix) and `mask_api_key()` (key display in admin listings) |
+| `schema.py` | `User`, `AppOwner`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AnomalyEvent`, `ConcurrencyLease` — eight ORM models, plus helpers `is_app_account()` (`app_*` prefix) and `mask_api_key()` (key display in admin listings) |
 
 ## ER Diagram
 
@@ -87,7 +87,7 @@ erDiagram
     users ||--o{ concurrency_leases : "holds in-flight slots"
 ```
 
-`usage_logs.user_id` and `concurrency_leases.user_id` are logical references without a foreign-key constraint. The admin `delete_user` clears every row that references a user (`app_owners`, the legacy `users.owner_id`, `anomaly_events`, `usage_logs`, leases) before deleting it; add any new reference there too.
+`usage_logs.user_id` and `concurrency_leases.user_id` are logical references without a foreign-key constraint. The admin `delete_user` clears every row that references a user (`app_owners`, the legacy `users.owner_id`, `anomaly_events`, leases) before deleting it; add any new foreign key there too. `usage_logs` and `usage_daily` are deliberately kept: they are the billing and audit record, and the delete logs the id → account mapping.
 
 ## User Model
 
@@ -196,7 +196,7 @@ classDiagram
 | Field | Type | Constraints | Default | Description |
 |---|---|---|---|---|
 | `id` | `INTEGER` | PK, auto-increment | — | Primary key |
-| `user_id` | `INTEGER` | Composite index | — | Requesting user ID. No FK constraint; `delete_user` removes the rows explicitly |
+| `user_id` | `INTEGER` | Composite index | — | Requesting user ID. No FK constraint: the rows outlive a deleted account (`delete_user` keeps them) |
 | `model` | `VARCHAR` | — | `""` | Model alias requested by user (user-facing name, not real_model) |
 | `model_type` | `VARCHAR` | — | `""` | Model type: `llm`, `vlm`, `embedding`, `vision_embedding`, `reranker`, `vision_reranker`, `systemone` |
 | `input_tokens` | `INTEGER` | — | `0` | Input token count (`prompt_tokens`) |
@@ -290,7 +290,7 @@ Maps to `usage_daily` table. Per-local-day (Asia/Taipei) rollup of `usage_logs`,
 | Field | Type | Constraints | Default | Description |
 |---|---|---|---|---|
 | `day` | `DATE` | PK | — | Asia/Taipei calendar day |
-| `user_id` | `INTEGER` | PK | — | No FK constraint (like `usage_logs`); `delete_user` removes the rows |
+| `user_id` | `INTEGER` | PK | — | No FK constraint (like `usage_logs`); kept when the account is deleted |
 | `backend` | `VARCHAR` | PK | — | `vllm`, `azure`, `bedrock` |
 | `model` | `VARCHAR` | PK | — | Model alias |
 | `model_type` | `VARCHAR` | PK | — | `llm`, `vlm`, `embedding`, ... |
@@ -308,3 +308,7 @@ Maps to `usage_daily` table. Per-local-day (Asia/Taipei) rollup of `usage_logs`,
 ## UsageRollupState Model
 
 Maps to `usage_rollup_state` table. One row (`name = "usage_daily"`) holding `rolled_through` (`DATE`): every day up to it is in `usage_daily`, with no gaps. No row means the rollup has not run yet, and reports read `usage_logs` only.
+
+## ScheduledJob Model
+
+Maps to `scheduled_jobs` table. One row per in-gateway periodic job (anomaly scan, usage-log retention; `app/services/scheduler.py`): `name` (PK), `last_started_at`, `last_finished_at` (naive UTC), `last_status` (`running` / `ok` / `error`), `last_detail`. Workers claim a run with a conditional UPDATE of `last_started_at`, so each job runs once per interval across every worker and host.

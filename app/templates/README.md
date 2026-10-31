@@ -109,7 +109,7 @@ Each user / app row has these buttons, left to right:
 | **AWS** | `POST /admin/users/{id}/toggle-bedrock` | every row | Flips `can_use_bedrock` (orange when granted, ghost when not). In place |
 | **Waive** | `POST /admin/users/{id}/toggle-concurrency-waive` | non-admin rows | Flips `concurrency_waived` (green when waived). In place |
 | **Disable / Enable** | `POST /admin/users/{id}/toggle-disable` | non-admin user rows, every app row | Flips `is_disabled` (warn-yellow "Enable" when disabled). The server refuses self-disable. Full POST → redirect |
-| **Delete** | `POST /admin/users/{id}/delete` | non-admin user rows, every app row | Deletes the user and every row referencing it (usage logs, ownerships, anomalies, leases); cannot delete self. Full POST → redirect |
+| **Delete** | `POST /admin/users/{id}/delete` | non-admin user rows, every app row | Deletes the user and the rows referencing it (ownerships, anomalies, leases); usage is kept for billing / audit; cannot delete self. Full POST → redirect |
 
 Every Actions button asks for confirmation first. The in-place toggles (Azure, AWS, Waive) listen in the bubble phase, after the form's own `onsubmit` confirm, so Cancel sends nothing; on OK they POST with `Accept: application/json`, get the new flag back as JSON and repaint only that button; without that header the endpoints answer with the classic 303 → `/admin`.
 

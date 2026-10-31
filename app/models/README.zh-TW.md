@@ -8,7 +8,7 @@
 
 | 檔案 | 說明 |
 |---|---|
-| `schema.py` | `User`、`AppOwner`、`UsageLog`、`UsageDaily`、`UsageRollupState`、`AnomalyEvent`、`ConcurrencyLease` 七個 ORM Model，以及輔助函式 `is_app_account()`（`app_*` 前綴）與 `mask_api_key()`（Admin 列表的金鑰遮罩顯示） |
+| `schema.py` | `User`、`AppOwner`、`UsageLog`、`UsageDaily`、`UsageRollupState`、`ScheduledJob`、`AnomalyEvent`、`ConcurrencyLease` 八個 ORM Model，以及輔助函式 `is_app_account()`（`app_*` 前綴）與 `mask_api_key()`（Admin 列表的金鑰遮罩顯示） |
 
 ## ER Diagram
 
@@ -87,7 +87,7 @@ erDiagram
     users ||--o{ concurrency_leases : "持有進行中名額"
 ```
 
-`usage_logs.user_id` 與 `concurrency_leases.user_id` 是邏輯參照，沒有外鍵約束。Admin 的 `delete_user` 會先清除所有參照該使用者的資料列（`app_owners`、舊版 `users.owner_id`、`anomaly_events`、`usage_logs`、leases）再刪除使用者；新增任何參照時也要一併加到那裡。
+`usage_logs.user_id` 與 `concurrency_leases.user_id` 是邏輯參照，沒有外鍵約束。Admin 的 `delete_user` 會先清除所有參照該使用者的資料列（`app_owners`、舊版 `users.owner_id`、`anomaly_events`、leases）再刪除使用者；新增任何外鍵時也要一併加到那裡。`usage_logs` 與 `usage_daily` 刻意保留：它們是計費與稽核紀錄，刪除時會在 log 記下 id 對應的帳號。
 
 ## User 模型
 
@@ -196,7 +196,7 @@ classDiagram
 | 欄位 | 型別 | 約束 | 預設值 | 說明 |
 |---|---|---|---|---|
 | `id` | `INTEGER` | PK, auto-increment | — | 主鍵 |
-| `user_id` | `INTEGER` | 複合索引 | — | 發起請求的使用者 ID。未設 FK 約束；`delete_user` 會明確刪除這些資料列 |
+| `user_id` | `INTEGER` | 複合索引 | — | 發起請求的使用者 ID。未設 FK 約束：帳號刪除後資料列仍保留（`delete_user` 不刪） |
 | `model` | `VARCHAR` | — | `""` | 使用者請求的模型別名（user-facing name，非 real_model） |
 | `model_type` | `VARCHAR` | — | `""` | 模型類型。可能值：`llm`、`vlm`、`embedding`、`vision_embedding`、`reranker`、`vision_reranker`、`systemone` |
 | `input_tokens` | `INTEGER` | — | `0` | 輸入 token 數量（`prompt_tokens`） |
@@ -290,7 +290,7 @@ cost_usd = (uncached_input_tokens × input_price_per_1m
 | 欄位 | 型別 | 約束 | 預設值 | 說明 |
 |---|---|---|---|---|
 | `day` | `DATE` | PK | — | 台北日期 |
-| `user_id` | `INTEGER` | PK | — | 無 FK 約束（同 `usage_logs`）；`delete_user` 會明確刪除 |
+| `user_id` | `INTEGER` | PK | — | 無 FK 約束（同 `usage_logs`）；帳號刪除後仍保留 |
 | `backend` | `VARCHAR` | PK | — | `vllm`、`azure`、`bedrock` |
 | `model` | `VARCHAR` | PK | — | 模型別名 |
 | `model_type` | `VARCHAR` | PK | — | `llm`、`vlm`、`embedding` 等 |
@@ -308,3 +308,7 @@ cost_usd = (uncached_input_tokens × input_price_per_1m
 ## UsageRollupState 模型
 
 對應 `usage_rollup_state` 資料表。只有一列（`name = "usage_daily"`），`rolled_through`（`DATE`）之前（含）的每一天都已在 `usage_daily` 中，沒有缺漏。沒有這一列代表尚未結算過，報表全部讀 `usage_logs`。
+
+## ScheduledJob 模型
+
+對應 `scheduled_jobs` 資料表。gateway 內建週期性工作（異常掃描、usage log 保留期清理；`app/services/scheduler.py`）每個工作一列：`name`（PK）、`last_started_at`、`last_finished_at`（naive UTC）、`last_status`（`running` / `ok` / `error`）、`last_detail`。worker 以條件式 UPDATE `last_started_at` 認領工作，所以每個週期在所有 worker 與主機之間只會執行一次。

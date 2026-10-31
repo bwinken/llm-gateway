@@ -57,6 +57,13 @@ async def lifespan(app: FastAPI):
     from app.services.usage_rollup import rollup_loop
     rollup_task = asyncio.create_task(rollup_loop())
 
+    # Periodic jobs that used to be systemd timers. Every worker runs the
+    # loops; a claim in scheduled_jobs lets one worker run each interval.
+    from app.services.anomaly_scan import SCAN_JOB
+    from app.services.scheduler import job_loop
+    from app.services.usage_retention import RETENTION_JOB
+    job_tasks = [asyncio.create_task(job_loop(job)) for job in (SCAN_JOB, RETENTION_JOB)]
+
     # Launch background health checker
     health_task = asyncio.create_task(health_check_loop(interval=30))
     logger.info("{} ready.", APP_TITLE)
@@ -64,7 +71,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    for task in (health_task, lease_task, rollup_task):
+    for task in (health_task, lease_task, rollup_task, *job_tasks):
         task.cancel()
         try:
             await task

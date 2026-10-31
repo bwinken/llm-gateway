@@ -180,4 +180,6 @@ class TestDeleteUser:
         assert db_session.get(User, app_id).owner_id is None
         assert db_session.exec(select(AnomalyEvent).where(AnomalyEvent.user_id == uid)).all() == []
         assert db_session.exec(select(AppOwner)).all() == []
-        assert db_session.exec(select(UsageDaily).where(UsageDaily.user_id == uid)).all() == []
+        # Usage is the billing / audit record: both tables keep the rows.
+        assert len(db_session.exec(select(UsageLog).where(UsageLog.user_id == uid)).all()) == 1
+        assert len(db_session.exec(select(UsageDaily).where(UsageDaily.user_id == uid)).all()) == 1

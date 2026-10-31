@@ -47,8 +47,8 @@ def _at_local(day: date, hour: int, minute: int = 0, second: int = 0) -> datetim
 @pytest.fixture()
 def history(db_session):
     """Usage over the last ~40 local days plus today, with rows right at the
-    local-midnight boundary, several models/backends, an app account and an
-    empty turn."""
+    local-midnight boundary, several models/backends, an app account, a
+    deleted account's kept usage and empty turns."""
     alice = _user(db_session, "alice", "ENG")
     bob = _user(db_session, "bob", "OPS")
     bot = _user(db_session, "app_bot", "ENG")
@@ -63,19 +63,17 @@ def history(db_session):
             _log(db_session, bob, _at_local(day, 12), cost="1.000000", model_type="vlm", out=1)
         if back % 2 == 0:
             _log(db_session, bot, _at_local(day, 9), cost="5.000000", backend="bedrock")
+        if back % 5 == 0:   # an account deleted since: delete_user keeps its usage
+            db_session.add(UsageLog(user_id=9999, model="m1", model_type="llm", input_tokens=1,
+                                    output_tokens=1, cost_usd=Decimal("3"), endpoint="/v1/messages",
+                                    created_at=_at_local(day, 15)))
     db_session.commit()
     return {"alice": alice, "bob": bob, "bot": bot, "today": today}
 
 
 def _reports(session, users) -> dict:
     """Every report that reads through ``aggregate``."""
-    import sys
-    from pathlib import Path
-
-    from app.services import analytics, stats
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    import scan_anomalies
+    from app.services import analytics, anomaly_scan, stats
 
     today = local_today()
     prev = today.replace(day=1) - timedelta(days=1)
@@ -94,9 +92,9 @@ def _reports(session, users) -> dict:
         "csv": analytics.user_backend_costs(
             session, f"{prev.year:04d}-{prev.month:02d}", f"{today.year:04d}-{today.month:02d}",
         ),
-        "spike": scan_anomalies.detect_cost_spike(session, now),
-        "shift": scan_anomalies.detect_behavior_shift(session, now),
-        "empty": scan_anomalies.detect_empty_turn_rate(session, now),
+        "spike": anomaly_scan.detect_cost_spike(session, now),
+        "shift": anomaly_scan.detect_behavior_shift(session, now),
+        "empty": anomaly_scan.detect_empty_turn_rate(session, now),
     }
 
 

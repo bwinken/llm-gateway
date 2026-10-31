@@ -29,7 +29,7 @@ API client → Nginx (:443, TLS)  only /v1/, /azure/, /aws/, = /me, /healthz, /r
 
 The example nginx config (`deploy/llm-gateway-example.nginx.conf`) defines parallel `/v1/`, `/azure/`, `/aws/` and `= /me` blocks in both the HTTP and HTTPS server contexts. All of them bypass oauth2-proxy and forward straight to the gateway with the client's `Authorization: Bearer <api_key>` header preserved. The Web UI is served over HTTP only, so oauth2-proxy's cookie settings (`COOKIE_SECURE=false`) need no HTTPS variant.
 
-- **Gateway**: user-level systemd service (Python/FastAPI, `127.0.0.1:8050`, 2 workers), plus two user-level timers (anomaly scan, usage-log cleanup)
+- **Gateway**: user-level systemd service (Python/FastAPI, `127.0.0.1:8050`, 2 workers). Its periodic jobs (usage rollup, anomaly scan, optional usage-log retention) run inside it: no timers
 - **PostgreSQL + oauth2-proxy**: Docker Compose (`deploy/docker-compose.yml`, both bound to `127.0.0.1`)
 - **Nginx**: system service, reverse proxy + auth_request
 
@@ -53,7 +53,7 @@ The script interactively guides you through all setup steps. It starts with **pr
 5. **App config**: copies `config.toml.example` → `config.toml` and `.env.example` → `.env`, filling in `DATABASE_URL` and `AUTH_BASE_URL` from `deploy/.env`
 6. **AuthCenter public key**: paste the PEM now or place it later
 7. **alembic upgrade head**: if the migration fails, the script stops **without** restarting the gateway, so the old version keeps serving (checkpoint)
-8. **systemd**: installs and (re)starts `llm-gateway.service`, enables the hourly scan timer, installs the cleanup timer **without** enabling it, enables lingering (checkpoint)
+8. **systemd**: installs and (re)starts `llm-gateway.service`, disables and removes the scan / cleanup timers an older install left behind (the gateway runs those jobs now), enables lingering (checkpoint)
 9. **Nginx**: renders `deploy/llm-gateway.nginx.conf` into `/etc/nginx/sites-available/llm-gateway`, then `nginx -t` and reload (skipped if nginx is not installed, or if that site copy is missing or empty)
 
 It ends with a **deployment summary**: service status and remaining tasks.
@@ -96,10 +96,6 @@ systemctl --user status llm-gateway     # Check status
 systemctl --user restart llm-gateway    # Restart
 journalctl --user -u llm-gateway -f     # View service output (app logs: ~/opt/llm-gateway/logs/)
 
-# Timers
-systemctl --user list-timers 'llm-gateway-*'
-journalctl --user -u llm-gateway-scan   # Last anomaly scans
-
 # PostgreSQL + oauth2-proxy (Docker Compose)
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml logs -f
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml restart
@@ -108,23 +104,31 @@ docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 
 ## Scheduled Jobs and Scripts
 
-Both jobs are `oneshot` services run by user timers. They are separate processes with their own DB connection and share nothing with the gateway workers.
+The gateway runs its periodic jobs itself; there are no systemd timers or cron entries to install. Every worker runs the loops, and the database makes sure each job runs once per interval across all workers and hosts (a claim in `scheduled_jobs`, or an advisory lock for the rollup). A job that fails is logged (`Scheduled job ... failed`, `Usage rollup failed`) and retried next interval; it never affects requests.
 
-| Timer | Schedule | Runs | State after `setup.sh` |
-|---|---|---|---|
-| `llm-gateway-scan.timer` | hourly | `scripts/scan_anomalies.py --execute`: flags unusual usage into `anomaly_events` for the admin panel. Detection only, never blocks anyone. | enabled |
-| `llm-gateway-cleanup.timer` | monthly | `scripts/cleanup_usage_logs.py --execute`: **deletes** `usage_logs` rows older than 365 days | installed, **not enabled** |
+| Job | Schedule | What it does | Default | Setting (`.env`) |
+|---|---|---|---|---|
+| Usage rollup | every 10 min | Sums closed Asia/Taipei days of `usage_logs` into `usage_daily`, which the admin page, dashboard and exports read. Backfills on first start after the migration. | on | `USAGE_ROLLUP_INTERVAL_S` (`0` = off) |
+| Anomaly scan | hourly | Flags unusual usage into `anomaly_events` for the admin panel. Detection only, never blocks anyone. | on | `ANOMALY_SCAN_INTERVAL_S` (`0` = off) |
+| Usage-log retention | daily | **Deletes** `usage_logs` rows older than N days, whole days only, and never a day not yet in `usage_daily` (reports keep it) | **off** | `USAGE_LOG_RETENTION_DAYS` (unset = keep forever) |
 
-`usage_logs` is the billing and audit record, and PostgreSQL holds years of it comfortably, so the cleanup timer ships disabled on purpose: deleting it is a governance decision. To turn it on: `systemctl --user enable --now llm-gateway-cleanup.timer`. Both scripts are dry runs without `--execute`, so you can preview first:
+`usage_logs` is the billing and audit record, and PostgreSQL holds years of it comfortably, so retention ships off on purpose: deleting it is a governance decision. Deleting a user keeps their usage rows too. `scheduled_jobs` shows each job's last start, finish and outcome. The scripts run the same code by hand and are dry runs without `--execute`:
 
 ```bash
 cd ~/opt/llm-gateway
-uv run python scripts/cleanup_usage_logs.py              # count rows older than 365 days
+uv run python scripts/rollup_usage_daily.py              # rollup watermark and pending days
+uv run python scripts/cleanup_usage_logs.py              # retention preview: cutoff and row count
 uv run python scripts/cleanup_usage_logs.py --days 180   # custom retention
 uv run python scripts/scan_anomalies.py                  # print findings only
 ```
 
-The daily usage rollup (`usage_logs` → `usage_daily`, which the admin page, dashboard and exports read) needs no timer: the gateway runs it in the background (`USAGE_ROLLUP_INTERVAL_S`, default 600 s), including the one-time backfill after `alembic upgrade head`. `uv run python scripts/rollup_usage_daily.py` shows its progress; `--recompute FROM TO --execute` repairs days after a data correction. See [docs/architecture.md](../docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy).
+`scripts/rollup_usage_daily.py --recompute FROM TO --execute` re-rolls days after a data correction. See [docs/architecture.md](../docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy).
+
+Upgrading an install that still has the old `llm-gateway-scan` / `llm-gateway-cleanup` timers: re-running `setup.sh` removes them, or by hand:
+
+```bash
+systemctl --user disable --now llm-gateway-scan.timer llm-gateway-cleanup.timer
+```
 
 Other scripts, run by hand from `~/opt/llm-gateway`: `scripts/migrate_sqlite_to_pg.py` (one-off SQLite → PostgreSQL data migration, `--dry-run` / `--sync`) and `scripts/azure_latency_probe.py` (splits Azure latency into phases, direct vs. through the gateway; `--help`).
 
@@ -217,8 +221,6 @@ docker compose -f deploy/docker-compose.yml up -d
     ├── setup.sh              # Deployment script
     ├── gen-selfsigned-cert.sh               # Self-signed TLS cert for :443
     ├── llm-gateway.service                  # Gateway systemd unit
-    ├── llm-gateway-scan.{service,timer}     # Hourly anomaly scan
-    ├── llm-gateway-cleanup.{service,timer}  # Monthly usage-log cleanup (not enabled)
     ├── llm-gateway-example.nginx.conf       # Nginx template
     └── llm-gateway.nginx.conf               # Your site copy (gitignored)
 ```

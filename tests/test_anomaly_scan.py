@@ -1,5 +1,5 @@
 """
-Tests for the usage-anomaly scan (scripts/scan_anomalies.py) and its admin
+Tests for the usage-anomaly scan (app/services/anomaly_scan.py) and its admin
 API. Detectors are pure functions over a Session, so they run against the
 in-memory SQLite harness directly.
 """
@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 
 from app.core.timeutil import local_day_start_utc
 from app.models.schema import AnomalyEvent, UsageLog, User
-from scripts.scan_anomalies import (
+from app.services.anomaly_scan import (
     BURST_PER_HOUR,
     OFF_HOURS_MIN_REQUESTS,
     detect_all,
@@ -116,7 +116,7 @@ class TestDetectAll:
         def broken(session, now):
             raise RuntimeError("canceling statement due to statement timeout")
 
-        with patch("scripts.scan_anomalies.detect_cost_spike", broken), \
+        with patch("app.services.anomaly_scan.detect_cost_spike", broken), \
              patch.object(db_session, "rollback", wraps=db_session.rollback) as rollback:
             detect_all(db_session, NOW)
         rollback.assert_called_once()

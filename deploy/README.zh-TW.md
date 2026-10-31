@@ -29,7 +29,7 @@ API client → Nginx (:443, TLS)  只開放 /v1/、/azure/、/aws/、= /me、/he
 
 範例 nginx 設定（`deploy/llm-gateway-example.nginx.conf`）在 HTTP 與 HTTPS 兩個 server context 中都有平行的 `/v1/`、`/azure/`、`/aws/` 和 `= /me` 區塊。它們都不經 oauth2-proxy，直接保留客戶端的 `Authorization: Bearer <api_key>` 轉發給 gateway。Web UI 只走 HTTP，所以 oauth2-proxy 的 cookie 設定（`COOKIE_SECURE=false`）不需要另一套 HTTPS 版本。
 
-- **Gateway**：user-level systemd service（Python/FastAPI，`127.0.0.1:8050`，2 個 worker），另有兩個 user-level timer（異常掃描、usage log 清理）
+- **Gateway**：user-level systemd service（Python/FastAPI，`127.0.0.1:8050`，2 個 worker）。週期性工作（用量彙總、異常掃描、選用的 usage log 保留期清理）在 gateway 內執行，不需要 timer
 - **PostgreSQL + oauth2-proxy**：Docker Compose（`deploy/docker-compose.yml`，兩者都只綁 `127.0.0.1`）
 - **Nginx**：system service，反向代理 + auth_request
 
@@ -53,7 +53,7 @@ bash deploy/setup.sh
 5. **應用程式設定檔**：複製 `config.toml.example` → `config.toml`、`.env.example` → `.env`，並從 `deploy/.env` 自動填入 `DATABASE_URL` 與 `AUTH_BASE_URL`
 6. **AuthCenter 公鑰**：現在貼上 PEM 內容，或稍後手動放置
 7. **alembic upgrade head**：遷移失敗時腳本會停止且**不會**重啟 gateway，線上維持舊版運行（檢查點）
-8. **systemd**：安裝並（重新）啟動 `llm-gateway.service`、啟用每小時異常掃描 timer、安裝但**不啟用** cleanup timer、啟用 lingering（檢查點）
+8. **systemd**：安裝並（重新）啟動 `llm-gateway.service`、停用並移除舊版留下的 scan / cleanup timer（這些工作改由 gateway 執行）、啟用 lingering（檢查點）
 9. **Nginx**：把 `deploy/llm-gateway.nginx.conf` 套用到 `/etc/nginx/sites-available/llm-gateway`，再 `nginx -t` 並 reload（未安裝 nginx，或該檔不存在、內容為空時略過）
 
 最後顯示**部署狀態摘要**：各服務狀態與待辦事項。
@@ -96,10 +96,6 @@ systemctl --user status llm-gateway     # 查看狀態
 systemctl --user restart llm-gateway    # 重啟
 journalctl --user -u llm-gateway -f     # 查看服務輸出（應用程式日誌：~/opt/llm-gateway/logs/）
 
-# Timer
-systemctl --user list-timers 'llm-gateway-*'
-journalctl --user -u llm-gateway-scan   # 最近幾次異常掃描
-
 # PostgreSQL + oauth2-proxy（Docker Compose）
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml logs -f
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml restart
@@ -108,23 +104,31 @@ docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 
 ## 排程任務與腳本
 
-兩個任務都是由 user timer 觸發的 `oneshot` service。它們是獨立進程、使用自己的 DB 連線，與 gateway worker 互不共用。
+週期性工作由 gateway 自己執行，不需要安裝 systemd timer 或 cron。每個 worker 都會跑這些迴圈，由資料庫保證每個工作在所有 worker、所有主機之間每個週期只執行一次（`scheduled_jobs` 認領；彙總則用 advisory lock）。工作失敗會記錄 log（`Scheduled job ... failed`、`Usage rollup failed`），下個週期重試，絕不影響請求。
 
-| Timer | 頻率 | 執行內容 | `setup.sh` 後的狀態 |
-|---|---|---|---|
-| `llm-gateway-scan.timer` | 每小時 | `scripts/scan_anomalies.py --execute`：把異常使用記到 `anomaly_events`，供管理頁面檢視。只偵測，絕不封鎖任何人。 | 已啟用 |
-| `llm-gateway-cleanup.timer` | 每月 | `scripts/cleanup_usage_logs.py --execute`：**刪除** 365 天前的 `usage_logs` | 已安裝、**未啟用** |
+| 工作 | 頻率 | 內容 | 預設 | 設定（`.env`） |
+|---|---|---|---|---|
+| 用量彙總 | 每 10 分鐘 | 把已結束的台北日 `usage_logs` 彙總進 `usage_daily`，管理頁面、dashboard 與匯出都讀它。遷移後第一次啟動會自動回填。 | 開 | `USAGE_ROLLUP_INTERVAL_S`（`0` = 關） |
+| 異常掃描 | 每小時 | 把異常使用記到 `anomaly_events`，供管理頁面檢視。只偵測，絕不封鎖任何人。 | 開 | `ANOMALY_SCAN_INTERVAL_S`（`0` = 關） |
+| usage log 保留期 | 每天 | **刪除** N 天前的 `usage_logs`，只刪整天，且絕不刪還沒彙總進 `usage_daily` 的日子（報表仍保有） | **關** | `USAGE_LOG_RETENTION_DAYS`（不設 = 永久保留） |
 
-`usage_logs` 是計費與稽核的底帳，PostgreSQL 存放多年資料也毫無壓力，所以 cleanup timer 刻意預設不啟用：要不要刪除是治理決定。需要時執行 `systemctl --user enable --now llm-gateway-cleanup.timer`。兩支腳本不加 `--execute` 都只是 dry run，可以先預覽：
+`usage_logs` 是計費與稽核的底帳，PostgreSQL 存放多年資料也毫無壓力，所以保留期清理刻意預設關閉：要不要刪除是治理決定。刪除使用者時也會保留其用量紀錄。`scheduled_jobs` 資料表記錄每個工作最近一次的開始、結束時間與結果。下列腳本執行相同的程式，不加 `--execute` 都只是 dry run：
 
 ```bash
 cd ~/opt/llm-gateway
-uv run python scripts/cleanup_usage_logs.py              # 計算超過 365 天的筆數
+uv run python scripts/rollup_usage_daily.py              # 彙總進度與待處理日期
+uv run python scripts/cleanup_usage_logs.py              # 保留期預覽：截止點與筆數
 uv run python scripts/cleanup_usage_logs.py --days 180   # 自訂保留天數
 uv run python scripts/scan_anomalies.py                  # 只列出結果
 ```
 
-每日用量彙總（`usage_logs` → `usage_daily`，管理頁面、dashboard 與匯出報表都讀它）不需要 timer：gateway 自己在背景執行（`USAGE_ROLLUP_INTERVAL_S`，預設 600 秒），`alembic upgrade head` 之後的第一次回填也是自動的。`uv run python scripts/rollup_usage_daily.py` 可查看進度；資料修正後用 `--recompute FROM TO --execute` 重算指定日期。詳見 [docs/architecture.md](../docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy)。
+資料修正後用 `scripts/rollup_usage_daily.py --recompute FROM TO --execute` 重算指定日期。詳見 [docs/architecture.md](../docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy)。
+
+從仍有舊 `llm-gateway-scan` / `llm-gateway-cleanup` timer 的版本升級：重新執行 `setup.sh` 會移除它們，或手動執行：
+
+```bash
+systemctl --user disable --now llm-gateway-scan.timer llm-gateway-cleanup.timer
+```
 
 其他腳本，需要時在 `~/opt/llm-gateway` 手動執行：`scripts/migrate_sqlite_to_pg.py`（一次性的 SQLite → PostgreSQL 資料遷移，`--dry-run` / `--sync`）與 `scripts/azure_latency_probe.py`（把 Azure 延遲拆成各階段，比較直連與經過 gateway；見 `--help`）。
 
@@ -217,8 +221,6 @@ docker compose -f deploy/docker-compose.yml up -d
     ├── setup.sh              # 部署腳本
     ├── gen-selfsigned-cert.sh               # 產生 :443 用的自簽 TLS 憑證
     ├── llm-gateway.service                  # Gateway systemd unit
-    ├── llm-gateway-scan.{service,timer}     # 每小時異常掃描
-    ├── llm-gateway-cleanup.{service,timer}  # 每月 usage log 清理（未啟用）
     ├── llm-gateway-example.nginx.conf       # Nginx 範本
     └── llm-gateway.nginx.conf               # 你的站台副本（gitignored）
 ```

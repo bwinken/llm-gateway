@@ -23,9 +23,11 @@ watermark. Request handling never writes here, so there is no row
 contention with traffic: the per-request work is still one ``usage_logs``
 INSERT. Every worker tries, and a transaction-scoped advisory lock lets one
 of them (across hosts too: the lock lives in PostgreSQL) do each day while
-the rest skip. ``delete_user`` takes the same lock so a concurrent rollup
-can't re-insert rows for a user being deleted. The lock is held for one
-day's transaction only, never across a request or stream.
+the rest skip. The lock is held for one day's transaction only, never
+across a request or stream. ``delete_user`` leaves both tables alone: usage
+is the billing and audit record, and keeping both sides keeps every report
+consistent (a deleted account's spend still counts in totals, and per-user
+listings skip ids with no account).
 
 A day is rolled only once it has been over for ``SETTLE_DELAY``:
 ``_log_usage`` stamps ``created_at`` when the row is built and commits right
@@ -35,7 +37,6 @@ after, so nothing lands in a day that long closed.
 from __future__ import annotations
 
 import asyncio
-import os
 import random
 from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime, timedelta, timezone
@@ -48,13 +49,14 @@ from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import LOCAL_TZ, local_day_start_utc_of
 from app.models.schema import UsageDaily, UsageLog, UsageRollupState
+from app.services.scheduler import env_seconds
 
 STATE_NAME = "usage_daily"
 SETTLE_DELAY = timedelta(minutes=15)
 DEFAULT_INTERVAL_S = 600.0
 # Per day transaction (PostgreSQL ``SET LOCAL``): one day's GROUP BY.
 _DAY_STATEMENT_TIMEOUT_MS = 600_000
-# pg_advisory_xact_lock key shared by the rollup writer and delete_user.
+# pg_try_advisory_xact_lock key of the rollup writer.
 _LOCK_KEY = 0x75736167_64617931  # "usagday1"
 
 DIMENSIONS = ("day", "user_id", "backend", "model", "model_type", "endpoint")
@@ -80,13 +82,6 @@ def _empty_turn_case():
 
 def _is_postgres(session: Session) -> bool:
     return session.bind is not None and session.bind.dialect.name == "postgresql"
-
-
-def lock(session: Session) -> None:
-    """Take the rollup lock for the rest of the current transaction (blocks).
-    No-op off PostgreSQL."""
-    if _is_postgres(session):
-        session.execute(sa.text("SELECT pg_advisory_xact_lock(:k)"), {"k": _LOCK_KEY})
 
 
 def _try_lock(session: Session) -> bool:
@@ -375,15 +370,7 @@ def interval_seconds() -> float:
     """``USAGE_ROLLUP_INTERVAL_S`` (default 600). ``0`` turns the background
     rollup off: reports then read ``usage_logs`` for every day after the
     watermark (still correct, slower as days pile up)."""
-    raw = os.getenv("USAGE_ROLLUP_INTERVAL_S", "").strip()
-    if not raw:
-        return DEFAULT_INTERVAL_S
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning("Invalid USAGE_ROLLUP_INTERVAL_S={!r}; using {}", raw, DEFAULT_INTERVAL_S)
-        return DEFAULT_INTERVAL_S
-    return max(value, 0.0)
+    return env_seconds("USAGE_ROLLUP_INTERVAL_S", DEFAULT_INTERVAL_S)
 
 
 def roll_next_day(bind=None) -> date | None:

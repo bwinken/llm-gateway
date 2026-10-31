@@ -109,7 +109,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | **AWS** | `POST /admin/users/{id}/toggle-bedrock` | 每一列 | 翻轉 `can_use_bedrock`（已授權為橘色，未授權為 ghost）。原地更新 |
 | **Waive** | `POST /admin/users/{id}/toggle-concurrency-waive` | 非 admin 列 | 翻轉 `concurrency_waived`（已免除為綠色）。原地更新 |
 | **Disable / Enable** | `POST /admin/users/{id}/toggle-disable` | 非 admin 的 user 列、所有 app 列 | 翻轉 `is_disabled`（停用時為警示黃的 "Enable"）。後端禁止停用自己。完整 POST → redirect |
-| **Delete** | `POST /admin/users/{id}/delete` | 非 admin 的 user 列、所有 app 列 | 刪除使用者及所有參照它的資料（usage logs、擁有關係、異常紀錄、lease）；不可刪除自己。完整 POST → redirect |
+| **Delete** | `POST /admin/users/{id}/delete` | 非 admin 的 user 列、所有 app 列 | 刪除使用者及參照它的資料（擁有關係、異常紀錄、lease）；用量紀錄保留供計費／稽核；不可刪除自己。完整 POST → redirect |
 
 Actions 欄的每個按鈕都會先要求確認。原地更新的切換按鈕（Azure、AWS、Waive）在 bubble 階段處理，排在表單自己的 `onsubmit` 確認之後，所以按取消不會送出任何請求；按確定後以 `Accept: application/json` 送出 POST，取回新的旗標值後只重繪該按鈕；沒有這個 header 時端點仍回傳傳統的 303 → `/admin`。
 
