@@ -89,6 +89,9 @@ Model names must be unique across all three backends. [`config.toml.example`](co
 | `LOG_DIR`, `LOG_LEVEL`, `LOG_ROTATION`, `LOG_RETENTION` | Log files, one per worker | `./logs`, `WARNING`, `100 MB`, `14 days` |
 | `LOG_REQUEST_BODIES` | Log raw request bodies on downstream errors. Debugging only: these contain user prompts. | `false` |
 | `DOWNSTREAM_MAX_CONNECTIONS` | HTTP connection pool size. Each open stream holds one connection. | `1000` |
+| `USAGE_ROLLUP_INTERVAL_S` | Seconds between checks of the background daily usage rollup that reports read (`0` turns it off: reports stay correct, just slower) | `600` |
+| `ANOMALY_SCAN_INTERVAL_S` | Seconds between the gateway's usage-anomaly scans (`0` turns it off) | `3600` |
+| `USAGE_LOG_RETENTION_DAYS` | Daily, delete `usage_logs` rows older than this many days (only days already in the daily rollup, so reports keep them). Unset keeps them forever | unset |
 
 SSO login itself (OIDC issuer, client secret) is configured for oauth2-proxy in `deploy/.env`; see [deploy/README.md](deploy/README.md).
 

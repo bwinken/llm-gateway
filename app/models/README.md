@@ -80,11 +80,40 @@ erDiagram
         DATETIME expires_at "TTL expiry (naive UTC)"
     }
 
+    usage_daily {
+        DATE day PK "Asia/Taipei day"
+        INTEGER user_id PK "No FK constraint; kept after account deletion"
+        VARCHAR backend PK "vllm / azure / bedrock"
+        VARCHAR model PK "Model alias"
+        VARCHAR model_type PK "llm / vlm / embedding ..."
+        VARCHAR endpoint PK "Endpoint label"
+        BIGINT requests "Request count"
+        BIGINT input_tokens "Input token sum"
+        BIGINT output_tokens "Output token sum"
+        NUMERIC cost_usd "Cost sum, NUMERIC(16,6)"
+        BIGINT empty_turns "Requests with output_tokens <= 1"
+    }
+
+    usage_rollup_state {
+        VARCHAR name PK "usage_daily"
+        DATE rolled_through "Watermark: rolled through this day"
+        DATETIME updated_at "Last advance"
+    }
+
+    scheduled_jobs {
+        VARCHAR name PK "Job name"
+        DATETIME last_started_at "Claim time (naive UTC)"
+        DATETIME last_finished_at "Finish time (naive UTC)"
+        VARCHAR last_status "running / ok / error"
+        VARCHAR last_detail "Summary or error"
+    }
+
     users ||--o{ usage_logs : "generates usage logs"
     users ||--o{ app_owners : "owned as app"
     users ||--o{ app_owners : "owns"
     users ||--o{ anomaly_events : "flagged in"
     users ||--o{ concurrency_leases : "holds in-flight slots"
+    users ||--o{ usage_daily : "summarized per day"
 ```
 
 `usage_logs.user_id` and `concurrency_leases.user_id` are logical references without a foreign-key constraint. The admin `delete_user` clears every row that references a user (`app_owners`, the legacy `users.owner_id`, `anomaly_events`, leases) before deleting it; add any new foreign key there too. `usage_logs` and `usage_daily` are deliberately kept: they are the billing and audit record, and the delete logs the id → account mapping.
@@ -227,7 +256,7 @@ Prices come from `config.toml`: the model entry's own override, else `[pricing.<
 
 ## AnomalyEvent Model
 
-Maps to `anomaly_events` table. Findings from the hourly usage-anomaly scan (`scripts/scan_anomalies.py`). Detection only: nothing here blocks or throttles a request.
+Maps to `anomaly_events` table. Findings from the hourly usage-anomaly scan the gateway runs (`app/services/anomaly_scan.py`; `scripts/scan_anomalies.py` runs it by hand). Detection only: nothing here blocks or throttles a request.
 
 One row per `(scope, rule, window_start)`: the scan upserts, so re-running a window is idempotent and an ongoing anomaly updates one row (`window_end` / `observed` grow). Alert side-channels must fire only when a row is **created**, never on updates.
 

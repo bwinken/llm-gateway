@@ -80,11 +80,40 @@ erDiagram
         DATETIME expires_at "TTL 到期 (naive UTC)"
     }
 
+    usage_daily {
+        DATE day PK "台北日期"
+        INTEGER user_id PK "無 FK 約束；帳號刪除後仍保留"
+        VARCHAR backend PK "vllm / azure / bedrock"
+        VARCHAR model PK "模型別名"
+        VARCHAR model_type PK "llm / vlm / embedding ..."
+        VARCHAR endpoint PK "端點標籤"
+        BIGINT requests "請求數"
+        BIGINT input_tokens "輸入 token 加總"
+        BIGINT output_tokens "輸出 token 加總"
+        NUMERIC cost_usd "成本加總，NUMERIC(16,6)"
+        BIGINT empty_turns "output_tokens <= 1 的請求數"
+    }
+
+    usage_rollup_state {
+        VARCHAR name PK "usage_daily"
+        DATE rolled_through "結算進度：已結算到這一天"
+        DATETIME updated_at "最後推進時間"
+    }
+
+    scheduled_jobs {
+        VARCHAR name PK "工作名稱"
+        DATETIME last_started_at "認領時間 (naive UTC)"
+        DATETIME last_finished_at "完成時間 (naive UTC)"
+        VARCHAR last_status "running / ok / error"
+        VARCHAR last_detail "摘要或錯誤"
+    }
+
     users ||--o{ usage_logs : "產生用量記錄"
     users ||--o{ app_owners : "被擁有 (app)"
     users ||--o{ app_owners : "擁有 (owner)"
     users ||--o{ anomaly_events : "被標記"
     users ||--o{ concurrency_leases : "持有進行中名額"
+    users ||--o{ usage_daily : "每日彙總"
 ```
 
 `usage_logs.user_id` 與 `concurrency_leases.user_id` 是邏輯參照，沒有外鍵約束。Admin 的 `delete_user` 會先清除所有參照該使用者的資料列（`app_owners`、舊版 `users.owner_id`、`anomaly_events`、leases）再刪除使用者；新增任何外鍵時也要一併加到那裡。`usage_logs` 與 `usage_daily` 刻意保留：它們是計費與稽核紀錄，刪除時會在 log 記下 id 對應的帳號。
@@ -227,7 +256,7 @@ cost_usd = (uncached_input_tokens × input_price_per_1m
 
 ## AnomalyEvent 模型
 
-對應資料表 `anomaly_events`。每小時用量異常掃描（`scripts/scan_anomalies.py`）的偵測結果。僅偵測：這裡的任何資料都不會阻擋或限流請求。
+對應資料表 `anomaly_events`。gateway 每小時執行的用量異常掃描（`app/services/anomaly_scan.py`；`scripts/scan_anomalies.py` 可手動執行）的偵測結果。僅偵測：這裡的任何資料都不會阻擋或限流請求。
 
 每個 `(scope, rule, window_start)` 一筆：掃描採 upsert，重跑同一時間窗具冪等性，持續中的異常只更新同一筆（`window_end` / `observed` 增長）。告警旁路只能在資料列**建立**時觸發，更新時不可觸發。
 

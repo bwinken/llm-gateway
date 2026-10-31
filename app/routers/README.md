@@ -230,7 +230,7 @@ Limits are validated by `_limit_usd`: a finite number ≥ 0, where `0` is a $0 b
 | `GET` | `/admin/users` | List all users (masked `api_key`, `daily_limit_usd`, `cloud_daily_limit_usd`, `is_admin`, `concurrency_waived`, `owner_ids`, `display_name`, `org_code`) |
 | `POST` | `/admin/users` | Create user (JSON body: `username`, `daily_limit_usd`, `cloud_daily_limit_usd` — `null` follows the default, `is_admin`, `concurrency_waived` — a JSON boolean, defaulting to true for `app_*` accounts, `owner_ids`). 409 on a duplicate username; the reply carries the full `api_key` |
 | `PATCH` | `/admin/users/{id}` | Update user (`daily_limit_usd`, `cloud_daily_limit_usd`, `is_admin`, `owner_ids` — replaces the owner list, `concurrency_waived` — a JSON boolean) |
-| `GET` | `/admin/api/anomalies` | Anomaly findings written by `scripts/scan_anomalies.py` (`?status=new` default, `acknowledged`, `resolved` or `all`; `?limit=50`, max 200) |
+| `GET` | `/admin/api/anomalies` | Anomaly findings written by the gateway's hourly scan (`app/services/anomaly_scan.py`) (`?status=new` default, `acknowledged`, `resolved` or `all`; `?limit=50`, max 200) |
 | `POST` | `/admin/api/anomalies/{id}/ack` | Mark a finding `acknowledged` |
 | `POST` | `/admin/api/anomalies/{id}/resolve` | Mark a finding `resolved` |
 

@@ -230,7 +230,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `GET` | `/admin/users` | 列出所有使用者（遮罩後的 `api_key`、`daily_limit_usd`、`cloud_daily_limit_usd`、`is_admin`、`concurrency_waived`、`owner_ids`、`display_name`、`org_code`） |
 | `POST` | `/admin/users` | 建立使用者（JSON body：`username`、`daily_limit_usd`、`cloud_daily_limit_usd` — `null` 表示依預設值、`is_admin`、`concurrency_waived` — 必須是 JSON boolean，`app_*` 帳號預設為 true、`owner_ids`）。username 重複回 409；回應含完整 `api_key` |
 | `PATCH` | `/admin/users/{id}` | 更新使用者（`daily_limit_usd`、`cloud_daily_limit_usd`、`is_admin`、`owner_ids` — 整份替換 owner 清單、`concurrency_waived` — 必須是 JSON boolean） |
-| `GET` | `/admin/api/anomalies` | `scripts/scan_anomalies.py` 寫入的異常紀錄（`?status=new` 為預設，或 `acknowledged`、`resolved`、`all`；`?limit=50`，上限 200） |
+| `GET` | `/admin/api/anomalies` | gateway 每小時異常掃描（`app/services/anomaly_scan.py`）寫入的異常紀錄（`?status=new` 為預設，或 `acknowledged`、`resolved`、`all`；`?limit=50`，上限 200） |
 | `POST` | `/admin/api/anomalies/{id}/ack` | 將異常標為 `acknowledged` |
 | `POST` | `/admin/api/anomalies/{id}/resolve` | 將異常標為 `resolved` |
 

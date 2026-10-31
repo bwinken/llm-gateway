@@ -42,7 +42,7 @@
         {# Anomalies #}
         <div class="p-4" style="border-color:rgba(255,255,255,0.05)">
             <div class="text-[11px] font-bold uppercase tracking-wider text-t3 mb-2 gw-tip gw-tip-wide"
-                 data-tip="Unusual usage flagged by the hourly scan (scripts/scan_anomalies.py). Detection only: nothing is blocked.">Usage anomalies</div>
+                 data-tip="Unusual usage flagged by the gateway's hourly scan. Detection only: nothing is blocked.">Usage anomalies</div>
             {% for a in anomalies %}
             <div id="anomaly-{{ a.id }}" class="py-2 flex items-start gap-2 {{ 'opacity-50' if a.status == 'acknowledged' }}" style="border-top:1px solid rgba(255,255,255,0.03)">
                 <span class="mt-0.5 text-[10px] px-1.5 py-0.5 rounded font-mono uppercase flex-shrink-0"

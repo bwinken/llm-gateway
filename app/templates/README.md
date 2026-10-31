@@ -84,7 +84,7 @@ Above the tab bar: the **Needs attention** panel and the key-number cards. Below
 
 | Section | Tab | Description |
 |---|---|---|
-| **Needs attention** | — | Three columns: open usage anomalies from `scripts/scan_anomalies.py` (severity, user/model, rule, summary; Ack / Resolve buttons), on-prem models down or queueing, and accounts at ≥ 90 % of today's daily limit (each links to `?q=<username>#users`). Collapses to "All clear" when empty |
+| **Needs attention** | — | Three columns: open usage anomalies from the gateway's hourly scan (`app/services/anomaly_scan.py`) (severity, user/model, rule, summary; Ack / Resolve buttons), on-prem models down or queueing, and accounts at ≥ 90 % of today's daily limit (each links to `?q=<username>#users`). Collapses to "All clear" when empty |
 | **Key numbers** | — | Spend today, Requests today, Active users today, In flight now (concurrency leases; "tracking off" when the limit is `off`), this month's cost / requests / tokens |
 | **DAU Trend** | Overview | Chart.js bar chart, 30-day Daily Active Users, today's DAU in top-right |
 | **App Leaderboard** | Overview | App account ranking (`app_*`), top-10 by monthly cost descending |
