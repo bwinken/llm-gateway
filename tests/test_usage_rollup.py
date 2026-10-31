@@ -136,7 +136,10 @@ class TestAggregate:
     def test_local_midnight_boundary(self, db_session):
         alice = _user(db_session, "alice")
         day = date(2026, 3, 10)
-        _log(db_session, alice, local_day_start_utc_of(day) - timedelta(microseconds=1))  # 23:59:59.999999 on the 9th
+        # One second, not one microsecond: SQLite before 3.53 rounds date()
+        # input to the millisecond, so 23:59:59.999999 would land on the 10th
+        # in the test DB (PostgreSQL keeps microseconds).
+        _log(db_session, alice, local_day_start_utc_of(day) - timedelta(seconds=1))  # 23:59:59 on the 9th
         _log(db_session, alice, local_day_start_utc_of(day))                              # 00:00 on the 10th
         db_session.commit()
         got = usage_rollup.aggregate(db_session, date(2026, 3, 9), date(2026, 3, 11), ("day",))
