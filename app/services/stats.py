@@ -4,6 +4,7 @@ Aggregate DB data for the web dashboard.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import timedelta
 
 from sqlalchemy import case as sa_case
@@ -143,11 +144,16 @@ def get_dau_trends(session: Session, days: int = 30) -> list[dict]:
     return [{"date": day.isoformat(), "dau": n} for day, n in sorted(per_day.items())]
 
 
-def get_monthly_all_users_usage(session: Session) -> dict[int, dict]:
-    """Return per-user usage for the current local (Asia/Taipei) month."""
+def get_monthly_all_users_usage(
+    session: Session, user_ids: Iterable[int] | None = None,
+) -> dict[int, dict]:
+    """Return per-user usage for the current local (Asia/Taipei) month.
+
+    ``user_ids`` narrows the scan to those accounts (one page of the admin
+    users table); ``None`` means every account."""
     out = {}
     for (uid,), entry in aggregate(
-        session, local_month_start(), _tomorrow(), ("user_id",),
+        session, local_month_start(), _tomorrow(), ("user_id",), user_ids=user_ids,
     ).items():
         t = _totals(entry)
         t["cost"] = round(t["cost"], 6)

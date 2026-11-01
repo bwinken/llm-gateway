@@ -1,0 +1,6 @@
+{# Number formatting shared by admin.html and _admin_user_table.html. #}
+{% macro format_token(n) -%}
+    {% if n >= 1000000 %}{{ "%.2f"|format(n / 1000000) }}M{% elif n >= 1000 %}{{ "%.1f"|format(n / 1000) }}K{% else %}{{ n }}{% endif %}
+{%- endmacro %}
+
+{% macro money(v) -%}${{ "%.2f"|format(v) if v >= 1 else "%.4f"|format(v) }}{%- endmacro %}

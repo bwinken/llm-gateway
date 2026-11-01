@@ -1,14 +1,26 @@
 {% extends "base.html" %}
 
-{% macro format_token(n) -%}
-    {% if n >= 1000000 %}
-        {{ "%.2f"|format(n / 1000000) }}M
-    {% elif n >= 1000 %}
-        {{ "%.1f"|format(n / 1000) }}K
-    {% else %}
-        {{ n }}
-    {% endif %}
-{%- endmacro %}
+{% from "_admin_macros.html" import format_token, money %}
+
+{% block head %}
+<style>
+    /* Granted / waived state of the per-account toggles (Azure, AWS, Waive). */
+    .gw-grant.is-on { font-weight: 700; }
+    .gw-grant-azure.is-on   { background: rgba(167,139,250,0.18); border-color: rgba(167,139,250,0.4); color: #cab9ff; }
+    .gw-grant-bedrock.is-on { background: rgba(255,153,51,0.15);  border-color: rgba(255,153,51,0.4);  color: #ffcb8a; }
+    .gw-grant-waive.is-on   { background: rgba(52,211,153,0.15);  border-color: rgba(52,211,153,0.4);  color: #86efac; }
+    .gw-badge-admin { background: rgba(167,139,250,0.1); color: #a78bfa; border-color: rgba(167,139,250,0.15); }
+    .gw-badge-muted { background: rgba(255,255,255,0.04); color: #868da0; border-color: rgba(255,255,255,0.06); }
+    .gw-badge-off   { background: rgba(245,166,35,0.1); color: #f5a623; border-color: rgba(245,166,35,0.2); }
+    /* .gw-badge sets display, so it would win over a plain .hidden. */
+    .gw-badge.hidden { display: none; }
+    /* A disabled account's row reads as inactive; its controls stay usable. */
+    .um-row.is-disabled .um-dim { opacity: 0.45; }
+    [data-um-panel].is-loading { opacity: 0.55; pointer-events: none; transition: opacity 0.15s; }
+    .um-flash-ok  { box-shadow: 0 0 0 2px rgba(52,211,153,0.85) !important; }
+    .um-flash-err { box-shadow: 0 0 0 2px rgba(248,113,113,0.9) !important; }
+</style>
+{% endblock %}
 
 {% block content %}
 
@@ -23,7 +35,6 @@
     </div>
 </div>
 
-{% macro money(v) -%}${{ "%.2f"|format(v) if v >= 1 else "%.4f"|format(v) }}{%- endmacro %}
 {# ── Needs attention: anomalies, servers, budgets — what to act on first ── #}
 {% set n_crit = anomalies|selectattr('severity', 'equalto', 'critical')|list|length + system_status.down|length + budget_pressure|selectattr('percent', 'ge', 100)|list|length %}
 {% set n_attention = anomalies|length + system_status.down|length + system_status.queueing|length + budget_pressure|length %}
@@ -115,7 +126,7 @@ function anomalyAction(id, action) {
             if (action === 'resolve') { row.remove(); }
             else { row.classList.add('opacity-50'); var b = row.querySelector('button'); if (b && b.textContent === 'Ack') b.remove(); }
         })
-        .catch(function(e){ alert('Failed: ' + e.message); });
+        .catch(function(e){ gwToast('Anomaly update failed — ' + e.message, 'error'); });
 }
 </script>
 
@@ -180,7 +191,7 @@ function anomalyAction(id, action) {
     <div class="gw-card overflow-hidden">
         <div class="px-5 py-3 flex items-center gap-2" style="border-bottom:1px solid rgba(255,255,255,0.04)">
             <h3 class="text-xs font-bold text-t3 uppercase tracking-wider">App Leaderboard</h3>
-            <span class="ml-auto text-[11px] text-t4 font-mono">{{ month_label }}</span>
+            <span class="ml-auto text-[11px] text-t4 font-mono">{{ month_label }} · top 10</span>
         </div>
         <div class="overflow-x-auto">
             <table class="gw-table">
@@ -188,10 +199,10 @@ function anomalyAction(id, action) {
                     <th>#</th><th>App</th><th style="text-align:right">Cost</th>
                     <th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Reqs</th>
                 </tr></thead>
-                <tbody id="appLbBody">
+                <tbody>
                     {% for u in app_leaderboard %}
-                    <tr class="lb-app-row">
-                        <td class="text-sm text-t4 font-mono lb-rank">{{ loop.index }}</td>
+                    <tr>
+                        <td class="text-sm text-t4 font-mono">{{ loop.index }}</td>
                         <td class="whitespace-nowrap">
                             <div class="flex items-center gap-2">
                                 <div class="h-7 w-7 rounded-lg bg-[rgba(99,152,255,0.1)] flex items-center justify-center text-ab font-bold text-xs">
@@ -200,7 +211,7 @@ function anomalyAction(id, action) {
                                 <span class="text-sm font-medium text-t1">{{ u.username }}</span>
                             </div>
                         </td>
-                        <td class="text-right text-sm font-mono font-medium text-t1">${{ "%.4f"|format(u.monthly_cost) }}</td>
+                        <td class="text-right text-sm font-mono font-medium text-t1">{{ money(u.monthly_cost) }}</td>
                         <td class="text-right text-sm font-mono text-t3">{{ format_token(u.monthly_input) }}</td>
                         <td class="text-right text-sm font-mono text-t3">{{ format_token(u.monthly_output) }}</td>
                         <td class="text-right text-sm font-mono text-t3">{{ u.monthly_reqs }}</td>
@@ -212,20 +223,13 @@ function anomalyAction(id, action) {
                 </tbody>
             </table>
         </div>
-        {% if app_leaderboard|length > 10 %}
-        <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)" id="appLbPager">
-            <button onclick="lbPage('app',-1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="appLbPrev" disabled>&larr; Prev</button>
-            <span id="appLbInfo"></span>
-            <button onclick="lbPage('app',1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="appLbNext">Next &rarr;</button>
-        </div>
-        {% endif %}
     </div>
 
     {# User Leaderboard #}
     <div class="gw-card overflow-hidden">
         <div class="px-5 py-3 flex items-center gap-2" style="border-bottom:1px solid rgba(255,255,255,0.04)">
             <h3 class="text-xs font-bold text-t3 uppercase tracking-wider">User Leaderboard</h3>
-            <span class="ml-auto text-[11px] text-t4 font-mono">{{ month_label }}</span>
+            <span class="ml-auto text-[11px] text-t4 font-mono">{{ month_label }} · top 10</span>
         </div>
         <div class="overflow-x-auto">
             <table class="gw-table">
@@ -233,10 +237,10 @@ function anomalyAction(id, action) {
                     <th>#</th><th>User</th><th style="text-align:right">Cost</th>
                     <th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Reqs</th>
                 </tr></thead>
-                <tbody id="userLbBody">
+                <tbody>
                     {% for u in user_leaderboard %}
-                    <tr class="lb-user-row">
-                        <td class="text-sm text-t4 font-mono lb-rank">{{ loop.index }}</td>
+                    <tr>
+                        <td class="text-sm text-t4 font-mono">{{ loop.index }}</td>
                         <td class="whitespace-nowrap">
                             <div class="flex items-center gap-2">
                                 <div class="h-7 w-7 rounded-lg bg-[rgba(167,139,250,0.1)] flex items-center justify-center text-av font-bold text-xs">
@@ -253,7 +257,7 @@ function anomalyAction(id, action) {
                                 </div>
                             </div>
                         </td>
-                        <td class="text-right text-sm font-mono font-medium text-t1">${{ "%.4f"|format(u.monthly_cost) }}</td>
+                        <td class="text-right text-sm font-mono font-medium text-t1">{{ money(u.monthly_cost) }}</td>
                         <td class="text-right text-sm font-mono text-t3">{{ format_token(u.monthly_input) }}</td>
                         <td class="text-right text-sm font-mono text-t3">{{ format_token(u.monthly_output) }}</td>
                         <td class="text-right text-sm font-mono text-t3">{{ u.monthly_reqs }}</td>
@@ -265,13 +269,6 @@ function anomalyAction(id, action) {
                 </tbody>
             </table>
         </div>
-        {% if user_leaderboard|length > 10 %}
-        <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)" id="userLbPager">
-            <button onclick="lbPage('user',-1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="userLbPrev" disabled>&larr; Prev</button>
-            <span id="userLbInfo"></span>
-            <button onclick="lbPage('user',1)" class="gw-btn gw-btn-ghost text-xs px-2 py-1" id="userLbNext">Next &rarr;</button>
-        </div>
-        {% endif %}
     </div>
 </div>
 
@@ -295,7 +292,7 @@ function anomalyAction(id, action) {
                             <span class="text-sm font-medium text-t1">{{ d.department }}</span>
                         </td>
                         <td class="text-right text-sm font-mono text-t3">{{ d.user_count }}</td>
-                        <td class="text-right text-sm font-mono font-medium text-t1">${{ "%.4f"|format(d.cost) }}</td>
+                        <td class="text-right text-sm font-mono font-medium text-t1">{{ money(d.cost) }}</td>
                         <td class="text-right text-sm font-mono text-t3">{{ format_token(d.input_tokens) }}</td>
                         <td class="text-right text-sm font-mono text-t3">{{ format_token(d.output_tokens) }}</td>
                         <td class="text-right text-sm font-mono text-t3">{{ d.requests }}</td>
@@ -357,11 +354,13 @@ function anomalyAction(id, action) {
                 <div>
                     <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">From (month)</label>
                     <input type="month" name="from" id="exportFrom" required
+                           value="{{ export_from_default }}" max="{{ export_to_default }}"
                            class="gw-input text-sm py-1.5 px-2 font-mono">
                 </div>
                 <div>
                     <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">To (month)</label>
                     <input type="month" name="to" id="exportTo" required
+                           value="{{ export_to_default }}" max="{{ export_to_default }}"
                            class="gw-input text-sm py-1.5 px-2 font-mono">
                 </div>
                 <button type="submit" id="exportBtn" class="gw-btn gw-btn-primary text-sm px-4 py-2">
@@ -381,17 +380,6 @@ function anomalyAction(id, action) {
 </div>
 
 <script>
-(function(){
-    var now = new Date();
-    var currMonth = now.toISOString().slice(0, 7);
-    var prev = new Date(now.getFullYear(), now.getMonth() - 5, 1);
-    var fromDefault = prev.toISOString().slice(0, 7);
-    document.getElementById('exportFrom').value = fromDefault;
-    document.getElementById('exportTo').value = currMonth;
-    document.getElementById('exportFrom').max = currMonth;
-    document.getElementById('exportTo').max = currMonth;
-})();
-
 function downloadExport(btnId, path, fallbackName) {
     var from = document.getElementById('exportFrom').value;
     var to = document.getElementById('exportTo').value;
@@ -438,291 +426,48 @@ function submitExportCsv() {
 <div data-panel="users">
 {# ── User Management ── #}
 <div class="gw-anim gw-d6">
-    <div class="flex items-center justify-between mb-4">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div class="flex items-center gap-4">
             <h2 class="text-sm font-bold text-t2">User Management</h2>
-            <div class="flex rounded-lg overflow-hidden border border-n4" style="border-color:rgba(255,255,255,0.06)">
-                <button id="umTabUsers" onclick="switchUmTab('users')" class="text-xs font-medium px-3 py-1.5 transition-colors bg-n3 text-t1">Users</button>
-                <button id="umTabApps" onclick="switchUmTab('apps')" class="text-xs font-medium px-3 py-1.5 transition-colors text-t4 hover:text-t2">Apps</button>
+            <div class="flex rounded-lg overflow-hidden border" style="border-color:rgba(255,255,255,0.06)" role="tablist" aria-label="Account type">
+                <button type="button" id="umTabUsers" data-um-tab="users" role="tab" class="text-xs font-medium px-3 py-1.5 transition-colors">
+                    Users <span class="text-t4 font-mono" data-um-count="users">{{ users_table.total }}</span></button>
+                <button type="button" id="umTabApps" data-um-tab="apps" role="tab" class="text-xs font-medium px-3 py-1.5 transition-colors">
+                    Apps <span class="text-t4 font-mono" data-um-count="apps">{{ apps_table.total }}</span></button>
             </div>
         </div>
-        <div class="flex items-center gap-3">
+        <div class="flex flex-wrap items-center gap-2">
             <a href="/admin/api/export/users.csv" download
                class="gw-btn gw-btn-ghost text-xs px-3 py-1.5 gw-tip gw-tip-wide"
                data-tip="Download a CSV of all real users (excluding app_* accounts) for mass mailing. Includes username, display_name, org_code, access flags (disabled / Azure / Bedrock), monthly cost, last active.">
-                <svg class="w-3.5 h-3.5 inline -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                <svg class="w-3.5 h-3.5 inline -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                 Export Users (CSV)
             </a>
-            <form action="/admin" method="GET" class="relative flex items-center gap-2">
-                <svg class="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-t4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-                <input type="text" name="q" value="{{ q }}" placeholder="Search username..."
-                       class="gw-input text-sm py-1.5 pl-8 pr-3 w-56">
+            <form id="umSearch" action="/admin" method="GET" class="flex flex-wrap items-center gap-2">
+                <select name="status" aria-label="Filter accounts" class="gw-input text-xs py-1.5 px-2">
+                    {% for value, label in user_table_statuses.items() %}
+                    <option value="{{ value }}" {{ 'selected' if value == table_state.status }}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+                <select name="sort" aria-label="Sort accounts" class="gw-input text-xs py-1.5 px-2">
+                    {% for value, label in user_table_sorts.items() %}
+                    <option value="{{ value }}" {{ 'selected' if value == table_state.sort }}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+                <div class="relative">
+                    <svg class="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-t4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                    <input type="search" name="q" value="{{ table_state.q }}" placeholder="Name, username or org…"
+                           aria-label="Search accounts by name, username or org code"
+                           class="gw-input text-sm py-1.5 pl-8 pr-3 w-56">
+                </div>
                 <button type="submit" class="gw-btn gw-btn-ghost text-xs px-2 py-1.5">Search</button>
-                {% if q %}
-                <a href="/admin" class="gw-btn gw-btn-ghost text-xs px-2 py-1.5 text-t4">Clear</a>
-                {% endif %}
+                <a href="/admin#users" id="umClear" class="gw-btn gw-btn-ghost text-xs px-2 py-1.5 text-t4 {{ '' if users_table.filtered or table_state.sort != 'id' else 'hidden' }}">Clear</a>
             </form>
         </div>
     </div>
 
-    {# Users table #}
-    <div id="umUsersPanel" class="gw-card overflow-hidden">
-        <div class="overflow-x-auto">
-            <table class="gw-table">
-                <thead><tr>
-                    <th>User</th><th>API Key</th>
-                    <th class="gw-tip" data-tip="All-time cumulative cost">Total Spend</th>
-                    <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
-                    <th style="text-align:right">Actions</th>
-                </tr></thead>
-                <tbody id="umUsersBody">
-                    {% for u in users %}
-                    <tr class="um-row" data-search="{{ (u.display_name or '')|lower }} {{ u.username|lower }} {{ (u.org_code or '')|lower }}">
-                        <td class="whitespace-nowrap">
-                            <div class="flex items-center gap-2">
-                                <div class="h-8 w-8 rounded-lg flex items-center justify-center font-bold text-sm bg-[rgba(167,139,250,0.1)] text-av">
-                                    {{ u.username[0]|upper }}
-                                </div>
-                                <div>
-                                    <div class="text-sm font-medium text-t1">
-                                        {{ u.display_name or u.username }}
-                                        {% if u.display_name and u.display_name != u.username %}
-                                        <span class="ml-1 text-xs text-t4 font-mono">{{ u.username }}</span>
-                                        {% endif %}
-                                        {% if u.org_code %}
-                                        <span class="ml-1 text-[10px] text-t4 bg-n3 px-1 py-0.5 rounded">{{ u.org_code }}</span>
-                                        {% endif %}
-                                    </div>
-                                    {% if u.is_admin %}
-                                        <span class="gw-badge" style="background:rgba(167,139,250,0.1);color:#a78bfa;border-color:rgba(167,139,250,0.15)">Admin</span>
-                                    {% else %}
-                                        <span class="gw-badge" style="background:rgba(255,255,255,0.04);color:#868da0;border-color:rgba(255,255,255,0.06)">User</span>
-                                    {% endif %}
-                                </div>
-                            </div>
-                        </td>
-                        <td class="whitespace-nowrap">
-                            <button data-username="{{ u.username }}" data-uid="{{ u.id }}"
-                                    onclick="showKeyModal(this)"
-                                    class="gw-btn gw-btn-ghost text-xs font-mono px-3 py-1.5">
-                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
-                                View Key
-                            </button>
-                        </td>
-                        <td class="whitespace-nowrap">
-                            <div class="text-sm text-t1 font-mono font-medium">${{ "%.4f"|format(u.total_cost) }}</div>
-                            <div class="text-xs text-t4">{{ u.total_tokens }} tokens</div>
-                        </td>
-                        <td class="whitespace-nowrap">
-                            <form action="/admin/users/{{ u.id }}/limit" method="POST" class="flex items-center gap-2">
-                                <span class="text-t4 text-sm">$</span>
-                                <input type="number" step="0.1" min="0" name="new_limit" value="{{ u.daily_limit_usd }}"
-                                       class="gw-input w-20 text-sm font-mono py-1 px-2">
-                                <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
-                            </form>
-                            {% if u.can_use_azure or u.can_use_bedrock or u.is_admin %}
-                            <form action="/admin/users/{{ u.id }}/cloud-limit" method="POST" class="flex items-center gap-2 mt-1"
-                                  title="This user's Azure + AWS daily cap. Empty = the default from Cloud Daily Limit; 0 = no cloud spend.">
-                                <span class="text-xs text-t3">Cloud $</span>
-                                <input type="number" step="0.1" min="0" name="new_cloud_limit"
-                                       value="{{ u.cloud_daily_limit_usd if u.cloud_daily_limit_usd is not none else '' }}"
-                                       placeholder="{{ ('%g'|format(cloud_daily_limit)) ~ ' (default)' if cloud_daily_limit is not none else 'no cap' }}"
-                                       class="gw-input w-36 text-sm font-mono py-1 px-2">
-                                <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
-                            </form>
-                            {% endif %}
-                        </td>
-                        <td class="whitespace-nowrap text-right">
-                            <div class="flex items-center justify-end gap-2">
-                                <form action="/admin/users/{{ u.id }}/toggle-azure" method="POST" data-username="{{ u.username }}"
-                                      data-granted="{{ 'true' if u.can_use_azure else 'false' }}" data-backend="azure"
-                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Revoke' : 'Grant') + ' Azure access?');">
-                                    <button type="submit"
-                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.can_use_azure else 'gw-btn-ghost' }}"
-                                            style="{{ 'background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.4);color:#cab9ff' if u.can_use_azure else '' }}"
-                                            title="{{ 'Azure granted' if u.can_use_azure else 'No Azure access' }}">
-                                        Azure
-                                    </button>
-                                </form>
-                                <form action="/admin/users/{{ u.id }}/toggle-bedrock" method="POST" data-username="{{ u.username }}"
-                                      data-granted="{{ 'true' if u.can_use_bedrock else 'false' }}" data-backend="bedrock"
-                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Revoke' : 'Grant') + ' AWS Bedrock access?');">
-                                    <button type="submit"
-                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.can_use_bedrock else 'gw-btn-ghost' }}"
-                                            style="{{ 'background:rgba(255,153,51,0.15);border-color:rgba(255,153,51,0.4);color:#ffcb8a' if u.can_use_bedrock else '' }}"
-                                            title="{{ 'AWS Bedrock granted' if u.can_use_bedrock else 'No AWS Bedrock access' }}">
-                                        AWS
-                                    </button>
-                                </form>
-                                {% if not u.is_admin %}
-                                <form action="/admin/users/{{ u.id }}/toggle-concurrency-waive" method="POST" data-username="{{ u.username }}"
-                                      data-granted="{{ 'true' if u.concurrency_waived else 'false' }}" data-backend="waive"
-                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Apply the concurrency limit again' : 'Waive the concurrency limit') + '?');">
-                                    <button type="submit"
-                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.concurrency_waived else 'gw-btn-ghost' }}"
-                                            style="{{ 'background:rgba(52,211,153,0.15);border-color:rgba(52,211,153,0.4);color:#86efac' if u.concurrency_waived else '' }}"
-                                            title="{{ 'Concurrency limit waived — click to apply it' if u.concurrency_waived else 'Concurrency limit applies — click to waive' }}">
-                                        Waive
-                                    </button>
-                                </form>
-                                <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-username="{{ u.username }}"
-                                      onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.is_disabled else 'false' }} ? 'Enable' : 'Disable') + ' account?');">
-                                    <button type="submit"
-                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-warn' if u.is_disabled else 'gw-btn-ghost' }}"
-                                            title="{{ 'Account disabled — click to enable' if u.is_disabled else 'Active — click to disable' }}">
-                                        {{ 'Enable' if u.is_disabled else 'Disable' }}
-                                    </button>
-                                </form>
-                                {% endif %}
-                                {% if not u.is_admin %}
-                                <form action="/admin/users/{{ u.id }}/delete" method="POST" data-username="{{ u.username }}"
-                                      onsubmit="return confirm('Delete user ' + this.dataset.username + '? This cannot be undone.');">
-                                    <button type="submit" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
-                                </form>
-                                {% endif %}
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% if user_total > 0 %}
-        <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)">
-            <a href="?offset={{ [offset - limit, 0]|max }}&limit={{ limit }}&app_offset={{ app_offset }}&app_limit={{ app_limit }}{% if q %}&q={{ q }}{% endif %}"
-               class="gw-btn gw-btn-ghost text-xs px-2 py-1 {{ 'opacity-30 pointer-events-none' if offset == 0 }}">&larr; Prev</a>
-            <span>{{ offset + 1 }}-{{ [offset + limit, user_total]|min }} of {{ user_total }}</span>
-            <a href="?offset={{ offset + limit }}&limit={{ limit }}&app_offset={{ app_offset }}&app_limit={{ app_limit }}{% if q %}&q={{ q }}{% endif %}"
-               class="gw-btn gw-btn-ghost text-xs px-2 py-1 {{ 'opacity-30 pointer-events-none' if offset + limit >= user_total }}">&rarr; Next</a>
-        </div>
-        {% endif %}
-    </div>
-
-    {# Apps table #}
-    <div id="umAppsPanel" class="gw-card overflow-hidden hidden">
-        <div class="overflow-x-auto">
-            <table class="gw-table">
-                <thead><tr>
-                    <th>App</th><th>API Key</th><th>Owner</th>
-                    <th class="gw-tip" data-tip="All-time cumulative cost">Total Spend</th>
-                    <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
-                    <th style="text-align:right">Actions</th>
-                </tr></thead>
-                <tbody id="umAppsBody">
-                    {% for u in apps %}
-                    <tr class="um-row" data-search="{{ u.username|lower }} {{ u.owners|join(' ')|lower }}">
-                        <td class="whitespace-nowrap">
-                            <div class="flex items-center gap-2">
-                                <div class="h-8 w-8 rounded-lg flex items-center justify-center font-bold text-sm bg-[rgba(99,152,255,0.1)] text-ab">
-                                    {{ u.username[0]|upper }}
-                                </div>
-                                <div>
-                                    <div class="text-sm font-medium text-t1">{{ u.username }}</div>
-                                    <span class="gw-badge">App</span>
-                                </div>
-                            </div>
-                        </td>
-                        <td class="whitespace-nowrap">
-                            <button data-username="{{ u.username }}" data-uid="{{ u.id }}"
-                                    onclick="showKeyModal(this)"
-                                    class="gw-btn gw-btn-ghost text-xs font-mono px-3 py-1.5">
-                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
-                                View Key
-                            </button>
-                        </td>
-                        <td class="whitespace-nowrap">
-                            <form onsubmit="event.preventDefault(); setOwner(this, {{ u.id }})" class="flex items-center gap-1">
-                                <input type="text" name="owner_usernames" value="{{ u.owners|join(', ') }}" placeholder="user1, user2"
-                                       class="gw-input w-40 text-sm font-mono py-1 px-2" title="Comma-separated usernames">
-                                <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Set</button>
-                            </form>
-                        </td>
-                        <td class="whitespace-nowrap">
-                            <div class="text-sm text-t1 font-mono font-medium">${{ "%.4f"|format(u.total_cost) }}</div>
-                            <div class="text-xs text-t4">{{ u.total_tokens }} tokens</div>
-                        </td>
-                        <td class="whitespace-nowrap">
-                            <form action="/admin/users/{{ u.id }}/limit" method="POST" class="flex items-center gap-2">
-                                <span class="text-t4 text-sm">$</span>
-                                <input type="number" step="0.1" min="0" name="new_limit" value="{{ u.daily_limit_usd }}"
-                                       class="gw-input w-20 text-sm font-mono py-1 px-2">
-                                <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
-                            </form>
-                            {% if u.can_use_azure or u.can_use_bedrock or u.is_admin %}
-                            <form action="/admin/users/{{ u.id }}/cloud-limit" method="POST" class="flex items-center gap-2 mt-1"
-                                  title="This user's Azure + AWS daily cap. Empty = the default from Cloud Daily Limit; 0 = no cloud spend.">
-                                <span class="text-xs text-t3">Cloud $</span>
-                                <input type="number" step="0.1" min="0" name="new_cloud_limit"
-                                       value="{{ u.cloud_daily_limit_usd if u.cloud_daily_limit_usd is not none else '' }}"
-                                       placeholder="{{ ('%g'|format(cloud_daily_limit)) ~ ' (default)' if cloud_daily_limit is not none else 'no cap' }}"
-                                       class="gw-input w-36 text-sm font-mono py-1 px-2">
-                                <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
-                            </form>
-                            {% endif %}
-                        </td>
-                        <td class="whitespace-nowrap text-right">
-                            <div class="flex items-center justify-end gap-2">
-                                <form action="/admin/users/{{ u.id }}/toggle-azure" method="POST" data-username="{{ u.username }}"
-                                      data-granted="{{ 'true' if u.can_use_azure else 'false' }}" data-backend="azure"
-                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Revoke' : 'Grant') + ' Azure access?');">
-                                    <button type="submit"
-                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.can_use_azure else 'gw-btn-ghost' }}"
-                                            style="{{ 'background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.4);color:#cab9ff' if u.can_use_azure else '' }}"
-                                            title="{{ 'Azure granted' if u.can_use_azure else 'No Azure access' }}">
-                                        Azure
-                                    </button>
-                                </form>
-                                <form action="/admin/users/{{ u.id }}/toggle-bedrock" method="POST" data-username="{{ u.username }}"
-                                      data-granted="{{ 'true' if u.can_use_bedrock else 'false' }}" data-backend="bedrock"
-                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Revoke' : 'Grant') + ' AWS Bedrock access?');">
-                                    <button type="submit"
-                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.can_use_bedrock else 'gw-btn-ghost' }}"
-                                            style="{{ 'background:rgba(255,153,51,0.15);border-color:rgba(255,153,51,0.4);color:#ffcb8a' if u.can_use_bedrock else '' }}"
-                                            title="{{ 'AWS Bedrock granted' if u.can_use_bedrock else 'No AWS Bedrock access' }}">
-                                        AWS
-                                    </button>
-                                </form>
-                                {% if not u.is_admin %}
-                                <form action="/admin/users/{{ u.id }}/toggle-concurrency-waive" method="POST" data-username="{{ u.username }}"
-                                      data-granted="{{ 'true' if u.concurrency_waived else 'false' }}" data-backend="waive"
-                                      onsubmit="return confirm((this.dataset.username) + ': ' + (this.dataset.granted === 'true' ? 'Apply the concurrency limit again' : 'Waive the concurrency limit') + '?');">
-                                    <button type="submit"
-                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-primary' if u.concurrency_waived else 'gw-btn-ghost' }}"
-                                            style="{{ 'background:rgba(52,211,153,0.15);border-color:rgba(52,211,153,0.4);color:#86efac' if u.concurrency_waived else '' }}"
-                                            title="{{ 'Concurrency limit waived — click to apply it' if u.concurrency_waived else 'Concurrency limit applies — click to waive' }}">
-                                        Waive
-                                    </button>
-                                </form>
-                                {% endif %}
-                                <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-username="{{ u.username }}"
-                                      onsubmit="return confirm((this.dataset.username) + ': ' + ({{ 'true' if u.is_disabled else 'false' }} ? 'Enable' : 'Disable') + ' app?');">
-                                    <button type="submit"
-                                            class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-warn' if u.is_disabled else 'gw-btn-ghost' }}"
-                                            title="{{ 'App disabled — click to enable' if u.is_disabled else 'Active — click to disable' }}">
-                                        {{ 'Enable' if u.is_disabled else 'Disable' }}
-                                    </button>
-                                </form>
-                                <form action="/admin/users/{{ u.id }}/delete" method="POST" data-username="{{ u.username }}"
-                                      onsubmit="return confirm('Delete app ' + this.dataset.username + '? This cannot be undone.');">
-                                    <button type="submit" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
-                                </form>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% if app_total > 0 %}
-        <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)">
-            <a href="?offset={{ offset }}&limit={{ limit }}&app_offset={{ [app_offset - app_limit, 0]|max }}&app_limit={{ app_limit }}{% if q %}&q={{ q }}{% endif %}"
-               class="gw-btn gw-btn-ghost text-xs px-2 py-1 {{ 'opacity-30 pointer-events-none' if app_offset == 0 }}">&larr; Prev</a>
-            <span>{{ app_offset + 1 }}-{{ [app_offset + app_limit, app_total]|min }} of {{ app_total }}</span>
-            <a href="?offset={{ offset }}&limit={{ limit }}&app_offset={{ app_offset + app_limit }}&app_limit={{ app_limit }}{% if q %}&q={{ q }}{% endif %}"
-               class="gw-btn gw-btn-ghost text-xs px-2 py-1 {{ 'opacity-30 pointer-events-none' if app_offset + app_limit >= app_total }}">&rarr; Next</a>
-        </div>
-        {% endif %}
-    </div>
+    {% with table = users_table %}{% include "_admin_user_table.html" %}{% endwith %}
+    {% with table = apps_table %}{% include "_admin_user_table.html" %}{% endwith %}
 </div>
 
 </div>
@@ -751,8 +496,7 @@ function submitExportCsv() {
                 {% endif %}
             </p>
         </div>
-        <form action="/admin/concurrency-limit" method="POST" class="flex items-end gap-3"
-              onsubmit="return this.mode.value !== 'enforce' || confirm('Enforce the concurrency limit? Accounts over ' + this.limit.value + ' in-flight requests will get 429 responses.');">
+        <form action="/admin/concurrency-limit" method="POST" class="flex items-end gap-3" data-confirm="concurrency">
             <div>
                 <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Mode</label>
                 <select name="mode" class="gw-input text-sm py-1.5 px-2">
@@ -780,9 +524,7 @@ function submitExportCsv() {
                 Floor for daily spend (USD). Applies to new users; existing users below the floor are auto-raised.
             </p>
         </div>
-        <form action="/admin/default-limit" method="POST"
-              onsubmit="return confirm('Set default daily limit to $' + this.new_default.value + '? All users below this floor (except $0 accounts) will be raised to it.');"
-              class="flex items-end gap-3">
+        <form action="/admin/default-limit" method="POST" data-confirm="default-limit" class="flex items-end gap-3">
             <div>
                 <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Default Limit (USD)</label>
                 <div class="flex items-center gap-1">
@@ -915,29 +657,29 @@ function submitExportCsv() {
 <script>gwTabs('adminTabs', 'adminTab');</script>
 
 {# ── API Key Modal ── #}
-<div id="keyModal" class="fixed inset-0 z-50 hidden">
+<div id="keyModal" class="fixed inset-0 z-50 hidden" role="dialog" aria-modal="true" aria-labelledby="keyModalTitle">
     <div class="gw-overlay fixed inset-0" onclick="closeKeyModal()"></div>
     <div class="fixed inset-0 flex items-center justify-center p-4">
         <div class="gw-modal w-full max-w-lg relative" onclick="event.stopPropagation()">
             <div class="flex items-center justify-between px-6 py-4" style="border-bottom:1px solid rgba(255,255,255,0.05)">
-                <h3 class="text-lg font-bold text-t1">
+                <h3 id="keyModalTitle" class="text-lg font-bold text-t1">
                     API Key &mdash; <span id="modalUsername" class="text-ab"></span>
                 </h3>
-                <button onclick="closeKeyModal()" class="text-t4 hover:text-t2 transition-colors">
+                <button type="button" onclick="closeKeyModal()" aria-label="Close" class="text-t4 hover:text-t2 transition-colors">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
             </div>
             <div class="px-6 py-5">
-                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-2">API Key</label>
+                <label for="modalKeyValue" class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-2">API Key</label>
                 <input id="modalKeyValue" type="text" readonly class="gw-input w-full px-3 py-2.5 font-mono text-sm select-all">
-                <div id="modalCopyFeedback" class="text-xs text-ag font-medium mt-1.5 h-4"></div>
+                <div id="modalCopyFeedback" class="text-xs text-ag font-medium mt-1.5 h-4" aria-live="polite"></div>
             </div>
             <div class="flex items-center justify-between px-6 py-4 bg-n1 rounded-b-2xl" style="border-top:1px solid rgba(255,255,255,0.04)">
-                <button onclick="refreshKey()" id="modalRefreshBtn" class="gw-btn gw-btn-warn text-sm px-4 py-2">
+                <button type="button" onclick="refreshKey()" id="modalRefreshBtn" class="gw-btn gw-btn-warn text-sm px-4 py-2">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
                     Regenerate
                 </button>
-                <button onclick="copyModalKey()" class="gw-btn gw-btn-primary text-sm px-4 py-2">
+                <button type="button" onclick="copyModalKey()" class="gw-btn gw-btn-primary text-sm px-4 py-2">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
                     Copy
                 </button>
@@ -947,51 +689,19 @@ function submitExportCsv() {
 </div>
 
 <script>
-    /* ── Leaderboard pagination ── */
-    var lbState = { app: { page: 0, size: 10 }, user: { page: 0, size: 10 } };
-    function lbPage(kind, delta) {
-        var rows = document.querySelectorAll('.lb-' + kind + '-row');
-        var total = rows.length;
-        if (!total) return;
-        var s = lbState[kind];
-        s.page = Math.max(0, Math.min(s.page + delta, Math.ceil(total / s.size) - 1));
-        var start = s.page * s.size, end = start + s.size;
-        rows.forEach(function(r, i) {
-            r.style.display = (i >= start && i < end) ? '' : 'none';
-            if (i >= start && i < end) r.querySelector('.lb-rank').textContent = i + 1;
-        });
-        var prevBtn = document.getElementById(kind + 'LbPrev');
-        var nextBtn = document.getElementById(kind + 'LbNext');
-        var info = document.getElementById(kind + 'LbInfo');
-        if (prevBtn) prevBtn.disabled = s.page === 0;
-        if (nextBtn) nextBtn.disabled = end >= total;
-        if (info) info.textContent = (start + 1) + '-' + Math.min(end, total) + ' of ' + total;
-    }
-    // Initialize pagination on load
-    lbPage('app', 0); lbPage('user', 0);
-
-    /* ── User Management tabs ── */
-    function switchUmTab(tab) {
-        try { sessionStorage.setItem('umTab', tab); } catch (e) {}
-        document.getElementById('umUsersPanel').classList.toggle('hidden', tab !== 'users');
-        document.getElementById('umAppsPanel').classList.toggle('hidden', tab !== 'apps');
-        var btnUsers = document.getElementById('umTabUsers');
-        var btnApps = document.getElementById('umTabApps');
-        btnUsers.className = 'text-xs font-medium px-3 py-1.5 transition-colors ' + (tab === 'users' ? 'bg-n3 text-t1' : 'text-t4 hover:text-t2');
-        btnApps.className = 'text-xs font-medium px-3 py-1.5 transition-colors ' + (tab === 'apps' ? 'bg-n3 text-t1' : 'text-t4 hover:text-t2');
-    }
-
-    let currentUserId = null;
-    // The listings carry masked keys only, so the real one is fetched per
-    // account when the modal opens.
+    /* ── API key modal ──
+       The listings carry no keys, so the real one is fetched per account
+       when the modal opens (GET /admin/users/{id}/api-key, which is logged). */
+    var currentUserId = null;
     function showKeyModal(el) {
         var uid = el.dataset.uid;
         currentUserId = uid;
         document.getElementById('modalUsername').textContent = el.dataset.username;
         var field = document.getElementById('modalKeyValue');
-        field.value = 'Loading\u2026';
+        field.value = 'Loading…';
         document.getElementById('modalCopyFeedback').textContent = '';
         document.getElementById('keyModal').classList.remove('hidden');
+        document.getElementById('modalRefreshBtn').focus();
         fetch('/admin/users/' + uid + '/api-key')
             .then(function(r) { return r.json(); })
             .then(function(d) {
@@ -1004,48 +714,275 @@ function submitExportCsv() {
     function closeKeyModal() { document.getElementById('keyModal').classList.add('hidden'); currentUserId = null; }
 
     function copyToClipboard(text, el) {
+        function done() { el.textContent = 'Copied to clipboard!'; setTimeout(function(){ el.textContent = ''; }, 2000); }
         if (navigator.clipboard && window.isSecureContext) {
-            navigator.clipboard.writeText(text).then(function(){ el.textContent='Copied to clipboard!'; setTimeout(function(){ el.textContent=''; }, 2000); });
+            navigator.clipboard.writeText(text).then(done);
         } else {
-            var ta=document.createElement('textarea'); ta.value=text; ta.style.position='fixed'; ta.style.left='-9999px';
+            var ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
             document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
-            el.textContent='Copied to clipboard!'; setTimeout(function(){ el.textContent=''; }, 2000);
+            done();
         }
     }
     function copyModalKey() { copyToClipboard(document.getElementById('modalKeyValue').value, document.getElementById('modalCopyFeedback')); }
 
     function refreshKey() {
-        if (!currentUserId) return;
-        if (!confirm('Regenerate API key? The old key will stop working immediately.')) return;
-        var btn = document.getElementById('modalRefreshBtn'); btn.disabled=true; btn.classList.add('opacity-50');
-        fetch('/admin/users/' + currentUserId + '/refresh-key', { method: 'POST' })
-            .then(r => r.json())
-            .then(data => {
-                if (data.ok) {
+        var uid = currentUserId;
+        if (!uid) return;
+        gwConfirm('Regenerate the API key of ' + document.getElementById('modalUsername').textContent +
+                  '? The old key stops working immediately.', { okLabel: 'Regenerate', danger: true })
+        .then(function(ok) {
+            if (!ok) return;
+            var btn = document.getElementById('modalRefreshBtn'); btn.disabled = true; btn.classList.add('opacity-50');
+            gwPost('/admin/users/' + uid + '/refresh-key')
+                .then(function(data) {
+                    if (currentUserId !== uid) return;
                     document.getElementById('modalKeyValue').value = data.api_key;
                     document.getElementById('modalCopyFeedback').textContent = 'Key regenerated!';
-                    setTimeout(() => { document.getElementById('modalCopyFeedback').textContent = ''; }, 3000);
-                } else alert('Failed.');
-            })
-            .catch(() => alert('Error.'))
-            .finally(() => { btn.disabled=false; btn.classList.remove('opacity-50'); });
+                    setTimeout(function() { document.getElementById('modalCopyFeedback').textContent = ''; }, 3000);
+                })
+                .catch(function(err) { gwToast('Regenerate failed — ' + err.message, 'error'); })
+                .then(function() { btn.disabled = false; btn.classList.remove('opacity-50'); });
+        });
     }
-    function setOwner(form, userId) {
-        var input = form.querySelector('input[name="owner_usernames"]');
-        var btn = form.querySelector('button[type="submit"]');
-        var origText = btn.textContent;
-        btn.disabled = true; btn.textContent = '...';
-        var fd = new FormData(); fd.append('owner_usernames', input.value);
-        fetch('/admin/users/' + userId + '/owner', { method: 'POST', body: fd, redirect: 'manual' })
-            .then(function(r) {
-                if (r.ok) { btn.textContent = 'OK'; btn.classList.add('text-green-400'); }
-                else if (r.type === 'opaqueredirect') { btn.textContent = 'OK'; btn.classList.add('text-green-400'); }
-                else return r.json().then(function(d) { alert(d.detail || 'Error'); btn.textContent = origText; });
-            })
-            .catch(function() { alert('Network error'); btn.textContent = origText; })
-            .finally(function() { btn.disabled = false; setTimeout(function() { btn.textContent = origText; btn.classList.remove('text-green-400'); }, 1500); });
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && !document.getElementById('keyModal').classList.contains('hidden')) closeKeyModal();
+    });
+
+    /* ── POST helper: Accept: application/json, error detail as the message ── */
+    function gwPost(url, body) {
+        return fetch(url, {
+            method: 'POST',
+            headers: { 'Accept': 'application/json' },
+            body: body,
+            credentials: 'same-origin'
+        }).then(function(resp) {
+            return resp.text().then(function(text) {
+                var data = null;
+                try { data = text ? JSON.parse(text) : {}; } catch (e) {}
+                if (!resp.ok) {
+                    var detail = data && data.detail;
+                    if (detail && typeof detail !== 'string') detail = JSON.stringify(detail);
+                    throw new Error(detail || ('HTTP ' + resp.status));
+                }
+                return data || {};
+            });
+        });
     }
-    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeKeyModal(); });
+
+    /* ── Users tab: Users / Apps panels ──
+       The panels come from _admin_user_table.html. Search, sort, filter and
+       paging fetch GET /admin/user-table (same query parameters as /admin)
+       and swap one panel, instead of reloading /admin and re-running every
+       report on it. The URL keeps the state, so a reload shows the same page. */
+    var um = (function() {
+        var KEYS = ['q', 'sort', 'status', 'offset', 'limit', 'app_offset', 'app_limit'];
+        var seq = { users: 0, apps: 0 };
+
+        function current() {
+            try { return sessionStorage.getItem('umTab') === 'apps' ? 'apps' : 'users'; } catch (e) { return 'users'; }
+        }
+        function panel(kind) { return document.querySelector('[data-um-panel="' + kind + '"]'); }
+
+        function show(kind) {
+            try { sessionStorage.setItem('umTab', kind); } catch (e) {}
+            ['users', 'apps'].forEach(function(k) {
+                var p = panel(k);
+                if (p) p.classList.toggle('hidden', k !== kind);
+                var b = document.querySelector('[data-um-tab="' + k + '"]');
+                b.classList.toggle('bg-n3', k === kind);
+                b.classList.toggle('text-t1', k === kind);
+                b.classList.toggle('text-t4', k !== kind);
+                b.setAttribute('aria-selected', k === kind ? 'true' : 'false');
+            });
+        }
+
+        function state() {
+            var params = new URLSearchParams(location.search), out = new URLSearchParams();
+            KEYS.forEach(function(k) { if (params.has(k)) out.set(k, params.get(k)); });
+            return out;
+        }
+
+        function setState(params) {
+            var qs = params.toString();
+            history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + '#users');
+            var filtered = params.get('q') || (params.get('status') || 'all') !== 'all' || (params.get('sort') || 'id') !== 'id';
+            document.getElementById('umClear').classList.toggle('hidden', !filtered);
+        }
+
+        function load(kind) {
+            var p = panel(kind);
+            var mine = ++seq[kind];
+            var params = state();
+            params.set('kind', kind);
+            if (p) p.classList.add('is-loading');
+            return fetch('/admin/user-table?' + params.toString(), { credentials: 'same-origin' })
+                .then(function(r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.text();
+                })
+                .then(function(html) {
+                    if (mine !== seq[kind]) return;  // a newer load for this panel won
+                    var box = document.createElement('div');
+                    box.innerHTML = html.trim();
+                    var fresh = box.querySelector('[data-um-panel]');
+                    panel(kind).replaceWith(fresh);
+                    document.querySelector('[data-um-count="' + kind + '"]').textContent = fresh.dataset.total;
+                    show(current());
+                })
+                .catch(function(err) {
+                    if (mine !== seq[kind]) return;
+                    if (p) p.classList.remove('is-loading');
+                    gwToast('Could not load the ' + kind + ' table — ' + err.message, 'error');
+                });
+        }
+
+        // A search that only matches the other kind (say, an app account
+        // linked from "Near daily limit") opens that kind's panel.
+        function followResults() {
+            var here = current(), there = here === 'users' ? 'apps' : 'users';
+            var nHere = +(panel(here) || {dataset: {}}).dataset.total, nThere = +(panel(there) || {dataset: {}}).dataset.total;
+            if (state().get('q') && nHere === 0 && nThere > 0) show(there);
+        }
+
+        document.addEventListener('click', function(e) {
+            var tab = e.target.closest && e.target.closest('[data-um-tab]');
+            if (tab) { show(tab.dataset.umTab); return; }
+            var a = e.target.closest && e.target.closest('a[data-um-nav]');
+            if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+            e.preventDefault();
+            var next = new URLSearchParams(new URL(a.href, location.href).search);
+            setState(next);
+            load(a.dataset.umNav);
+        });
+
+        var form = document.getElementById('umSearch');
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            var next = state();
+            ['offset', 'app_offset'].forEach(function(k) { next.delete(k); });  // new results start at page 1
+            ['q', 'sort', 'status'].forEach(function(k) {
+                var v = form.elements[k].value.trim();
+                var dflt = { q: '', sort: 'id', status: 'all' }[k];
+                if (v && v !== dflt) next.set(k, v); else next.delete(k);
+            });
+            setState(next);
+            Promise.all([load('users'), load('apps')]).then(followResults);
+        });
+        form.querySelectorAll('select').forEach(function(sel) {
+            sel.addEventListener('change', function() { form.requestSubmit(); });
+        });
+        document.getElementById('umClear').addEventListener('click', function(e) {
+            e.preventDefault();
+            form.elements.q.value = ''; form.elements.sort.value = 'id'; form.elements.status.value = 'all';
+            form.requestSubmit();
+        });
+
+        show(current());
+        followResults();
+        return { load: load };
+    })();
+
+    /* ── Per-account actions, in place ──
+       Every row form carries data-action. One delegated handler confirms
+       when the action needs it, POSTs with Accept: application/json and
+       repaints only what changed: the toggle button, the row's disabled
+       look, the input that was saved. A delete reloads that one panel so the
+       paging stays right. Without JS the forms post and redirect as before. */
+    (function() {
+        var TOGGLE = {
+            azure:   { key: 'can_use_azure',      flag: 'azure',
+                       ask: function(n, on) { return n + ': ' + (on ? 'revoke' : 'grant') + ' Azure access?'; },
+                       title: ['No Azure access', 'Azure granted'] },
+            bedrock: { key: 'can_use_bedrock',    flag: 'bedrock',
+                       ask: function(n, on) { return n + ': ' + (on ? 'revoke' : 'grant') + ' AWS Bedrock access?'; },
+                       title: ['No AWS Bedrock access', 'AWS Bedrock granted'] },
+            waive:   { key: 'concurrency_waived',
+                       ask: function(n, on) { return n + ': ' + (on ? 'apply the concurrency limit again' : 'waive the concurrency limit') + '?'; },
+                       title: ['Concurrency limit applies — click to waive', 'Concurrency limit waived — click to apply it'] }
+        };
+
+        function flash(el, ok) {
+            if (!el) return;
+            var cls = ok ? 'um-flash-ok' : 'um-flash-err';
+            el.classList.add(cls);
+            setTimeout(function() { el.classList.remove(cls); }, 1200);
+        }
+
+        function paintToggle(form, action, on) {
+            var t = TOGGLE[action], btn = form.querySelector('button');
+            form.dataset.granted = on ? 'true' : 'false';
+            btn.classList.toggle('is-on', on);
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+            btn.title = t.title[on ? 1 : 0];
+            var row = form.closest('tr');
+            if (t.flag) {
+                row.dataset[t.flag] = on ? 'true' : 'false';
+                // The Cloud $ field applies only to accounts that can reach the cloud.
+                var cloud = row.dataset.azure === 'true' || row.dataset.bedrock === 'true' || row.dataset.admin === 'true';
+                row.querySelector('[data-cloud-form]').classList.toggle('hidden', !cloud);
+            }
+        }
+
+        function paintDisabled(form, off) {
+            var btn = form.querySelector('button'), row = form.closest('tr');
+            form.dataset.granted = off ? 'true' : 'false';
+            btn.textContent = off ? 'Enable' : 'Disable';
+            btn.title = off ? 'Disabled — click to enable' : 'Active — click to disable';
+            btn.classList.toggle('gw-btn-warn', off);
+            btn.classList.toggle('gw-btn-ghost', !off);
+            row.classList.toggle('is-disabled', off);
+            row.querySelector('.um-disabled-badge').classList.toggle('hidden', !off);
+        }
+
+        function confirmFor(form, action) {
+            var name = form.closest('tr').dataset.username, on = form.dataset.granted === 'true';
+            if (TOGGLE[action]) return gwConfirm(TOGGLE[action].ask(name, on), { okLabel: 'Yes' });
+            if (action === 'disable') {
+                return gwConfirm(on ? 'Enable ' + name + '?' : 'Disable ' + name + '? Their API key is refused until re-enabled.',
+                                 { okLabel: on ? 'Enable' : 'Disable', danger: !on });
+            }
+            if (action === 'delete') {
+                return gwConfirm('Delete ' + name + '? This cannot be undone. Their usage history is kept.',
+                                 { okLabel: 'Delete', danger: true });
+            }
+            return Promise.resolve(true);
+        }
+
+        function apply(form, action, data) {
+            var name = form.closest('tr').dataset.username;
+            if (TOGGLE[action]) return paintToggle(form, action, !!data[TOGGLE[action].key]);
+            if (action === 'disable') return paintDisabled(form, !!data.is_disabled);
+            if (action === 'delete') {
+                gwToast(name + ' deleted.', 'ok');
+                return um.load(form.closest('[data-um-panel]').dataset.umPanel);
+            }
+            var input = form.querySelector('input:not([type=hidden])');
+            if (action === 'limit') input.value = data.daily_limit_usd;
+            if (action === 'cloud-limit') input.value = data.cloud_daily_limit_usd == null ? '' : data.cloud_daily_limit_usd;
+            flash(input, true);
+        }
+
+        document.addEventListener('submit', function(e) {
+            var form = e.target, action = form.dataset && form.dataset.action;
+            if (!action) return;
+            e.preventDefault();
+            confirmFor(form, action).then(function(ok) {
+                if (!ok) return;
+                // Serialize before disabling anything: disabled controls are
+                // left out of FormData.
+                var body = new URLSearchParams(new FormData(form));
+                var btn = form.querySelector('button[type="submit"]');
+                if (btn) btn.disabled = true;
+                gwPost(form.action, body)
+                    .then(function(data) { apply(form, action, data); })
+                    .catch(function(err) {
+                        flash(form.querySelector('input:not([type=hidden])'), false);
+                        gwToast(form.closest('tr').dataset.username + ': ' + err.message, 'error');
+                    })
+                    .then(function() { if (btn) btn.disabled = false; });
+            });
+        });
+    })();
 </script>
 
 <script>
@@ -1104,206 +1041,79 @@ function submitExportCsv() {
 </script>
 
 <script>
-    /* ── In-place saves for the per-user limit forms ──
-       Daily / Azure / Bedrock limit edits used to POST-redirect and reload
-       the whole page for every single Save, which made bulk-editing limits
-       painfully slow (viewport jump, table re-render, re-find the row).
-       Intercept just those forms and submit via fetch: green flash on the
-       input = saved, red flash + alert = rejected. Everything else on the
-       page (toggles, deletes, search) still round-trips as before. */
-    (function(){
-        var LIMIT_ACTION = /\/admin\/users\/\d+\/(limit|cloud-limit)$/;
-
-        function flash(el, ok) {
-            if (!el) return;
-            el.style.transition = 'box-shadow 0.15s';
-            el.style.boxShadow = ok
-                ? '0 0 0 2px rgba(52, 211, 153, 0.85)'
-                : '0 0 0 2px rgba(248, 113, 113, 0.9)';
-            setTimeout(function(){ el.style.boxShadow = ''; }, 1200);
-        }
-
-        document.addEventListener('submit', function(e){
-            var form = e.target;
-            if (!(form instanceof HTMLFormElement) || !LIMIT_ACTION.test(form.action)) return;
-            e.preventDefault();
-
-            var btn = form.querySelector('button[type="submit"]');
-            var input = form.querySelector('input[type="number"]');
-            var label = btn ? btn.textContent : '';
-            if (btn) { btn.disabled = true; btn.textContent = '…'; }
-
-            fetch(form.action, {
-                method: 'POST',
-                // URLSearchParams keeps the body urlencoded, same as a
-                // native form submit — the backend Form(...) params and the
-                // 303-redirect response both behave identically.
-                body: new URLSearchParams(new FormData(form)),
-            })
-            .then(function(resp){
-                if (!resp.ok) {
-                    return resp.text().then(function(t){
-                        throw new Error('HTTP ' + resp.status + (t ? ': ' + t.slice(0, 200) : ''));
-                    });
-                }
-                flash(input, true);
-            })
-            .catch(function(err){
-                flash(input, false);
-                alert('Save failed — ' + err.message);
-            })
-            .then(function(){
-                if (btn) { btn.disabled = false; btn.textContent = label; }
-            });
-        }, true);
-    })();
-</script>
-
-<script>
-    /* ── In-place Azure / AWS grant + concurrency Waive toggles + Cloud Budget Fallback ──
-       These used to be classic POST → 303 → /admin round-trips, which
-       re-rendered the whole page on every click and dumped the viewport
-       (the scroll restore below is best-effort — the tables still jumped).
-       Now the click POSTs with Accept: application/json, the endpoint
-       answers with the new flag value, and only the one button repaints. */
-    (function(){
-        var TOGGLE_ACTION = /\/admin\/users\/\d+\/toggle-(azure|bedrock|concurrency-waive)$/;
-        var GRANTED_STYLE = {
-            azure:   'background:rgba(167,139,250,0.18);border-color:rgba(167,139,250,0.4);color:#cab9ff',
-            bedrock: 'background:rgba(255,153,51,0.15);border-color:rgba(255,153,51,0.4);color:#ffcb8a',
-            waive:   'background:rgba(52,211,153,0.15);border-color:rgba(52,211,153,0.4);color:#86efac'
-        };
-        var TITLES = {
-            azure:   { on: 'Azure granted',       off: 'No Azure access' },
-            bedrock: { on: 'AWS Bedrock granted', off: 'No AWS Bedrock access' },
-            waive:   { on: 'Concurrency limit waived — click to apply it',
-                       off: 'Concurrency limit applies — click to waive' }
-        };
-        var RESPONSE_KEYS = { azure: 'can_use_azure', bedrock: 'can_use_bedrock', waive: 'concurrency_waived' };
-
-        function paint(form, granted) {
-            var backend = form.dataset.backend;
-            var btn = form.querySelector('button[type="submit"]');
-            form.dataset.granted = granted ? 'true' : 'false';
-            if (!btn) return;
-            btn.classList.toggle('gw-btn-primary', granted);
-            btn.classList.toggle('gw-btn-ghost', !granted);
-            btn.setAttribute('style', granted ? GRANTED_STYLE[backend] : '');
-            btn.title = granted ? TITLES[backend].on : TITLES[backend].off;
-        }
-
-        function postJson(url, payload) {
-            // `payload` is a form (serialized as it stands right now) or a
-            // ready-made URLSearchParams body.
-            var body = payload instanceof HTMLFormElement
-                ? new URLSearchParams(new FormData(payload))
-                : payload;
-            return fetch(url, {
-                method: 'POST',
-                headers: { 'Accept': 'application/json' },
-                body: body,
-                credentials: 'same-origin'
-            }).then(function(resp){
-                if (!resp.ok) {
-                    return resp.text().then(function(t){
-                        throw new Error('HTTP ' + resp.status + (t ? ': ' + t.slice(0, 200) : ''));
-                    });
-                }
-                return resp.json();
-            });
-        }
-
-        // Bubble phase, so the form's own onsubmit="return confirm(...)" runs
-        // first: Cancel leaves defaultPrevented set and nothing is sent.
-        document.addEventListener('submit', function(e){
-            var form = e.target;
-            if (!(form instanceof HTMLFormElement) || !TOGGLE_ACTION.test(form.action)) return;
-            if (e.defaultPrevented) return;
-            e.preventDefault();
-            var btn = form.querySelector('button[type="submit"]');
-            var backend = form.dataset.backend;
-            if (btn) btn.disabled = true;
-            postJson(form.action, form)
-                .then(function(data){
-                    paint(form, !!data[RESPONSE_KEYS[backend]]);
-                })
-                .catch(function(err){ alert('Update failed — ' + err.message); })
-                .then(function(){ if (btn) btn.disabled = false; });
-        });
-
-        var fbForm = document.getElementById('cloud-budget-fallback-form');
-        if (fbForm) {
-            var box = fbForm.querySelector('input[name="enabled"]');
-            var state = document.getElementById('cloud-budget-fallback-state');
-            function paintFallback(on) {
-                box.checked = on;
-                state.textContent = on ? 'Enabled — falls back to on-prem'
-                                       : 'Disabled — 429 when cloud budget is spent';
-                state.style.color = on ? '#cab9ff' : '';
+    /* ── Settings forms that confirm first (data-confirm) ──
+       A confirmed form is sent with form.submit(), which does not fire
+       another submit event. */
+    (function() {
+        var ASK = {
+            'concurrency': function(f) {
+                return f.mode.value === 'enforce'
+                    ? { text: 'Enforce the concurrency limit? Accounts over ' + f.limit.value + ' in-flight requests will get 429 responses.', okLabel: 'Enforce', danger: true }
+                    : null;
+            },
+            'default-limit': function(f) {
+                return { text: 'Set the default daily limit to $' + f.new_default.value + '? Every account below this floor (except $0 accounts) is raised to it.', okLabel: 'Apply' };
             }
-            box.addEventListener('change', function(){
-                var wanted = box.checked;
-                // Post the checkbox state itself instead of serializing the
-                // form: the box is disabled while the save is in flight, and
-                // a disabled control is left out of FormData, so serializing
-                // after disabling sent an empty body — which the endpoint
-                // reads as "unchecked" — and every click saved the flag as
-                // off and snapped the box back.
-                var body = new URLSearchParams({ enabled: wanted ? 'on' : 'off' });
-                box.disabled = true;
-                postJson(fbForm.action, body)
-                    .then(function(data){ paintFallback(!!data.cloud_budget_fallback); })
-                    .catch(function(err){
-                        paintFallback(!wanted);
-                        alert('Save failed — ' + err.message);
-                    })
-                    .then(function(){ box.disabled = false; });
-            });
-            fbForm.addEventListener('submit', function(e){ e.preventDefault(); });
-        }
+        };
+        document.addEventListener('submit', function(e) {
+            var form = e.target, ask = form.dataset && ASK[form.dataset.confirm];
+            if (!ask) return;
+            var q = ask(form);
+            if (!q) return;
+            e.preventDefault();
+            gwConfirm(q.text, q).then(function(ok) { if (ok) { saveAdminScroll(); form.submit(); } });
+        });
     })();
-</script>
 
-<script>
-    /* ── Keep scroll position & active tab across full-page round-trips ──
-       Actions in the user-management tables (search, pagination,
-       disable toggles, deletes) reload /admin via GET or POST-redirect,
-       which would otherwise dump the viewport back at the top of the page
-       and reset the Users/Apps tab. (Limit saves and the Azure/AWS grant
-       toggles are AJAX now and never leave the page.) */
-    (function(){
-        var Y_KEY = 'adminScroll';
-        function saveScroll(){
-            try { sessionStorage.setItem(Y_KEY, JSON.stringify({ y: window.scrollY, t: Date.now() })); } catch (e) {}
+    /* ── Cloud Budget Fallback: saved on change ── */
+    (function() {
+        var fbForm = document.getElementById('cloud-budget-fallback-form');
+        if (!fbForm) return;
+        var box = fbForm.querySelector('input[name="enabled"]');
+        var state = document.getElementById('cloud-budget-fallback-state');
+        function paintFallback(on) {
+            box.checked = on;
+            state.textContent = on ? 'Enabled — falls back to on-prem'
+                                   : 'Disabled — 429 when cloud budget is spent';
+            state.style.color = on ? '#cab9ff' : '';
         }
-        // Capture phase catches every form on the page (per-row action forms
-        // included) without wiring each one individually. AJAX-only forms
-        // save too, but the freshness window below keeps that harmless.
-        document.addEventListener('submit', saveScroll, true);
-        document.addEventListener('click', function(e){
-            var a = e.target && e.target.closest ? e.target.closest('a') : null;
-            if (!a) return;
-            var href = a.getAttribute('href') || '';
-            // Pagination links (?offset=...) and the search Clear link (/admin).
-            if (href.charAt(0) === '?' || href === '/admin') saveScroll();
+        box.addEventListener('change', function() {
+            var wanted = box.checked;
+            // Post the wanted state itself instead of serializing the form:
+            // the box is disabled while the save is in flight, and a
+            // disabled control is left out of FormData, which the endpoint
+            // would read as "unchecked".
+            var body = new URLSearchParams({ enabled: wanted ? 'on' : 'off' });
+            box.disabled = true;
+            gwPost(fbForm.action, body)
+                .then(function(data) { paintFallback(!!data.cloud_budget_fallback); })
+                .catch(function(err) {
+                    paintFallback(!wanted);
+                    gwToast('Save failed — ' + err.message, 'error');
+                })
+                .then(function() { box.disabled = false; });
+        });
+        fbForm.addEventListener('submit', function(e) { e.preventDefault(); });
+    })();
+
+    /* ── Keep the scroll position across the settings forms' round-trips ──
+       Settings forms (and app creation) still POST and redirect to /admin;
+       everything in the Users tab is in place and never leaves the page. */
+    var Y_KEY = 'adminScroll';
+    function saveAdminScroll() {
+        try { sessionStorage.setItem(Y_KEY, JSON.stringify({ y: window.scrollY, t: Date.now() })); } catch (e) {}
+    }
+    (function() {
+        document.addEventListener('submit', function(e) {
+            var f = e.target;
+            if (f.dataset.action || f.id === 'umSearch' || f.id === 'exportForm') return;
+            saveAdminScroll();
         }, true);
-
         var saved = null;
-        try {
-            saved = JSON.parse(sessionStorage.getItem(Y_KEY));
-            sessionStorage.removeItem(Y_KEY);
-        } catch (e) {}
-        // 30s freshness window: restores after a round-trip reload, but a
-        // stale save (e.g. an AJAX submit that never navigated) won't yank
-        // the viewport when the admin returns to this page minutes later.
-        if (saved && typeof saved.y === 'number' && Date.now() - saved.t < 30000) {
-            window.scrollTo(0, saved.y);
-        }
-
-        // Re-open the tab (Users/Apps) that was active before the reload.
-        try {
-            if (sessionStorage.getItem('umTab') === 'apps') switchUmTab('apps');
-        } catch (e) {}
+        try { saved = JSON.parse(sessionStorage.getItem(Y_KEY)); sessionStorage.removeItem(Y_KEY); } catch (e) {}
+        // 30 s freshness window: a stale save must not yank the viewport
+        // when the admin comes back to this page later.
+        if (saved && typeof saved.y === 'number' && Date.now() - saved.t < 30000) window.scrollTo(0, saved.y);
     })();
 </script>
 {% endblock %}
