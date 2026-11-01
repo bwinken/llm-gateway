@@ -93,7 +93,7 @@ class TestReportPagesRunOffTheEventLoop:
         from app.routers import admin, web_ui
 
         for fn in (
-            admin.admin_page, admin.export_usage_report,
+            admin.admin_page, admin.user_table_panel, admin.export_usage_report,
             admin.export_user_backend_costs_csv, admin.export_users_csv,
             web_ui.dashboard, web_ui.model_breakdown_api,
         ):

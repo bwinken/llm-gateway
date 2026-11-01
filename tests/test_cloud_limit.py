@@ -289,10 +289,17 @@ class TestAdmin:
         with _cap(30):
             body = client.get("/admin", headers=self._hdr(admin_user)).text
         assert 'action="/admin/cloud-limit"' in body
-        assert f'action="/admin/users/{test_user.id}/cloud-limit"' in body
-        assert f'action="/admin/users/{onprem.id}/cloud-limit"' not in body
+
+        def cloud_form(uid: int) -> str:
+            start = body.index(f'action="/admin/users/{uid}/cloud-limit"')
+            return body[start:body.index(">", start)]
+
+        assert "hidden" not in cloud_form(test_user.id)
+        # Rendered but hidden without cloud access: granting Azure / AWS in
+        # place reveals it without a reload.
+        assert "hidden" in cloud_form(onprem.id)
         # Admins reach the cloud regardless of the toggles, so they get the field.
-        assert f'action="/admin/users/{admin_user.id}/cloud-limit"' in body
+        assert "hidden" not in cloud_form(admin_user.id)
         assert "30 (default)" in body
         for kind in ("azure", "bedrock"):
             assert f'/admin/users/{test_user.id}/{kind}-limit"' not in body
