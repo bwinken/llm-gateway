@@ -20,6 +20,7 @@ from app.core.config import (
     APP_TITLE,
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
+    get_display_order_snapshot,
     get_model_routing_snapshot,
     get_pricing_snapshot,
     get_site_links,
@@ -29,7 +30,7 @@ from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ, seconds_until_local_midnight
 from app.services.model_order import (
     catalog_key,
-    sort_order_of,
+    positions,
     type_rank,
     unknown_key,
 )
@@ -102,7 +103,7 @@ def _format_duration(seconds: float) -> str:
 def _catalog_sort_key(m: dict):
     """A model-table row's place within its type (see ``model_order``)."""
     return catalog_key(
-        m.get("name") or m.get("alias") or "", m.get("sort_order"),
+        m.get("name") or m.get("alias") or "", m.get("position"),
         m["input_price"] + m["output_price"],
     )
 
@@ -116,6 +117,7 @@ def _catalog_keys() -> dict[tuple[str, str], tuple]:
     """``(backend, alias) -> catalog_key`` for every configured model, hidden
     ones included (their past usage still has to sort sensibly)."""
     pricing_map = get_pricing_snapshot()
+    order = _display_positions()
     keys: dict[tuple[str, str], tuple] = {}
     for backend, snapshot in (
         ("vllm", get_model_routing_snapshot()),
@@ -124,8 +126,13 @@ def _catalog_keys() -> dict[tuple[str, str], tuple]:
     ):
         for alias, entry in snapshot.items():
             in_price, out_price = _resolve_prices(entry, entry.get("type", "llm"), pricing_map)
-            keys[(backend, alias)] = catalog_key(alias, sort_order_of(entry), in_price + out_price)
+            keys[(backend, alias)] = catalog_key(alias, order[backend].get(alias), in_price + out_price)
     return keys
+
+
+def _display_positions() -> dict[str, dict[str, int]]:
+    """``{backend: {alias: index}}`` from ``[display_order]``."""
+    return {backend: positions(aliases) for backend, aliases in get_display_order_snapshot().items()}
 
 
 def _hidden_cloud_backends(user: User) -> frozenset[str]:
@@ -222,6 +229,7 @@ def index(
     # carries optional admin-set metadata so the welcome page can show
     # capability badges (tools / vision / cache) and context window.
     pricing_map = get_pricing_snapshot()
+    order = _display_positions()["vllm"]
     models_by_type: dict[str, list[dict]] = {}
     for alias, route in get_model_routing_snapshot().items():
         if route.get("hidden"):
@@ -239,7 +247,7 @@ def index(
             "supports_vision": route.get("supports_vision", False),
             "supports_prompt_caching": route.get("supports_prompt_caching", False),
             "is_reasoning": route.get("is_reasoning", False),
-            "sort_order": sort_order_of(route),
+            "position": order.get(alias),
             "input_price": in_price,
             "output_price": out_price,
         })
@@ -287,6 +295,7 @@ def dashboard(
     # online/down indicator, plus the effective billing prices so the list
     # can sort by (and display) cost.
     pricing_map = get_pricing_snapshot()
+    order = _display_positions()
     server_groups: dict[str, list[dict]] = {}
     for model_name, route in get_model_routing_snapshot().items():
         if route.get("hidden"):
@@ -309,7 +318,7 @@ def dashboard(
                 "supports_vision": route.get("supports_vision", False),
                 "supports_prompt_caching": route.get("supports_prompt_caching", False),
                 "is_reasoning": route.get("is_reasoning", False),
-                "sort_order": sort_order_of(route),
+                "position": order["vllm"].get(model_name),
                 "input_price": in_price,
                 "output_price": out_price,
                 # Load snapshot from /metrics — None when unavailable.
@@ -351,7 +360,7 @@ def dashboard(
     # shape as server_groups so the template renders all backends uniformly).
     # Hidden Azure entries are skipped so admins can stage models without
     # exposing them yet (mirrors the vLLM `hidden` flag).
-    def _cloud_groups(snapshot: dict) -> dict[str, list[dict]]:
+    def _cloud_groups(snapshot: dict, backend: str) -> dict[str, list[dict]]:
         groups: dict[str, list[dict]] = {}
         for alias, entry in snapshot.items():
             if entry.get("hidden"):
@@ -367,7 +376,7 @@ def dashboard(
                 "supports_vision": entry.get("supports_vision", False),
                 "supports_prompt_caching": entry.get("supports_prompt_caching", False),
                 "is_reasoning": entry.get("is_reasoning", False),
-                "sort_order": sort_order_of(entry),
+                "position": order[backend].get(alias),
                 "input_price": in_price,
                 "output_price": out_price,
             })
@@ -377,12 +386,12 @@ def dashboard(
 
     azure_groups: dict[str, list[dict]] = {}
     if user.can_use_azure or user.is_admin:
-        azure_groups = _cloud_groups(get_azure_models_snapshot())
+        azure_groups = _cloud_groups(get_azure_models_snapshot(), "azure")
 
     # Bedrock access — same contract as the Azure section above.
     bedrock_groups: dict[str, list[dict]] = {}
     if user.can_use_bedrock or user.is_admin:
-        bedrock_groups = _cloud_groups(get_bedrock_models_snapshot())
+        bedrock_groups = _cloud_groups(get_bedrock_models_snapshot(), "bedrock")
 
     return templates.TemplateResponse(
         "dashboard.html",

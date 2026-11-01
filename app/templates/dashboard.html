@@ -168,7 +168,7 @@
 {# Group dicts arrive with their types already in display order and each
    group's models in catalog order (app/services/model_order.py). #}
 {% macro order_note(models) -%}
-    {%- if models | selectattr('sort_order', 'ne', none) | list -%}· admin order, then by price
+    {%- if models | selectattr('position', 'ne', none) | list -%}· arranged by an admin
     {%- else -%}· by price, then name{%- endif -%}
 {%- endmacro %}
 {# Capability badge macro shared by all three model sections #}
@@ -275,7 +275,7 @@
                         <span class="text-[11px] font-bold text-t4 uppercase tracking-wider">
                             {{ type_labels[type_key] if type_key in type_labels else type_key|upper }}
                         </span>
-                        <span class="text-[10px] text-t4 ml-2 gw-tip gw-tip-wide" data-tip="Models an admin pinned come first, then cheapest first; ties by name. Servers that are down are listed last.">{{ order_note(servers) }}</span>
+                        <span class="text-[10px] text-t4 ml-2 gw-tip gw-tip-wide" data-tip="In the order an admin arranged (Model Config → Display order); models not arranged follow, cheapest first, then by name. Servers that are down are listed last.">{{ order_note(servers) }}</span>
                     </td>
                 </tr>
                 {% for s in servers %}

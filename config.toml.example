@@ -136,10 +136,6 @@ api_key = "your-api-key"
 # reasoning_effort_map = { high = "xhigh" }
 # reasoning_efforts = []   # this model takes no effort knob: always stripped
 # hidden = false          # Hide from user-facing pages and /v1/models (still usable via API)
-# sort_order = 1          # Display position within its type on the welcome page and the
-#                         # dashboard (model tables + Cost by Model): lower first. Unset =
-#                         # after the numbered ones, cheapest first, then by name. Works
-#                         # on [azure_models.*] / [bedrock_models.*] entries too.
 # native_messages = false # Set true when the downstream vLLM (>= 0.11.1) serves the native
 #                         # Anthropic /v1/messages endpoint: Anthropic requests (Claude Code)
 #                         # are forwarded as-is instead of translated via the OpenAI pivot.
@@ -352,3 +348,18 @@ api_key = ""                        # decider's server checks no key
 # output_price_per_1m = 15.00
 # cached_input_price_per_1m = 0.30
 # rate_limit_fallback = "claude-haiku"
+
+
+# ==========================================
+# Display order (optional)
+# ==========================================
+# The order models are listed in on the welcome page, the dashboard (model
+# tables and Cost by Model) and Admin → Model Config. One list of aliases per
+# backend; easiest to arrange by dragging in Model Config → Display order.
+# Models are always grouped by type (llm, vlm, embedding, ...); within a
+# type the listed ones come first in this order, then any model left out,
+# cheapest first, then by name. Display only: routing never reads it.
+# [display_order]
+# vllm = ["my-llm", "my-vlm", "bge-m3"]
+# azure = ["gpt-4o"]
+# bedrock = ["claude-sonnet"]

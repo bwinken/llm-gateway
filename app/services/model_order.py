@@ -4,7 +4,8 @@ The welcome page, the dashboard's model tables and its Cost by Model card
 all sort with these keys, so a model sits in the same place everywhere:
 
 1. by type, in ``TYPE_ORDER`` (unknown types after, by name);
-2. models with an admin-set ``sort_order`` first, lowest number first;
+2. models listed in ``[display_order]`` for their backend first, in that
+   order (arranged in Admin → Model Config → Display order);
 3. then cheapest first (billed input + output price per 1M tokens);
 4. then by alias in natural order: case-insensitive, digit runs compared as
    numbers, so ``qwen3-8b < qwen3-32b < qwen3-235b`` (a plain string sort
@@ -18,7 +19,6 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any
 
 TYPE_ORDER: tuple[str, ...] = (
     "llm", "vlm", "embedding", "vision_embedding", "reranker", "vision_reranker", "systemone",
@@ -42,19 +42,17 @@ def type_rank(model_type: str | None) -> tuple:
     return (TYPE_ORDER.index(t), "") if t in TYPE_ORDER else (len(TYPE_ORDER), t)
 
 
-def sort_order_of(entry: dict[str, Any]) -> int | None:
-    """The entry's ``sort_order`` when it is a usable integer, else None."""
-    value = entry.get("sort_order")
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
+def positions(aliases: list[str]) -> dict[str, int]:
+    """``{alias: index}`` for one backend's ``[display_order]`` list."""
+    return {alias: i for i, alias in enumerate(aliases)}
 
 
-def catalog_key(alias: str, sort_order: int | None, price_total: float) -> tuple:
-    """Order of one model within its type (rules 2–4 in the module docstring)."""
+def catalog_key(alias: str, position: int | None, price_total: float) -> tuple:
+    """Order of one model within its type (rules 2–4 in the module docstring).
+    ``position`` is its index in the backend's ``[display_order]`` list."""
     return (
-        0 if sort_order is not None else 1,
-        sort_order if sort_order is not None else 0,
+        0 if position is not None else 1,
+        position if position is not None else 0,
         price_total,
         natural_key(alias),
     )

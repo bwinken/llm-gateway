@@ -22,10 +22,13 @@ from app.core.config import (
     _MODEL_PRICING_KEYS,
     APP_TITLE,
     CONCURRENCY_MODES,
+    DISPLAY_ORDER_BACKENDS,
     bedrock_shared_settings,
     get_cloud_budget_fallback,
     get_cloud_daily_limit,
     get_concurrency_settings,
+    get_azure_models_snapshot,
+    get_bedrock_models_snapshot,
     get_config_data,
     get_default_daily_limit,
     get_model_routing_snapshot,
@@ -985,6 +988,38 @@ def get_config_api():
     return JSONResponse(get_config_data())
 
 
+def _clean_display_order(
+    raw: object, maps: dict[str, dict | None],
+) -> dict[str, list[str]] | None:
+    """Validate ``display_order`` ({backend: [alias, ...]}) from a config PUT.
+
+    ``None`` (omitted) leaves the section as it is. Aliases that are not
+    models of that backend (renamed or deleted since the page loaded) and
+    repeats are dropped rather than refused: the order is display-only.
+    A backend whose models the payload omits is checked against the
+    current config, which save_config leaves untouched."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="display_order must be an object of alias lists.")
+    unknown = sorted(set(raw) - set(DISPLAY_ORDER_BACKENDS))
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"display_order: unknown backend(s) {unknown}.")
+    current = {
+        "vllm": get_model_routing_snapshot,
+        "azure": get_azure_models_snapshot,
+        "bedrock": get_bedrock_models_snapshot,
+    }
+    out: dict[str, list[str]] = {}
+    for backend in DISPLAY_ORDER_BACKENDS:
+        aliases = raw.get(backend, [])
+        if not isinstance(aliases, list) or not all(isinstance(a, str) for a in aliases):
+            raise HTTPException(status_code=400, detail=f"display_order.{backend} must be a list of aliases.")
+        known = maps[backend] if maps[backend] is not None else current[backend]()
+        out[backend] = list(dict.fromkeys(a for a in aliases if a in known))
+    return out
+
+
 @router.put("/api/config")
 async def save_config_api(
     request: Request,
@@ -1011,6 +1046,10 @@ async def save_config_api(
         raise HTTPException(status_code=400, detail="Invalid bedrock_models format.")
     if bedrock_fallback is not None and not isinstance(bedrock_fallback, dict):
         raise HTTPException(status_code=400, detail="Invalid bedrock_fallback format.")
+    display_order = _clean_display_order(
+        body.get("display_order"),
+        {"vllm": models, "azure": azure_models, "bedrock": bedrock_models},
+    )
 
     # Aliases must be unique across backends — _build_config refuses to load
     # a config that repeats one, and it only runs AFTER save_config has
@@ -1044,25 +1083,14 @@ async def save_config_api(
     _INTERNAL_TYPES: dict[str, type | tuple[type, ...]] = {
         "hidden": bool,
         "native_messages": bool,
-        "sort_order": int,
     }
 
     def _check_internal(label: str, alias: str, info: dict) -> None:
         for key in _MODEL_INTERNAL_KEYS:
-            if key not in info:
-                continue
-            expected = _INTERNAL_TYPES[key]
-            value = info[key]
-            # bool is an int subclass: True must not pass as a sort_order.
-            if not isinstance(value, expected) or (expected is int and isinstance(value, bool)):
+            if key in info and not isinstance(info[key], _INTERNAL_TYPES[key]):
                 raise HTTPException(
                     status_code=400,
                     detail=f"{label} '{alias}' field '{key}' has wrong type.",
-                )
-            if expected is int and value < 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{label} '{alias}' field '{key}' must be non-negative.",
                 )
     for alias, info in models.items():
         if not isinstance(info, dict):
@@ -1246,7 +1274,7 @@ async def save_config_api(
 
     save_config(
         models, pricing, fallback or {}, azure_models, azure_fallback,
-        bedrock_models, bedrock_fallback,
+        bedrock_models, bedrock_fallback, display_order,
     )
     return JSONResponse({"ok": True})
 
