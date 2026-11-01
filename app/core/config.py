@@ -95,6 +95,31 @@ _MODEL_INTERNAL_KEYS: tuple[str, ...] = (
     "native_messages",
 )
 
+# [display_order]: the order models are listed in on the welcome page, the
+# dashboard's model tables and its Cost by Model card, and in Admin → Model
+# Config. One list of aliases per backend; models left out come after the
+# listed ones of their type (app/services/model_order.py). Display only:
+# routing never reads it.
+DISPLAY_ORDER_BACKENDS: tuple[str, ...] = ("vllm", "azure", "bedrock")
+
+
+def _build_display_order(raw: dict[str, Any]) -> dict[str, list[str]]:
+    """``[display_order]`` as ``{backend: [alias, ...]}``, every backend
+    present; anything that is not a list of strings is ignored, duplicates
+    keep their first position."""
+    section = raw.get("display_order")
+    section = section if isinstance(section, dict) else {}
+    out: dict[str, list[str]] = {}
+    for backend in DISPLAY_ORDER_BACKENDS:
+        seen: dict[str, None] = {}
+        value = section.get(backend)
+        if isinstance(value, list):
+            for alias in value:
+                if isinstance(alias, str) and alias:
+                    seen.setdefault(alias, None)
+        out[backend] = list(seen)
+    return out
+
 
 # Cloud-only routing policy on [azure_models.*] / [bedrock_models.*] entries.
 # `rate_limit_fallback`: alias of another entry on the SAME backend that takes
@@ -428,6 +453,7 @@ _raw = _load_toml()
     APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP,
     AZURE_MODELS, AZURE_FALLBACK_MAP, BEDROCK_MODELS, BEDROCK_FALLBACK_MAP,
 ) = _build_config(_raw)
+DISPLAY_ORDER: dict[str, list[str]] = _build_display_order(_raw)
 
 _config_lock = threading.Lock()
 _config_mtime: float = _config_mtime_now()
@@ -450,6 +476,12 @@ def get_model_routing_snapshot() -> dict[str, dict[str, Any]]:
     return dict(MODEL_ROUTING)
 
 
+def get_display_order_snapshot() -> dict[str, list[str]]:
+    """``{backend: [alias, ...]}`` from ``[display_order]`` (copies)."""
+    _check_auto_reload()
+    return {backend: list(DISPLAY_ORDER.get(backend, [])) for backend in DISPLAY_ORDER_BACKENDS}
+
+
 def get_pricing_snapshot() -> dict[str, dict[str, float]]:
     """Return a shallow copy of PRICING_MAP safe for iteration."""
     _check_auto_reload()
@@ -468,6 +500,7 @@ def reload_config() -> None:
         new_app_config, new_routing, new_pricing, new_fallback,
         new_azure, new_azure_fallback, new_bedrock, new_bedrock_fallback,
     ) = _build_config(raw)
+    new_display_order = _build_display_order(raw)
 
     # Pre-compute stale keys outside the lock
     stale_app = set(APP_CONFIG) - set(new_app_config)
@@ -489,6 +522,7 @@ def reload_config() -> None:
         AZURE_FALLBACK_MAP.update(new_azure_fallback)
         BEDROCK_MODELS.update(new_bedrock)
         BEDROCK_FALLBACK_MAP.update(new_bedrock_fallback)
+        DISPLAY_ORDER.update(new_display_order)
         for k in stale_app:
             APP_CONFIG.pop(k, None)
         for k in stale_routing:
@@ -515,8 +549,11 @@ def save_config(
     azure_fallback: dict[str, str] | None = None,
     bedrock_models: dict[str, dict[str, Any]] | None = None,
     bedrock_fallback: dict[str, str] | None = None,
+    display_order: dict[str, list[str]] | None = None,
 ) -> None:
-    """Write config back to config.toml and reload globals."""
+    """Write config back to config.toml and reload globals.
+
+    A section passed as ``None`` is left as it is in the file."""
     raw = _load_toml()
 
     # Rebuild [models.*] sections grouped by type
@@ -650,6 +687,19 @@ def save_config(
         else:
             raw.pop("bedrock_fallback", None)
 
+    # Rebuild [display_order]: empty lists are dropped (that backend is in
+    # automatic order), and so is the section when nothing is arranged.
+    if display_order is not None:
+        cleaned_order = {
+            backend: list(display_order[backend])
+            for backend in DISPLAY_ORDER_BACKENDS
+            if display_order.get(backend)
+        }
+        if cleaned_order:
+            raw["display_order"] = cleaned_order
+        else:
+            raw.pop("display_order", None)
+
     # Atomic write: write to temp file then rename to prevent corruption
     dir_path = _CONFIG_PATH.parent
     fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix=".toml.tmp")
@@ -678,6 +728,7 @@ def get_config_data() -> dict[str, Any]:
         "azure_fallback": dict(AZURE_FALLBACK_MAP),
         "bedrock_models": dict(BEDROCK_MODELS),
         "bedrock_fallback": dict(BEDROCK_FALLBACK_MAP),
+        "display_order": {b: list(DISPLAY_ORDER.get(b, [])) for b in DISPLAY_ORDER_BACKENDS},
         # What blank Bedrock fields fall back to. Never the secret itself.
         "bedrock_shared": _bedrock_shared_summary(),
     }

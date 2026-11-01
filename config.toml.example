@@ -348,3 +348,18 @@ api_key = ""                        # decider's server checks no key
 # output_price_per_1m = 15.00
 # cached_input_price_per_1m = 0.30
 # rate_limit_fallback = "claude-haiku"
+
+
+# ==========================================
+# Display order (optional)
+# ==========================================
+# The order models are listed in on the welcome page, the dashboard (model
+# tables and Cost by Model) and Admin → Model Config. One list of aliases per
+# backend; easiest to arrange by dragging in Model Config → Display order.
+# Models are always grouped by type (llm, vlm, embedding, ...); within a
+# type the listed ones come first in this order, then any model left out,
+# cheapest first, then by name. Display only: routing never reads it.
+# [display_order]
+# vllm = ["my-llm", "my-vlm", "bge-m3"]
+# azure = ["gpt-4o"]
+# bedrock = ["claude-sonnet"]

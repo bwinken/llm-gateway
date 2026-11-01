@@ -14,6 +14,28 @@
     .mc-bad { border-color: rgba(255,92,92,0.45) !important; }
     .mc-pill { display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; border-radius: 5px; font-size: 10px; font-weight: 600; line-height: 16px; }
     .mc-kbd { font-family: "JetBrains Mono", monospace; font-size: 10px; padding: 1px 5px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1); color: #868da0; }
+    /* Left list: compact one-line rows under sticky, foldable group headers. */
+    .mc-row { padding: 5px 8px; }
+    .mc-group-h { position: sticky; top: 0; z-index: 2; background: #15161d; display: flex; align-items: center; justify-content: space-between; padding: 4px 2px; }
+    .mc-fold { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #868da0; }
+    .mc-fold:hover, .mc-type:hover { color: #c4c9d4; }
+    .mc-type { display: flex; align-items: center; gap: 4px; width: 100%; padding: 4px 6px 2px; font-size: 10px; font-family: "JetBrains Mono", monospace; color: #4e5569; }
+    .mc-chev { width: 10px; height: 10px; transition: transform 0.15s; flex-shrink: 0; }
+    .mc-chev.open { transform: rotate(90deg); }
+    .mc-chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.07); color: #868da0; }
+    .mc-chip span { color: #4e5569; margin-left: 2px; }
+    .mc-chip:hover { color: #c4c9d4; }
+    .mc-chip.on { background: rgba(99,152,255,0.12); border-color: rgba(99,152,255,0.3); color: #dfe7ff; }
+    .mc-chip.bad span { color: #ff8a8a; }
+    /* Display order editor */
+    .mc-order-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); background: rgba(255,255,255,0.015); cursor: grab; }
+    .mc-order-row:hover { border-color: rgba(255,255,255,0.1); }
+    .mc-order-row.mc-dragging { opacity: 0.35; }
+    .mc-order-row.mc-drop-before { box-shadow: 0 -2px 0 #6398ff; }
+    .mc-order-row.mc-drop-after { box-shadow: 0 2px 0 #6398ff; }
+    .mc-arrow { width: 24px; height: 24px; border-radius: 6px; color: #868da0; display: inline-flex; align-items: center; justify-content: center; }
+    .mc-arrow:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: #eef0f4; }
+    .mc-arrow:disabled { opacity: 0.25; cursor: default; }
 </style>
 
 <div class="mb-6 flex justify-between items-center gap-4 flex-wrap gw-anim">
@@ -41,12 +63,14 @@
 <div id="mainContent" class="hidden gw-anim grid grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)] gap-5 items-start pb-24">
     <aside class="gw-card p-3 lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] flex flex-col">
         <div class="relative mb-2">
-            <input id="searchBox" type="search" oninput="onSearch(this.value)" placeholder="Search models…" autocomplete="off"
+            <input id="searchBox" type="search" oninput="onSearch(this.value)" placeholder="Search alias, model ID, name…" autocomplete="off"
                    class="gw-input w-full text-sm py-2 pl-8 pr-2">
             <svg class="w-4 h-4 text-t4 absolute left-2.5 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z"/></svg>
         </div>
-        <button onclick="openAddModal()" class="gw-btn gw-btn-primary text-xs px-3 py-2 justify-center mb-3">+ Add model</button>
-        <nav id="modelList" class="overflow-y-auto -mx-1 px-1 space-y-3 text-sm"></nav>
+        <div id="listFilters" class="flex flex-wrap gap-1 mb-2"></div>
+        <button onclick="openAddModal()" class="gw-btn gw-btn-primary text-xs px-3 py-2 justify-center mb-2">+ Add model</button>
+        <nav id="modelList" class="overflow-y-auto -mx-1 px-1 space-y-2 text-sm" aria-label="Models"></nav>
+        <p class="mc-hint mt-2 px-1 hidden lg:block"><span class="mc-kbd">/</span> search · <span class="mc-kbd">↑</span><span class="mc-kbd">↓</span> move through the list</p>
     </aside>
 
     <section id="editor" class="min-w-0"></section>
@@ -95,7 +119,7 @@
 let config = null;
 let savedSnapshot = '';     // JSON of the config as last loaded/saved
 let savedConfig = null;     // parsed copy of the same, for per-model "changed" dots
-let sel = null;             // { kind: 'vllm'|'azure'|'bedrock', alias } or { kind: 'settings' }
+let sel = null;             // { kind: 'vllm'|'azure'|'bedrock', alias } or { kind: 'settings' | 'order' }
 let searchText = '';
 let modalState = null;
 
@@ -162,6 +186,16 @@ window.addEventListener('beforeunload', e => { if (isDirty()) { e.preventDefault
 document.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveAll(); }
     if (e.key === 'Escape' && modalState) closeModal();
+    if (modalState || e.ctrlKey || e.metaKey || e.altKey) return;
+    const active = document.activeElement;
+    const search = document.getElementById('searchBox');
+    const typing = active && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName);
+    if (e.key === '/' && !typing) { e.preventDefault(); search.focus(); search.select(); return; }
+    const inList = active === search || (active && active.closest && active.closest('#modelList'));
+    if (!inList) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); moveSelection(e.key === 'ArrowDown' ? 1 : -1); }
+    else if (e.key === 'Enter' && active === search) { e.preventDefault(); moveSelection(0); }
+    else if (e.key === 'Escape' && active === search && search.value) { search.value = ''; onSearch(''); }
 });
 
 async function loadConfig() {
@@ -183,6 +217,14 @@ function normalize(c) {
     for (const k of KINDS) {
         if (!c[BACKENDS[k].map]) c[BACKENDS[k].map] = {};
         if (!c[BACKENDS[k].fb]) c[BACKENDS[k].fb] = {};
+    }
+    // [display_order]: one alias list per backend; aliases that no longer
+    // exist are dropped here so they never count as an unsaved change.
+    const order = c.display_order || {};
+    c.display_order = {};
+    for (const k of KINDS) {
+        const map = c[BACKENDS[k].map];
+        c.display_order[k] = Array.isArray(order[k]) ? [...new Set(order[k])].filter(a => map[a]) : [];
     }
     if (!c.pricing) c.pricing = {};
     if (!c.pricing._default) c.pricing._default = { input_price_per_1m: 0.1, output_price_per_1m: 0.1 };
@@ -225,8 +267,12 @@ function updateDirty() {
     const dirty = isDirty();
     document.getElementById('dirtyBar').classList.toggle('hidden', !dirty);
     const n = dirty ? changedModelCount() : 0;
+    const orderChanged = dirty && JSON.stringify(config.display_order) !== JSON.stringify(savedConfig.display_order);
+    const parts = [];
+    if (n) parts.push(`${n} model${n === 1 ? '' : 's'} edited`);
+    if (orderChanged) parts.push('display order');
     document.getElementById('dirtyText').textContent = !dirty ? '' :
-        n ? `Unsaved changes · ${n} model${n === 1 ? '' : 's'} edited` : 'Unsaved changes to defaults / pricing';
+        parts.length ? `Unsaved changes · ${parts.join(' · ')}` : 'Unsaved changes to defaults / pricing';
     document.getElementById('saveBtn').textContent = dirty ? 'Save •' : 'Save';
 }
 
@@ -252,21 +298,32 @@ function selectFromHash() {
     const slash = h.indexOf('/');
     const kind = slash > 0 ? h.slice(0, slash) : h;
     const alias = slash > 0 ? h.slice(slash + 1) : '';
-    if (kind === 'settings') { sel = { kind: 'settings' }; return; }
+    if (kind === 'settings' || kind === 'order') { sel = { kind }; return; }
     if (BACKENDS[kind] && mapOf(kind)[alias]) { sel = { kind, alias }; return; }
     // Default: first model of the first non-empty backend, else settings.
     for (const k of KINDS) {
-        const first = Object.keys(mapOf(k))[0];
+        const first = displayOrder(k)[0];
         if (first) { sel = { kind: k, alias: first }; return; }
     }
     sel = { kind: 'settings' };
 }
 
+function isModelSel() { return !!(sel && BACKENDS[sel.kind]); }
+
 function select(kind, alias) {
-    sel = kind === 'settings' ? { kind } : { kind, alias };
-    const hash = '#' + (kind === 'settings' ? 'settings' : kind + '/' + encodeURIComponent(alias));
+    const page = !BACKENDS[kind];
+    sel = page ? { kind } : { kind, alias };
+    if (!page) {
+        // Unfold the groups holding the selection.
+        collapsed.delete(kind);
+        collapsed.delete(kind + ':' + (mapOf(kind)[alias]?.type || 'llm'));
+        saveCollapsed();
+    }
+    const hash = '#' + (page ? kind : kind + '/' + encodeURIComponent(alias));
     if (location.hash !== hash) history.replaceState(null, '', hash);
     renderAll();
+    const item = document.querySelector('#modelList .mc-item.active');
+    if (item) item.scrollIntoView({ block: 'nearest' });
     // Bring the editor's header into view (below the sticky navbar) when it
     // is off-screen — e.g. on a phone, where the list sits above it.
     const top = document.getElementById('editor').getBoundingClientRect().top;
@@ -310,8 +367,89 @@ function allProblems() {
     return out;
 }
 
-// ── Left: model list ──
+// ── Display order (mirrors app/services/model_order.py) ──
+//
+// By type (MODEL_TYPES first, others after by name); within a type the
+// aliases in config.display_order[kind] first, in that order, then the rest
+// cheapest first (billed input + output per 1M), then by alias in natural
+// order (case-insensitive, digit runs compared as numbers).
 
+function natParts(s) {
+    return String(s).toLowerCase().split(/(\d+)/).filter(Boolean)
+        .map(p => /^\d+$/.test(p) ? [0, Number(p), ''] : [1, 0, p]);
+}
+function cmpNatural(a, b) {
+    const x = natParts(a), y = natParts(b);
+    for (let i = 0; i < Math.min(x.length, y.length); i++) {
+        for (let j = 0; j < 3; j++) if (x[i][j] !== y[i][j]) return x[i][j] < y[i][j] ? -1 : 1;
+    }
+    return x.length - y.length;
+}
+function cmpType(a, b) {
+    const ia = MODEL_TYPES.indexOf(a || 'llm'), ib = MODEL_TYPES.indexOf(b || 'llm');
+    const ra = ia === -1 ? MODEL_TYPES.length : ia, rb = ib === -1 ? MODEL_TYPES.length : ib;
+    return ra - rb || (ra === MODEL_TYPES.length ? String(a).localeCompare(String(b)) : 0);
+}
+// Same priority as billing: per-model pair → [pricing.<type>] → _default.
+function priceTotal(info) {
+    if (info.input_price_per_1m !== undefined && info.output_price_per_1m !== undefined) {
+        return Number(info.input_price_per_1m) + Number(info.output_price_per_1m);
+    }
+    const p = config.pricing[info.type || 'llm'] || config.pricing._default || {};
+    return (Number(p.input_price_per_1m) || 0) + (Number(p.output_price_per_1m) || 0);
+}
+function displayOrder(kind) {
+    const map = mapOf(kind);
+    const pos = new Map(config.display_order[kind].map((a, i) => [a, i]));
+    return Object.keys(map).sort((a, b) => {
+        const t = cmpType(map[a].type, map[b].type);
+        if (t) return t;
+        const pa = pos.get(a), pb = pos.get(b);
+        if (pa !== undefined || pb !== undefined) {
+            if (pa === undefined) return 1;
+            if (pb === undefined) return -1;
+            return pa - pb;
+        }
+        return (priceTotal(map[a]) - priceTotal(map[b])) || cmpNatural(a, b);
+    });
+}
+function groupByType(kind, aliases) {
+    const map = mapOf(kind), out = new Map();
+    for (const a of aliases) {
+        const t = map[a].type || 'llm';
+        if (!out.has(t)) out.set(t, []);
+        out.get(t).push(a);
+    }
+    return out;
+}
+
+// ── Left: model list ──
+//
+// Backend → type groups in display order, one line per model (its model ID
+// shows on the selected row and on hover). Groups fold, remembered in this
+// browser; a search or a filter chip shows every match regardless.
+
+const FILTERS = {
+    all:      { label: 'All',      test: () => true },
+    edited:   { label: 'Edited',   test: (k, a) => isChanged(k, a) },
+    problems: { label: 'Problems', test: (k, a, i) => problems(k, a, i).length > 0 },
+    hidden:   { label: 'Hidden',   test: (k, a, i) => !!i.hidden },
+};
+let listFilter = 'all';
+let collapsed = new Set(loadCollapsed());
+
+function loadCollapsed() {
+    try { return JSON.parse(localStorage.getItem('mcCollapsed') || '[]'); } catch (e) { return []; }
+}
+function saveCollapsed() {
+    try { localStorage.setItem('mcCollapsed', JSON.stringify([...collapsed])); } catch (e) {}
+}
+function toggleGroup(key) {
+    if (collapsed.has(key)) collapsed.delete(key); else collapsed.add(key);
+    saveCollapsed();
+    renderList();
+}
+function setFilter(f) { listFilter = listFilter === f ? 'all' : f; renderList(); }
 function onSearch(v) { searchText = v.trim().toLowerCase(); renderList(); }
 
 function subtitle(kind, info) {
@@ -320,73 +458,128 @@ function subtitle(kind, info) {
     return info.model_id || '';
 }
 
+function chevron(open) {
+    return `<svg class="mc-chev ${open ? 'open' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M9 5l7 7-7 7"/></svg>`;
+}
+
+function renderFilters() {
+    const counts = Object.fromEntries(Object.keys(FILTERS).map(f => [f, 0]));
+    for (const k of KINDS) for (const [a, i] of Object.entries(mapOf(k))) {
+        for (const f of Object.keys(FILTERS)) if (FILTERS[f].test(k, a, i)) counts[f]++;
+    }
+    if (listFilter !== 'all' && !counts[listFilter]) listFilter = 'all';
+    document.getElementById('listFilters').innerHTML = Object.entries(FILTERS)
+        .filter(([f]) => f === 'all' || counts[f])
+        .map(([f, d]) => `<button type="button" class="mc-chip ${listFilter === f ? 'on' : ''} ${f === 'problems' ? 'bad' : ''}"
+            aria-pressed="${listFilter === f}" onclick="setFilter('${f}')">${d.label}<span>${counts[f]}</span></button>`)
+        .join('');
+}
+
+function pageItem(kind, icon, label, hint) {
+    const active = sel && sel.kind === kind;
+    return `
+        <button class="mc-item mc-row ${active ? 'active' : ''} flex items-center gap-2" data-nav="${kind}" onclick="select('${kind}')">
+            ${icon}
+            <span class="text-t2 font-medium">${label}</span>
+            ${hint ? `<span class="ml-auto text-[10px] text-t4">${hint}</span>` : ''}
+        </button>`;
+}
+
+const GEAR_ICON = '<svg class="w-4 h-4 text-t3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.3 4.3c.4-1.7 3-1.7 3.4 0a1.7 1.7 0 002.6 1.1c1.5-.9 3.3.8 2.4 2.4a1.7 1.7 0 001 2.5c1.8.4 1.8 3 0 3.4a1.7 1.7 0 00-1 2.6c.9 1.5-.9 3.3-2.4 2.4a1.7 1.7 0 00-2.6 1c-.4 1.8-3 1.8-3.4 0a1.7 1.7 0 00-2.5-1c-1.6.9-3.3-.9-2.4-2.4a1.7 1.7 0 00-1.1-2.6c-1.7-.4-1.7-3 0-3.4a1.7 1.7 0 001.1-2.5c-.9-1.6.8-3.3 2.4-2.4 1 .6 2.3.1 2.5-1.1z"/><circle cx="12" cy="12" r="3" stroke-width="2"/></svg>';
+const ORDER_ICON = '<svg class="w-4 h-4 text-t3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h11M4 12h11M4 18h11M19 4v16m0 0l-2.5-2.5M19 20l2.5-2.5"/></svg>';
+
 function renderList() {
+    renderFilters();
     const nav = document.getElementById('modelList');
     const q = searchText;
-    const matches = (alias, info, kind) => !q
+    const filtering = !!q || listFilter !== 'all';
+    const matches = (kind, alias, info) => FILTERS[listFilter].test(kind, alias, info) && (!q
         || alias.toLowerCase().includes(q)
         || subtitle(kind, info).toLowerCase().includes(q)
-        || (info.display_name || '').toLowerCase().includes(q);
+        || (info.display_name || '').toLowerCase().includes(q));
 
-    const settingsActive = sel && sel.kind === 'settings';
-    let html = `
-        <button class="mc-item ${settingsActive ? 'active' : ''} flex items-center gap-2" onclick="select('settings')">
-            <svg class="w-4 h-4 text-t3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.3 4.3c.4-1.7 3-1.7 3.4 0a1.7 1.7 0 002.6 1.1c1.5-.9 3.3.8 2.4 2.4a1.7 1.7 0 001 2.5c1.8.4 1.8 3 0 3.4a1.7 1.7 0 00-1 2.6c.9 1.5-.9 3.3-2.4 2.4a1.7 1.7 0 00-2.6 1c-.4 1.8-3 1.8-3.4 0a1.7 1.7 0 00-2.5-1c-1.6.9-3.3-.9-2.4-2.4a1.7 1.7 0 00-1.1-2.6c-1.7-.4-1.7-3 0-3.4a1.7 1.7 0 001.1-2.5c-.9-1.6.8-3.3 2.4-2.4 1 .6 2.3.1 2.5-1.1z"/><circle cx="12" cy="12" r="3" stroke-width="2"/></svg>
-            <span class="text-t2 font-medium">Fallbacks &amp; pricing</span>
-        </button>`;
+    const arranged = KINDS.some(k => config.display_order[k].length);
+    let html = `<div class="space-y-0.5">
+        ${pageItem('settings', GEAR_ICON, 'Fallbacks &amp; pricing')}
+        ${pageItem('order', ORDER_ICON, 'Display order', arranged ? 'arranged' : 'automatic')}
+    </div>`;
 
     let shown = 0;
     for (const kind of KINDS) {
-        const entries = Object.entries(mapOf(kind));
-        const visible = entries.filter(([a, info]) => matches(a, info, kind));
+        const map = mapOf(kind);
+        const total = Object.keys(map).length;
+        const visible = displayOrder(kind).filter(a => matches(kind, a, map[a]));
         shown += visible.length;
-        if (q && !visible.length) continue;
+        if (filtering && !visible.length) continue;
+        const open = filtering || !collapsed.has(kind);
         html += `
             <div>
-                <div class="flex items-center justify-between px-2 py-1">
-                    <span class="text-[11px] font-bold text-t4 uppercase tracking-wider">${BACKENDS[kind].label} <span class="font-normal">${entries.length}</span></span>
+                <div class="mc-group-h">
+                    <button type="button" class="mc-fold" onclick="toggleGroup('${kind}')" aria-expanded="${open}">
+                        ${chevron(open)}${BACKENDS[kind].label}
+                        <span class="font-normal normal-case tracking-normal">${filtering ? `${visible.length}/` : ''}${total}</span>
+                    </button>
                     <button onclick="openAddModal(${js(kind)})" class="text-t4 hover:text-ab text-xs px-1" title="Add ${escAttr(BACKENDS[kind].short)} model">+ Add</button>
                 </div>`;
-        if (!entries.length) {
+        if (!total) {
             html += `<p class="px-2 py-1 text-xs text-t4">None configured.</p>`;
-        } else if (kind === 'vllm') {
-            // Group on-prem models by type — that's how routing/fallback thinks of them.
-            const types = [...new Set(visible.map(([, i]) => i.type))];
-            types.sort((a, b) => MODEL_TYPES.indexOf(a) - MODEL_TYPES.indexOf(b));
-            for (const t of types) {
-                html += `<div class="px-2 pt-1 text-[10px] font-mono text-t4">${escHtml(t)}</div>`;
-                html += visible.filter(([, i]) => i.type === t).map(([a, i]) => listItem(kind, a, i)).join('');
+        } else if (open) {
+            const groups = groupByType(kind, visible);
+            // A type header only when the backend has more than one type.
+            const typed = new Set(Object.values(map).map(i => i.type || 'llm')).size > 1;
+            for (const [t, aliases] of groups) {
+                const key = kind + ':' + t;
+                const topen = filtering || !typed || !collapsed.has(key);
+                if (typed) {
+                    html += `<button type="button" class="mc-type" onclick="toggleGroup(${js(key)})" aria-expanded="${topen}">
+                        ${chevron(topen)}${escHtml(t)} <span>${aliases.length}</span></button>`;
+                }
+                if (topen) html += aliases.map(a => listItem(kind, a, map[a])).join('');
             }
-        } else {
-            html += visible.map(([a, i]) => listItem(kind, a, i)).join('');
         }
         html += `</div>`;
     }
-    if (q && !shown) html += `<p class="px-2 py-3 text-xs text-t4">No models match "${escHtml(searchText)}".</p>`;
+    if (filtering && !shown) {
+        html += `<p class="px-2 py-3 text-xs text-t4">No models match${q ? ` "${escHtml(searchText)}"` : ''}${listFilter !== 'all' ? ` in ${FILTERS[listFilter].label}` : ''}.</p>`;
+    }
     nav.innerHTML = html;
+}
+
+// Arrow keys walk the rows as rendered (folded groups skipped); 0 = the
+// first row (Enter in the search box).
+function moveSelection(delta) {
+    const items = [...document.querySelectorAll('#modelList [data-nav]')];
+    if (!items.length) return;
+    const cur = items.findIndex(el => el.classList.contains('active'));
+    const next = delta === 0 ? items.find(el => el.dataset.nav.includes('/')) || items[0]
+        : items[Math.max(0, Math.min(items.length - 1, (cur === -1 ? -1 : cur) + delta))];
+    const nav = next.dataset.nav, slash = nav.indexOf('/');
+    if (slash === -1) select(nav); else select(nav.slice(0, slash), decodeURIComponent(nav.slice(slash + 1)));
 }
 
 function listItem(kind, alias, info) {
     const active = sel && sel.kind === kind && sel.alias === alias;
     const bad = problems(kind, alias, info).length > 0;
     const badges = [];
-    if (kind !== 'vllm' && info.type === 'vlm') badges.push(pill('vlm', 'rgba(167,139,250,0.12)', '#a78bfa'));
     if (info.is_reasoning) badges.push(pill('think', 'rgba(77,217,232,0.10)', '#4dd9e8', 'is_reasoning'));
-    if (info.rate_limit_fallback) badges.push(pill('429→' + escHtml(info.rate_limit_fallback), 'rgba(245,166,35,0.10)', '#f5a623', 'Rate-limit fallback'));
+    if (info.rate_limit_fallback) badges.push(pill('429', 'rgba(245,166,35,0.10)', '#f5a623', 'On 429, retries on ' + info.rate_limit_fallback));
     if (info.hidden) badges.push(pill('hidden', 'rgba(255,255,255,0.05)', '#868da0', 'Hidden from GET /v1/models and the dashboard (still served by alias)'));
     const marker = bad
         ? '<span class="w-1.5 h-1.5 rounded-full bg-ar shrink-0" title="Missing required fields"></span>'
         : isChanged(kind, alias)
             ? '<span class="w-1.5 h-1.5 rounded-full bg-aa shrink-0" title="Unsaved changes"></span>'
             : '';
+    const sub = subtitle(kind, info);
+    const hover = [sub, info.display_name].filter(Boolean).join(' · ');
     return `
-        <button class="mc-item ${active ? 'active' : ''} ${info.hidden ? 'opacity-60' : ''}" onclick="select(${js(kind)}, ${js(alias)})">
+        <button class="mc-item mc-row ${active ? 'active' : ''} ${info.hidden ? 'opacity-60' : ''}" data-nav="${kind}/${escAttr(encodeURIComponent(alias))}"
+                onclick="select(${js(kind)}, ${js(alias)})" ${hover ? `title="${escAttr(hover)}"` : ''}>
             <div class="flex items-center gap-1.5 min-w-0">
                 <span class="font-mono text-[13px] ${active ? 'text-t1' : 'text-t2'} truncate">${escHtml(alias)}</span>
                 ${marker}
+                ${badges.length ? `<span class="ml-auto flex gap-1 shrink-0">${badges.join('')}</span>` : ''}
             </div>
-            <div class="text-[11px] text-t4 font-mono truncate">${escHtml(subtitle(kind, info) || '—')}</div>
-            ${badges.length ? `<div class="flex flex-wrap gap-1 mt-1">${badges.join('')}</div>` : ''}
+            ${active && sub ? `<div class="text-[11px] text-t4 font-mono truncate">${escHtml(sub)}</div>` : ''}
         </button>`;
 }
 
@@ -400,10 +593,155 @@ function renderEditor() {
     const el = document.getElementById('editor');
     if (!sel) { el.innerHTML = ''; return; }
     if (sel.kind === 'settings') { el.innerHTML = renderSettings(); return; }
+    if (sel.kind === 'order') { el.innerHTML = renderOrderEditor(); return; }
     const info = mapOf(sel.kind)[sel.alias];
     if (!info) { selectFromHash(); return renderEditor(); }
     el.innerHTML = renderModelEditor(sel.kind, sel.alias, info);
 }
+
+// ── Display order editor ──
+//
+// One list per backend and type. Drag a row (or use its arrows) to arrange
+// a type: that writes every alias of the type into config.display_order
+// [kind] in the new order. "Automatic" removes them again. A model added
+// later is not in the list, so it shows after the arranged ones (marked
+// "new") until it is placed.
+
+function typeAliases(kind, type) {
+    return displayOrder(kind).filter(a => (mapOf(kind)[a].type || 'llm') === type);
+}
+
+function setTypeOrder(kind, type, aliases, focus) {
+    const map = mapOf(kind);
+    const others = config.display_order[kind].filter(a => map[a] && (map[a].type || 'llm') !== type);
+    // Kept grouped by type so [display_order] reads the way the pages show it.
+    config.display_order[kind] = [...others, ...aliases].sort((a, b) => cmpType(map[a].type, map[b].type));
+    renderEditor();
+    changed();
+    if (focus) {
+        const btn = document.querySelector(focus);
+        if (btn && !btn.disabled) btn.focus();
+    }
+}
+
+function moveModel(kind, type, alias, delta) {
+    const list = typeAliases(kind, type);
+    const i = list.indexOf(alias), j = i + delta;
+    if (i === -1 || j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    setTypeOrder(kind, type, list,
+        `[data-order-row="${CSS.escape(kind + '/' + alias)}"] [data-move="${delta}"]`);
+}
+
+function resetTypeOrder(kind, type) {
+    const map = mapOf(kind);
+    config.display_order[kind] = config.display_order[kind].filter(a => (map[a]?.type || 'llm') !== type);
+    renderEditor();
+    changed();
+}
+
+function renderOrderEditor() {
+    let body = '';
+    for (const kind of KINDS) {
+        const map = mapOf(kind);
+        if (!Object.keys(map).length) continue;
+        const listed = new Set(config.display_order[kind]);
+        let lists = '';
+        for (const [type, aliases] of groupByType(kind, displayOrder(kind))) {
+            const arranged = aliases.some(a => listed.has(a));
+            const rows = aliases.map((a, i) => {
+                const info = map[a];
+                const sub = info.display_name || subtitle(kind, info);
+                const key = escAttr(kind + '/' + a);
+                return `
+                    <li class="mc-order-row" draggable="true" data-order-row="${key}" data-kind="${kind}" data-type="${escAttr(type)}" data-alias="${escAttr(a)}">
+                        <svg class="w-4 h-4 text-t4 shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>
+                        <span class="w-5 text-right text-[11px] font-mono text-t4 shrink-0">${i + 1}</span>
+                        <span class="font-mono text-[13px] text-t1 truncate">${escHtml(a)}</span>
+                        ${sub ? `<span class="text-[11px] text-t4 truncate hidden sm:inline">${escHtml(sub)}</span>` : ''}
+                        <span class="ml-auto flex items-center gap-1 shrink-0">
+                            ${info.hidden ? pill('hidden', 'rgba(255,255,255,0.05)', '#868da0', 'Hidden from the dashboard; still ordered for Cost by Model') : ''}
+                            ${arranged && !listed.has(a) ? pill('new', 'rgba(245,166,35,0.10)', '#f5a623', 'Not placed yet: listed after the arranged models') : ''}
+                            <button type="button" class="mc-arrow" data-move="-1" ${i === 0 ? 'disabled' : ''} title="Move up" aria-label="Move ${escAttr(a)} up"
+                                    onclick="moveModel(${js(kind)}, ${js(type)}, ${js(a)}, -1)">↑</button>
+                            <button type="button" class="mc-arrow" data-move="1" ${i === aliases.length - 1 ? 'disabled' : ''} title="Move down" aria-label="Move ${escAttr(a)} down"
+                                    onclick="moveModel(${js(kind)}, ${js(type)}, ${js(a)}, 1)">↓</button>
+                        </span>
+                    </li>`;
+            }).join('');
+            lists += `
+                <div>
+                    <div class="flex items-center gap-2 mb-1.5">
+                        <span class="text-[11px] font-mono text-t3">${escHtml(type)}</span>
+                        ${arranged
+                            ? `<span class="mc-pill" style="background:rgba(99,152,255,0.10);color:#6398ff">arranged</span>
+                               <button type="button" class="ml-auto text-[11px] text-t4 hover:text-t2" onclick="resetTypeOrder(${js(kind)}, ${js(type)})"
+                                       title="Forget this arrangement: cheapest first, then by name">Back to automatic</button>`
+                            : `<span class="mc-hint">automatic · cheapest first, then by name — drag to arrange</span>`}
+                    </div>
+                    <ol class="space-y-1">${rows}</ol>
+                </div>`;
+        }
+        body += section(BACKENDS[kind].label, `<div class="space-y-4">${lists}</div>`);
+    }
+    return `
+        <div class="gw-card p-5 space-y-5">
+            <div>
+                <h2 class="text-xl font-bold text-t1">Display order</h2>
+                <p class="mc-hint mt-1">The order models are listed in on the welcome page, the dashboard (model tables and
+                    Cost by Model) and the list on the left. Drag a model or use its arrows. Models stay grouped by type;
+                    a type nobody arranged is listed cheapest first, then by name. Display only: routing is unaffected.
+                    Saved with the rest of this page, as <code class="font-mono">[display_order]</code> in config.toml.</p>
+            </div>
+            ${body || '<p class="text-sm text-t4">No models configured.</p>'}
+        </div>`;
+}
+
+// Drag and drop within one type list. Listeners sit on #editor, which is
+// never replaced, so they survive every re-render of its content.
+(function () {
+    let drag = null;
+    const rowOf = e => e.target.closest && e.target.closest('[data-order-row]');
+    const sameList = row => drag && row && row.dataset.kind === drag.kind && row.dataset.type === drag.type;
+    const clearMarks = () => document.querySelectorAll('.mc-drop-before, .mc-drop-after')
+        .forEach(el => el.classList.remove('mc-drop-before', 'mc-drop-after'));
+    document.addEventListener('DOMContentLoaded', () => {
+        const editor = document.getElementById('editor');
+        editor.addEventListener('dragstart', e => {
+            const row = rowOf(e);
+            if (!row) return;
+            drag = { kind: row.dataset.kind, type: row.dataset.type, alias: row.dataset.alias };
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', drag.alias);
+            row.classList.add('mc-dragging');
+        });
+        editor.addEventListener('dragover', e => {
+            const row = rowOf(e);
+            if (!sameList(row)) return;
+            e.preventDefault();
+            const r = row.getBoundingClientRect();
+            const before = e.clientY < r.top + r.height / 2;
+            clearMarks();
+            if (row.dataset.alias !== drag.alias) row.classList.add(before ? 'mc-drop-before' : 'mc-drop-after');
+        });
+        editor.addEventListener('drop', e => {
+            const row = rowOf(e);
+            if (!sameList(row)) return;
+            e.preventDefault();
+            const before = row.classList.contains('mc-drop-before');
+            clearMarks();
+            if (row.dataset.alias === drag.alias) return;
+            const list = typeAliases(drag.kind, drag.type).filter(a => a !== drag.alias);
+            list.splice(list.indexOf(row.dataset.alias) + (before ? 0 : 1), 0, drag.alias);
+            setTypeOrder(drag.kind, drag.type, list);
+        });
+        editor.addEventListener('dragend', () => {
+            clearMarks();
+            document.querySelectorAll('.mc-dragging').forEach(el => el.classList.remove('mc-dragging'));
+            drag = null;
+        });
+    });
+})();
 
 function renderModelEditor(kind, alias, info) {
     const b = BACKENDS[kind];
@@ -899,7 +1237,7 @@ function referencesTo(kind, alias) {
 // ── Add / Duplicate / Rename ──
 
 function openAddModal(kind) {
-    const k = kind || (sel && sel.kind !== 'settings' ? sel.kind : 'vllm');
+    const k = kind || (isModelSel() ? sel.kind : 'vllm');
     openModal({
         mode: 'add', kind: k,
         title: 'Add model', desc: 'Creates an empty model you can then fill in.',
@@ -909,7 +1247,7 @@ function openAddModal(kind) {
 }
 
 function openDuplicateModal() {
-    if (!sel || sel.kind === 'settings') return;
+    if (!isModelSel()) return;
     openModal({
         mode: 'duplicate', kind: sel.kind, from: sel.alias,
         title: `Duplicate ${sel.alias}`,
@@ -919,7 +1257,7 @@ function openDuplicateModal() {
 }
 
 function openRenameModal() {
-    if (!sel || sel.kind === 'settings') return;
+    if (!isModelSel()) return;
     openModal({
         mode: 'rename', kind: sel.kind, from: sel.alias,
         title: `Rename ${sel.alias}`,
@@ -995,6 +1333,9 @@ function submitModal() {
         showStatus(`Added ${alias}. Fill in the connection details, then save.`, 'success');
     } else if (st.mode === 'duplicate') {
         mapOf(st.kind)[alias] = structuredClone(mapOf(st.kind)[st.from]);
+        // An arranged original gets its copy right below it.
+        const order = config.display_order[st.kind], at = order.indexOf(st.from);
+        if (at !== -1) order.splice(at + 1, 0, alias);
         closeModal();
         select(st.kind, alias);
         showStatus(`Duplicated ${st.from} as ${alias}. Change what differs, then save.`, 'success');
@@ -1021,18 +1362,20 @@ function renameModel(kind, from, to) {
     const fb = config[BACKENDS[kind].fb];
     for (const t of Object.keys(fb)) if (fb[t] === from) fb[t] = to;
     for (const info of Object.values(map)) if (info.rate_limit_fallback === from) info.rate_limit_fallback = to;
+    config.display_order[kind] = config.display_order[kind].map(a => a === from ? to : a);
     select(kind, to);
 }
 
 function deleteSelected() {
-    if (!sel || sel.kind === 'settings') return;
+    if (!isModelSel()) return;
     const { kind, alias } = sel;
     const refs = referencesTo(kind, alias);
     const note = refs.length ? `\n\nIt is used as fallback by: ${refs.join(', ')} — those will be cleared.` : '';
     if (!confirm(`Delete ${BACKENDS[kind].short} model "${alias}"? Takes effect after saving.${note}`)) return;
-    const keys = Object.keys(mapOf(kind));
+    const keys = displayOrder(kind);
     const next = keys[keys.indexOf(alias) + 1] || keys[keys.indexOf(alias) - 1];
     delete mapOf(kind)[alias];
+    config.display_order[kind] = config.display_order[kind].filter(a => a !== alias);
     // Drop references so the save doesn't fail server-side validation.
     const fb = config[BACKENDS[kind].fb];
     for (const t of Object.keys(fb)) if (fb[t] === alias) delete fb[t];
