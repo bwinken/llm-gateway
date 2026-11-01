@@ -34,7 +34,7 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | `app/services/anthropic_adapter.py` | Anthropic Messages ↔ OpenAI chat (the internal pivot format) |
 | `app/services/usage_rollup.py` | `usage_daily` rollup: `aggregate` (the read path for every multi-day report), the in-app `rollup_loop` |
 | `app/services/scheduler.py`, `anomaly_scan.py`, `usage_retention.py` | In-gateway periodic jobs (claim in `scheduled_jobs`): the hourly anomaly scan and the opt-in usage-log retention |
-| `app/services/` (rest) | `concurrency`, `rate_limit_fallback`, `reasoning_effort`, `health`, `observability`, `metrics` (Prometheus), `redact`, `stats`, `analytics` / `usage_export`, `aws_eventstream` |
+| `app/services/` (rest) | `model_order` (the one display order for model lists), `concurrency`, `rate_limit_fallback`, `reasoning_effort`, `health`, `observability`, `metrics` (Prometheus), `redact`, `stats`, `analytics` / `usage_export`, `aws_eventstream` |
 | `app/models/schema.py` | `User`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AppOwner`, `AnomalyEvent`, `ConcurrencyLease` |
 | `app/templates/` | `dashboard.html`, `admin.html`, `admin_models.html` (model-config SPA), `base.html` |
 | `alembic/versions/` | Migrations (PostgreSQL-only: they do not run on SQLite) |
@@ -105,6 +105,7 @@ Each of these has broken production or a test before. The parenthesized test pin
 - Reasoning effort: no nearest-level guessing. Forward what was asked, what config maps it to, or nothing. An undeclared route is byte-faithful. `max` is a level of its own, not a spelling of `xhigh`. `reasoning_effort` is only emitted for `is_reasoning` models.
 - Thinking history replayed downstream carries **both** `reasoning` and `reasoning_content` (vLLM ≥ 0.20 reads only the former).
 - System messages appear only at index 0. Mid-conversation system/developer entries merge into the adjacent user turn as `<system-reminder>` text: hoisting them would break prefix caching.
+- Every page that lists models sorts them with `app/services/model_order.py` (type, admin `sort_order`, price, natural alias order), Cost by Model included: never add a list with its own sort (`tests/test_model_order.py`).
 - New per-model config keys go in the right tuple: `_MODEL_METADATA_KEYS` (surfaced in `/v1/models`), `_MODEL_PRICING_KEYS`, `_MODEL_REASONING_KEYS`, or the internal/cloud-routing keys (never surfaced).
 - `/readyz` gates on the database only. The vLLM health cache is per-worker and failing on downstream outages would pull every instance out of the load balancer at once.
 

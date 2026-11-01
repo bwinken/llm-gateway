@@ -27,6 +27,12 @@ from app.core.config import (
 from app.core.database import get_session
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ, seconds_until_local_midnight
+from app.services.model_order import (
+    catalog_key,
+    sort_order_of,
+    type_rank,
+    unknown_key,
+)
 from app.services.stats import (
     get_daily_trends,
     get_model_breakdown,
@@ -93,9 +99,33 @@ def _format_duration(seconds: float) -> str:
     return f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
 
 
-def _price_sort_key(m: dict):
-    """Cheapest first; ties broken by alias for a stable listing."""
-    return (m["input_price"] + m["output_price"], m.get("name") or m.get("alias") or "")
+def _catalog_sort_key(m: dict):
+    """A model-table row's place within its type (see ``model_order``)."""
+    return catalog_key(
+        m.get("name") or m.get("alias") or "", m.get("sort_order"),
+        m["input_price"] + m["output_price"],
+    )
+
+
+def _by_type(groups: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    """``groups`` with its type keys in display order (``TYPE_ORDER`` first)."""
+    return {t: groups[t] for t in sorted(groups, key=type_rank)}
+
+
+def _catalog_keys() -> dict[tuple[str, str], tuple]:
+    """``(backend, alias) -> catalog_key`` for every configured model, hidden
+    ones included (their past usage still has to sort sensibly)."""
+    pricing_map = get_pricing_snapshot()
+    keys: dict[tuple[str, str], tuple] = {}
+    for backend, snapshot in (
+        ("vllm", get_model_routing_snapshot()),
+        ("azure", get_azure_models_snapshot()),
+        ("bedrock", get_bedrock_models_snapshot()),
+    ):
+        for alias, entry in snapshot.items():
+            in_price, out_price = _resolve_prices(entry, entry.get("type", "llm"), pricing_map)
+            keys[(backend, alias)] = catalog_key(alias, sort_order_of(entry), in_price + out_price)
+    return keys
 
 
 def _hidden_cloud_backends(user: User) -> frozenset[str]:
@@ -133,9 +163,20 @@ def _build_model_breakdown(
     extra_backends = sorted({
         r["backend"] for r in breakdown_rows if r["backend"] not in backend_order
     })
+    # Rows follow the model tables' order (type, then the catalog order),
+    # not spend, so a model sits in the same place in both places. The
+    # doughnut sorts its own copy by cost.
+    catalog = _catalog_keys()
+
+    def _row_key(r: dict) -> tuple:
+        return (
+            type_rank(r["type"]),
+            catalog.get((r["backend"], r["model"])) or unknown_key(r["model"]),
+        )
+
     groups = []
     for backend_key in backend_order + extra_backends:
-        rows = [r for r in breakdown_rows if r["backend"] == backend_key]
+        rows = sorted((r for r in breakdown_rows if r["backend"] == backend_key), key=_row_key)
         if not rows:
             continue
         for r in rows:
@@ -180,12 +221,13 @@ def index(
     # Group models by type for display (skip hidden models). Each entry
     # carries optional admin-set metadata so the welcome page can show
     # capability badges (tools / vision / cache) and context window.
+    pricing_map = get_pricing_snapshot()
     models_by_type: dict[str, list[dict]] = {}
-    first_model = ""
     for alias, route in get_model_routing_snapshot().items():
         if route.get("hidden"):
             continue
         model_type = route["type"]
+        in_price, out_price = _resolve_prices(route, model_type, pricing_map)
         if model_type not in models_by_type:
             models_by_type[model_type] = []
         models_by_type[model_type].append({
@@ -197,9 +239,16 @@ def index(
             "supports_vision": route.get("supports_vision", False),
             "supports_prompt_caching": route.get("supports_prompt_caching", False),
             "is_reasoning": route.get("is_reasoning", False),
+            "sort_order": sort_order_of(route),
+            "input_price": in_price,
+            "output_price": out_price,
         })
-        if not first_model and model_type in ("llm", "vlm"):
-            first_model = alias
+    for models in models_by_type.values():
+        models.sort(key=_catalog_sort_key)
+    models_by_type = _by_type(models_by_type)
+    first_model = next(
+        (models[0]["alias"] for t in ("llm", "vlm") if (models := models_by_type.get(t))), "",
+    )
 
     return templates.TemplateResponse(
         "welcome.html",
@@ -260,6 +309,7 @@ def dashboard(
                 "supports_vision": route.get("supports_vision", False),
                 "supports_prompt_caching": route.get("supports_prompt_caching", False),
                 "is_reasoning": route.get("is_reasoning", False),
+                "sort_order": sort_order_of(route),
                 "input_price": in_price,
                 "output_price": out_price,
                 # Load snapshot from /metrics — None when unavailable.
@@ -267,8 +317,11 @@ def dashboard(
                 "waiting": metrics.get("waiting") if metrics else None,
             }
         )
+    # Catalog order, except that servers that are down go last in their
+    # type: the ones a user can pick come first.
     for servers in server_groups.values():
-        servers.sort(key=_price_sort_key)
+        servers.sort(key=lambda s: (not s["alive"], _catalog_sort_key(s)))
+    server_groups = _by_type(server_groups)
 
     system_status = summarize_server_status(
         [s for servers in server_groups.values() for s in servers]
@@ -294,7 +347,7 @@ def dashboard(
     claude_code_available = (_SETUP_DIR / "install-claude-code.bat").is_file()
 
     # Azure access — list configured Azure model aliases when the user has
-    # been granted access, grouped by model type and sorted by price (same
+    # been granted access, grouped by model type in catalog order (same
     # shape as server_groups so the template renders all backends uniformly).
     # Hidden Azure entries are skipped so admins can stage models without
     # exposing them yet (mirrors the vLLM `hidden` flag).
@@ -314,12 +367,13 @@ def dashboard(
                 "supports_vision": entry.get("supports_vision", False),
                 "supports_prompt_caching": entry.get("supports_prompt_caching", False),
                 "is_reasoning": entry.get("is_reasoning", False),
+                "sort_order": sort_order_of(entry),
                 "input_price": in_price,
                 "output_price": out_price,
             })
         for models in groups.values():
-            models.sort(key=_price_sort_key)
-        return groups
+            models.sort(key=_catalog_sort_key)
+        return _by_type(groups)
 
     azure_groups: dict[str, list[dict]] = {}
     if user.can_use_azure or user.is_admin:

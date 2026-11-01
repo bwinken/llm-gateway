@@ -90,9 +90,14 @@ _MODEL_REASONING_KEYS: tuple[str, ...] = (
 # a mixed fleet may run older vLLM versions on some servers. On a Claude
 # [bedrock_models.*] entry it means the same thing against Bedrock's
 # Anthropic endpoint (/anthropic/v1/messages) instead of Converse.
+#
+# `sort_order`: optional integer; models that set it are listed first, lowest
+# first, in the welcome page, the dashboard's model tables and its Cost by
+# Model card (app/services/model_order.py). Display only.
 _MODEL_INTERNAL_KEYS: tuple[str, ...] = (
     "hidden",
     "native_messages",
+    "sort_order",
 )
 
 

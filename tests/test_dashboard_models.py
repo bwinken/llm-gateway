@@ -101,7 +101,7 @@ class TestDashboardModelSections:
         body = resp.text
         assert "In $/1M" in body
         assert "Out $/1M" in body
-        assert "sorted by price" in body
+        assert "by price, then name" in body
 
 
 class TestCostSplitAccessGating:

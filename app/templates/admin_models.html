@@ -373,6 +373,7 @@ function listItem(kind, alias, info) {
     if (kind !== 'vllm' && info.type === 'vlm') badges.push(pill('vlm', 'rgba(167,139,250,0.12)', '#a78bfa'));
     if (info.is_reasoning) badges.push(pill('think', 'rgba(77,217,232,0.10)', '#4dd9e8', 'is_reasoning'));
     if (info.rate_limit_fallback) badges.push(pill('429→' + escHtml(info.rate_limit_fallback), 'rgba(245,166,35,0.10)', '#f5a623', 'Rate-limit fallback'));
+    if (Number.isInteger(info.sort_order)) badges.push(pill('#' + info.sort_order, 'rgba(99,152,255,0.10)', '#6398ff', 'Dashboard order'));
     if (info.hidden) badges.push(pill('hidden', 'rgba(255,255,255,0.05)', '#868da0', 'Hidden from GET /v1/models and the dashboard (still served by alias)'));
     const marker = bad
         ? '<span class="w-1.5 h-1.5 rounded-full bg-ar shrink-0" title="Missing required fields"></span>'
@@ -499,10 +500,25 @@ function toggleSecret(btn) {
     btn.textContent = hidden ? 'Show' : 'Hide';
 }
 
+// Display position on the welcome page and the dashboard (model tables and
+// Cost by Model), within the model's type. Blank = after the numbered ones,
+// cheapest first, then by name (app/services/model_order.py).
+function orderRow(kind, alias, info) {
+    const tip = 'Lower numbers are listed first within this model\'s type on the welcome page and the '
+        + 'dashboard (model tables and Cost by Model). Blank = after the numbered models, cheapest first, '
+        + 'then by name. Display only: routing is unaffected.';
+    return `
+        <label class="flex items-center gap-3 text-sm">
+            <span class="text-t2 gw-tip gw-tip-wide" data-tip="${escAttr(tip)}">Dashboard order</span>
+            <input type="number" min="0" step="1" value="${info.sort_order ?? ''}" ${fieldAttrs(kind, alias, 'sort_order', 'int')}
+                   oninput="setField(this)" placeholder="auto" class="gw-input w-24 text-sm py-1 px-2 font-mono">
+        </label>`;
+}
+
 function renderRouting(kind, alias, info) {
     const visibleRow = checkRow(kind, alias, 'hidden', !info.hidden, 'Listed in /v1/models and on the dashboard',
         'Unticked = left out of GET /v1/models (client model pickers such as Claude Code) and the '
-        + 'dashboard. Requests that name the alias are still served.', true);
+        + 'dashboard. Requests that name the alias are still served.', true) + orderRow(kind, alias, info);
     if (kind === 'vllm') {
         const nativeTip = 'Forward Anthropic /v1/messages requests as-is to the native vLLM endpoint '
             + '(vLLM >= 0.11.1) instead of translating via the OpenAI pivot. Falls back to translation '

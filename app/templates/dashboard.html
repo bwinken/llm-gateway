@@ -165,7 +165,12 @@
     'vision_reranker': 'Vision Reranker',
     'systemone': 'System One (Decisions)'
 } %}
-{% set type_order = ['llm', 'vlm', 'embedding', 'vision_embedding', 'reranker', 'vision_reranker', 'systemone'] %}
+{# Group dicts arrive with their types already in display order and each
+   group's models in catalog order (app/services/model_order.py). #}
+{% macro order_note(models) -%}
+    {%- if models | selectattr('sort_order', 'ne', none) | list -%}· admin order, then by price
+    {%- else -%}· by price, then name{%- endif -%}
+{%- endmacro %}
 {# Capability badge macro shared by all three model sections #}
 {% macro capability_badges(m) %}
     {% if m.is_reasoning %}
@@ -201,17 +206,16 @@
             </tr>
         </thead>
         <tbody>
-            {% set extra = groups.keys() | reject('in', type_order) | list %}
-            {% for type_key in type_order + extra if type_key in groups and groups[type_key] %}
+            {% for type_key, models in groups.items() if models %}
             <tr style="background:rgba(255,255,255,0.015)">
                 <td colspan="5" class="py-1.5">
                     <span class="text-[11px] font-bold text-t4 uppercase tracking-wider">
                         {{ type_labels[type_key] if type_key in type_labels else type_key|upper }}
                     </span>
-                    <span class="text-[10px] text-t4 ml-2">· sorted by price</span>
+                    <span class="text-[10px] text-t4 ml-2">{{ order_note(models) }}</span>
                 </td>
             </tr>
-            {% for m in groups[type_key] %}
+            {% for m in models %}
             <tr>
                 <td class="whitespace-nowrap">
                     <code class="text-sm font-mono font-medium text-t1">{{ m.alias }}</code>
@@ -265,17 +269,16 @@
                 </tr>
             </thead>
             <tbody>
-                {% set extra_types = server_groups.keys() | reject('in', type_order) | list %}
-                {% for type_key in type_order + extra_types if type_key in server_groups and server_groups[type_key] %}
+                {% for type_key, servers in server_groups.items() if servers %}
                 <tr style="background:rgba(255,255,255,0.015)">
                     <td colspan="8" class="py-1.5">
                         <span class="text-[11px] font-bold text-t4 uppercase tracking-wider">
                             {{ type_labels[type_key] if type_key in type_labels else type_key|upper }}
                         </span>
-                        <span class="text-[10px] text-t4 ml-2">· sorted by price</span>
+                        <span class="text-[10px] text-t4 ml-2 gw-tip gw-tip-wide" data-tip="Models an admin pinned come first, then cheapest first; ties by name. Servers that are down are listed last.">{{ order_note(servers) }}</span>
                     </td>
                 </tr>
-                {% for s in server_groups[type_key] %}
+                {% for s in servers %}
                 {% set busy = s.alive and s.waiting %}
                 <tr style="{{ 'background:rgba(255,92,92,0.06)' if not s.alive or (busy and s.waiting >= 10) else 'background:rgba(245,166,35,0.05)' if busy else '' }}">
                     <td class="whitespace-nowrap">
@@ -557,7 +560,9 @@
         var slices = [];
         mbGroups.forEach(function (g) {
             var ramp = MB_RAMPS[g.backend] || MB_RAMPS._other;
-            var rows = g.rows;
+            // The table lists rows in catalog order; the ring wants the
+            // biggest first so the darkest step and the "Other" fold land right.
+            var rows = g.rows.slice().sort(function (a, b) { return b.cost_usd - a.cost_usd; });
             var shown = rows.length <= ramp.length ? rows : rows.slice(0, ramp.length - 1);
             shown.forEach(function (r, i) {
                 slices.push({ label: r.model + ' · ' + g.label, cost: r.cost_usd, share: r.share, color: ramp[i] });

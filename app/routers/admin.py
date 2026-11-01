@@ -1044,7 +1044,26 @@ async def save_config_api(
     _INTERNAL_TYPES: dict[str, type | tuple[type, ...]] = {
         "hidden": bool,
         "native_messages": bool,
+        "sort_order": int,
     }
+
+    def _check_internal(label: str, alias: str, info: dict) -> None:
+        for key in _MODEL_INTERNAL_KEYS:
+            if key not in info:
+                continue
+            expected = _INTERNAL_TYPES[key]
+            value = info[key]
+            # bool is an int subclass: True must not pass as a sort_order.
+            if not isinstance(value, expected) or (expected is int and isinstance(value, bool)):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{label} '{alias}' field '{key}' has wrong type.",
+                )
+            if expected is int and value < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{label} '{alias}' field '{key}' must be non-negative.",
+                )
     for alias, info in models.items():
         if not isinstance(info, dict):
             raise HTTPException(status_code=400, detail=f"Invalid model entry: {alias}")
@@ -1072,16 +1091,7 @@ async def save_config_api(
                     status_code=400,
                     detail=f"Model '{alias}' field '{key}' must be non-negative.",
                 )
-        for key in _MODEL_INTERNAL_KEYS:
-            if key not in info:
-                continue
-            expected = _INTERNAL_TYPES[key]
-            value = info[key]
-            if not isinstance(value, expected):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Model '{alias}' field '{key}' has wrong type.",
-                )
+        _check_internal("Model", alias, info)
         _validate_reasoning_keys("Model", alias, info)
         for key in _MODEL_PRICING_KEYS:
             if key not in info:
@@ -1205,16 +1215,7 @@ async def save_config_api(
                     )
             _validate_reasoning_keys(f"{backend} model", alias, info)
             _validate_rate_limit_fallback(f"{backend} model", alias, info, cloud_models)
-            for key in _MODEL_INTERNAL_KEYS:
-                if key not in info:
-                    continue
-                expected = _INTERNAL_TYPES[key]
-                value = info[key]
-                if not isinstance(value, expected):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"{backend} model '{alias}' field '{key}' has wrong type.",
-                    )
+            _check_internal(f"{backend} model", alias, info)
             # Bedrock's Anthropic endpoint only serves Claude; the proxy
             # would ignore the flag on any other model.
             if (
