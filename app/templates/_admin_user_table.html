@@ -1,0 +1,153 @@
+{# One Users-tab panel: the Users table or the Apps table (table.kind).
+
+   Rendered twice inside /admin and alone by GET /admin/user-table, which the
+   page swaps in on search / sort / filter / paging / delete. Every control is
+   still a real form or link (action, href), so the page works without JS;
+   with JS, admin.html intercepts forms carrying data-action and links
+   carrying data-um-nav and does them in place. #}
+{% from "_admin_macros.html" import format_token, money %}
+
+{% macro toggle_form(u, action, path, granted, label, title_on, title_off) %}
+<form action="/admin/users/{{ u.id }}/{{ path }}" method="POST" data-action="{{ action }}"
+      data-granted="{{ 'true' if granted else 'false' }}">
+    <button type="submit" class="gw-btn gw-btn-ghost gw-grant gw-grant-{{ action }} text-xs px-3 py-1 {{ 'is-on' if granted }}"
+            aria-pressed="{{ 'true' if granted else 'false' }}"
+            title="{{ title_on if granted else title_off }}">{{ label }}</button>
+</form>
+{% endmacro %}
+
+{% macro user_row(u, is_apps) %}
+{% set cloud = u.can_use_azure or u.can_use_bedrock or u.is_admin %}
+<tr class="um-row {{ 'is-disabled' if u.is_disabled }}" data-uid="{{ u.id }}" data-username="{{ u.username }}"
+    data-azure="{{ 'true' if u.can_use_azure else 'false' }}" data-bedrock="{{ 'true' if u.can_use_bedrock else 'false' }}"
+    data-admin="{{ 'true' if u.is_admin else 'false' }}">
+    <td class="whitespace-nowrap um-dim">
+        <div class="flex items-center gap-2">
+            <div class="h-8 w-8 rounded-lg flex items-center justify-center font-bold text-sm {{ 'bg-[rgba(99,152,255,0.1)] text-ab' if is_apps else 'bg-[rgba(167,139,250,0.1)] text-av' }}">
+                {{ (u.username[4:5] if is_apps and u.username|length > 4 else u.username[:1])|upper }}
+            </div>
+            <div>
+                <div class="text-sm font-medium text-t1">
+                    {{ u.display_name or u.username }}
+                    {% if u.display_name and u.display_name != u.username %}
+                    <span class="ml-1 text-xs text-t4 font-mono">{{ u.username }}</span>
+                    {% endif %}
+                    {% if u.org_code %}
+                    <span class="ml-1 text-[10px] text-t4 bg-n3 px-1 py-0.5 rounded">{{ u.org_code }}</span>
+                    {% endif %}
+                </div>
+                <div class="flex items-center gap-1 mt-0.5">
+                    {% if is_apps %}<span class="gw-badge">App</span>
+                    {% elif u.is_admin %}<span class="gw-badge gw-badge-admin">Admin</span>
+                    {% else %}<span class="gw-badge gw-badge-muted">User</span>{% endif %}
+                    {% if u.is_self %}<span class="gw-badge gw-badge-muted">You</span>{% endif %}
+                    <span class="gw-badge gw-badge-off um-disabled-badge {{ '' if u.is_disabled else 'hidden' }}">Disabled</span>
+                </div>
+            </div>
+        </div>
+    </td>
+    <td class="whitespace-nowrap">
+        <button type="button" data-username="{{ u.username }}" data-uid="{{ u.id }}"
+                onclick="showKeyModal(this)"
+                class="gw-btn gw-btn-ghost text-xs font-mono px-3 py-1.5">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+            View Key
+        </button>
+    </td>
+    {% if is_apps %}
+    <td class="whitespace-nowrap">
+        <form action="/admin/users/{{ u.id }}/owner" method="POST" data-action="owner" class="flex items-center gap-1">
+            <input type="text" name="owner_usernames" value="{{ u.owners|join(', ') }}" placeholder="user1, user2"
+                   aria-label="Owners of {{ u.username }}"
+                   class="gw-input w-40 text-sm font-mono py-1 px-2" title="Comma-separated usernames">
+            <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Set</button>
+        </form>
+    </td>
+    {% endif %}
+    <td class="whitespace-nowrap um-dim">
+        <div class="text-sm text-t1 font-mono font-medium">{{ money(u.monthly_cost) }}</div>
+        <div class="text-xs text-t4 font-mono">{{ format_token(u.monthly_tokens) }} tokens · {{ u.monthly_reqs }} reqs</div>
+    </td>
+    <td class="whitespace-nowrap">
+        <form action="/admin/users/{{ u.id }}/limit" method="POST" data-action="limit" class="flex items-center gap-2">
+            <span class="text-t4 text-sm">$</span>
+            <input type="number" step="0.1" min="0" name="new_limit" value="{{ u.daily_limit_usd }}"
+                   aria-label="Daily limit of {{ u.username }} (USD)"
+                   class="gw-input w-20 text-sm font-mono py-1 px-2">
+            <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
+        </form>
+        {# Always rendered, hidden without cloud access: granting Azure / AWS
+           in place has to be able to reveal it without a reload. #}
+        <form action="/admin/users/{{ u.id }}/cloud-limit" method="POST" data-action="cloud-limit" data-cloud-form
+              class="flex items-center gap-2 mt-1 {{ '' if cloud else 'hidden' }}"
+              title="This account's Azure + AWS daily cap. Empty = the default from Cloud Daily Limit; 0 = no cloud spend.">
+            <span class="text-xs text-t3">Cloud $</span>
+            <input type="number" step="0.1" min="0" name="new_cloud_limit"
+                   value="{{ u.cloud_daily_limit_usd if u.cloud_daily_limit_usd is not none else '' }}"
+                   placeholder="{{ ('%g'|format(cloud_daily_limit)) ~ ' (default)' if cloud_daily_limit is not none else 'no cap' }}"
+                   aria-label="Cloud daily limit of {{ u.username }} (USD)"
+                   class="gw-input w-36 text-sm font-mono py-1 px-2">
+            <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
+        </form>
+    </td>
+    <td class="whitespace-nowrap text-right">
+        <div class="flex items-center justify-end gap-2">
+            {{ toggle_form(u, 'azure', 'toggle-azure', u.can_use_azure, 'Azure', 'Azure granted', 'No Azure access') }}
+            {{ toggle_form(u, 'bedrock', 'toggle-bedrock', u.can_use_bedrock, 'AWS', 'AWS Bedrock granted', 'No AWS Bedrock access') }}
+            {% if not u.is_admin %}
+            {{ toggle_form(u, 'waive', 'toggle-concurrency-waive', u.concurrency_waived, 'Waive',
+                           'Concurrency limit waived — click to apply it', 'Concurrency limit applies — click to waive') }}
+            {% endif %}
+            {% if not u.is_admin and not u.is_self %}
+            <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-action="disable"
+                  data-granted="{{ 'true' if u.is_disabled else 'false' }}">
+                <button type="submit" class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-warn' if u.is_disabled else 'gw-btn-ghost' }}"
+                        title="{{ 'Disabled — click to enable' if u.is_disabled else 'Active — click to disable' }}">
+                    {{ 'Enable' if u.is_disabled else 'Disable' }}
+                </button>
+            </form>
+            <form action="/admin/users/{{ u.id }}/delete" method="POST" data-action="delete">
+                <button type="submit" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
+            </form>
+            {% endif %}
+        </div>
+    </td>
+</tr>
+{% endmacro %}
+
+{% set is_apps = table.kind == 'apps' %}
+<div id="{{ 'umAppsPanel' if is_apps else 'umUsersPanel' }}" class="gw-card overflow-hidden {{ 'hidden' if is_apps }}"
+     data-um-panel="{{ table.kind }}" data-total="{{ table.total }}" aria-live="polite">
+    <div class="overflow-x-auto">
+        <table class="gw-table">
+            <thead><tr>
+                <th>{{ 'App' if is_apps else 'User' }}</th><th>API Key</th>
+                {% if is_apps %}<th>Owner</th>{% endif %}
+                <th class="gw-tip gw-tip-wide" data-tip="Cost, tokens and requests in the current month (Asia/Taipei).">This Month</th>
+                <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
+                <th style="text-align:right">Actions</th>
+            </tr></thead>
+            <tbody>
+                {% for u in table.rows %}
+                {{ user_row(u, is_apps) }}
+                {% else %}
+                <tr><td colspan="{{ 6 if is_apps else 5 }}" class="text-center py-8 text-sm text-t4">
+                    {% if table.filtered %}No {{ 'apps' if is_apps else 'users' }} match this search or filter.
+                    {% else %}No {{ 'app accounts' if is_apps else 'users' }} yet.{% endif %}
+                </td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% if table.total > 0 %}
+    <div class="px-5 py-2 flex items-center justify-between text-xs text-t4" style="border-top:1px solid rgba(255,255,255,0.04)">
+        {% if table.prev_url %}
+        <a href="{{ table.prev_url }}" data-um-nav="{{ table.kind }}" class="gw-btn gw-btn-ghost text-xs px-2 py-1">&larr; Prev</a>
+        {% else %}<span class="gw-btn gw-btn-ghost text-xs px-2 py-1 opacity-30" aria-disabled="true">&larr; Prev</span>{% endif %}
+        <span>{{ table.first }}-{{ table.last }} of {{ table.total }}</span>
+        {% if table.next_url %}
+        <a href="{{ table.next_url }}" data-um-nav="{{ table.kind }}" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Next &rarr;</a>
+        {% else %}<span class="gw-btn gw-btn-ghost text-xs px-2 py-1 opacity-30" aria-disabled="true">Next &rarr;</span>{% endif %}
+    </div>
+    {% endif %}
+</div>

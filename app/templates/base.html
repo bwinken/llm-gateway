@@ -70,6 +70,73 @@
     };
     </script>
 
+    <script>
+    /* Non-blocking replacements for alert() / confirm(), usable on every page.
+       gwToast(message, 'ok' | 'error' | 'info') shows a message for a few
+       seconds. gwConfirm(message, {okLabel, cancelLabel, danger}) opens a
+       dialog and resolves to true / false; Enter confirms, Escape cancels,
+       and a danger dialog starts with focus on Cancel. */
+    window.gwToast = function (message, kind) {
+        var box = document.getElementById('gwToasts');
+        if (!box) {
+            box = document.createElement('div');
+            box.id = 'gwToasts'; box.className = 'gw-toasts';
+            box.setAttribute('role', 'status'); box.setAttribute('aria-live', 'polite');
+            document.body.appendChild(box);
+        }
+        var t = document.createElement('div');
+        t.className = 'gw-toast gw-toast-' + (kind || 'info');
+        t.textContent = message;
+        box.appendChild(t);
+        setTimeout(function () { t.remove(); }, kind === 'error' ? 7000 : 3500);
+    };
+    window.gwConfirm = function (message, opts) {
+        opts = opts || {};
+        return new Promise(function (resolve) {
+            var prev = document.activeElement;
+            var wrap = document.createElement('div');
+            wrap.className = 'gw-confirm';
+            wrap.setAttribute('role', 'alertdialog');
+            wrap.setAttribute('aria-modal', 'true');
+            wrap.innerHTML =
+                '<div class="gw-overlay fixed inset-0"></div>' +
+                '<div class="gw-modal gw-confirm-box">' +
+                  '<p class="text-sm text-t1 leading-relaxed" id="gwConfirmMsg"></p>' +
+                  '<div class="mt-5 flex justify-end gap-2">' +
+                    '<button type="button" class="gw-btn gw-btn-ghost text-sm px-4 py-2" data-r="0"></button>' +
+                    '<button type="button" class="gw-btn text-sm px-4 py-2 ' + (opts.danger ? 'gw-btn-danger' : 'gw-btn-primary') + '" data-r="1"></button>' +
+                  '</div>' +
+                '</div>';
+            wrap.setAttribute('aria-labelledby', 'gwConfirmMsg');
+            wrap.querySelector('p').textContent = message;
+            var cancel = wrap.querySelector('[data-r="0"]'), ok = wrap.querySelector('[data-r="1"]');
+            cancel.textContent = opts.cancelLabel || 'Cancel';
+            ok.textContent = opts.okLabel || 'OK';
+            function close(result) {
+                document.removeEventListener('keydown', onKey, true);
+                wrap.remove();
+                if (prev && prev.focus) prev.focus();
+                resolve(result);
+            }
+            function onKey(e) {
+                if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); }
+                else if (e.key === 'Enter' && document.activeElement !== cancel) { e.preventDefault(); e.stopPropagation(); close(true); }
+                else if (e.key === 'Tab') {  // keep focus inside the dialog
+                    e.preventDefault();
+                    (document.activeElement === ok ? cancel : ok).focus();
+                }
+            }
+            wrap.addEventListener('click', function (e) {
+                var r = e.target.closest('[data-r]');
+                if (r) close(r.dataset.r === '1');
+                else if (e.target.classList.contains('gw-overlay')) close(false);
+            });
+            document.addEventListener('keydown', onKey, true);
+            document.body.appendChild(wrap);
+            (opts.danger ? cancel : ok).focus();
+        });
+    };
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -328,6 +395,21 @@
         .gw-tab-count-warn { background: rgba(245,166,35,0.14); color: #f5a623; }
         .gw-tab-count-crit { background: rgba(255,92,92,0.16); color: #ff8a8a; }
 
+        /* ── Toasts and confirm dialog (gwToast / gwConfirm) ── */
+        .gw-toasts {
+            position: fixed; top: 68px; right: 16px; z-index: 10000;
+            display: flex; flex-direction: column; gap: 8px; max-width: min(380px, calc(100vw - 32px));
+        }
+        .gw-toast {
+            padding: 10px 14px; border-radius: 10px; font-size: 13px; line-height: 1.4;
+            color: #eef0f4; background: #1f2029; border: 1px solid rgba(255,255,255,0.08);
+            border-left: 3px solid #6398ff; box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+            animation: fadeUp 0.2s ease-out both; word-break: break-word;
+        }
+        .gw-toast-ok { border-left-color: #3dd68c; }
+        .gw-toast-error { border-left-color: #ff5c5c; }
+        .gw-confirm { position: fixed; inset: 0; z-index: 10001; display: flex; align-items: center; justify-content: center; padding: 16px; }
+        .gw-confirm-box { width: 100%; max-width: 420px; padding: 20px 22px; position: relative; }
         .gw-fab {
             position: fixed; right: 22px; bottom: 22px; z-index: 60;
             width: 54px; height: 54px; border-radius: 50%;

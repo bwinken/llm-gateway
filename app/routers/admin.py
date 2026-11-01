@@ -5,7 +5,8 @@ Admin panel: web UI + API endpoints for user management and model configuration.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security
@@ -38,6 +39,7 @@ from app.core.config import (
     set_site_links,
 )
 from app.core.database import get_session
+from app.core.timeutil import local_month_start
 from app.models.schema import (
     AnomalyEvent,
     AppOwner,
@@ -115,6 +117,163 @@ def _limit_usd(raw: object, field: str) -> float:
     return value
 
 
+# ── Users / Apps tables ──
+#
+# The two tables in the Users tab render from one partial
+# (_admin_user_table.html). /admin renders both inside the full page;
+# /admin/user-table renders one of them alone, so searching, sorting,
+# filtering, paging and refreshing after a delete swap just that panel
+# instead of re-running every report on the page. Both read the same query
+# parameters, so a panel link is also a working /admin URL without JS.
+
+_MAX_PAGE_SIZE = 200
+USER_TABLE_SORTS: dict[str, str] = {
+    "id": "Oldest first",
+    "name": "Username",
+    "spend": "Spend this month",
+}
+USER_TABLE_STATUSES: dict[str, str] = {
+    "all": "All accounts",
+    "disabled": "Disabled",
+    "cloud": "Cloud access",
+    "waived": "Concurrency waived",
+}
+
+
+def _table_state(
+    q: str = "",
+    sort: str = "id",
+    status: str = "all",
+    offset: int = 0,
+    limit: int = _PAGE_SIZE,
+    app_offset: int = 0,
+    app_limit: int = _PAGE_SIZE,
+) -> dict:
+    """The Users-tab query parameters, normalized (unknown values → defaults)."""
+    return {
+        "q": q.strip(),
+        "sort": sort if sort in USER_TABLE_SORTS else "id",
+        "status": status if status in USER_TABLE_STATUSES else "all",
+        "offset": max(0, offset),
+        "limit": min(max(1, limit), _MAX_PAGE_SIZE),
+        "app_offset": max(0, app_offset),
+        "app_limit": min(max(1, app_limit), _MAX_PAGE_SIZE),
+    }
+
+
+_STATE_DEFAULTS = _table_state()
+
+
+def _admin_url(state: dict, **overrides) -> str:
+    """``/admin?…#users`` for ``state`` with ``overrides``, URL-encoded and
+    without parameters left at their defaults."""
+    merged = {**state, **overrides}
+    params = {k: v for k, v in merged.items() if v != _STATE_DEFAULTS[k]}
+    return "/admin" + (f"?{urlencode(params)}" if params else "") + "#users"
+
+
+def _user_table(
+    session: Session,
+    kind: str,
+    state: dict,
+    admin_user: User,
+    monthly_map: dict[int, dict] | None = None,
+) -> dict:
+    """One page of the Users or Apps table, ready for the partial.
+
+    ``monthly_map`` is the month's per-user usage when the caller already has
+    it (the full admin page does); otherwise only this page's accounts are
+    aggregated, or every account when sorting by spend."""
+    is_apps = kind == "apps"
+    offset_key, limit_key = ("app_offset", "app_limit") if is_apps else ("offset", "limit")
+    limit = state[limit_key]
+
+    clauses = [app_account_clause() if is_apps else ~app_account_clause()]
+    if state["q"]:
+        like = f"%{state['q']}%"
+        clauses.append(
+            User.username.ilike(like)  # type: ignore[attr-defined]
+            | User.display_name.ilike(like)  # type: ignore[union-attr]
+            | User.org_code.ilike(like)  # type: ignore[union-attr]
+        )
+    status = state["status"]
+    if status == "disabled":
+        clauses.append(User.is_disabled == True)  # noqa: E712
+    elif status == "cloud":
+        clauses.append((User.can_use_azure == True) | (User.can_use_bedrock == True))  # noqa: E712
+    elif status == "waived":
+        clauses.append(User.concurrency_waived == True)  # noqa: E712
+
+    total = session.exec(select(func.count()).select_from(User).where(*clauses)).one()
+    offset = max(0, min(state[offset_key], max(total - 1, 0)))
+
+    if state["sort"] == "spend":
+        if monthly_map is None:
+            monthly_map = get_monthly_all_users_usage(session)
+        ids = list(session.exec(select(User.id).where(*clauses)).all())
+        ids.sort(key=lambda i: (-monthly_map.get(i, {}).get("cost", 0.0), i))
+        page_ids = ids[offset:offset + limit]
+        by_id = {
+            u.id: u for u in session.exec(select(User).where(User.id.in_(page_ids))).all()  # type: ignore[union-attr]
+        } if page_ids else {}
+        page = [by_id[i] for i in page_ids if i in by_id]
+    else:
+        order = (User.username, User.id) if state["sort"] == "name" else (User.id,)
+        page = list(session.exec(
+            select(User).where(*clauses).order_by(*order).offset(offset).limit(limit)
+        ).all())
+        if monthly_map is None:
+            monthly_map = get_monthly_all_users_usage(session, user_ids=[u.id for u in page])
+
+    # Owners of the apps on this page only.
+    owners: dict[int, list[str]] = {}
+    if is_apps and page:
+        links = session.exec(
+            select(AppOwner.app_id, User.username)
+            .join(User, User.id == AppOwner.owner_id)  # type: ignore[arg-type]
+            .where(AppOwner.app_id.in_([u.id for u in page]))  # type: ignore[attr-defined]
+            .order_by(User.username)
+        ).all()
+        for app_id, owner_name in links:
+            owners.setdefault(int(app_id), []).append(str(owner_name))
+
+    empty = {"cost": 0.0, "input_tokens": 0, "output_tokens": 0, "requests": 0}
+    rows = []
+    for u in page:
+        monthly = monthly_map.get(u.id, empty)
+        rows.append({
+            "id": u.id,
+            "username": u.username,
+            "display_name": u.display_name,
+            "org_code": u.org_code,
+            "daily_limit_usd": u.daily_limit_usd,
+            "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
+            "is_admin": u.is_admin,
+            "is_self": u.id == admin_user.id,
+            "is_disabled": u.is_disabled,
+            "can_use_azure": u.can_use_azure,
+            "can_use_bedrock": u.can_use_bedrock,
+            "concurrency_waived": u.concurrency_waived,
+            "owners": owners.get(u.id, []),
+            "monthly_cost": monthly["cost"],
+            "monthly_tokens": monthly["input_tokens"] + monthly["output_tokens"],
+            "monthly_reqs": monthly["requests"],
+        })
+
+    return {
+        "kind": kind,
+        "rows": rows,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "first": offset + 1 if total else 0,
+        "last": min(offset + limit, total),
+        "prev_url": _admin_url(state, **{offset_key: max(offset - limit, 0)}) if offset > 0 else None,
+        "next_url": _admin_url(state, **{offset_key: offset + limit}) if offset + limit < total else None,
+        "filtered": bool(state["q"]) or status != "all",
+    }
+
+
 @router.get("", response_class=HTMLResponse)
 def admin_page(
     request: Request,
@@ -125,6 +284,8 @@ def admin_page(
     app_limit: int = _PAGE_SIZE,
     app_offset: int = 0,
     q: str = "",
+    sort: str = "id",
+    status: str = "all",
 ):
     # Plain ``def``: FastAPI runs it in the threadpool. The aggregates below
     # take seconds on a busy month, and inside an ``async def`` they would
@@ -136,88 +297,19 @@ def admin_page(
     totals = overview["totals"]
     app_leaderboard = overview["app_leaderboard"]
     user_leaderboard = overview["user_leaderboard"]
-    monthly_map = overview["per_user"]
 
-    # ── User Management: paginated queries with optional search ──
-    search = q.strip()
-    user_base = select(User).where(~app_account_clause())
-    app_base = select(User).where(app_account_clause())
+    # ── User Management: both tables, reusing the month's per-user map ──
+    state = _table_state(q, sort, status, offset, limit, app_offset, app_limit)
+    users_table = _user_table(session, "users", state, admin_user, overview["per_user"])
+    apps_table = _user_table(session, "apps", state, admin_user, overview["per_user"])
 
-    if search:
-        like = f"%{search}%"
-        search_filter = (
-            User.username.ilike(like)
-            | User.display_name.ilike(like)
-            | User.org_code.ilike(like)
-        )
-        user_base = user_base.where(search_filter)
-        app_base = app_base.where(search_filter)
-
-    user_total = session.exec(select(func.count()).select_from(user_base.subquery())).one()
-    app_total = session.exec(select(func.count()).select_from(app_base.subquery())).one()
-
-    # Clamp offset
-    offset = max(0, min(offset, max(user_total - 1, 0)))
-    app_offset = max(0, min(app_offset, max(app_total - 1, 0)))
-
-    paged_users = session.exec(
-        user_base.order_by(User.id).offset(offset).limit(limit)
-    ).all()
-    paged_apps = session.exec(
-        app_base.order_by(User.id).offset(app_offset).limit(app_limit)
-    ).all()
-
-    # Owner lookup for app accounts
-    all_app_owners = session.exec(select(AppOwner)).all()
-    user_lookup: dict[int, str] = {}
-    for u in paged_users:
-        user_lookup[u.id] = u.username
-    # Also need usernames of owners who may not be in the paged set
-    owner_ids = {ao.owner_id for ao in all_app_owners}
-    if owner_ids:
-        owners = session.exec(select(User).where(User.id.in_(owner_ids))).all()
-        for o in owners:
-            user_lookup[o.id] = o.username
-
-    app_owners_map: dict[int, list[str]] = {}
-    for ao in all_app_owners:
-        app_owners_map.setdefault(ao.app_id, []).append(
-            user_lookup.get(ao.owner_id, str(ao.owner_id))
-        )
-
-    def _build_user_data(u: User) -> dict:
-        monthly = monthly_map.get(u.id, {
-            "cost": 0.0, "input_tokens": 0, "output_tokens": 0, "requests": 0,
-        })
-        return {
-            "id": u.id,
-            "username": u.username,
-            # Masked: a bulk listing must not carry usable credentials.
-            # The modal fetches the real key from /users/{id}/api-key.
-            "api_key": mask_api_key(u.api_key),
-            "daily_limit_usd": u.daily_limit_usd,
-            "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
-            "is_admin": u.is_admin,
-            "is_disabled": u.is_disabled,
-            "can_use_azure": u.can_use_azure,
-            "can_use_bedrock": u.can_use_bedrock,
-            "concurrency_waived": u.concurrency_waived,
-            "owners": app_owners_map.get(u.id, []),
-            "display_name": u.display_name,
-            "org_code": u.org_code,
-            "total_cost": monthly["cost"],
-            "total_tokens": monthly["input_tokens"] + monthly["output_tokens"],
-            "monthly_cost": monthly["cost"],
-            "monthly_input": monthly["input_tokens"],
-            "monthly_output": monthly["output_tokens"],
-            "monthly_reqs": monthly["requests"],
-        }
-
-    users = [_build_user_data(u) for u in paged_users]
-    apps = [_build_user_data(u) for u in paged_apps]
-
-    now = datetime.now(timezone.utc)
-    month_label = now.strftime("%B %Y")
+    # Report months are local (Asia/Taipei) months, like the figures under
+    # them: a UTC label named the previous month for the first 8 hours.
+    month_start = local_month_start()
+    month_label = month_start.strftime("%B %Y")
+    export_from = month_start
+    for _ in range(5):
+        export_from = (export_from - timedelta(days=1)).replace(day=1)
 
     dau_data = get_dau_trends(session)
     today_dau = dau_data[-1]["dau"] if dau_data else 0
@@ -277,8 +369,13 @@ def admin_page(
             "user": admin_user,
             "display_name": admin_user.display_name or admin_user.username,
             "org_code": admin_user.org_code,
-            "users": users,
-            "apps": apps,
+            "users_table": users_table,
+            "apps_table": apps_table,
+            "table_state": state,
+            "user_table_sorts": USER_TABLE_SORTS,
+            "user_table_statuses": USER_TABLE_STATUSES,
+            "export_from_default": export_from.strftime("%Y-%m"),
+            "export_to_default": month_start.strftime("%Y-%m"),
             "app_leaderboard": app_leaderboard,
             "user_leaderboard": user_leaderboard,
             "month_label": month_label,
@@ -289,7 +386,7 @@ def admin_page(
             "dept_usage": dept_usage,
             "anomalies": anomalies,
             "anomaly_usernames": anomaly_usernames,
-            "current_year": now.year,
+            "current_year": month_start.year,
             "dau_data": dau_data,
             "today_dau": today_dau,
             "default_daily_limit": get_default_daily_limit(),
@@ -303,14 +400,37 @@ def admin_page(
             "concurrency_modes": CONCURRENCY_MODES,
             "concurrency_in_flight": concurrency_in_flight,
             "site_links": get_site_links(),
-            # Pagination state
-            "limit": limit,
-            "offset": offset,
-            "user_total": user_total,
-            "app_limit": app_limit,
-            "app_offset": app_offset,
-            "app_total": app_total,
-            "q": search,
+            "user_total": users_table["total"],
+            "app_total": apps_table["total"],
+        },
+    )
+
+
+@router.get("/user-table", response_class=HTMLResponse)
+def user_table_panel(
+    request: Request,
+    kind: str = Query(..., pattern="^(users|apps)$"),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+    limit: int = _PAGE_SIZE,
+    offset: int = 0,
+    app_limit: int = _PAGE_SIZE,
+    app_offset: int = 0,
+    q: str = "",
+    sort: str = "id",
+    status: str = "all",
+):
+    """One Users-tab panel (``kind`` = users | apps) as an HTML fragment.
+
+    Takes the same query parameters as ``/admin``, whose page swaps the
+    fragment in. Plain ``def`` for the same reason as ``admin_page``."""
+    state = _table_state(q, sort, status, offset, limit, app_offset, app_limit)
+    return templates.TemplateResponse(
+        "_admin_user_table.html",
+        {
+            "request": request,
+            "table": _user_table(session, kind, state, admin_user),
+            "cloud_daily_limit": get_cloud_daily_limit(),
         },
     )
 
@@ -410,6 +530,8 @@ async def update_user_limit(
         session.add(target)
         session.commit()
 
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "daily_limit_usd": target.daily_limit_usd})
     return RedirectResponse(url="/admin", status_code=303)
 
 
@@ -439,6 +561,8 @@ async def update_user_cloud_limit(
         session.add(target)
         session.commit()
 
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "cloud_daily_limit_usd": target.cloud_daily_limit_usd})
     return RedirectResponse(url="/admin", status_code=303)
 
 
@@ -603,6 +727,7 @@ def _wants_json(request: Request) -> bool:
 @router.post("/users/{user_id}/toggle-disable")
 def toggle_disable(
     user_id: int,
+    request: Request,
     admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
 ):
@@ -615,6 +740,8 @@ def toggle_disable(
     target.is_disabled = not target.is_disabled
     session.add(target)
     session.commit()
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "is_disabled": target.is_disabled})
     return RedirectResponse(url="/admin", status_code=303)
 
 
@@ -721,6 +848,8 @@ def delete_user(
         admin_user.username, *deleted,
     )
 
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "deleted": user_id})
     return RedirectResponse(url="/admin", status_code=303)
 
 
