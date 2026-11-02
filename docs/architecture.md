@@ -211,7 +211,7 @@ Screens the prompt of **local (vLLM) traffic** with a guard model before it is f
 
 **Langfuse**: `screen` stashes the verdict in the request-meta contextvar (`observability.set_guardrail_result`); `_emit_observation` and `_log_error` copy it onto the request's own generation: `guardrail_*` metadata (`status`, `action`, `categories`, `latency_ms`, `detail`, `tokens`, `model`, `policy`), a `guardrail:<status>` tag, and categorical scores `guardrail` (safe / controversial / unsafe / skipped / timeout / error / parse_error, or `pending` on a failed request that ended before a monitor-mode verdict) and `guardrail_action` (pass / flag / block). A blocked request never reaches `_log_usage`, so `screen` records a generation of its own: zero usage and cost, level `WARNING`, status message `guardrail blocked: …`, only the `client` and guardrail scores. Requests the policy doesn't cover carry no guardrail fields.
 
-**Test connection** (`POST /admin/guardrail/test`): judges a sample text with the values in the form, saved or not, enabled or not, and shows status, categories and latency.
+**Test connection** (`POST /admin/guardrail/test`): judges a sample text with the values in the form, saved or not, enabled or not, and shows status, categories, latency and the model that answered (the reply's `model`). On failure it adds a `hint` (`_test_hint`): an `X-Model-Fallback` header means the base URL is an LLM gateway (this one included) that fell back to another model; a `parse_error` from a different `model` means the URL reaches another server; any other `parse_error` means the endpoint answered the sample like a chat model (e.g. `Thinking Process: …`), i.e. it is not serving Qwen3Guard-Gen weights or its chat template.
 
 `tests/test_guardrail.py`.
 

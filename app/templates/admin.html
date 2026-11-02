@@ -1437,11 +1437,13 @@ function submitExportCsv() {
             gwPost('/admin/guardrail/test', new FormData(form))
                 .then(function(r) {
                     var cats = (r.categories || []).join(', ');
-                    out.className = 'text-xs font-mono ' + (r.ok ? 'text-ag' : 'text-ar');
+                    out.className = 'text-xs font-mono whitespace-pre-line ' + (r.ok ? 'text-ag' : 'text-ar');
                     out.textContent = (r.ok ? 'OK — ' : 'Failed — ') + r.status
                         + (cats ? ' (' + cats + ')' : '')
                         + (r.detail ? ' · ' + r.detail : '')
-                        + (r.latency_ms != null ? ' · ' + r.latency_ms + ' ms' : '');
+                        + (r.served_model ? ' · model ' + r.served_model : '')
+                        + (r.latency_ms != null ? ' · ' + r.latency_ms + ' ms' : '')
+                        + (r.hint ? '\n' + r.hint : '');
                 })
                 .catch(function(err) {
                     out.className = 'text-xs font-mono text-ar';

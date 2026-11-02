@@ -230,6 +230,7 @@ class TestEvaluate:
         assert kwargs["json"]["model"] == "guard-4b"
         assert kwargs["json"]["messages"] == [{"role": "user", "content": "text"}]
         assert kwargs["headers"]["Authorization"] == "Bearer gk-1"
+        assert kwargs["json"]["temperature"] == 0  # greedy: a deterministic verdict
 
     def test_timeout(self):
         v = self._run(_settings(action="block"), _guard_client(side_effect=httpx.ReadTimeout("t")))
@@ -653,6 +654,42 @@ class TestAdmin:
             resp = client.post("/admin/guardrail/test", data=_form(),
                                headers=web_auth_header(sub="admin", scopes=["admin"]))
         assert resp.json()["ok"] is False and resp.json()["status"] == "error"
+
+    def test_test_connection_explains_a_chat_model_reply(self, client, admin_user):
+        """A reasoning model answering the sample (not Qwen3Guard) is a
+        parse_error with a hint and the model that answered."""
+        reply = make_httpx_response(200, {
+            "model": "Qwen/Qwen3Guard-Gen-4B",
+            "choices": [{"message": {"role": "assistant",
+                                     "content": "Thinking Process: 1. **Analyze the Request:**"}}],
+        })
+        with patch("app.services.guardrail.get_guardrail_client", return_value=_guard_client(reply)):
+            r = client.post("/admin/guardrail/test", data=_form(),
+                            headers=web_auth_header(sub="admin", scopes=["admin"])).json()
+        assert r["ok"] is False and r["status"] == "parse_error"
+        assert r["served_model"] == "Qwen/Qwen3Guard-Gen-4B"
+        assert "not a Qwen3Guard verdict" in r["hint"]
+
+    def test_test_connection_names_another_served_model(self, client, admin_user):
+        reply = make_httpx_response(200, {
+            "model": "qwen3.5-35b",
+            "choices": [{"message": {"role": "assistant", "content": "Here is a poem"}}],
+        })
+        with patch("app.services.guardrail.get_guardrail_client", return_value=_guard_client(reply)):
+            r = client.post("/admin/guardrail/test", data=_form(),
+                            headers=web_auth_header(sub="admin", scopes=["admin"])).json()
+        assert r["status"] == "parse_error" and "Answered by 'qwen3.5-35b'" in r["hint"]
+
+    def test_test_connection_detects_a_gateway_fallback(self, client, admin_user):
+        reply = make_httpx_response(200, {
+            "model": "qwen3.5-35b",
+            "choices": [{"message": {"role": "assistant", "content": "Thinking Process: ..."}}],
+        })
+        reply.headers["X-Model-Fallback"] = "unknown model; using qwen3.5-35b"
+        with patch("app.services.guardrail.get_guardrail_client", return_value=_guard_client(reply)):
+            r = client.post("/admin/guardrail/test", data=_form(),
+                            headers=web_auth_header(sub="admin", scopes=["admin"])).json()
+        assert r["ok"] is False and "LLM gateway" in r["hint"]
 
     def test_test_connection_needs_base_url(self, client, admin_user):
         resp = client.post("/admin/guardrail/test", data=_form(base_url=""),

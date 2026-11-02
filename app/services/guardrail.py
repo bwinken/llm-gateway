@@ -112,6 +112,8 @@ class GuardVerdict:
     latency_ms: float | None = None
     detail: str | None = None       # error type, skip reason, unparsed snippet
     tokens: int | None = None       # guard model tokens (informational, never billed)
+    served_model: str | None = None  # the reply's ``model`` (Test connection diagnostics)
+    fallback: str | None = None     # an ``X-Model-Fallback`` header: base URL is a gateway
 
     def as_meta(self, settings: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -131,7 +133,9 @@ class GuardVerdict:
 # ---------------------------------------------------------------------------
 
 def build_guard_request(model: str, text: str) -> dict[str, Any]:
-    """Body for prompt moderation: the text as the only user message."""
+    """Body for prompt moderation: the text as the only user message.
+
+    ``temperature`` 0 (greedy): the verdict must be deterministic."""
     return {
         "model": model,
         "messages": [{"role": "user", "content": text}],
@@ -315,8 +319,12 @@ async def evaluate(settings: dict[str, Any], text: str) -> GuardVerdict:
         return GuardVerdict(STATUS_ERROR, latency_ms=latency, detail=f"HTTP {resp.status_code}")
     content: Any = None
     tokens = None
+    served = None
+    fallback = resp.headers.get("X-Model-Fallback") or None
     try:
         data = resp.json()
+        if isinstance(data.get("model"), str):
+            served = data["model"]
         usage = data.get("usage") or {}
         if isinstance(usage.get("total_tokens"), int):
             tokens = usage["total_tokens"]
@@ -326,11 +334,12 @@ async def evaluate(settings: dict[str, Any], text: str) -> GuardVerdict:
         snippet = content if isinstance(content, str) else type(exc).__name__
         return GuardVerdict(
             STATUS_PARSE_ERROR, latency_ms=latency, tokens=tokens,
-            detail=str(snippet)[:_DETAIL_SNIPPET],
+            detail=str(snippet)[:_DETAIL_SNIPPET], served_model=served, fallback=fallback,
         )
     return GuardVerdict(
         status, categories=categories, latency_ms=latency, tokens=tokens,
         action=decide_action(settings, status, categories),
+        served_model=served, fallback=fallback,
     )
 
 
@@ -534,4 +543,25 @@ async def test_guard(settings: dict[str, Any], text: str) -> dict[str, Any]:
         "latency_ms": verdict.latency_ms,
         "detail": verdict.detail,
         "tokens": verdict.tokens,
+        "served_model": verdict.served_model,
+        "hint": _test_hint(settings, verdict),
     }
+
+
+def _test_hint(settings: dict[str, Any], verdict: GuardVerdict) -> str | None:
+    """What a failed Test connection most likely means. A ``parse_error``
+    whose reply reads like an answer (``Thinking Process: …``, a poem) means
+    the endpoint is not running Qwen3Guard-Gen at all."""
+    if verdict.fallback:
+        return (f"The base URL is an LLM gateway that does not serve '{settings.get('model')}' "
+                f"and fell back ({verdict.fallback}). Point it at the guard's own vLLM server.")
+    if verdict.status != STATUS_PARSE_ERROR:
+        return None
+    served = verdict.served_model
+    if served and served != settings.get("model"):
+        return (f"Answered by '{served}', not '{settings.get('model')}': "
+                "the base URL reaches another model.")
+    return ("The reply is not a Qwen3Guard verdict ('Safety: …'): the endpoint answered the "
+            "sample like a chat model. Check that the served weights are Qwen3Guard-Gen "
+            "(--served-model-name not on another model) and that vLLM is not started with "
+            "another --chat-template.")
