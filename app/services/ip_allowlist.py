@@ -295,9 +295,20 @@ def check(request: Request, user: User) -> None:
 
 # ── Reads and writes for the admin panel ──
 
+def _network_key(rule: IpAllowRule) -> tuple:
+    try:
+        net = ipaddress.ip_network(rule.cidr, strict=False)
+        return (net.version, int(net.network_address), net.prefixlen)
+    except ValueError:
+        return (99, 0, 0)
+
+
 def list_rules(session: Session, now: datetime | None = None, expired_days: int = 7) -> dict[str, list[IpAllowRule]]:
-    """``{"active", "upcoming", "expired"}``: the expired ones of the last
-    ``expired_days`` days, newest first, as the record of recent access."""
+    """``{"active", "upcoming", "expired"}``. Active and upcoming rules are
+    sorted by address, then start, so the several rules one range can have
+    (different people, different windows) sit together; the expired ones
+    of the last ``expired_days`` days come newest first, as the record of
+    recent access."""
     now = now or utcnow()
     rows = session.exec(
         select(IpAllowRule).where(or_(
@@ -313,6 +324,8 @@ def list_rules(session: Session, now: datetime | None = None, expired_days: int 
             out["upcoming"].append(row)
         else:
             out["active"].append(row)
+    for key in ("active", "upcoming"):
+        out[key].sort(key=lambda r: (_network_key(r), r.starts_at or datetime.min, r.id))
     out["expired"].sort(key=lambda r: r.expires_at, reverse=True)
     return out
 

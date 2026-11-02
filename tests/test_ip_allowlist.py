@@ -122,6 +122,36 @@ class TestRules:
         assert ip_allowlist.verdict(addr(LAB), "alice", "", now) == "not_for_this_account"
         assert ip_allowlist.verdict(addr(OUTSIDE), "alice", "", now) == "no_rule_for_address"
 
+    def test_one_range_different_people_different_windows(self, db_session):
+        """Rules on the same range add up, each with its own people and window."""
+        now = ip_allowlist.utcnow()
+        for name in ("alice", "bob", "dave"):
+            _account(db_session, name, f"k-{name}")
+        _rule(db_session, "203.0.113.0/24", usernames=["alice", "bob"], expires_at=now + timedelta(days=4))
+        _rule(db_session, "203.0.113.0/24", usernames=["dave"],
+              starts_at=now + timedelta(days=7), expires_at=now + timedelta(days=7, hours=9))
+        _rule(db_session, "203.0.113.0/24", usernames=["bob"],
+              starts_at=now + timedelta(days=7), expires_at=now + timedelta(days=14))
+
+        def ok(user, when):
+            return ip_allowlist.is_allowed(addr(PARTNER), user, "", now + when)
+
+        assert ok("alice", timedelta(0)) and ok("bob", timedelta(0)) and not ok("dave", timedelta(0))
+        assert not ok("alice", timedelta(days=5)) and not ok("bob", timedelta(days=5))   # first window over
+        assert ok("dave", timedelta(days=7, hours=1)) and ok("bob", timedelta(days=7, hours=1))
+        assert not ok("alice", timedelta(days=7, hours=1))
+        assert not ok("dave", timedelta(days=7, hours=10)) and ok("bob", timedelta(days=7, hours=10))
+
+    def test_rules_of_one_range_are_listed_together(self, db_session):
+        now = ip_allowlist.utcnow()
+        _rule(db_session, "203.0.113.0/24")
+        _rule(db_session, "10.0.0.0/8")
+        _rule(db_session, "203.0.113.0/24", starts_at=now - timedelta(hours=1))
+        _rule(db_session, "9.0.0.0/8")
+        assert [r.cidr for r in ip_allowlist.list_rules(db_session, now)["active"]] == [
+            "9.0.0.0/8", "10.0.0.0/8", "203.0.113.0/24", "203.0.113.0/24",
+        ]
+
     def test_accounts_and_org_codes_combine(self, db_session):
         _account(db_session, "alice", "k-a")
         _account(db_session, "carol", "k-c", org_code="RD-7")
