@@ -24,6 +24,14 @@ from app.core.config import (
     APP_TITLE,
     CONCURRENCY_MODES,
     DISPLAY_ORDER_BACKENDS,
+    GUARDRAIL_ACTIONS,
+    GUARDRAIL_BLOCK_MESSAGE_MAX,
+    GUARDRAIL_CATEGORY_RULES,
+    GUARDRAIL_ENDPOINTS,
+    GUARDRAIL_MAX_CHARS_RANGE,
+    GUARDRAIL_SCOPES,
+    GUARDRAIL_THRESHOLDS,
+    GUARDRAIL_TIMEOUT_RANGE_S,
     bedrock_shared_settings,
     get_cloud_budget_fallback,
     get_cloud_daily_limit,
@@ -32,6 +40,7 @@ from app.core.config import (
     get_bedrock_models_snapshot,
     get_config_data,
     get_default_daily_limit,
+    get_guardrail_settings,
     get_model_routing_snapshot,
     get_site_links,
     save_config,
@@ -39,6 +48,7 @@ from app.core.config import (
     set_concurrency_settings,
     set_cloud_daily_limit,
     set_default_daily_limit,
+    set_guardrail_settings,
     set_site_links,
 )
 from app.core.database import get_session
@@ -52,7 +62,7 @@ from app.models.schema import (
     is_app_account,
     mask_api_key,
 )
-from app.services import concurrency
+from app.services import concurrency, guardrail
 from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
@@ -403,6 +413,11 @@ def admin_page(
             "concurrency_modes": CONCURRENCY_MODES,
             "concurrency_in_flight": concurrency_in_flight,
             "site_links": get_site_links(),
+            "guardrail": _guardrail_view(),
+            "guardrail_categories": guardrail.QWEN3GUARD_CATEGORIES,
+            "guardrail_model_family": guardrail.GUARD_MODEL_FAMILY,
+            "guardrail_endpoints": GUARDRAIL_ENDPOINTS,
+            "guardrail_rules": GUARDRAIL_CATEGORY_RULES,
             "user_total": users_table["total"],
             "app_total": apps_table["total"],
         },
@@ -715,6 +730,127 @@ async def update_concurrency_limit(
     if _wants_json(request):
         return JSONResponse({"ok": True, "mode": mode, "limit": limit})
     return RedirectResponse(url="/admin", status_code=303)
+
+
+# ── Guardrail ──
+
+def _guardrail_view() -> dict:
+    """Guardrail settings for the template: never the API key itself."""
+    settings = get_guardrail_settings()
+    view = {k: v for k, v in settings.items() if k != "api_key"}
+    view["rules"] = {
+        cat: guardrail.category_rule(settings, cat) for cat in guardrail.QWEN3GUARD_CATEGORIES
+    }
+    return view
+
+
+def _guardrail_from_form(form) -> dict:
+    """Validated ``[guardrail]`` values from the admin card's form. A blank
+    API key keeps the stored one (the page never sees it); ``clear_api_key``
+    removes it. Raises 400 on anything invalid."""
+    current = get_guardrail_settings()
+
+    def choice(field: str, allowed: tuple[str, ...]) -> str:
+        value = str(form.get(field) or "").strip().lower()
+        if value not in allowed:
+            raise HTTPException(status_code=400, detail=f"{field} must be one of: {', '.join(allowed)}.")
+        return value
+
+    base_url = str(form.get("base_url") or "").strip().rstrip("/")
+    if base_url and not base_url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="base_url must start with http:// or https://.")
+
+    api_key = str(form.get("api_key") or "").strip()
+    if str(form.get("clear_api_key") or "").lower() in ("on", "true", "1"):
+        api_key = ""
+    elif not api_key:
+        api_key = current["api_key"]
+
+    lo, hi = GUARDRAIL_TIMEOUT_RANGE_S
+    try:
+        timeout_s = float(str(form.get("timeout_s") or "").strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="timeout_s must be a number of seconds.")
+    if not math.isfinite(timeout_s) or not lo <= timeout_s <= hi:
+        raise HTTPException(status_code=400, detail=f"timeout_s must be between {lo:g} and {hi:g} seconds.")
+
+    lo_c, hi_c = GUARDRAIL_MAX_CHARS_RANGE
+    try:
+        max_chars = int(str(form.get("max_input_chars") or "").strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="max_input_chars must be a whole number.")
+    if not lo_c <= max_chars <= hi_c:
+        raise HTTPException(status_code=400, detail=f"max_input_chars must be between {lo_c} and {hi_c}.")
+
+    rules: dict[str, str] = {}
+    for cat in guardrail.QWEN3GUARD_CATEGORIES:
+        rule = str(form.get(f"rule:{cat}") or guardrail.DEFAULT_CATEGORY_RULE).strip().lower()
+        if rule not in GUARDRAIL_CATEGORY_RULES:
+            raise HTTPException(status_code=400, detail=f"rule for {cat} must be one of: {', '.join(GUARDRAIL_CATEGORY_RULES)}.")
+        if rule != guardrail.DEFAULT_CATEGORY_RULE:
+            rules[cat] = rule
+
+    endpoints = [e for e in form.getlist("endpoints") if e in GUARDRAIL_ENDPOINTS]
+    exempt = []
+    for part in str(form.get("exempt_users") or "").replace("\n", ",").split(","):
+        name = part.strip()
+        if name and name not in exempt:
+            exempt.append(name)
+    block_message = str(form.get("block_message") or "").strip()
+    if len(block_message) > GUARDRAIL_BLOCK_MESSAGE_MAX:
+        raise HTTPException(status_code=400, detail=f"block_message is limited to {GUARDRAIL_BLOCK_MESSAGE_MAX} characters.")
+
+    return {
+        # The card sends a hidden "off" plus the checkbox's "on" when ticked.
+        "enabled": any(str(v).lower() in ("on", "true", "1", "yes") for v in form.getlist("enabled")),
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": str(form.get("model") or "").strip() or current["model"],
+        "timeout_s": timeout_s,
+        "action": choice("action", GUARDRAIL_ACTIONS),
+        "block_threshold": choice("block_threshold", GUARDRAIL_THRESHOLDS),
+        "category_rules": rules,
+        "block_message": block_message,
+        "apply_to": choice("apply_to", GUARDRAIL_SCOPES),
+        "exempt_users": exempt,
+        "endpoints": endpoints,
+        "max_input_chars": max_chars,
+    }
+
+
+@router.post("/guardrail")
+async def update_guardrail(
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+):
+    """Save the ``[guardrail]`` section (admin panel → Guardrail card). Takes
+    effect on the next request in every worker (config auto-reload)."""
+    values = _guardrail_from_form(await request.form())
+    set_guardrail_settings(values)
+    logger.info(
+        "Guardrail settings saved | enabled={} action={} threshold={} base_url={} admin={}",
+        values["enabled"], values["action"], values["block_threshold"],
+        values["base_url"] or "(none)", admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "guardrail": _guardrail_view()})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+_GUARDRAIL_TEST_TEXT = "Hello! Can you help me write a short poem about the sea?"
+
+
+@router.post("/guardrail/test")
+async def test_guardrail(request: Request):
+    """Admin "Test connection": judge a sample text with the values currently
+    in the form (saved or not; enabled or not) and return the verdict, so a
+    base URL / key / model name can be checked before turning it on."""
+    form = await request.form()
+    values = _guardrail_from_form(form)
+    if not values["base_url"]:
+        raise HTTPException(status_code=400, detail="Set a base URL first.")
+    text = str(form.get("text") or "").strip() or _GUARDRAIL_TEST_TEXT
+    return JSONResponse(await guardrail.test_guard(values, text))
 
 
 def _wants_json(request: Request) -> bool:
@@ -1147,6 +1283,76 @@ def _clean_display_order(
         known = maps[backend] if maps[backend] is not None else current[backend]()
         out[backend] = list(dict.fromkeys(a for a in aliases if a in known))
     return out
+
+
+_TEST_MODEL_TIMEOUT_S = 10.0
+
+
+@router.post("/api/test-model")
+async def test_model_connection(body: dict):
+    """Model Config "Test connection" for a local (vLLM) entry, with the
+    values in the editor (saved or not): ``{base_url, api_key, real_model,
+    type}``. Asks the server for ``GET {base_url}/models`` (System One:
+    its ``/health``) with the entry's key and reports whether it answered
+    and whether ``real_model`` is among the models it serves. Read-only
+    and free: no inference call, nothing billed."""
+    import time
+
+    import httpx
+
+    from app.core.server_state import get_health_client
+    from app.services.health import _SYSTEMONE_TYPE, _probe_systemone
+
+    base_url = str(body.get("base_url") or "").strip().rstrip("/")
+    if not base_url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="base_url must start with http:// or https://.")
+    api_key = str(body.get("api_key") or "").strip()
+    real_model = str(body.get("real_model") or "").strip()
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    client = get_health_client()
+    t0 = time.monotonic()
+
+    def ms() -> float:
+        return round((time.monotonic() - t0) * 1000.0, 1)
+
+    if body.get("type") == _SYSTEMONE_TYPE:
+        try:
+            ok = await _probe_systemone(client, base_url, headers)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "latency_ms": ms(), "detail": type(exc).__name__})
+        return JSONResponse({
+            "ok": ok, "latency_ms": ms(),
+            "detail": "health check passed" if ok else "health check failed",
+        })
+
+    try:
+        resp = await client.get(f"{base_url}/models", headers=headers, timeout=_TEST_MODEL_TIMEOUT_S)
+    except httpx.TimeoutException:
+        return JSONResponse({"ok": False, "latency_ms": ms(), "detail": f"no answer within {_TEST_MODEL_TIMEOUT_S:g}s"})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "latency_ms": ms(), "detail": f"cannot connect ({type(exc).__name__})"})
+    latency = ms()
+    if resp.status_code in (401, 403):
+        return JSONResponse({"ok": False, "latency_ms": latency, "detail": f"HTTP {resp.status_code}: check the API key"})
+    if resp.status_code != 200:
+        return JSONResponse({"ok": False, "latency_ms": latency, "detail": f"HTTP {resp.status_code}"})
+    served: list[str] = []
+    try:
+        for item in resp.json().get("data") or []:
+            if isinstance(item, dict) and isinstance(item.get("id"), str):
+                served.append(item["id"])
+    except Exception:
+        return JSONResponse({"ok": False, "latency_ms": latency, "detail": "/models did not return a model list"})
+    found = bool(real_model) and real_model in served
+    if not real_model:
+        detail = "server reachable; set Real model to check it is served"
+    elif found:
+        detail = f"server reachable, serves {real_model}"
+    else:
+        detail = f"server reachable, but {real_model} is not among its models"
+    return JSONResponse({
+        "ok": found, "latency_ms": latency, "detail": detail, "served_models": served[:20],
+    })
 
 
 @router.put("/api/config")

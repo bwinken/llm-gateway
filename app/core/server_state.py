@@ -1,7 +1,7 @@
 """
 Global httpx.AsyncClient manager and per-server health cache.
 
-Four clients:
+Five clients:
   - `_client`         — used for vLLM downstreams (internal LAN, no proxy)
   - `_health_client`  — used ONLY by the background health checker. A health
                         probe sharing `_client` competes for the same
@@ -13,6 +13,11 @@ Four clients:
                         HTTP proxy when AZURE_HTTP_PROXY is set.
   - `_bedrock_client` — used for AWS Bedrock; same convention with
                         BEDROCK_HTTP_PROXY / BEDROCK_INSECURE.
+  - `_guardrail_client` — the guardrail model (app/services/guardrail.py).
+                        Deliberately WITHOUT the phase-timing event hooks: a
+                        guard call is not the request's downstream, so it
+                        must not stamp `upstream_*` marks. Its time shows up
+                        in `gateway_overhead_ms` (and as `guardrail_ms`).
 
 Keeping them separate means internal vLLM traffic never goes through the
 corporate proxy, while external cloud calls can when the deployment needs it.
@@ -34,6 +39,7 @@ _client: httpx.AsyncClient | None = None
 _health_client: httpx.AsyncClient | None = None
 _azure_client: httpx.AsyncClient | None = None
 _bedrock_client: httpx.AsyncClient | None = None
+_guardrail_client: httpx.AsyncClient | None = None
 # Shared-client pool size, kept for utilization reporting (pool_snapshot).
 _client_max_connections: int = 0
 _health_cache: dict[str, bool] = {}
@@ -81,7 +87,8 @@ def _env_int(name: str, default: int) -> int:
 
 
 async def init_client() -> None:
-    global _client, _health_client, _azure_client, _bedrock_client, _client_max_connections
+    global _client, _health_client, _azure_client, _bedrock_client, _guardrail_client
+    global _client_max_connections
     # Each in-flight streaming request holds one pool connection for its whole
     # duration (minutes, for agentic clients), so the pool must be sized for
     # peak concurrent streams — not average request rate. Downstreams are
@@ -125,9 +132,23 @@ async def init_client() -> None:
         os.getenv("BEDROCK_HTTP_PROXY", "").strip(), _env_flag("BEDROCK_INSECURE"),
     )
 
+    # Guardrail client: per-call deadlines come from [guardrail].timeout_s
+    # (guardrail.py); the client-level timeout is only a backstop. No event
+    # hooks (see the module docstring).
+    _guardrail_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(30.0, connect=5.0),
+        transport=httpx.AsyncHTTPTransport(
+            retries=1,
+            limits=httpx.Limits(
+                max_connections=_env_int("GUARDRAIL_MAX_CONNECTIONS", 200),
+                max_keepalive_connections=50,
+            ),
+        ),
+    )
+
 
 async def close_client() -> None:
-    global _client, _health_client, _azure_client, _bedrock_client
+    global _client, _health_client, _azure_client, _bedrock_client, _guardrail_client
     if _client is not None:
         await _client.aclose()
         _client = None
@@ -140,6 +161,9 @@ async def close_client() -> None:
     if _bedrock_client is not None:
         await _bedrock_client.aclose()
         _bedrock_client = None
+    if _guardrail_client is not None:
+        await _guardrail_client.aclose()
+        _guardrail_client = None
 
 
 def get_client() -> httpx.AsyncClient:
@@ -195,6 +219,14 @@ def get_bedrock_client() -> httpx.AsyncClient:
     if _bedrock_client is not None:
         return _bedrock_client
     return get_client()
+
+
+def get_guardrail_client() -> httpx.AsyncClient:
+    """Return the guardrail client. Falls back to the health client (also
+    hook-free) when uninitialised; tests patch this getter."""
+    if _guardrail_client is not None:
+        return _guardrail_client
+    return get_health_client()
 
 
 def set_alive(base_url: str, alive: bool) -> None:

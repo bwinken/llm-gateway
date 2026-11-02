@@ -20,6 +20,7 @@ billing goes through ``_log_usage`` (decoupled from any specific route map).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import contextvars
 import json
 import os
@@ -461,7 +462,7 @@ def _emit_observation(
         out_payload = output_payload
     # Off the event loop: with LANGFUSE_CAPTURE_IO on, the SDK JSON-encodes
     # the whole prompt synchronously (~35 ms for a 1 MB Claude Code body).
-    _submit_background(record_generation, GenerationRecord(
+    rec = GenerationRecord(
         username=user.username,
         user_id=str(user.id),
         endpoint=endpoint,
@@ -481,7 +482,22 @@ def _emit_observation(
         display_name=getattr(user, "display_name", None),
         input_payload=input_payload,
         output_payload=out_payload,
-    ))
+        guardrail=meta.get("guardrail"),
+    )
+    guardrail = rec.guardrail
+    if guardrail is not None and not isinstance(guardrail, dict) and not guardrail.done():
+        # Monitor-mode guardrail still judging alongside this request: emit
+        # once the verdict is in (bounded by its timeout). Never wait for it:
+        # a blocked executor thread would delay the usage-log writes too.
+        def _emit_with_verdict(verdict: dict) -> None:
+            try:
+                _submit_background(record_generation, dataclasses.replace(rec, guardrail=verdict))
+            except Exception as exc:
+                logger.warning("observability hook failed: {}", exc)
+
+        guardrail.add_done_callback(_emit_with_verdict)
+        return
+    _submit_background(record_generation, rec)
 
 
 def _log_error(
@@ -530,6 +546,7 @@ def _log_error(
             x_app=meta.get("x_app"),
             session_id=meta.get("session_id"),
             display_name=getattr(user, "display_name", None),
+            guardrail=meta.get("guardrail"),
         ))
     except Exception as exc:  # never let the error-hook break error handling
         logger.warning("observability error-hook failed: {}", exc)
