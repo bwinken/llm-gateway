@@ -151,7 +151,7 @@ def _create() -> dict[str, Any]:
                               ("backend",), buckets=_OVERHEAD_BUCKETS, registry=reg),
         "tps": Histogram(f"{_PREFIX}_output_tokens_per_second", "Output tokens / generation time.",
                          model_labels, buckets=_TPS_BUCKETS, registry=reg),
-        "rejections": Counter(f"{_PREFIX}_rejections_total", "Requests refused with 429 before reaching a downstream.",
+        "rejections": Counter(f"{_PREFIX}_rejections_total", "Requests refused before reaching a downstream (429 budget / concurrency, 403 IP allowlist).",
                               ("reason",), registry=reg),
         "in_flight": Gauge(f"{_PREFIX}_in_flight_requests", "Open HTTP requests, streams included.",
                            multiprocess_mode="livesum", registry=reg),
@@ -249,7 +249,7 @@ def observe_error(endpoint: str, backend: str, model: str, status_code: int) -> 
 
 
 def observe_rejection(reason: str) -> None:
-    """A request refused with 429 at the gateway (budget or concurrency)."""
+    """A request refused at the gateway: 429 (budget, concurrency) or 403 (IP allowlist)."""
     try:
         m = _init()
         if m is None:

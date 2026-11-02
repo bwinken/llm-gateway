@@ -303,6 +303,13 @@ TEST_BEDROCK_MODELS: dict[str, dict[str, Any]] = {
 # Build a test FastAPI app (no lifespan side-effects)
 # ---------------------------------------------------------------------------
 
+# The API IP allowlist stays off whatever a local config.toml says; its tests
+# patch in their own settings (tests/test_ip_allowlist.py). Every reader goes
+# through ip_allowlist.settings(), so one patch covers the routers too.
+IP_ALLOWLIST_OFF: dict[str, Any] = {
+    "mode": "off",
+}
+
 GUARDRAIL_OFF: dict[str, Any] = {
     "enabled": False, "active": False, "base_url": "", "api_key": "", "api_key_set": False,
     "model": "Qwen/Qwen3Guard-Gen-4B", "timeout_s": 3.0, "action": "monitor",
@@ -411,6 +418,8 @@ _ALL_PATCHES = [
     # The guardrail stays off whatever a local config.toml says; its tests
     # patch in their own settings (tests/test_guardrail.py).
     lambda: patch("app.services.guardrail.get_guardrail_settings", return_value=dict(GUARDRAIL_OFF)),
+    lambda: patch("app.services.ip_allowlist.engine", _test_engine),
+    lambda: patch("app.services.ip_allowlist.get_ip_allowlist_settings", return_value=dict(IP_ALLOWLIST_OFF)),
 ]
 
 
@@ -422,12 +431,15 @@ def _patch_all():
     import app.services.usage_rollup  # noqa: F401 — same, for the rollup engine patch
     import app.services.scheduler  # noqa: F401 — same, for the job-claim engine patch
     import app.services.guardrail  # noqa: F401 — same, for the settings patch
+    import app.services.ip_allowlist as ip_allowlist  # same, for the engine / settings patches
     from contextlib import ExitStack
 
+    ip_allowlist.reset()  # the per-worker snapshot is module state
     with ExitStack() as stack:
         for make_patch in _ALL_PATCHES:
             stack.enter_context(make_patch())
         yield
+    ip_allowlist.reset()
 
 
 @pytest.fixture()

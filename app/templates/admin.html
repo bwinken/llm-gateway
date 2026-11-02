@@ -9,6 +9,11 @@
     .gw-grant-azure.is-on   { background: rgba(167,139,250,0.18); border-color: rgba(167,139,250,0.4); color: #cab9ff; }
     .gw-grant-bedrock.is-on { background: rgba(255,153,51,0.15);  border-color: rgba(255,153,51,0.4);  color: #ffcb8a; }
     .gw-grant-waive.is-on   { background: rgba(52,211,153,0.15);  border-color: rgba(52,211,153,0.4);  color: #86efac; }
+    .sa-chip { display: inline-flex; align-items: baseline; gap: .375rem; padding: .3rem .65rem; border-radius: .5rem;
+               border: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.02); font-size: .75rem; color: #c4c9d4; }
+    .sa-chip:hover { border-color: rgba(99,152,255,0.35); }
+    .sa-chip.is-zero { color: #4e5569; }
+    .sa-chip.is-active { border-color: rgba(99,152,255,0.6); background: rgba(99,152,255,0.1); }
     .gw-badge-admin { background: rgba(167,139,250,0.1); color: #a78bfa; border-color: rgba(167,139,250,0.15); }
     .gw-badge-muted { background: rgba(255,255,255,0.04); color: #868da0; border-color: rgba(255,255,255,0.06); }
     .gw-badge-off   { background: rgba(245,166,35,0.1); color: #f5a623; border-color: rgba(245,166,35,0.2); }
@@ -424,6 +429,21 @@ function submitExportCsv() {
 </div>
 
 <div data-panel="users">
+{# ── Special access: who has something other than the defaults ── #}
+<div class="gw-card p-4 mb-4 gw-anim gw-d6">
+    <div class="flex flex-wrap items-center gap-2">
+        <span class="text-[11px] font-bold text-t3 uppercase tracking-wider mr-1 gw-tip gw-tip-wide"
+              data-tip="Accounts with a permission or setting other than the defaults. Click one to list those accounts below; each row's toggles show what it has. Users and app accounts are counted separately (Waiver not the default: users waived, or app accounts un-waived). Counts are as of this page load.">Special access</span>
+        {% for s in special_access %}
+        {% set n = s.users + s.apps %}
+        <a href="{{ s.url }}" class="sa-chip {{ 'is-zero' if n == 0 }} {{ 'is-active' if table_state.status == s.key }}">
+            {{ s.label }} <span class="font-mono {{ 'text-t1' if s.users else '' }}">{{ s.users }}</span>
+            {% if s.apps %}<span class="text-t4 font-mono">+{{ s.apps }} app{{ '' if s.apps == 1 else 's' }}</span>{% endif %}
+        </a>
+        {% endfor %}
+    </div>
+</div>
+
 {# ── User Management ── #}
 <div class="gw-anim gw-d6">
     <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -762,6 +782,142 @@ function submitExportCsv() {
             <span id="guardrail-test-result" class="text-xs font-mono"></span>
         </div>
     </form>
+</div>
+
+{# ── IP Allowlist (API surfaces only; rules in ip_allow_rules) ── #}
+<div id="ip-allowlist" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #ff7a45">
+    <div class="mb-4 max-w-3xl">
+        <h2 class="text-sm font-bold text-t2 mb-1">IP Allowlist</h2>
+        <p class="text-xs text-t4 gw-tip gw-tip-wide"
+           data-tip="Checked on every /v1, /azure and /aws request right after its API key: it is admitted when an active rule covers both its address and its account. A rule with no accounts and no org codes is for everyone. The web UI, sign-in and health checks are never checked, so this page always stays reachable. Only admins add, edit or end rules. Monitor: requests no rule admits are served and logged as 'IP allowlist would refuse (monitor)' with the account, address and reason. Enforce: they get 403. A change reaches every worker within 15 seconds; a preset end time is exact. Only the start of a request is checked: a stream already running is not cut off.">
+            Which accounts may call the API from which addresses. Each rule is an address range for everyone, or for listed accounts and org codes; permanent, or for one window.
+        </p>
+        {% if ip_allowlist is not none %}
+        <p class="text-xs text-t4 mt-1.5">
+            Your address on this page: <span class="font-mono text-t2">{{ ip_allowlist.your_ip or 'unknown' }}</span>
+            — {% if ip_allowlist.your_verdict == 'allowed' %}<span class="text-ag">your API key is allowed from here</span>
+            {% elif ip_allowlist.your_verdict == 'not_for_this_account' %}<span class="text-ar">rules cover this address, but none is for your account</span>
+            {% else %}<span class="text-ar">no rule covers this address</span>{% endif %}
+        </p>
+        {% endif %}
+    </div>
+    {% if ip_allowlist is none %}
+    <p class="text-xs text-ar">The allowlist could not be loaded (has <span class="font-mono">alembic upgrade head</span> been run?).</p>
+    {% else %}
+    {% set ipa = ip_allowlist %}
+    <form action="/admin/ip-allowlist" method="POST" data-ip-form="settings" class="flex flex-wrap items-end gap-3 mb-5">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Mode</label>
+            <select name="mode" class="gw-input text-sm py-1.5 px-2">
+                {% for m in ipa.modes %}
+                <option value="{{ m }}" {{ 'selected' if m == ipa.mode else '' }}>{{ {'off': 'Off — no check', 'monitor': 'Monitor — log only', 'enforce': 'Enforce — 403'}[m] }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
+    </form>
+
+    {% set sections = [('active', 'Active'), ('upcoming', 'Scheduled'), ('expired', 'Ended in the last 7 days')] %}
+    {% for key, heading in sections %}
+    {% set rows = ipa.rules[key] %}
+    {% if rows or key == 'active' %}
+    <div class="mb-4">
+        <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">{{ heading }} <span class="text-t4 font-mono">{{ rows | length }}</span></div>
+        {% if rows %}
+        <div class="overflow-x-auto">
+        <table class="gw-table">
+            <thead><tr>
+                <th>Address</th><th>Label</th><th>For</th><th>From</th><th>Until</th><th>Added by</th><th></th>
+            </tr></thead>
+            <tbody>
+                {% for r in rows %}
+                <tr>
+                    <td class="font-mono text-sm text-t1 whitespace-nowrap">{{ r.cidr }}</td>
+                    <td class="text-sm text-t3">{{ r.label }}</td>
+                    <td class="text-xs">
+                        {% if r.everyone %}<span class="gw-badge gw-badge-muted">Everyone</span>
+                        {% else %}
+                        {% for u in r.usernames %}<span class="font-mono text-t2">{{ u }}</span>{{ ',' if not loop.last or r.org_codes }} {% endfor %}
+                        {% for c in r.org_codes %}<span class="gw-badge">org {{ c }}</span> {% endfor %}
+                        {% endif %}
+                        {% if key != 'expired' %}
+                        <details class="mt-1">
+                            <summary class="text-ab cursor-pointer select-none">Edit</summary>
+                            <form action="/admin/ip-allowlist/rules/{{ r.id }}/who" method="POST" data-ip-form="who" class="mt-2 flex flex-col gap-1.5">
+                                <input type="text" name="usernames" value="{{ r.usernames | join(', ') }}" placeholder="Accounts: alice, bob"
+                                       aria-label="Accounts for {{ r.cidr }}" class="gw-input w-56 text-xs font-mono py-1 px-2">
+                                <input type="text" name="org_codes" value="{{ r.org_codes | join(', ') }}" placeholder="Org codes: RD-7"
+                                       aria-label="Org codes for {{ r.cidr }}" class="gw-input w-56 text-xs font-mono py-1 px-2">
+                                <div class="flex items-center gap-2">
+                                    <button type="submit" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Save</button>
+                                    <span class="text-t4">both empty = everyone</span>
+                                </div>
+                            </form>
+                        </details>
+                        {% endif %}
+                    </td>
+                    <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ r.starts or '—' }}</td>
+                    <td class="font-mono text-xs whitespace-nowrap">
+                        {% if not r.expires %}<span class="text-t2">permanent</span>
+                        {% else %}<span class="text-t3">{{ r.expires }}</span>{% if r.remaining and key == 'active' %} <span class="text-t4">· {{ r.remaining }}</span>{% endif %}{% endif %}
+                    </td>
+                    <td class="text-xs text-t3 whitespace-nowrap">{{ r.created_by }}</td>
+                    <td class="text-right">
+                        {% if key != 'expired' %}
+                        <form action="/admin/ip-allowlist/rules/{{ r.id }}/end" method="POST" data-ip-form="end" data-cidr="{{ r.cidr }}" class="inline">
+                            <button type="submit" class="gw-btn gw-btn-ghost text-xs px-2 py-1">{{ 'Remove' if key == 'upcoming' else 'End now' }}</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <p class="text-xs text-t4">No active rules{% if ipa.mode == 'enforce' %}: every API request is refused{% endif %}.</p>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% endfor %}
+
+    <form action="/admin/ip-allowlist/rules" method="POST" data-ip-form="add" class="flex flex-wrap items-end gap-3 pt-4" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="One address (203.0.113.5) or a CIDR range (10.0.0.0/8, 2001:db8::/32).">Address or range</label>
+            <input type="text" name="cidr" required placeholder="203.0.113.5 or 10.0.0.0/8"
+                   class="gw-input w-56 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Label</label>
+            <input type="text" name="label" maxlength="200" placeholder="Partner office"
+                   class="gw-input w-48 text-sm py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Usernames, comma-separated. Leave this and Org codes empty for everyone.">Accounts</label>
+            <input type="text" name="usernames" placeholder="empty = everyone"
+                   class="gw-input w-48 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Org codes (departments), comma-separated: every account with one of them. Combined with Accounts: either one admits.">Org codes</label>
+            <input type="text" name="org_codes" placeholder="RD-7, QA-2"
+                   class="gw-input w-36 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Asia/Taipei time. Empty: from now.">From (optional)</label>
+            <input type="datetime-local" name="starts_at" class="gw-input text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Asia/Taipei time. Empty: permanent.">Until (empty = permanent)</label>
+            <input type="datetime-local" name="expires_at" class="gw-input text-sm font-mono py-1.5 px-2">
+        </div>
+        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Add rule</button>
+    </form>
+    {% endif %}
 </div>
 
 {# ── Site Links (support bot + install guide) ── #}
@@ -1236,6 +1392,35 @@ function submitExportCsv() {
                 .then(function() { box.disabled = false; });
         });
         fbForm.addEventListener('submit', function(e) { e.preventDefault(); });
+    })();
+
+    /* ── IP Allowlist: every form posts as JSON (errors become a toast instead
+       of a JSON page), then the page reloads to show the new list. ── */
+    (function() {
+        var card = document.getElementById('ip-allowlist');
+        if (!card) return;
+        card.addEventListener('submit', function(e) {
+            var form = e.target, kind = form.dataset.ipForm;
+            if (!kind) return;
+            e.preventDefault();
+            var ask = null;
+            if (kind === 'settings' && form.mode.value === 'enforce') {
+                ask = { text: 'Enforce the IP allowlist? API requests from addresses without an active rule will get 403.', okLabel: 'Enforce', danger: true };
+            } else if (kind === 'end') {
+                ask = { text: 'End access for ' + form.dataset.cidr + ' now?', okLabel: 'End', danger: true };
+            }
+            (ask ? gwConfirm(ask.text, ask) : Promise.resolve(true)).then(function(ok) {
+                if (!ok) return;
+                var btn = form.querySelector('button[type="submit"]');
+                if (btn) btn.disabled = true;
+                gwPost(form.action, new FormData(form))
+                    .then(function() { saveAdminScroll(); window.location.reload(); })
+                    .catch(function(err) {
+                        gwToast('IP allowlist — ' + err.message, 'error');
+                        if (btn) btn.disabled = false;
+                    });
+            });
+        });
     })();
 
     /* ── Guardrail: Test connection (judges a sample with the form's values) ── */

@@ -64,6 +64,13 @@ async def lifespan(app: FastAPI):
     from app.services.usage_retention import RETENTION_JOB
     job_tasks = [asyncio.create_task(job_loop(job)) for job in (SCAN_JOB, RETENTION_JOB)]
 
+    # API IP allowlist: load the rules before serving (an enforcing
+    # allowlist with no snapshot would refuse everyone), then keep this
+    # worker's copy fresh.
+    from app.services import ip_allowlist
+    await asyncio.to_thread(ip_allowlist.refresh)
+    allowlist_task = asyncio.create_task(ip_allowlist.refresh_loop())
+
     # Launch background health checker
     health_task = asyncio.create_task(health_check_loop(interval=30))
     logger.info("{} ready.", APP_TITLE)
@@ -71,7 +78,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    for task in (health_task, lease_task, rollup_task, *job_tasks):
+    for task in (health_task, lease_task, rollup_task, allowlist_task, *job_tasks):
         task.cancel()
         try:
             await task

@@ -918,6 +918,32 @@ def set_concurrency_settings(mode: str, limit: int) -> None:
     _save_app_keys({_CONCURRENCY_MODE_KEY: mode, _CONCURRENCY_LIMIT_KEY: limit})
 
 
+# API IP allowlist (admin panel → "IP Allowlist" card; rules live in the
+# ip_allow_rules table, enforced by app/services/ip_allowlist.py). Like the
+# concurrency limit, "off" is an explicit mode, and a typo never turns it on.
+IP_ALLOWLIST_MODES: tuple[str, ...] = ("off", "monitor", "enforce")
+_IP_ALLOWLIST_MODE_KEY = "ip_allowlist_mode"
+
+
+def get_ip_allowlist_settings() -> dict[str, Any]:
+    """``{"mode"}`` for the API IP allowlist: ``off`` (no check), ``monitor``
+    (addresses outside the allowlist are logged but served) or ``enforce``
+    (they get 403). Never raises; auto-reloads."""
+    _check_auto_reload()
+    mode = str(APP_CONFIG.get(_IP_ALLOWLIST_MODE_KEY) or "off").strip().lower()
+    if mode not in IP_ALLOWLIST_MODES:
+        mode = "off"
+    return {"mode": mode}
+
+
+def set_ip_allowlist_settings(mode: str) -> None:
+    """Persist ``[app].ip_allowlist_mode``. Callers validate first; this
+    re-checks so a bad value never reaches config.toml."""
+    if mode not in IP_ALLOWLIST_MODES:
+        raise ValueError(f"ip allowlist mode must be one of {IP_ALLOWLIST_MODES}, got {mode!r}")
+    _save_app_keys({_IP_ALLOWLIST_MODE_KEY: mode})
+
+
 # Guardrail ([guardrail] section; admin panel → "Guardrail" card; applied by
 # app/services/guardrail.py). It runs only when enabled AND a base_url is set.
 # The default action is "monitor": every verdict is recorded (Langfuse), no

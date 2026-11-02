@@ -9,10 +9,10 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Security
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import delete, update
+from sqlalchemy import case, delete, update
 from sqlmodel import Session, func, select
 
 from app.core.auth import get_web_user
@@ -32,6 +32,7 @@ from app.core.config import (
     GUARDRAIL_SCOPES,
     GUARDRAIL_THRESHOLDS,
     GUARDRAIL_TIMEOUT_RANGE_S,
+    IP_ALLOWLIST_MODES,
     bedrock_shared_settings,
     get_cloud_budget_fallback,
     get_cloud_daily_limit,
@@ -49,20 +50,22 @@ from app.core.config import (
     set_cloud_daily_limit,
     set_default_daily_limit,
     set_guardrail_settings,
+    set_ip_allowlist_settings,
     set_site_links,
 )
 from app.core.database import get_session
-from app.core.timeutil import local_month_start
+from app.core.timeutil import LOCAL_TZ, local_month_start
 from app.models.schema import (
     AnomalyEvent,
     AppOwner,
+    IpAllowRule,
     User,
     UsageLog,
     app_account_clause,
     is_app_account,
     mask_api_key,
 )
-from app.services import concurrency, guardrail
+from app.services import concurrency, guardrail, ip_allowlist
 from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
@@ -147,10 +150,67 @@ USER_TABLE_SORTS: dict[str, str] = {
 }
 USER_TABLE_STATUSES: dict[str, str] = {
     "all": "All accounts",
-    "disabled": "Disabled",
+    "special": "Any special access",
+    "admin": "Admin",
+    "azure": "Azure access",
+    "bedrock": "AWS access",
     "cloud": "Cloud access",
+    "cloud_cap": "Own cloud cap",
     "waived": "Concurrency waived",
+    "waiver_changed": "Waiver not the default",
+    "disabled": "Disabled",
 }
+# The "Special access" overview above the tables: one count per permission,
+# each linking to its filter. The waiver counts only what differs from an
+# account kind's default (users are created limited, app accounts waived).
+SPECIAL_ACCESS_KEYS: tuple[str, ...] = (
+    "admin", "azure", "bedrock", "cloud_cap", "waiver_changed", "disabled",
+)
+
+
+def _status_clause(status: str, is_apps: bool):
+    """The WHERE clause of a Users / Apps table filter (None for "all").
+    ``special`` is every account with something other than the defaults of
+    its kind: a flag granted, its own cloud cap, or the concurrency waiver
+    flipped from what new accounts of that kind get."""
+    waived_differs = (User.concurrency_waived == False) if is_apps else (User.concurrency_waived == True)  # noqa: E712
+    clauses = {
+        "admin": User.is_admin == True,  # noqa: E712
+        "azure": User.can_use_azure == True,  # noqa: E712
+        "bedrock": User.can_use_bedrock == True,  # noqa: E712
+        "cloud": (User.can_use_azure == True) | (User.can_use_bedrock == True),  # noqa: E712
+        "cloud_cap": User.cloud_daily_limit_usd.is_not(None),  # type: ignore[union-attr]
+        "waived": User.concurrency_waived == True,  # noqa: E712
+        "waiver_changed": waived_differs,
+        "disabled": User.is_disabled == True,  # noqa: E712
+    }
+    if status == "special":
+        return (
+            clauses["admin"] | clauses["cloud"] | clauses["cloud_cap"] | waived_differs
+        )
+    return clauses.get(status)
+
+
+def _special_access_summary(session: Session) -> list[dict]:
+    """Counts for the overview: ``[{key, label, users, apps, url}]``, from one
+    aggregate per account kind."""
+    keys = ("special", *SPECIAL_ACCESS_KEYS)
+    counts: dict[str, dict[str, int]] = {key: {} for key in keys}
+    for kind, is_apps in (("users", False), ("apps", True)):
+        kind_clause = app_account_clause() if is_apps else ~app_account_clause()
+        row = session.exec(
+            select(*[
+                func.coalesce(func.sum(case((_status_clause(key, is_apps), 1), else_=0)), 0)
+                for key in keys
+            ]).select_from(User).where(kind_clause)
+        ).one()
+        for key, n in zip(keys, row):
+            counts[key][kind] = int(n)
+    return [
+        {"key": key, "label": USER_TABLE_STATUSES[key], **counts[key],
+         "url": _admin_url(_STATE_DEFAULTS, status=key)}
+        for key in keys
+    ]
 
 
 def _table_state(
@@ -210,12 +270,9 @@ def _user_table(
             | User.org_code.ilike(like)  # type: ignore[union-attr]
         )
     status = state["status"]
-    if status == "disabled":
-        clauses.append(User.is_disabled == True)  # noqa: E712
-    elif status == "cloud":
-        clauses.append((User.can_use_azure == True) | (User.can_use_bedrock == True))  # noqa: E712
-    elif status == "waived":
-        clauses.append(User.concurrency_waived == True)  # noqa: E712
+    status_clause = _status_clause(status, is_apps)
+    if status_clause is not None:
+        clauses.append(status_clause)
 
     total = session.exec(select(func.count()).select_from(User).where(*clauses)).one()
     offset = max(0, min(state[offset_key], max(total - 1, 0)))
@@ -373,6 +430,13 @@ def admin_page(
         logger.warning("Concurrency in-flight summary failed | error={}: {}", type(exc).__name__, exc)
         concurrency_in_flight = None
 
+    try:
+        ip_allowlist_view = _ip_allowlist_view(session, request, admin_user)
+    except Exception as exc:  # e.g. before `alembic upgrade`: the card says so, the page still renders
+        session.rollback()
+        logger.warning("IP allowlist view failed | error={}: {}", type(exc).__name__, exc)
+        ip_allowlist_view = None
+
     return templates.TemplateResponse(
         "admin.html",
         {
@@ -414,6 +478,8 @@ def admin_page(
             "concurrency_in_flight": concurrency_in_flight,
             "site_links": get_site_links(),
             "guardrail": _guardrail_view(),
+            "ip_allowlist": ip_allowlist_view,
+            "special_access": _special_access_summary(session),
             "guardrail_categories": guardrail.QWEN3GUARD_CATEGORIES,
             "guardrail_model_family": guardrail.GUARD_MODEL_FAMILY,
             "guardrail_endpoints": GUARDRAIL_ENDPOINTS,
@@ -729,6 +795,185 @@ async def update_concurrency_limit(
     )
     if _wants_json(request):
         return JSONResponse({"ok": True, "mode": mode, "limit": limit})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+# ── API IP allowlist ──
+
+_LOCAL_INPUT_FORMAT = "%Y-%m-%dT%H:%M"
+
+
+def _local_input_to_utc(field: str, text: str) -> datetime | None:
+    """A ``<input type="datetime-local">`` value, read as Asia/Taipei time,
+    as naive UTC (the ``ip_allow_rules`` convention). Blank → None."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        local = datetime.strptime(text[:16], _LOCAL_INPUT_FORMAT).replace(tzinfo=LOCAL_TZ)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{field} must be a date and time (YYYY-MM-DDTHH:MM).")
+    return local.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _local_label(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return value.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+
+
+def _ip_rule_view(rule, now: datetime) -> dict:
+    remaining = ""
+    if rule.expires_at is not None and rule.expires_at > now:
+        mins = int((rule.expires_at - now).total_seconds() // 60)
+        if mins >= 48 * 60:
+            remaining = f"{mins // 1440}d {mins % 1440 // 60}h left"
+        elif mins >= 60:
+            remaining = f"{mins // 60}h {mins % 60:02d}m left"
+        else:
+            remaining = f"{max(mins, 1)}m left"
+    return {
+        "id": rule.id,
+        "cidr": rule.cidr,
+        "label": rule.label,
+        "usernames": list(rule.usernames or []),
+        "org_codes": list(rule.org_codes or []),
+        "everyone": not rule.usernames and not rule.org_codes,
+        "created_by": rule.created_by,
+        "starts": _local_label(rule.starts_at),
+        "expires": _local_label(rule.expires_at),
+        "remaining": remaining,
+    }
+
+
+def _ip_allowlist_view(session: Session, request: Request, admin_user: User) -> dict:
+    now = ip_allowlist.utcnow()
+    groups = ip_allowlist.list_rules(session, now)
+    addr = ip_allowlist.client_address(request)
+    return {
+        **ip_allowlist.settings(),
+        "modes": IP_ALLOWLIST_MODES,
+        "rules": {k: [_ip_rule_view(r, now) for r in rows] for k, rows in groups.items()},
+        "your_ip": str(addr) if addr is not None else "",
+        # Whether the admin's own API key would be admitted from here.
+        "your_verdict": ip_allowlist.verdict(addr, admin_user.username, admin_user.org_code or "", now),
+    }
+
+
+@router.post("/ip-allowlist")
+def update_ip_allowlist(
+    request: Request,
+    mode: str = Form(""),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+):
+    """Save the IP allowlist's mode (``[app].ip_allowlist_mode``)."""
+    mode = mode.strip().lower()
+    if mode not in IP_ALLOWLIST_MODES:
+        raise HTTPException(status_code=400, detail=f"mode must be one of: {', '.join(IP_ALLOWLIST_MODES)}.")
+    set_ip_allowlist_settings(mode)
+    logger.info("IP allowlist mode set | mode={} admin={}", mode, admin_user.username)
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "mode": mode})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/ip-allowlist/rules")
+def add_ip_allow_rule(
+    request: Request,
+    cidr: str = Form(""),
+    label: str = Form(""),
+    usernames: str = Form(""),
+    org_codes: str = Form(""),
+    starts_at: str = Form(""),
+    expires_at: str = Form(""),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Add an allowlist rule: an address or CIDR range; for everyone (both
+    ``usernames`` and ``org_codes`` empty) or for the listed accounts and
+    org codes (comma-separated); permanent (no end time) or for one window
+    (start optional, end in the future). Times are Asia/Taipei. Takes
+    effect in this worker at once, in the others within
+    ``ip_allowlist.REFRESH_S`` seconds."""
+    start = _local_input_to_utc("Start", starts_at)
+    end = _local_input_to_utc("End", expires_at)
+    try:
+        rule = ip_allowlist.add_rule(
+            session, cidr, label=label, created_by=admin_user.username,
+            usernames=ip_allowlist.split_names(usernames), org_codes=ip_allowlist.split_names(org_codes),
+            starts_at=start, expires_at=end,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    ip_allowlist.refresh()
+    logger.info(
+        "IP allowlist rule added | id={} cidr={} label={!r} for={} starts={} expires={} admin={}",
+        rule.id, rule.cidr, rule.label, _who_text(rule), rule.starts_at or "now", rule.expires_at or "never",
+        admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "rule": _ip_rule_view(rule, ip_allowlist.utcnow())})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+def _who_text(rule) -> str:
+    if not rule.usernames and not rule.org_codes:
+        return "everyone"
+    return ",".join([*rule.usernames, *(f"org:{c}" for c in rule.org_codes)])
+
+
+@router.post("/ip-allowlist/rules/{rule_id}/who")
+def set_ip_allow_rule_who(
+    rule_id: int,
+    request: Request,
+    usernames: str = Form(""),
+    org_codes: str = Form(""),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Change who a rule admits (both empty = everyone), e.g. when a team
+    changes. The address and window stay as they are."""
+    rule = session.get(IpAllowRule, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    before = _who_text(rule)
+    try:
+        ip_allowlist.set_who(
+            session, rule, ip_allowlist.split_names(usernames), ip_allowlist.split_names(org_codes),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    ip_allowlist.refresh()
+    logger.info(
+        "IP allowlist rule edited | id={} cidr={} for: {} -> {} admin={}",
+        rule.id, rule.cidr, before, _who_text(rule), admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "rule": _ip_rule_view(rule, ip_allowlist.utcnow())})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/ip-allowlist/rules/{rule_id}/end")
+def end_ip_allow_rule(
+    rule_id: int,
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """End a rule now. It stays in the list as expired for a week; a rule
+    that had not started is deleted."""
+    rule = session.get(IpAllowRule, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    cidr, label = rule.cidr, rule.label
+    ip_allowlist.end_rule(session, rule)
+    ip_allowlist.refresh()
+    logger.info(
+        "IP allowlist rule ended | id={} cidr={} label={!r} admin={}",
+        rule_id, cidr, label, admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "ended": rule_id})
     return RedirectResponse(url="/admin", status_code=303)
 
 

@@ -47,6 +47,20 @@ cloud_budget_fallback = false
 concurrency_limit_mode = "off"
 concurrency_limit = 8
 
+# API IP allowlist (admin panel → "IP Allowlist" card): which accounts may
+# call /v1, /azure and /aws from which addresses (the web UI and health checks
+# are never checked). The rules (address range; everyone, or listed accounts /
+# org codes; optional start / end time) live in the ip_allow_rules table and
+# are edited on the card, not here.
+# ip_allowlist_mode:
+#   "off"     — no check (default)
+#   "monitor" — requests no rule admits are served, but logged as
+#               "IP allowlist would refuse (monitor)" WARNINGs with the
+#               account, address and reason
+#   "enforce" — they get 403
+# Only admins add or end rules; users cannot open access themselves.
+ip_allowlist_mode = "off"
+
 # ==========================================
 # Guardrail (admin panel → "Guardrail" card)
 # ==========================================
