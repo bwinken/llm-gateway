@@ -1,5 +1,6 @@
-"""Prompt guardrail: screen the newest user turn with a guard model before
-the request is forwarded.
+"""Prompt guardrail: screen the newest user turn of local (vLLM) requests
+with a guard model (before forwarding under "block", alongside the model
+call under "monitor").
 
 **Built for Qwen3Guard-Gen** (Qwen/Qwen3Guard-Gen-4B; the 0.6B / 8B
 variants answer the same way). The guard is called through its OpenAI chat
@@ -30,12 +31,17 @@ Contract (docs/architecture.md#guardrail-appservicesguardrailpy):
   A blocked request gets a generation of its own (level WARNING), since
   it never reaches ``_log_usage``.
 - Action "monitor" (the default) never refuses anything: a verdict the
-  policy would block is recorded as ``guardrail_action = flag``.
+  policy would block is recorded as ``guardrail_action = flag``. Since it
+  can't change the outcome, the guard runs **in the background**, alongside
+  the vLLM call, and adds no latency: the request meta holds a
+  ``PendingVerdict`` that the Langfuse emission (off the event loop) waits
+  for. Action "block" waits for the verdict before forwarding.
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import re
 import time
 from dataclasses import dataclass, field
@@ -332,6 +338,89 @@ async def evaluate(settings: dict[str, Any], text: str) -> GuardVerdict:
 # Request-path entry point
 # ---------------------------------------------------------------------------
 
+STATUS_PENDING = "pending"
+
+
+class PendingVerdict:
+    """A monitor-mode verdict still being computed by a background task.
+
+    Stashed in the request meta in place of the verdict dict. Nothing ever
+    waits on it: ``_emit_observation`` defers the request's Langfuse
+    generation with ``add_done_callback`` until the verdict is in (the
+    guard task is bounded by ``timeout_s`` and always settles), and a
+    synchronous reader (``_log_error``) that finds it unsettled records
+    ``pending``.
+    """
+
+    def __init__(self, settings: dict[str, Any]):
+        self._future: concurrent.futures.Future = concurrent.futures.Future()
+        self._fallback = {"model": settings.get("model"), "policy": settings.get("action"),
+                          "action": "pass", "categories": []}
+
+    def set(self, meta: dict[str, Any]) -> None:
+        if not self._future.done():
+            self._future.set_result(meta)
+
+    def done(self) -> bool:
+        return self._future.done()
+
+    def add_done_callback(self, fn) -> None:
+        """``fn(verdict_dict)`` once the verdict is in (now, if it is).
+        Runs on the thread that settles it: the event loop's."""
+        self._future.add_done_callback(lambda f: fn(f.result()))
+
+    def resolve(self) -> dict[str, Any]:
+        if self._future.done():
+            return self._future.result()
+        return dict(self._fallback, status=STATUS_PENDING, detail="request ended before the verdict")
+
+
+# Strong references to the running monitor tasks: the event loop only keeps
+# weak ones, and a collected task would never deliver its verdict.
+_monitor_tasks: set[asyncio.Task] = set()
+
+
+def _log_verdict(verdict: GuardVerdict, username: str, model: str, endpoint: str) -> None:
+    if verdict.status in (STATUS_TIMEOUT, STATUS_ERROR, STATUS_PARSE_ERROR):
+        logger.warning(
+            "Guardrail unavailable, allowing request | user={} model={} endpoint={} "
+            "status={} detail={} latency_ms={}",
+            username, model, endpoint, verdict.status,
+            verdict.detail if verdict.status != STATUS_PARSE_ERROR else "unparsable reply",
+            verdict.latency_ms,
+        )
+    elif verdict.action == "flag":
+        logger.info(
+            "Guardrail flagged | user={} model={} endpoint={} status={} categories={}",
+            username, model, endpoint, verdict.status, ",".join(verdict.categories) or "-",
+        )
+
+
+async def _monitor(
+    settings: dict[str, Any], text: str, pending: PendingVerdict,
+    username: str, model: str, endpoint: str,
+) -> None:
+    """Background guard call for action "monitor". Always settles ``pending``."""
+    meta: dict[str, Any] | None = None
+    try:
+        verdict = await evaluate(settings, text)
+        meta = verdict.as_meta(settings)
+        _log_verdict(verdict, username, model, endpoint)
+    except BaseException as exc:  # incl. cancellation at shutdown
+        meta = GuardVerdict(STATUS_ERROR, detail=type(exc).__name__).as_meta(settings)
+        if not isinstance(exc, Exception):
+            raise
+    finally:
+        pending.set(meta or GuardVerdict(STATUS_ERROR).as_meta(settings))
+
+
+def _start_monitor(settings: dict[str, Any], text: str, username: str, model: str, endpoint: str) -> None:
+    pending = PendingVerdict(settings)
+    set_guardrail_result(pending)  # type: ignore[arg-type]
+    task = asyncio.create_task(_monitor(settings, text, pending, username, model, endpoint))
+    _monitor_tasks.add(task)
+    task.add_done_callback(_monitor_tasks.discard)
+
 def _blocked_response(kind: str, message: str) -> JSONResponse:
     if kind == "messages":
         body: dict[str, Any] = {
@@ -397,25 +486,18 @@ async def screen(
         model = model if isinstance(model, str) else ""
         text = extract_user_text(body, kind).strip()
         if not text:
-            verdict = GuardVerdict(STATUS_SKIPPED, detail="no new user text")
-        else:
-            verdict = await evaluate(settings, clip(text, settings["max_input_chars"]))
+            set_guardrail_result(GuardVerdict(STATUS_SKIPPED, detail="no new user text").as_meta(settings))
+            return None
+        text = clip(text, settings["max_input_chars"])
+        if settings["action"] != "block":
+            # Monitor can't change the outcome: judge alongside the vLLM call.
+            _start_monitor(settings, text, user.username, model, endpoint)
+            return None
+
+        verdict = await evaluate(settings, text)
         meta = verdict.as_meta(settings)
         set_guardrail_result(meta)
-
-        if verdict.status in (STATUS_TIMEOUT, STATUS_ERROR, STATUS_PARSE_ERROR):
-            logger.warning(
-                "Guardrail unavailable, allowing request | user={} model={} endpoint={} "
-                "status={} detail={} latency_ms={}",
-                user.username, model, endpoint, verdict.status,
-                verdict.detail if verdict.status != STATUS_PARSE_ERROR else "unparsable reply",
-                verdict.latency_ms,
-            )
-        elif verdict.action == "flag":
-            logger.info(
-                "Guardrail flagged | user={} model={} endpoint={} status={} categories={}",
-                user.username, model, endpoint, verdict.status, ",".join(verdict.categories) or "-",
-            )
+        _log_verdict(verdict, user.username, model, endpoint)
 
         if verdict.action != "block":
             return None

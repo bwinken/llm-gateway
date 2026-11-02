@@ -224,18 +224,15 @@ def request_timing(output_tokens: int = 0) -> dict[str, Any]:
     return out
 
 
-def set_guardrail_result(result: dict) -> None:
-    """Stash the guardrail verdict for this request (app/services/guardrail.py).
-    Read at the `_log_usage` / `_log_error` seams so the request's own
-    generation carries it. No-op outside a request."""
+def set_guardrail_result(result: Any) -> None:
+    """Stash the guardrail verdict for this request (app/services/guardrail.py):
+    a dict, or a ``PendingVerdict`` (monitor mode, still being judged) that
+    ``record_generation`` resolves. Read at the `_log_usage` / `_log_error`
+    seams so the request's own generation carries it. No-op outside a
+    request."""
     meta = _live_meta()
     if meta is not None:
         meta["guardrail"] = result
-
-
-def get_guardrail_result() -> dict | None:
-    meta = _live_meta()
-    return meta.get("guardrail") if meta is not None else None
 
 
 def set_io_input(payload: Any) -> None:
@@ -378,6 +375,17 @@ def build_scores(
     return scores
 
 
+def resolve_guardrail(guardrail: Any) -> dict | None:
+    """The verdict dict; an unsettled ``PendingVerdict`` resolves to
+    ``pending`` (it never blocks). Never raises."""
+    if guardrail is None or isinstance(guardrail, dict):
+        return guardrail
+    try:
+        return guardrail.resolve()
+    except Exception:
+        return None
+
+
 def build_guardrail_scores(guardrail: dict | None) -> list[dict]:
     """Categorical scores for the guardrail verdict, so its distribution can
     be charted per model / endpoint / user:
@@ -509,7 +517,7 @@ class GenerationRecord:
     is_error: bool = False              # failed request → level=ERROR + request_error score
     input_payload: Any = None           # Phase 2 (LANGFUSE_CAPTURE_IO)
     output_payload: Any = None          # Phase 2
-    guardrail: dict | None = None       # guardrail verdict (guardrail.py)
+    guardrail: Any = None               # verdict dict or PendingVerdict (guardrail.py)
     blocked: bool = False               # refused by the guardrail → level=WARNING
 
 
@@ -641,6 +649,7 @@ def record_generation(rec: GenerationRecord) -> None:
         from langfuse import propagate_attributes
 
         client_label = classify_client(rec.user_agent, rec.endpoint, rec.x_app)
+        rec.guardrail = resolve_guardrail(rec.guardrail)
         tags = [f"backend:{rec.backend}", f"type:{rec.model_type}"]
         if rec.guardrail and rec.guardrail.get("status"):
             tags.append(f"guardrail:{rec.guardrail['status']}")

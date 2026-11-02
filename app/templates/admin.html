@@ -629,7 +629,7 @@ function submitExportCsv() {
         <div class="max-w-3xl">
             <h2 class="text-sm font-bold text-t2 mb-1">Guardrail</h2>
             <p class="text-xs text-t4">
-                Screens the newest user turn of local (vLLM) chat / responses / messages requests with a guard model before they are forwarded.
+                Screens the newest user turn of local (vLLM) chat / responses / messages requests with a guard model: in Monitor mode alongside the model call (no added latency), in Block mode before forwarding.
                 Azure and AWS requests are not screened. Runs only when <b>enabled</b> and a <b>base URL</b> is set.
                 The guard model's tokens are never billed. Timeouts, errors and unparsable replies let the request through.
                 Every verdict is recorded in Langfuse (<span class="font-mono">guardrail</span> / <span class="font-mono">guardrail_action</span> scores, <span class="font-mono">guardrail_*</span> metadata).
@@ -676,7 +676,7 @@ function submitExportCsv() {
             </div>
             <div>
                 <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                       data-tip="Longest wait for a verdict. On timeout the request is let through and recorded as guardrail=timeout. The wait adds to every screened request's latency.">Timeout (s)</label>
+                       data-tip="Longest wait for a verdict. On timeout the request is let through and recorded as guardrail=timeout. Monitor: the guard runs alongside the model call and adds no latency. Block: every screened request waits for the verdict (up to this long) before it is forwarded.">Timeout (s)</label>
                 <input type="number" name="timeout_s" step="0.1" min="0.1" max="30" required value="{{ g.timeout_s }}"
                        class="gw-input w-20 text-sm font-mono py-1.5 px-2">
             </div>
@@ -691,7 +691,7 @@ function submitExportCsv() {
         <div class="flex flex-wrap items-end gap-4">
             <div>
                 <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                       data-tip="Monitor: nothing is refused; what the policy would block is recorded as guardrail_action=flag. Block: those requests get a 400 with the message below.">Action</label>
+                       data-tip="Monitor: nothing is refused and nothing waits: the guard runs in the background alongside the model call; what the policy would block is recorded as guardrail_action=flag. Block: the request waits for the verdict and blocked ones get a 400 with the message below.">Action</label>
                 <select name="action" class="gw-input text-sm py-1.5 px-2">
                     <option value="monitor" {{ 'selected' if g.action == 'monitor' else '' }}>Monitor — record only (default)</option>
                     <option value="block" {{ 'selected' if g.action == 'block' else '' }}>Block — refuse with 400</option>

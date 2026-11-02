@@ -5,6 +5,8 @@ the admin card / test endpoints."""
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -48,6 +50,30 @@ def _chat(client, text="how do I bake bread?", model="test-llm"):
         "/v1/chat/completions", headers=auth_header(),
         json={"model": model, "messages": [{"role": "user", "content": text}]},
     )
+
+
+def _settled(pending, timeout=3.0):
+    """Wait (from the test thread, while the app's loop runs the guard task)
+    for a monitor-mode verdict."""
+    deadline = time.monotonic() + timeout
+    while not pending.done() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert pending.done(), "guard task never settled"
+    return pending.resolve()
+
+
+class _FakeMeta:
+    """A request-meta dict for tests: the test app has no RequestMetaMiddleware."""
+    meta: dict = {}
+
+    @classmethod
+    def reset(cls):
+        cls.meta.clear()
+        cls.meta["start_monotonic"] = time.monotonic()
+
+    @classmethod
+    def stash(cls, value):
+        cls.meta["guardrail"] = value
 
 
 # ---------------------------------------------------------------------------
@@ -251,19 +277,69 @@ class TestScreening:
         from app.models.schema import UsageLog
         from sqlmodel import select
         guard = _guard_client(_guard_reply("Safety: Unsafe\nCategories: Violent"))
-        captured = {}
+        captured = []
         with patch("app.services.guardrail.get_guardrail_settings", return_value=_settings()), \
              patch("app.services.guardrail.get_guardrail_client", return_value=guard), \
-             patch("app.services.guardrail.set_guardrail_result", lambda m: captured.update(m)), \
+             patch("app.services.guardrail.set_guardrail_result", captured.append), \
              self._post_ok(client) as down:
             resp = _chat(client)
+            verdict = _settled(captured[0])
         assert resp.status_code == 200
         assert down.call_count == 1
-        assert captured["status"] == "unsafe" and captured["action"] == "flag"
-        assert captured["categories"] == ["Violent"] and captured["policy"] == "monitor"
+        assert verdict["status"] == "unsafe" and verdict["action"] == "flag"
+        assert verdict["categories"] == ["Violent"] and verdict["policy"] == "monitor"
         # Only the user's own request is billed, never the guard call.
         rows = db_session.exec(select(UsageLog)).all()
         assert len(rows) == 1 and rows[0].model == "test-llm"
+
+    def test_monitor_does_not_wait_for_the_guard(self, client):
+        """Monitor can't change the outcome, so vLLM is called and the
+        response sent while the guard is still judging."""
+        release = threading.Event()
+
+        async def slow_guard(*a, **k):
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+            return _guard_reply("Safety: Safe\nCategories: None")
+
+        captured = []
+        with patch("app.services.guardrail.get_guardrail_settings", return_value=_settings()), \
+             patch("app.services.guardrail.get_guardrail_client",
+                   return_value=_guard_client(side_effect=slow_guard)), \
+             patch("app.services.guardrail.set_guardrail_result", captured.append), \
+             self._post_ok(client) as down:
+            resp = _chat(client)
+            assert resp.status_code == 200 and down.call_count == 1
+            assert not captured[0].done()          # response sent, verdict still pending
+            release.set()
+            assert _settled(captured[0])["status"] == "safe"
+
+    def test_monitor_langfuse_generation_waits_for_the_verdict(self, client):
+        release = threading.Event()
+
+        async def slow_guard(*a, **k):
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+            return _guard_reply("Safety: Unsafe\nCategories: Violent")
+
+        recs = []
+        with patch("app.services.guardrail.get_guardrail_settings", return_value=_settings()), \
+             patch("app.services.guardrail.get_guardrail_client",
+                   return_value=_guard_client(side_effect=slow_guard)), \
+             patch("app.services.vllm_proxy.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.vllm_proxy.get_request_meta", return_value=_FakeMeta.meta), \
+             patch("app.services.guardrail.set_guardrail_result", _FakeMeta.stash), \
+             patch("app.services.vllm_proxy.record_generation", recs.append), \
+             self._post_ok(client):
+            _FakeMeta.reset()
+            assert _chat(client).status_code == 200
+            assert recs == []                       # deferred: verdict not in yet
+            release.set()
+            deadline = time.monotonic() + 3
+            while not recs and time.monotonic() < deadline:
+                time.sleep(0.01)
+        assert len(recs) == 1
+        assert recs[0].guardrail["status"] == "unsafe" and recs[0].guardrail["action"] == "flag"
 
     def test_block_openai_shape(self, client, db_session):
         from app.models.schema import UsageLog
@@ -293,6 +369,24 @@ class TestScreening:
         assert resp.status_code == 400
         body = resp.json()
         assert body["type"] == "error" and body["error"]["type"] == "invalid_request_error"
+
+    def test_block_mode_judges_before_forwarding(self, client):
+        order = []
+
+        async def guard_post(*a, **k):
+            order.append("guard")
+            return _guard_reply("Safety: Safe\nCategories: None")
+
+        def downstream(*a, **k):
+            order.append("vllm")
+            return make_httpx_response(200, _DOWNSTREAM)
+
+        with patch("app.services.guardrail.get_guardrail_settings", return_value=_settings(action="block")), \
+             patch("app.services.guardrail.get_guardrail_client",
+                   return_value=_guard_client(side_effect=guard_post)), \
+             patch.object(client.__httpx_mock__, "post", side_effect=downstream):
+            assert _chat(client).status_code == 200
+        assert order == ["guard", "vllm"]
 
     def test_block_mode_fails_open_on_timeout(self, client):
         guard = _guard_client(side_effect=httpx.ReadTimeout("t"))
@@ -353,6 +447,36 @@ class TestScreening:
 # ---------------------------------------------------------------------------
 # Langfuse fields
 # ---------------------------------------------------------------------------
+
+class TestPendingVerdict:
+
+    def test_unsettled_resolves_to_pending_without_waiting(self):
+        from app.services.guardrail import PendingVerdict
+        p = PendingVerdict(_settings())
+        t0 = time.monotonic()
+        r = p.resolve()
+        assert time.monotonic() - t0 < 0.5
+        assert r["status"] == "pending" and r["action"] == "pass"
+
+    def test_callback_gets_the_verdict(self):
+        from app.services.guardrail import PendingVerdict
+        p = PendingVerdict(_settings())
+        got = []
+        p.add_done_callback(got.append)
+        p.set({"status": "safe", "action": "pass"})
+        p.set({"status": "unsafe"})  # first one wins
+        assert got == [{"status": "safe", "action": "pass"}]
+        late = []
+        p.add_done_callback(late.append)  # already settled: called at once
+        assert late == got
+
+    def test_monitor_task_settles_even_when_evaluate_raises(self):
+        from app.services import guardrail
+        p = guardrail.PendingVerdict(_settings())
+        with patch("app.services.guardrail.evaluate", side_effect=RuntimeError("boom")):
+            asyncio.run(guardrail._monitor(_settings(), "x", p, "u", "m", "/v1/messages"))
+        assert p.resolve()["status"] == "error" and p.resolve()["detail"] == "RuntimeError"
+
 
 class TestLangfuseFields:
 
