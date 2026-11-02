@@ -465,7 +465,7 @@ def _ip_access_view(session: Session, request: Request, user: User) -> dict | No
     now = ip_allowlist.utcnow()
     addr = ip_allowlist.client_address(request)
     allowed = ip_allowlist.is_allowed(addr, now)
-    can_self_serve = user.username in settings["self_service_users"]
+    can_self_serve = user.can_self_allow_ip
     if allowed and not can_self_serve:
         return None
     max_hours = settings["self_service_max_hours"]
@@ -501,10 +501,10 @@ def open_own_ip_access(
 ):
     """Open API access for the address this request comes from, for
     ``hours`` (at most ``[app].ip_allowlist_self_service_max_hours``). Only
-    for users an admin listed under Self-service. Always the caller's own
-    address: there is no field for another one."""
+    for accounts an admin granted it (``users.can_self_allow_ip``). Always
+    the caller's own address: there is no field for another one."""
     settings = ip_allowlist.settings()
-    if user.username not in settings["self_service_users"]:
+    if not user.can_self_allow_ip:
         raise HTTPException(status_code=403, detail="You are not allowed to open API access yourself. Ask an administrator.")
     addr = ip_allowlist.client_address(request)
     if addr is None:

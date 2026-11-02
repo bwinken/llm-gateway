@@ -56,11 +56,10 @@ concurrency_limit = 8
 #   "monitor" — unlisted addresses are served, but logged as
 #               "IP not on allowlist (monitor)" WARNINGs
 #   "enforce" — unlisted addresses get 403
-# ip_allowlist_self_service_users: usernames allowed to open their own current
-# address from the dashboard, for at most ip_allowlist_self_service_max_hours
-# (1-168) at a time.
+# ip_allowlist_self_service_max_hours (1-168): the longest a user may open
+# their own current address for from the dashboard. Who may do that is set
+# per account (admin Users table → "IP" toggle), not here.
 ip_allowlist_mode = "off"
-ip_allowlist_self_service_users = []
 ip_allowlist_self_service_max_hours = 8
 
 # ==========================================

@@ -76,7 +76,7 @@ Alias 在 `[models.*]`、`[azure_models.*]`、`[bedrock_models.*]` 之間必須�
 | `get_cloud_daily_limit()` / `set_cloud_daily_limit(value)` | `[app].cloud_daily_limit_usd`，Azure + Bedrock 合計的預設上限。`None` = 無預設上限，`0` = $0 上限。`set_…(None)` 會移除該 key |
 | `get_cloud_budget_fallback()` / `set_cloud_budget_fallback(enabled)` | `[app].cloud_budget_fallback`（預設 `False`）：雲端上限用完時改由地端服務而非回 429，僅適用 `/v1/*` |
 | `get_concurrency_settings()` / `set_concurrency_settings(mode, limit)` | 從 `[app].concurrency_limit_mode` / `concurrency_limit` 讀出 `(mode, limit)`；無效值 fallback 為 `("off", 8)`。setter 遇到錯誤的 mode 或 `limit < 1` 會丟出 `ValueError` |
-| `get_ip_allowlist_settings()` / `set_ip_allowlist_settings(mode, self_service_users, max_hours)` | 從 `[app].ip_allowlist_*` 讀出 `{mode, self_service_users, self_service_max_hours}`；無效值 fallback 為 `off` / `[]` / `8`。setter 遇到錯誤的 mode 或超出 1–168 的時數會丟出 `ValueError`。規則本身存在 `ip_allow_rules` 資料表，不在這裡 |
+| `get_ip_allowlist_settings()` / `set_ip_allowlist_settings(mode, max_hours)` | 從 `[app].ip_allowlist_*` 讀出 `{mode, self_service_max_hours}`；無效值 fallback 為 `off` / `8`。setter 遇到錯誤的 mode 或超出 1–168 的時數會丟出 `ValueError`。規則本身存在 `ip_allow_rules` 資料表、誰可以自助開通是 `users.can_self_allow_ip`，都不在這裡 |
 | `get_site_links()` / `set_site_links(support_bot_url, install_guide_url)` | 存在 `[app]`、可由管理員編輯的 Web UI 連結；空字串表示隱藏該元素 |
 
 ---

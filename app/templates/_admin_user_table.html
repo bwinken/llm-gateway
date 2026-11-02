@@ -94,6 +94,11 @@
         <div class="flex items-center justify-end gap-2">
             {{ toggle_form(u, 'azure', 'toggle-azure', u.can_use_azure, 'Azure', 'Azure granted', 'No Azure access') }}
             {{ toggle_form(u, 'bedrock', 'toggle-bedrock', u.can_use_bedrock, 'AWS', 'AWS Bedrock granted', 'No AWS Bedrock access') }}
+            {% if not is_apps %}
+            {{ toggle_form(u, 'ipself', 'toggle-ip-self-service', u.can_self_allow_ip, 'IP',
+                           'May open their own address from the dashboard — click to revoke',
+                           'Cannot open their own address — click to allow (IP allowlist self-service)') }}
+            {% endif %}
             {% if not u.is_admin %}
             {{ toggle_form(u, 'waive', 'toggle-concurrency-waive', u.concurrency_waived, 'Waive',
                            'Concurrency limit waived — click to apply it', 'Concurrency limit applies — click to waive') }}

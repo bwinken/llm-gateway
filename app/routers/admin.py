@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Security
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import delete, update
+from sqlalchemy import case, delete, update
 from sqlmodel import Session, func, select
 
 from app.core.auth import get_web_user
@@ -151,10 +151,69 @@ USER_TABLE_SORTS: dict[str, str] = {
 }
 USER_TABLE_STATUSES: dict[str, str] = {
     "all": "All accounts",
-    "disabled": "Disabled",
+    "special": "Any special access",
+    "admin": "Admin",
+    "azure": "Azure access",
+    "bedrock": "AWS access",
     "cloud": "Cloud access",
+    "cloud_cap": "Own cloud cap",
     "waived": "Concurrency waived",
+    "waiver_changed": "Waiver not the default",
+    "ip_self": "IP self-service",
+    "disabled": "Disabled",
 }
+# The "Special access" overview above the tables: one count per permission,
+# each linking to its filter. The waiver counts only what differs from an
+# account kind's default (users are created limited, app accounts waived).
+SPECIAL_ACCESS_KEYS: tuple[str, ...] = (
+    "admin", "azure", "bedrock", "cloud_cap", "waiver_changed", "ip_self", "disabled",
+)
+
+
+def _status_clause(status: str, is_apps: bool):
+    """The WHERE clause of a Users / Apps table filter (None for "all").
+    ``special`` is every account with something other than the defaults of
+    its kind: a flag granted, its own cloud cap, or the concurrency waiver
+    flipped from what new accounts of that kind get."""
+    waived_differs = (User.concurrency_waived == False) if is_apps else (User.concurrency_waived == True)  # noqa: E712
+    clauses = {
+        "admin": User.is_admin == True,  # noqa: E712
+        "azure": User.can_use_azure == True,  # noqa: E712
+        "bedrock": User.can_use_bedrock == True,  # noqa: E712
+        "cloud": (User.can_use_azure == True) | (User.can_use_bedrock == True),  # noqa: E712
+        "cloud_cap": User.cloud_daily_limit_usd.is_not(None),  # type: ignore[union-attr]
+        "waived": User.concurrency_waived == True,  # noqa: E712
+        "waiver_changed": waived_differs,
+        "ip_self": User.can_self_allow_ip == True,  # noqa: E712
+        "disabled": User.is_disabled == True,  # noqa: E712
+    }
+    if status == "special":
+        return (
+            clauses["admin"] | clauses["cloud"] | clauses["cloud_cap"] | clauses["ip_self"] | waived_differs
+        )
+    return clauses.get(status)
+
+
+def _special_access_summary(session: Session) -> list[dict]:
+    """Counts for the overview: ``[{key, label, users, apps, url}]``, from one
+    aggregate per account kind."""
+    keys = ("special", *SPECIAL_ACCESS_KEYS)
+    counts: dict[str, dict[str, int]] = {key: {} for key in keys}
+    for kind, is_apps in (("users", False), ("apps", True)):
+        kind_clause = app_account_clause() if is_apps else ~app_account_clause()
+        row = session.exec(
+            select(*[
+                func.coalesce(func.sum(case((_status_clause(key, is_apps), 1), else_=0)), 0)
+                for key in keys
+            ]).select_from(User).where(kind_clause)
+        ).one()
+        for key, n in zip(keys, row):
+            counts[key][kind] = int(n)
+    return [
+        {"key": key, "label": USER_TABLE_STATUSES[key], **counts[key],
+         "url": _admin_url(_STATE_DEFAULTS, status=key)}
+        for key in keys
+    ]
 
 
 def _table_state(
@@ -214,12 +273,9 @@ def _user_table(
             | User.org_code.ilike(like)  # type: ignore[union-attr]
         )
     status = state["status"]
-    if status == "disabled":
-        clauses.append(User.is_disabled == True)  # noqa: E712
-    elif status == "cloud":
-        clauses.append((User.can_use_azure == True) | (User.can_use_bedrock == True))  # noqa: E712
-    elif status == "waived":
-        clauses.append(User.concurrency_waived == True)  # noqa: E712
+    status_clause = _status_clause(status, is_apps)
+    if status_clause is not None:
+        clauses.append(status_clause)
 
     total = session.exec(select(func.count()).select_from(User).where(*clauses)).one()
     offset = max(0, min(state[offset_key], max(total - 1, 0)))
@@ -271,6 +327,7 @@ def _user_table(
             "can_use_azure": u.can_use_azure,
             "can_use_bedrock": u.can_use_bedrock,
             "concurrency_waived": u.concurrency_waived,
+            "can_self_allow_ip": u.can_self_allow_ip,
             "owners": owners.get(u.id, []),
             "monthly_cost": monthly["cost"],
             "monthly_tokens": monthly["input_tokens"] + monthly["output_tokens"],
@@ -426,6 +483,7 @@ def admin_page(
             "site_links": get_site_links(),
             "guardrail": _guardrail_view(),
             "ip_allowlist": ip_allowlist_view,
+            "special_access": _special_access_summary(session),
             "guardrail_categories": guardrail.QWEN3GUARD_CATEGORIES,
             "guardrail_model_family": guardrail.GUARD_MODEL_FAMILY,
             "guardrail_endpoints": GUARDRAIL_ENDPOINTS,
@@ -801,6 +859,10 @@ def _ip_allowlist_view(session: Session, request: Request) -> dict:
         "rules": {k: [_ip_rule_view(r, now) for r in rows] for k, rows in groups.items()},
         "your_ip": str(addr) if addr is not None else "",
         "your_ip_allowed": ip_allowlist.is_allowed(addr, now),
+        "self_service_url": _admin_url(_STATE_DEFAULTS, status="ip_self"),
+        "self_service_users": list(session.exec(
+            select(User.username).where(User.can_self_allow_ip == True).order_by(User.username)  # noqa: E712
+        ).all()),
     }
 
 
@@ -808,14 +870,12 @@ def _ip_allowlist_view(session: Session, request: Request) -> dict:
 def update_ip_allowlist(
     request: Request,
     mode: str = Form(""),
-    self_service_users: str = Form(""),
     self_service_max_hours: str = Form(""),
     admin_user: User = Security(get_web_user, scopes=["admin"]),
-    session: Session = Depends(get_session),
 ):
-    """Save the IP allowlist's mode and who may open access for their own
-    address from the dashboard (``[app].ip_allowlist_*``). Every username
-    must exist, so a typo can't silently authorize nobody."""
+    """Save the IP allowlist's mode and the longest a self-service user may
+    open their address for (``[app].ip_allowlist_*``). Who may self-serve is
+    per account (``users.can_self_allow_ip``, the Users table's IP toggle)."""
     mode = mode.strip().lower()
     if mode not in IP_ALLOWLIST_MODES:
         raise HTTPException(status_code=400, detail=f"mode must be one of: {', '.join(IP_ALLOWLIST_MODES)}.")
@@ -826,23 +886,12 @@ def update_ip_allowlist(
         raise HTTPException(status_code=400, detail="Max hours must be a whole number.")
     if not lo <= max_hours <= hi:
         raise HTTPException(status_code=400, detail=f"Max hours must be between {lo} and {hi}.")
-    names: list[str] = []
-    for part in self_service_users.replace("\n", ",").split(","):
-        name = part.strip()
-        if name and name not in names:
-            names.append(name)
-    if names:
-        known = set(session.exec(select(User.username).where(User.username.in_(names))).all())  # type: ignore[attr-defined]
-        unknown = [n for n in names if n not in known]
-        if unknown:
-            raise HTTPException(status_code=400, detail=f"Unknown user(s): {', '.join(unknown)}.")
-    set_ip_allowlist_settings(mode, names, max_hours)
+    set_ip_allowlist_settings(mode, max_hours)
     logger.info(
-        "IP allowlist settings saved | mode={} self_service_users={} max_hours={} admin={}",
-        mode, ",".join(names) or "(none)", max_hours, admin_user.username,
+        "IP allowlist settings saved | mode={} max_hours={} admin={}", mode, max_hours, admin_user.username,
     )
     if _wants_json(request):
-        return JSONResponse({"ok": True, "mode": mode, "self_service_users": names, "self_service_max_hours": max_hours})
+        return JSONResponse({"ok": True, "mode": mode, "self_service_max_hours": max_hours})
     return RedirectResponse(url="/admin", status_code=303)
 
 
@@ -1094,6 +1143,44 @@ def toggle_bedrock(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+def _end_self_grants(session: Session, username: str) -> int:
+    """End every dashboard grant ``username`` still has open (their IP
+    self-service was revoked). Returns how many."""
+    grants = ip_allowlist.self_grants(session, username)
+    for grant in grants:
+        ip_allowlist.end_rule(session, grant)
+    if grants:
+        ip_allowlist.refresh()
+    return len(grants)
+
+
+@router.post("/users/{user_id}/toggle-ip-self-service")
+def toggle_ip_self_service(
+    user_id: int,
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Flip the user's can_self_allow_ip flag (may open API access for their
+    own address from the dashboard). Revoking it also ends every grant the
+    user still has open, so "off" takes effect now, not hours later."""
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    target.can_self_allow_ip = not target.can_self_allow_ip
+    session.add(target)
+    session.commit()
+    ended = 0 if target.can_self_allow_ip else _end_self_grants(session, target.username)
+    logger.info(
+        "IP self-service {} | user={} admin={}{}",
+        "granted" if target.can_self_allow_ip else "revoked", target.username, admin_user.username,
+        f" ({ended} open grant(s) ended)" if ended else "",
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "can_self_allow_ip": target.can_self_allow_ip, "ended_grants": ended})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 @router.post("/users/{user_id}/toggle-concurrency-waive")
 def toggle_concurrency_waive(
     user_id: int,
@@ -1230,6 +1317,7 @@ def list_users_api(
             "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
             "is_admin": u.is_admin,
             "concurrency_waived": u.concurrency_waived,
+            "can_self_allow_ip": u.can_self_allow_ip,
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
@@ -1268,6 +1356,8 @@ def create_user_api(
         new_user.is_admin = bool(body["is_admin"])
     if "concurrency_waived" in body:
         new_user.concurrency_waived = _strict_bool(body["concurrency_waived"], "concurrency_waived")
+    if "can_self_allow_ip" in body:
+        new_user.can_self_allow_ip = _strict_bool(body["can_self_allow_ip"], "can_self_allow_ip")
     session.add(new_user)
     session.commit()
     session.refresh(new_user)
@@ -1321,6 +1411,11 @@ def update_user_api(
         target.is_admin = bool(body["is_admin"])
     if "concurrency_waived" in body:
         target.concurrency_waived = _strict_bool(body["concurrency_waived"], "concurrency_waived")
+    revoke_ip_self = False
+    if "can_self_allow_ip" in body:
+        allowed = _strict_bool(body["can_self_allow_ip"], "can_self_allow_ip")
+        revoke_ip_self = target.can_self_allow_ip and not allowed
+        target.can_self_allow_ip = allowed
     if "owner_ids" in body:
         session.execute(delete(AppOwner).where(AppOwner.app_id == user_id))
         for oid in (body["owner_ids"] or []):
@@ -1331,6 +1426,8 @@ def update_user_api(
     session.add(target)
     session.commit()
     session.refresh(target)
+    if revoke_ip_self:
+        _end_self_grants(session, target.username)
     return {"ok": True, "user_id": target.id}
 
 

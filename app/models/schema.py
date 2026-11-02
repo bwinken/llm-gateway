@@ -73,6 +73,10 @@ class User(SQLModel, table=True):
     # are created waived (batch jobs legitimately run many requests at once);
     # an admin can un-waive one to limit it.
     concurrency_waived: bool = Field(default=False)
+    # May open API access for their own current address from the dashboard
+    # (IP allowlist self-service, app/services/ip_allowlist.py). Granted one
+    # account at a time from the admin Users table.
+    can_self_allow_ip: bool = Field(default=False)
     owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     display_name: str = Field(default="")
     org_code: str = Field(default="")
