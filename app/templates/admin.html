@@ -663,7 +663,7 @@ function submitExportCsv() {
                 <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
                        data-tip="Sent as Authorization: Bearer. Leave blank to keep the stored key; optional when the guard server checks none.">API Key</label>
                 <input type="password" name="api_key" autocomplete="new-password"
-                       placeholder="{{ '•••••••• (set — blank keeps it)' if g.api_key_set else 'none' }}"
+                       placeholder="{{ '•••••••• (set)' if g.api_key_set else 'none' }}"
                        class="gw-input w-56 text-sm font-mono py-1.5 px-2">
                 {% if g.api_key_set %}
                 <label class="flex items-center gap-1.5 mt-1 text-[11px] text-t4"><input type="checkbox" name="clear_api_key" value="on"> remove key</label>
@@ -759,7 +759,7 @@ function submitExportCsv() {
             <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
             <button type="button" id="guardrail-test" class="gw-btn text-sm px-4 py-2 gw-tip gw-tip-wide"
                     data-tip="Sends a sample text to the guard with the values in this form (saved or not) and shows the verdict.">Test connection</button>
-            <span id="guardrail-test-result" class="text-xs font-mono text-t4"></span>
+            <span id="guardrail-test-result" class="text-xs font-mono"></span>
         </div>
     </form>
 </div>
@@ -1246,19 +1246,20 @@ function submitExportCsv() {
         if (!form || !btn) return;
         btn.addEventListener('click', function() {
             btn.disabled = true;
-            out.style.color = '';
+            // Classes, not style.color: Tailwind runs with important: true.
+            out.className = 'text-xs font-mono text-t4';
             out.textContent = 'Testing…';
             gwPost('/admin/guardrail/test', new FormData(form))
                 .then(function(r) {
                     var cats = (r.categories || []).join(', ');
-                    out.style.color = r.ok ? '#3dd68c' : '#ff6b6b';
+                    out.className = 'text-xs font-mono ' + (r.ok ? 'text-ag' : 'text-ar');
                     out.textContent = (r.ok ? 'OK — ' : 'Failed — ') + r.status
                         + (cats ? ' (' + cats + ')' : '')
                         + (r.detail ? ' · ' + r.detail : '')
                         + (r.latency_ms != null ? ' · ' + r.latency_ms + ' ms' : '');
                 })
                 .catch(function(err) {
-                    out.style.color = '#ff6b6b';
+                    out.className = 'text-xs font-mono text-ar';
                     out.textContent = 'Failed — ' + err.message;
                 })
                 .then(function() { btn.disabled = false; });

@@ -826,7 +826,7 @@ function renderConnection(kind, alias, info) {
         <div class="flex items-center gap-3 mt-3 flex-wrap">
             <button type="button" onclick="testConnection(this, ${js(alias)})" class="gw-btn gw-btn-ghost text-xs px-3 py-1.5 gw-tip gw-tip-wide"
                     data-tip="Asks the server for its model list (GET base_url/models) with the values above, saved or not, and checks Real model is among them. No inference call, nothing billed.">Test connection</button>
-            <span class="mc-test-result text-xs font-mono text-t4"></span>
+            <span class="mc-test-result text-xs font-mono"></span>
         </div>` : '';
     return `
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -845,7 +845,8 @@ async function testConnection(btn, alias) {
     const out = btn.parentElement.querySelector('.mc-test-result');
     if (!info) return;
     btn.disabled = true;
-    out.style.color = '';
+    // Classes, not style.color: Tailwind runs with important: true.
+    out.className = 'mc-test-result text-xs font-mono text-t4';
     out.textContent = 'Testing…';
     try {
         const resp = await fetch('/admin/api/test-model', {
@@ -855,12 +856,12 @@ async function testConnection(btn, alias) {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
-        out.style.color = data.ok ? '#3dd68c' : '#ff6b6b';
+        out.className = 'mc-test-result text-xs font-mono ' + (data.ok ? 'text-ag' : 'text-ar');
         out.textContent = (data.ok ? 'OK — ' : 'Failed — ') + data.detail
             + (data.latency_ms != null ? ' · ' + data.latency_ms + ' ms' : '');
         out.title = (data.served_models || []).length ? 'Served: ' + data.served_models.join(', ') : '';
     } catch (e) {
-        out.style.color = '#ff6b6b';
+        out.className = 'mc-test-result text-xs font-mono text-ar';
         out.textContent = 'Failed — ' + e.message;
     } finally { btn.disabled = false; }
 }
