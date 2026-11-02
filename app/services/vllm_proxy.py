@@ -481,6 +481,7 @@ def _emit_observation(
         display_name=getattr(user, "display_name", None),
         input_payload=input_payload,
         output_payload=out_payload,
+        guardrail=meta.get("guardrail"),
     ))
 
 
@@ -530,6 +531,7 @@ def _log_error(
             x_app=meta.get("x_app"),
             session_id=meta.get("session_id"),
             display_name=getattr(user, "display_name", None),
+            guardrail=meta.get("guardrail"),
         ))
     except Exception as exc:  # never let the error-hook break error handling
         logger.warning("observability error-hook failed: {}", exc)

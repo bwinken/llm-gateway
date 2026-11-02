@@ -821,6 +821,13 @@ function renderConnection(kind, alias, info) {
                 </div>
             </label>`;
     }).join('');
+    // Local (vLLM) entries only: cloud entries are not probed from here.
+    const test = kind === 'vllm' ? `
+        <div class="flex items-center gap-3 mt-3 flex-wrap">
+            <button type="button" onclick="testConnection(this, ${js(alias)})" class="gw-btn gw-btn-ghost text-xs px-3 py-1.5 gw-tip gw-tip-wide"
+                    data-tip="Asks the server for its model list (GET base_url/models) with the values above, saved or not, and checks Real model is among them. No inference call, nothing billed.">Test connection</button>
+            <span class="mc-test-result text-xs font-mono text-t4"></span>
+        </div>` : '';
     return `
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
             <label class="flex flex-col gap-1">
@@ -828,7 +835,34 @@ function renderConnection(kind, alias, info) {
                 <select ${fieldAttrs(kind, alias, 'type', 'type')} onchange="setField(this)" class="gw-input text-sm py-1.5 px-2">${typeOpts}</select>
             </label>
             ${fields}
-        </div>`;
+        </div>${test}`;
+}
+
+// "Test connection" for a local model: probes the server with the editor's
+// current (possibly unsaved) values via POST /admin/api/test-model.
+async function testConnection(btn, alias) {
+    const info = config.models[alias];
+    const out = btn.parentElement.querySelector('.mc-test-result');
+    if (!info) return;
+    btn.disabled = true;
+    out.style.color = '';
+    out.textContent = 'Testing…';
+    try {
+        const resp = await fetch('/admin/api/test-model', {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ base_url: info.base_url || '', api_key: info.api_key || '', real_model: info.real_model || '', type: info.type || 'llm' }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
+        out.style.color = data.ok ? '#3dd68c' : '#ff6b6b';
+        out.textContent = (data.ok ? 'OK — ' : 'Failed — ') + data.detail
+            + (data.latency_ms != null ? ' · ' + data.latency_ms + ' ms' : '');
+        out.title = (data.served_models || []).length ? 'Served: ' + data.served_models.join(', ') : '';
+    } catch (e) {
+        out.style.color = '#ff6b6b';
+        out.textContent = 'Failed — ' + e.message;
+    } finally { btn.disabled = false; }
 }
 
 function toggleSecret(btn) {

@@ -59,6 +59,7 @@ from app.services.azure_proxy import (
     azure_forward_messages,
     azure_forward_responses,
 )
+from app.services import guardrail
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
     bedrock_forward_count_tokens,
@@ -400,6 +401,10 @@ async def chat_completions(request: Request, user: User = Depends(limited_curren
         if await _cloud_budget_gate(user, "bedrock", alias, "/v1/chat/completions"):
             return await bedrock_forward_chat_completions(request, user)
         budget_fallback = "bedrock"
+    # Guardrail: local (vLLM) traffic only, cloud-budget fallbacks included.
+    blocked = await guardrail.screen(request, user, "chat_completions", "/v1/chat/completions", "vllm")
+    if blocked is not None:
+        return blocked
     response = await vllm_forward_chat_completions(
         request, user, allowed_types=["llm", "vlm"]
     )
@@ -739,6 +744,10 @@ async def responses(request: Request, user: User = Depends(limited_current_user)
         if await _cloud_budget_gate(user, "azure", alias, "/v1/responses"):
             return await azure_forward_responses(request, user)
         budget_fallback = "azure"
+    # Guardrail: local (vLLM) traffic only, cloud-budget fallbacks included.
+    blocked = await guardrail.screen(request, user, "responses", "/v1/responses", "vllm")
+    if blocked is not None:
+        return blocked
     response = await vllm_forward_responses(
         request, user, allowed_types=["llm", "vlm"], path_suffix="/responses"
     )
@@ -775,6 +784,10 @@ async def messages(request: Request, user: User = Depends(limited_current_user))
         if await _cloud_budget_gate(user, "bedrock", alias, "/v1/messages"):
             return await bedrock_forward_messages(request, user)
         budget_fallback = "bedrock"
+    # Guardrail: local (vLLM) traffic only, cloud-budget fallbacks included.
+    blocked = await guardrail.screen(request, user, "messages", "/v1/messages", "vllm")
+    if blocked is not None:
+        return blocked
     response = await vllm_forward_messages(request, user, allowed_types=["llm", "vlm"])
     if budget_fallback:
         _tag_budget_fallback(response, budget_fallback)

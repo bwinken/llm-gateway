@@ -453,6 +453,8 @@ _raw = _load_toml()
     APP_CONFIG, MODEL_ROUTING, PRICING_MAP, FALLBACK_MAP,
     AZURE_MODELS, AZURE_FALLBACK_MAP, BEDROCK_MODELS, BEDROCK_FALLBACK_MAP,
 ) = _build_config(_raw)
+# [guardrail]: the raw section, normalized on read by get_guardrail_settings.
+GUARDRAIL_CONFIG: dict[str, Any] = dict(_raw.get("guardrail") or {})
 DISPLAY_ORDER: dict[str, list[str]] = _build_display_order(_raw)
 
 _config_lock = threading.Lock()
@@ -501,6 +503,7 @@ def reload_config() -> None:
         new_azure, new_azure_fallback, new_bedrock, new_bedrock_fallback,
     ) = _build_config(raw)
     new_display_order = _build_display_order(raw)
+    new_guardrail = dict(raw.get("guardrail") or {})
 
     # Pre-compute stale keys outside the lock
     stale_app = set(APP_CONFIG) - set(new_app_config)
@@ -523,6 +526,8 @@ def reload_config() -> None:
         BEDROCK_MODELS.update(new_bedrock)
         BEDROCK_FALLBACK_MAP.update(new_bedrock_fallback)
         DISPLAY_ORDER.update(new_display_order)
+        GUARDRAIL_CONFIG.clear()
+        GUARDRAIL_CONFIG.update(new_guardrail)
         for k in stale_app:
             APP_CONFIG.pop(k, None)
         for k in stale_routing:
@@ -911,6 +916,166 @@ def set_concurrency_settings(mode: str, limit: int) -> None:
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError(f"concurrency limit must be an integer >= 1, got {limit!r}")
     _save_app_keys({_CONCURRENCY_MODE_KEY: mode, _CONCURRENCY_LIMIT_KEY: limit})
+
+
+# Guardrail ([guardrail] section; admin panel → "Guardrail" card; applied by
+# app/services/guardrail.py). It runs only when enabled AND a base_url is set.
+# The default action is "monitor": every verdict is recorded (Langfuse), no
+# request is refused. The guard model's own tokens are never billed.
+GUARDRAIL_ACTIONS: tuple[str, ...] = ("monitor", "block")
+GUARDRAIL_THRESHOLDS: tuple[str, ...] = ("unsafe", "controversial")
+GUARDRAIL_SCOPES: tuple[str, ...] = ("all", "users", "apps")
+GUARDRAIL_ENDPOINTS: tuple[str, ...] = ("chat_completions", "responses", "messages")
+# Per-category rule: "block" (refused when action = "block", else flagged),
+# "flag" (recorded as would-block, never refused), "ignore" (counts as safe).
+GUARDRAIL_CATEGORY_RULES: tuple[str, ...] = ("block", "flag", "ignore")
+GUARDRAIL_DEFAULT_BLOCK_MESSAGE = (
+    "This request was blocked by the gateway's content policy."
+)
+GUARDRAIL_BLOCK_MESSAGE_MAX = 500
+GUARDRAIL_DEFAULT_MODEL = "Qwen/Qwen3Guard-Gen-4B"
+GUARDRAIL_DEFAULT_TIMEOUT_S = 3.0
+GUARDRAIL_TIMEOUT_RANGE_S: tuple[float, float] = (0.1, 30.0)
+GUARDRAIL_DEFAULT_MAX_CHARS = 8000
+GUARDRAIL_MAX_CHARS_RANGE: tuple[int, int] = (200, 100_000)
+
+
+def _as_bool(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "yes", "on", "1")
+    return False
+
+
+def _str_list(val: Any) -> list[str]:
+    """A list of non-empty strings from a TOML list or a comma-separated string."""
+    if isinstance(val, str):
+        val = val.split(",")
+    if not isinstance(val, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in val:
+        s = str(item).strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def _category_rules(val: Any) -> dict[str, str]:
+    """``{category: rule}`` with valid rules only. A category not listed
+    follows the default rule, "block" (see guardrail.category_rule)."""
+    if not isinstance(val, dict):
+        return {}
+    out: dict[str, str] = {}
+    for cat, rule in val.items():
+        rule = str(rule).strip().lower()
+        if str(cat).strip() and rule in GUARDRAIL_CATEGORY_RULES:
+            out[str(cat).strip()] = rule
+    return out
+
+
+def get_guardrail_settings() -> dict[str, Any]:
+    """Normalized ``[guardrail]`` settings. Never raises: anything malformed
+    falls back to its default, and the defaults are "off" / "monitor", so a
+    typo can never start refusing requests.
+
+    ``active`` is what the request path checks: enabled AND a base URL.
+    ``api_key`` is the secret itself: never render it, use ``api_key_set``.
+    """
+    _check_auto_reload()
+    raw = GUARDRAIL_CONFIG
+    base_url = str(raw.get("base_url") or "").strip().rstrip("/")
+    api_key = str(raw.get("api_key") or "").strip()
+    enabled = _as_bool(raw.get("enabled", False))
+
+    action = str(raw.get("action") or "monitor").strip().lower()
+    if action not in GUARDRAIL_ACTIONS:
+        action = "monitor"
+    threshold = str(raw.get("block_threshold") or "unsafe").strip().lower()
+    if threshold not in GUARDRAIL_THRESHOLDS:
+        threshold = "unsafe"
+    apply_to = str(raw.get("apply_to") or "all").strip().lower()
+    if apply_to not in GUARDRAIL_SCOPES:
+        apply_to = "all"
+
+    try:
+        timeout_s = float(raw.get("timeout_s", GUARDRAIL_DEFAULT_TIMEOUT_S))
+    except (TypeError, ValueError):
+        timeout_s = GUARDRAIL_DEFAULT_TIMEOUT_S
+    if not math.isfinite(timeout_s):
+        timeout_s = GUARDRAIL_DEFAULT_TIMEOUT_S
+    lo, hi = GUARDRAIL_TIMEOUT_RANGE_S
+    timeout_s = min(max(timeout_s, lo), hi)
+
+    try:
+        max_chars = int(raw.get("max_input_chars", GUARDRAIL_DEFAULT_MAX_CHARS))
+    except (TypeError, ValueError):
+        max_chars = GUARDRAIL_DEFAULT_MAX_CHARS
+    lo_c, hi_c = GUARDRAIL_MAX_CHARS_RANGE
+    max_chars = min(max(max_chars, lo_c), hi_c)
+
+    if "endpoints" in raw:
+        endpoints = [e for e in _str_list(raw.get("endpoints")) if e in GUARDRAIL_ENDPOINTS]
+    else:
+        endpoints = list(GUARDRAIL_ENDPOINTS)
+
+    return {
+        "enabled": enabled,
+        "active": enabled and bool(base_url),
+        "base_url": base_url,
+        "api_key": api_key,
+        "api_key_set": bool(api_key),
+        "model": str(raw.get("model") or "").strip() or GUARDRAIL_DEFAULT_MODEL,
+        "timeout_s": timeout_s,
+        "action": action,
+        "block_threshold": threshold,
+        "category_rules": _category_rules(raw.get("category_rules")),
+        "block_message": (
+            str(raw.get("block_message") or "").strip()[:GUARDRAIL_BLOCK_MESSAGE_MAX]
+            or GUARDRAIL_DEFAULT_BLOCK_MESSAGE
+        ),
+        "apply_to": apply_to,
+        "exempt_users": _str_list(raw.get("exempt_users")),
+        "endpoints": endpoints,
+        "max_input_chars": max_chars,
+    }
+
+
+def set_guardrail_settings(values: dict[str, Any]) -> None:
+    """Replace the ``[guardrail]`` section and reload. Callers validate first;
+    the enumerations are re-checked so a bad value never reaches the file."""
+    if values.get("action") not in GUARDRAIL_ACTIONS:
+        raise ValueError(f"guardrail action must be one of {GUARDRAIL_ACTIONS}")
+    if values.get("block_threshold") not in GUARDRAIL_THRESHOLDS:
+        raise ValueError(f"guardrail block_threshold must be one of {GUARDRAIL_THRESHOLDS}")
+    if values.get("apply_to") not in GUARDRAIL_SCOPES:
+        raise ValueError(f"guardrail apply_to must be one of {GUARDRAIL_SCOPES}")
+    if any(e not in GUARDRAIL_ENDPOINTS for e in values.get("endpoints", [])):
+        raise ValueError(f"guardrail endpoints must be among {GUARDRAIL_ENDPOINTS}")
+    if any(r not in GUARDRAIL_CATEGORY_RULES for r in (values.get("category_rules") or {}).values()):
+        raise ValueError(f"guardrail category rules must be among {GUARDRAIL_CATEGORY_RULES}")
+    section = {
+        "enabled": bool(values.get("enabled")),
+        "base_url": str(values.get("base_url") or ""),
+        "api_key": str(values.get("api_key") or ""),
+        "model": str(values.get("model") or GUARDRAIL_DEFAULT_MODEL),
+        "timeout_s": float(values["timeout_s"]),
+        "action": values["action"],
+        "block_threshold": values["block_threshold"],
+        "category_rules": dict(values.get("category_rules") or {}),
+        "block_message": str(values.get("block_message") or "")[:GUARDRAIL_BLOCK_MESSAGE_MAX],
+        "apply_to": values["apply_to"],
+        "exempt_users": list(values.get("exempt_users") or []),
+        "endpoints": list(values.get("endpoints") or []),
+        "max_input_chars": int(values["max_input_chars"]),
+    }
+    raw = _load_toml()
+    raw["guardrail"] = section
+    _write_toml(raw)
+    reload_config()
 
 
 def _save_app_keys(values: dict[str, Any]) -> None:

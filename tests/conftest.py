@@ -303,6 +303,15 @@ TEST_BEDROCK_MODELS: dict[str, dict[str, Any]] = {
 # Build a test FastAPI app (no lifespan side-effects)
 # ---------------------------------------------------------------------------
 
+GUARDRAIL_OFF: dict[str, Any] = {
+    "enabled": False, "active": False, "base_url": "", "api_key": "", "api_key_set": False,
+    "model": "Qwen/Qwen3Guard-Gen-4B", "timeout_s": 3.0, "action": "monitor",
+    "block_threshold": "unsafe", "category_rules": {},
+    "block_message": "This request was blocked by the gateway's content policy.",
+    "apply_to": "all", "exempt_users": [],
+    "endpoints": ["chat_completions", "responses", "messages"], "max_input_chars": 8000,
+}
+
 _mock_httpx_client = AsyncMock(spec=httpx.AsyncClient)
 def _inline_background(fn, *args):
     """Run the usage-log DB write (and the Langfuse generation) inline instead
@@ -399,6 +408,9 @@ _ALL_PATCHES = [
     lambda: patch("app.core.server_state.get_azure_client", return_value=_mock_httpx_client),
     lambda: patch("app.core.server_state.get_bedrock_client", return_value=_mock_httpx_client),
     lambda: patch("app.core.auth._decode_jwt", _test_decode_jwt),
+    # The guardrail stays off whatever a local config.toml says; its tests
+    # patch in their own settings (tests/test_guardrail.py).
+    lambda: patch("app.services.guardrail.get_guardrail_settings", return_value=dict(GUARDRAIL_OFF)),
 ]
 
 
@@ -409,6 +421,7 @@ def _patch_all():
     import app.services.concurrency  # noqa: F401 — same, for the lease-store engine patch
     import app.services.usage_rollup  # noqa: F401 — same, for the rollup engine patch
     import app.services.scheduler  # noqa: F401 — same, for the job-claim engine patch
+    import app.services.guardrail  # noqa: F401 — same, for the settings patch
     from contextlib import ExitStack
 
     with ExitStack() as stack:

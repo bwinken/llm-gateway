@@ -48,6 +48,34 @@ concurrency_limit_mode = "off"
 concurrency_limit = 8
 
 # ==========================================
+# Guardrail (admin panel → "Guardrail" card)
+# ==========================================
+# Screens the newest user turn of LOCAL (vLLM) chat / responses / messages
+# requests with a Qwen3Guard-Gen model before forwarding. Azure / AWS traffic
+# is never screened. Runs only when enabled AND base_url is set. The guard's
+# tokens are not billed. Timeouts, errors and unparsable replies let the
+# request through. Every verdict is recorded in Langfuse.
+# The parser is written for Qwen3Guard-Gen's "Safety: / Categories:" reply:
+# another guard model needs app/services/guardrail.py rewritten.
+[guardrail]
+enabled = false
+base_url = ""                       # e.g. "http://guard-host:8000/v1"
+api_key = ""                        # optional, sent as Bearer
+model = "Qwen/Qwen3Guard-Gen-4B"    # served model name
+timeout_s = 3.0
+action = "monitor"                  # "monitor" (record only) | "block" (400)
+block_threshold = "unsafe"          # "unsafe" | "controversial" (= Controversial and Unsafe)
+apply_to = "all"                    # "all" | "users" | "apps"
+exempt_users = []
+endpoints = ["chat_completions", "responses", "messages"]
+max_input_chars = 8000
+block_message = "This request was blocked by the gateway's content policy."
+
+# Per category: "block" (default) | "flag" (record only) | "ignore" (= safe).
+[guardrail.category_rules]
+# "Politically Sensitive Topics" = "ignore"
+
+# ==========================================
 # Pricing (USD per 1M tokens)
 # ==========================================
 [pricing]

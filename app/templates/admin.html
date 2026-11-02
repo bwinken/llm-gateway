@@ -622,6 +622,148 @@ function submitExportCsv() {
 </div>
 
 </div>
+{# ── Guardrail (Qwen3Guard-Gen prompt screening, local vLLM traffic only) ── #}
+{% set g = guardrail %}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #f5a623">
+    <div class="flex flex-wrap items-start justify-between gap-4 mb-4">
+        <div class="max-w-3xl">
+            <h2 class="text-sm font-bold text-t2 mb-1">Guardrail</h2>
+            <p class="text-xs text-t4">
+                Screens the newest user turn of local (vLLM) chat / responses / messages requests with a guard model before they are forwarded.
+                Azure and AWS requests are not screened. Runs only when <b>enabled</b> and a <b>base URL</b> is set.
+                The guard model's tokens are never billed. Timeouts, errors and unparsable replies let the request through.
+                Every verdict is recorded in Langfuse (<span class="font-mono">guardrail</span> / <span class="font-mono">guardrail_action</span> scores, <span class="font-mono">guardrail_*</span> metadata).
+            </p>
+            <p class="text-xs mt-2 px-2.5 py-1.5 rounded" style="background:rgba(245,166,35,0.10);color:#f5c26b">
+                Built for <b>{{ guardrail_model_family }}</b> (Qwen/Qwen3Guard-Gen-4B): the gateway reads its
+                <span class="font-mono">Safety: … / Categories: …</span> reply. Pointing this at a different guard model
+                requires rewriting the prompt and parsing logic in <span class="font-mono">app/services/guardrail.py</span>.
+            </p>
+        </div>
+        <span id="guardrail-state" class="text-xs font-semibold px-2 py-1 rounded"
+              style="{{ 'background:rgba(61,214,140,0.12);color:#3dd68c' if g.active else 'background:rgba(255,255,255,0.05)' }}">
+            {% if g.active %}Active — {{ 'blocking' if g.action == 'block' else 'monitor only' }}
+            {% elif g.enabled %}Inactive — no base URL
+            {% else %}Disabled{% endif %}
+        </span>
+    </div>
+    <form id="guardrail-form" action="/admin/guardrail" method="POST" class="space-y-4">
+        <div class="flex flex-wrap items-end gap-4">
+            <label class="flex items-center gap-2 cursor-pointer select-none pb-2">
+                <input type="hidden" name="enabled" value="off">
+                <input type="checkbox" name="enabled" value="on" {{ 'checked' if g.enabled else '' }} class="w-4 h-4" style="accent-color:#f5a623">
+                <span class="text-sm font-semibold text-t3">Enabled</span>
+            </label>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Base URL</label>
+                <input type="text" name="base_url" value="{{ g.base_url }}" placeholder="http://guard-host:8000/v1"
+                       class="gw-input w-72 text-sm font-mono py-1.5 px-2">
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                       data-tip="Sent as Authorization: Bearer. Leave blank to keep the stored key; optional when the guard server checks none.">API Key</label>
+                <input type="password" name="api_key" autocomplete="new-password"
+                       placeholder="{{ '•••••••• (set — blank keeps it)' if g.api_key_set else 'none' }}"
+                       class="gw-input w-56 text-sm font-mono py-1.5 px-2">
+                {% if g.api_key_set %}
+                <label class="flex items-center gap-1.5 mt-1 text-[11px] text-t4"><input type="checkbox" name="clear_api_key" value="on"> remove key</label>
+                {% endif %}
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                       data-tip="The model name the guard server serves (vllm serve --served-model-name).">Model</label>
+                <input type="text" name="model" value="{{ g.model }}" class="gw-input w-60 text-sm font-mono py-1.5 px-2">
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                       data-tip="Longest wait for a verdict. On timeout the request is let through and recorded as guardrail=timeout. The wait adds to every screened request's latency.">Timeout (s)</label>
+                <input type="number" name="timeout_s" step="0.1" min="0.1" max="30" required value="{{ g.timeout_s }}"
+                       class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                       data-tip="Longer user text is cut to its head and tail before it is judged.">Max chars</label>
+                <input type="number" name="max_input_chars" step="1" min="200" max="100000" required value="{{ g.max_input_chars }}"
+                       class="gw-input w-24 text-sm font-mono py-1.5 px-2">
+            </div>
+        </div>
+
+        <div class="flex flex-wrap items-end gap-4">
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                       data-tip="Monitor: nothing is refused; what the policy would block is recorded as guardrail_action=flag. Block: those requests get a 400 with the message below.">Action</label>
+                <select name="action" class="gw-input text-sm py-1.5 px-2">
+                    <option value="monitor" {{ 'selected' if g.action == 'monitor' else '' }}>Monitor — record only (default)</option>
+                    <option value="block" {{ 'selected' if g.action == 'block' else '' }}>Block — refuse with 400</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Act on</label>
+                <select name="block_threshold" class="gw-input text-sm py-1.5 px-2">
+                    <option value="unsafe" {{ 'selected' if g.block_threshold == 'unsafe' else '' }}>Unsafe only</option>
+                    <option value="controversial" {{ 'selected' if g.block_threshold == 'controversial' else '' }}>Controversial and Unsafe</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Accounts</label>
+                <select name="apply_to" class="gw-input text-sm py-1.5 px-2">
+                    <option value="all" {{ 'selected' if g.apply_to == 'all' else '' }}>All accounts</option>
+                    <option value="users" {{ 'selected' if g.apply_to == 'users' else '' }}>Users only</option>
+                    <option value="apps" {{ 'selected' if g.apply_to == 'apps' else '' }}>App accounts only</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Endpoints</label>
+                <div class="flex items-center gap-3 py-1.5">
+                    {% for ep in guardrail_endpoints %}
+                    <label class="flex items-center gap-1.5 text-xs text-t3">
+                        <input type="checkbox" name="endpoints" value="{{ ep }}" {{ 'checked' if ep in g.endpoints else '' }}>
+                        <span class="font-mono">{{ {'chat_completions': 'chat', 'responses': 'responses', 'messages': 'messages'}[ep] }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                       data-tip="Usernames never screened, comma-separated.">Exempt users</label>
+                <input type="text" name="exempt_users" value="{{ g.exempt_users | join(', ') }}" placeholder="app_batch, alice"
+                       class="gw-input w-56 text-sm font-mono py-1.5 px-2">
+            </div>
+        </div>
+
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Per category the guard reports. Block: refused when Action is Block (recorded as flag under Monitor). Flag: recorded as would-block, never refused. Ignore: treated as safe (still recorded with its category). When several categories are reported, the strictest rule wins.">Category rules</label>
+            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-x-6 gap-y-1.5">
+                {% for cat in guardrail_categories %}
+                <div class="flex items-center justify-between gap-2">
+                    <span class="text-xs text-t3">{{ cat }}</span>
+                    <select name="rule:{{ cat }}" class="gw-input text-xs py-1 px-1.5">
+                        {% for r in guardrail_rules %}
+                        <option value="{{ r }}" {{ 'selected' if g.rules[cat] == r else '' }}>{{ r }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Error message returned to the client (HTTP 400) when a request is blocked.">Block message</label>
+            <input type="text" name="block_message" value="{{ g.block_message }}" maxlength="500"
+                   class="gw-input w-full text-sm py-1.5 px-2">
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3">
+            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
+            <button type="button" id="guardrail-test" class="gw-btn text-sm px-4 py-2 gw-tip gw-tip-wide"
+                    data-tip="Sends a sample text to the guard with the values in this form (saved or not) and shows the verdict.">Test connection</button>
+            <span id="guardrail-test-result" class="text-xs font-mono text-t4"></span>
+        </div>
+    </form>
+</div>
+
 {# ── Site Links (support bot + install guide) ── #}
 <div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #4dd9e8">
     <div class="mb-4">
@@ -1094,6 +1236,33 @@ function submitExportCsv() {
                 .then(function() { box.disabled = false; });
         });
         fbForm.addEventListener('submit', function(e) { e.preventDefault(); });
+    })();
+
+    /* ── Guardrail: Test connection (judges a sample with the form's values) ── */
+    (function() {
+        var form = document.getElementById('guardrail-form');
+        var btn = document.getElementById('guardrail-test');
+        var out = document.getElementById('guardrail-test-result');
+        if (!form || !btn) return;
+        btn.addEventListener('click', function() {
+            btn.disabled = true;
+            out.style.color = '';
+            out.textContent = 'Testing…';
+            gwPost('/admin/guardrail/test', new FormData(form))
+                .then(function(r) {
+                    var cats = (r.categories || []).join(', ');
+                    out.style.color = r.ok ? '#3dd68c' : '#ff6b6b';
+                    out.textContent = (r.ok ? 'OK — ' : 'Failed — ') + r.status
+                        + (cats ? ' (' + cats + ')' : '')
+                        + (r.detail ? ' · ' + r.detail : '')
+                        + (r.latency_ms != null ? ' · ' + r.latency_ms + ' ms' : '');
+                })
+                .catch(function(err) {
+                    out.style.color = '#ff6b6b';
+                    out.textContent = 'Failed — ' + err.message;
+                })
+                .then(function() { btn.disabled = false; });
+        });
     })();
 
     /* ── Keep the scroll position across the settings forms' round-trips ──

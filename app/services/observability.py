@@ -224,6 +224,20 @@ def request_timing(output_tokens: int = 0) -> dict[str, Any]:
     return out
 
 
+def set_guardrail_result(result: dict) -> None:
+    """Stash the guardrail verdict for this request (app/services/guardrail.py).
+    Read at the `_log_usage` / `_log_error` seams so the request's own
+    generation carries it. No-op outside a request."""
+    meta = _live_meta()
+    if meta is not None:
+        meta["guardrail"] = result
+
+
+def get_guardrail_result() -> dict | None:
+    meta = _live_meta()
+    return meta.get("guardrail") if meta is not None else None
+
+
 def set_io_input(payload: Any) -> None:
     """Stash the request input (OpenAI chat `messages` shape) for Phase 2 I/O
     capture. Set by the forward_* functions (which have the translated body)
@@ -364,6 +378,35 @@ def build_scores(
     return scores
 
 
+def build_guardrail_scores(guardrail: dict | None) -> list[dict]:
+    """Categorical scores for the guardrail verdict, so its distribution can
+    be charted per model / endpoint / user:
+
+      guardrail         safe | controversial | unsafe | skipped
+                        | timeout | error | parse_error
+      guardrail_action  pass | flag | block   (flag = would be blocked by
+                        the current policy, but the action is "monitor")
+    """
+    if not guardrail:
+        return []
+    return [
+        {"name": "guardrail", "value": str(guardrail.get("status")), "data_type": "CATEGORICAL"},
+        {"name": "guardrail_action", "value": str(guardrail.get("action")), "data_type": "CATEGORICAL"},
+    ]
+
+
+def guardrail_metadata(guardrail: dict | None) -> dict[str, Any]:
+    """The verdict as flat ``guardrail_*`` metadata keys (filterable)."""
+    if not guardrail:
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("status", "action", "categories", "latency_ms", "detail", "model", "policy", "tokens"):
+        value = guardrail.get(key)
+        if value is not None and value != []:
+            out[f"guardrail_{key}"] = value
+    return out
+
+
 class StreamingChatOutput:
     """Accumulate OpenAI streaming ``delta``s into a single assistant-message
     dict for Langfuse output capture (Phase 2).
@@ -466,6 +509,8 @@ class GenerationRecord:
     is_error: bool = False              # failed request → level=ERROR + request_error score
     input_payload: Any = None           # Phase 2 (LANGFUSE_CAPTURE_IO)
     output_payload: Any = None          # Phase 2
+    guardrail: dict | None = None       # guardrail verdict (guardrail.py)
+    blocked: bool = False               # refused by the guardrail → level=WARNING
 
 
 _client = None
@@ -597,6 +642,8 @@ def record_generation(rec: GenerationRecord) -> None:
 
         client_label = classify_client(rec.user_agent, rec.endpoint, rec.x_app)
         tags = [f"backend:{rec.backend}", f"type:{rec.model_type}"]
+        if rec.guardrail and rec.guardrail.get("status"):
+            tags.append(f"guardrail:{rec.guardrail['status']}")
 
         metadata: dict[str, Any] = {
             "user_id": rec.user_id,
@@ -616,6 +663,7 @@ def record_generation(rec: GenerationRecord) -> None:
         if rec.req_shape:
             for k, v in rec.req_shape.items():
                 metadata[f"req_{k}"] = v
+        metadata.update(guardrail_metadata(rec.guardrail))
 
         # The span starts "now" (see the end_time comment below), so the
         # completion start is placed ttft after now: Langfuse's TTFT
@@ -644,7 +692,11 @@ def record_generation(rec: GenerationRecord) -> None:
                 usage_details=rec.usage,
                 cost_details=rec.cost,
                 metadata=metadata,
-                level="ERROR" if rec.error else "DEFAULT",
+                level=(
+                    "WARNING" if rec.blocked
+                    else "ERROR" if rec.error
+                    else "DEFAULT"
+                ),
                 status_message=rec.error,
                 completion_start_time=completion_start,
                 input=rec.input_payload,
@@ -662,14 +714,20 @@ def record_generation(rec: GenerationRecord) -> None:
                 gen.end(end_time=anchor_ns + int(rec.latency_ms * 1_000_000))
             else:
                 gen.end()
-            for s in build_scores(
-                empty_turn=rec.empty_turn,
-                fallback_used=rec.fallback_reason is not None,
-                client=client_label,
-                output_tokens=rec.output_tokens,
-                is_error=rec.is_error,
-                timing=rec.timing,
-            ):
+            if rec.blocked:
+                # Nothing was generated: the per-response signals are noise.
+                scores = [{"name": "client", "value": client_label, "data_type": "CATEGORICAL"}]
+            else:
+                scores = build_scores(
+                    empty_turn=rec.empty_turn,
+                    fallback_used=rec.fallback_reason is not None,
+                    client=client_label,
+                    output_tokens=rec.output_tokens,
+                    is_error=rec.is_error,
+                    timing=rec.timing,
+                )
+            scores += build_guardrail_scores(rec.guardrail)
+            for s in scores:
                 gen.score(name=s["name"], value=s["value"], data_type=s["data_type"])
     except Exception as exc:  # never break the proxy
         logger.warning("Langfuse record_generation failed: {}", exc)
