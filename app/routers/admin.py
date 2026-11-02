@@ -33,7 +33,6 @@ from app.core.config import (
     GUARDRAIL_THRESHOLDS,
     GUARDRAIL_TIMEOUT_RANGE_S,
     IP_ALLOWLIST_MODES,
-    IP_SELF_SERVICE_HOURS_RANGE,
     bedrock_shared_settings,
     get_cloud_budget_fallback,
     get_cloud_daily_limit,
@@ -159,14 +158,13 @@ USER_TABLE_STATUSES: dict[str, str] = {
     "cloud_cap": "Own cloud cap",
     "waived": "Concurrency waived",
     "waiver_changed": "Waiver not the default",
-    "ip_self": "IP self-service",
     "disabled": "Disabled",
 }
 # The "Special access" overview above the tables: one count per permission,
 # each linking to its filter. The waiver counts only what differs from an
 # account kind's default (users are created limited, app accounts waived).
 SPECIAL_ACCESS_KEYS: tuple[str, ...] = (
-    "admin", "azure", "bedrock", "cloud_cap", "waiver_changed", "ip_self", "disabled",
+    "admin", "azure", "bedrock", "cloud_cap", "waiver_changed", "disabled",
 )
 
 
@@ -184,12 +182,11 @@ def _status_clause(status: str, is_apps: bool):
         "cloud_cap": User.cloud_daily_limit_usd.is_not(None),  # type: ignore[union-attr]
         "waived": User.concurrency_waived == True,  # noqa: E712
         "waiver_changed": waived_differs,
-        "ip_self": User.can_self_allow_ip == True,  # noqa: E712
         "disabled": User.is_disabled == True,  # noqa: E712
     }
     if status == "special":
         return (
-            clauses["admin"] | clauses["cloud"] | clauses["cloud_cap"] | clauses["ip_self"] | waived_differs
+            clauses["admin"] | clauses["cloud"] | clauses["cloud_cap"] | waived_differs
         )
     return clauses.get(status)
 
@@ -327,7 +324,6 @@ def _user_table(
             "can_use_azure": u.can_use_azure,
             "can_use_bedrock": u.can_use_bedrock,
             "concurrency_waived": u.concurrency_waived,
-            "can_self_allow_ip": u.can_self_allow_ip,
             "owners": owners.get(u.id, []),
             "monthly_cost": monthly["cost"],
             "monthly_tokens": monthly["input_tokens"] + monthly["output_tokens"],
@@ -840,7 +836,6 @@ def _ip_rule_view(rule, now: datetime) -> dict:
         "id": rule.id,
         "cidr": rule.cidr,
         "label": rule.label,
-        "source": rule.source,
         "created_by": rule.created_by,
         "starts": _local_label(rule.starts_at),
         "expires": _local_label(rule.expires_at),
@@ -855,14 +850,9 @@ def _ip_allowlist_view(session: Session, request: Request) -> dict:
     return {
         **ip_allowlist.settings(),
         "modes": IP_ALLOWLIST_MODES,
-        "hours_range": IP_SELF_SERVICE_HOURS_RANGE,
         "rules": {k: [_ip_rule_view(r, now) for r in rows] for k, rows in groups.items()},
         "your_ip": str(addr) if addr is not None else "",
         "your_ip_allowed": ip_allowlist.is_allowed(addr, now),
-        "self_service_url": _admin_url(_STATE_DEFAULTS, status="ip_self"),
-        "self_service_users": list(session.exec(
-            select(User.username).where(User.can_self_allow_ip == True).order_by(User.username)  # noqa: E712
-        ).all()),
     }
 
 
@@ -870,28 +860,16 @@ def _ip_allowlist_view(session: Session, request: Request) -> dict:
 def update_ip_allowlist(
     request: Request,
     mode: str = Form(""),
-    self_service_max_hours: str = Form(""),
     admin_user: User = Security(get_web_user, scopes=["admin"]),
 ):
-    """Save the IP allowlist's mode and the longest a self-service user may
-    open their address for (``[app].ip_allowlist_*``). Who may self-serve is
-    per account (``users.can_self_allow_ip``, the Users table's IP toggle)."""
+    """Save the IP allowlist's mode (``[app].ip_allowlist_mode``)."""
     mode = mode.strip().lower()
     if mode not in IP_ALLOWLIST_MODES:
         raise HTTPException(status_code=400, detail=f"mode must be one of: {', '.join(IP_ALLOWLIST_MODES)}.")
-    lo, hi = IP_SELF_SERVICE_HOURS_RANGE
-    try:
-        max_hours = int(self_service_max_hours.strip())
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Max hours must be a whole number.")
-    if not lo <= max_hours <= hi:
-        raise HTTPException(status_code=400, detail=f"Max hours must be between {lo} and {hi}.")
-    set_ip_allowlist_settings(mode, max_hours)
-    logger.info(
-        "IP allowlist settings saved | mode={} max_hours={} admin={}", mode, max_hours, admin_user.username,
-    )
+    set_ip_allowlist_settings(mode)
+    logger.info("IP allowlist mode set | mode={} admin={}", mode, admin_user.username)
     if _wants_json(request):
-        return JSONResponse({"ok": True, "mode": mode, "self_service_max_hours": max_hours})
+        return JSONResponse({"ok": True, "mode": mode})
     return RedirectResponse(url="/admin", status_code=303)
 
 
@@ -936,17 +914,17 @@ def end_ip_allow_rule(
     admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
 ):
-    """End a rule now (any source, dashboard grants included). It stays in
-    the list as expired for a week; a rule that had not started is deleted."""
+    """End a rule now. It stays in the list as expired for a week; a rule
+    that had not started is deleted."""
     rule = session.get(IpAllowRule, rule_id)
     if rule is None:
         raise HTTPException(status_code=404, detail="Rule not found.")
-    cidr, source, created_by = rule.cidr, rule.source, rule.created_by
+    cidr, label = rule.cidr, rule.label
     ip_allowlist.end_rule(session, rule)
     ip_allowlist.refresh()
     logger.info(
-        "IP allowlist rule ended | id={} cidr={} source={} created_by={} admin={}",
-        rule_id, cidr, source, created_by, admin_user.username,
+        "IP allowlist rule ended | id={} cidr={} label={!r} admin={}",
+        rule_id, cidr, label, admin_user.username,
     )
     if _wants_json(request):
         return JSONResponse({"ok": True, "ended": rule_id})
@@ -1143,44 +1121,6 @@ def toggle_bedrock(
     return RedirectResponse(url="/admin", status_code=303)
 
 
-def _end_self_grants(session: Session, username: str) -> int:
-    """End every dashboard grant ``username`` still has open (their IP
-    self-service was revoked). Returns how many."""
-    grants = ip_allowlist.self_grants(session, username)
-    for grant in grants:
-        ip_allowlist.end_rule(session, grant)
-    if grants:
-        ip_allowlist.refresh()
-    return len(grants)
-
-
-@router.post("/users/{user_id}/toggle-ip-self-service")
-def toggle_ip_self_service(
-    user_id: int,
-    request: Request,
-    admin_user: User = Security(get_web_user, scopes=["admin"]),
-    session: Session = Depends(get_session),
-):
-    """Flip the user's can_self_allow_ip flag (may open API access for their
-    own address from the dashboard). Revoking it also ends every grant the
-    user still has open, so "off" takes effect now, not hours later."""
-    target = session.exec(select(User).where(User.id == user_id)).first()
-    if not target:
-        raise HTTPException(status_code=404, detail="User not found.")
-    target.can_self_allow_ip = not target.can_self_allow_ip
-    session.add(target)
-    session.commit()
-    ended = 0 if target.can_self_allow_ip else _end_self_grants(session, target.username)
-    logger.info(
-        "IP self-service {} | user={} admin={}{}",
-        "granted" if target.can_self_allow_ip else "revoked", target.username, admin_user.username,
-        f" ({ended} open grant(s) ended)" if ended else "",
-    )
-    if _wants_json(request):
-        return JSONResponse({"ok": True, "can_self_allow_ip": target.can_self_allow_ip, "ended_grants": ended})
-    return RedirectResponse(url="/admin", status_code=303)
-
-
 @router.post("/users/{user_id}/toggle-concurrency-waive")
 def toggle_concurrency_waive(
     user_id: int,
@@ -1317,7 +1257,6 @@ def list_users_api(
             "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
             "is_admin": u.is_admin,
             "concurrency_waived": u.concurrency_waived,
-            "can_self_allow_ip": u.can_self_allow_ip,
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
@@ -1356,8 +1295,6 @@ def create_user_api(
         new_user.is_admin = bool(body["is_admin"])
     if "concurrency_waived" in body:
         new_user.concurrency_waived = _strict_bool(body["concurrency_waived"], "concurrency_waived")
-    if "can_self_allow_ip" in body:
-        new_user.can_self_allow_ip = _strict_bool(body["can_self_allow_ip"], "can_self_allow_ip")
     session.add(new_user)
     session.commit()
     session.refresh(new_user)
@@ -1411,11 +1348,6 @@ def update_user_api(
         target.is_admin = bool(body["is_admin"])
     if "concurrency_waived" in body:
         target.concurrency_waived = _strict_bool(body["concurrency_waived"], "concurrency_waived")
-    revoke_ip_self = False
-    if "can_self_allow_ip" in body:
-        allowed = _strict_bool(body["can_self_allow_ip"], "can_self_allow_ip")
-        revoke_ip_self = target.can_self_allow_ip and not allowed
-        target.can_self_allow_ip = allowed
     if "owner_ids" in body:
         session.execute(delete(AppOwner).where(AppOwner.app_id == user_id))
         for oid in (body["owner_ids"] or []):
@@ -1426,8 +1358,6 @@ def update_user_api(
     session.add(target)
     session.commit()
     session.refresh(target)
-    if revoke_ip_self:
-        _end_self_grants(session, target.username)
     return {"ok": True, "user_id": target.id}
 
 

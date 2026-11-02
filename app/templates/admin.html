@@ -9,7 +9,6 @@
     .gw-grant-azure.is-on   { background: rgba(167,139,250,0.18); border-color: rgba(167,139,250,0.4); color: #cab9ff; }
     .gw-grant-bedrock.is-on { background: rgba(255,153,51,0.15);  border-color: rgba(255,153,51,0.4);  color: #ffcb8a; }
     .gw-grant-waive.is-on   { background: rgba(52,211,153,0.15);  border-color: rgba(52,211,153,0.4);  color: #86efac; }
-    .gw-grant-ipself.is-on  { background: rgba(255,122,69,0.15);  border-color: rgba(255,122,69,0.4);  color: #ffb08f; }
     .sa-chip { display: inline-flex; align-items: baseline; gap: .375rem; padding: .3rem .65rem; border-radius: .5rem;
                border: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.02); font-size: .75rem; color: #c4c9d4; }
     .sa-chip:hover { border-color: rgba(99,152,255,0.35); }
@@ -790,8 +789,8 @@ function submitExportCsv() {
     <div class="mb-4 max-w-3xl">
         <h2 class="text-sm font-bold text-t2 mb-1">IP Allowlist</h2>
         <p class="text-xs text-t4 gw-tip gw-tip-wide"
-           data-tip="Checked on /v1, /azure and /aws (and the unprefixed API routes) before the API key. The web UI, sign-in and health checks are never blocked, so this page always stays reachable. Monitor: requests from unlisted addresses are served and logged as 'IP not on allowlist (monitor)'. Enforce: they get 403. A new rule, or ending one early, reaches every worker within 15 seconds; a preset end time is exact. Only the start of a request is checked: a stream already running is not cut off.">
-            Which client addresses may call the API. Rules are permanent (no end time) or open for one window. Users granted <span class="text-t3">IP</span> in the Users table can open their own current address for a few hours from their dashboard.
+           data-tip="Checked on /v1, /azure and /aws (and the unprefixed API routes) before the API key. The web UI, sign-in and health checks are never blocked, so this page always stays reachable. Only admins add or end rules: users cannot open access themselves. Monitor: requests from unlisted addresses are served and logged as 'IP not on allowlist (monitor)'. Enforce: they get 403. A new rule, or ending one early, reaches every worker within 15 seconds; a preset end time is exact. Only the start of a request is checked: a stream already running is not cut off.">
+            Which client addresses may call the API. Rules are permanent (no end time) or open for one window; use the label to note who or what a rule is for.
         </p>
         {% if ip_allowlist is not none %}
         <p class="text-xs text-t4 mt-1.5">
@@ -812,21 +811,6 @@ function submitExportCsv() {
                 <option value="{{ m }}" {{ 'selected' if m == ipa.mode else '' }}>{{ {'off': 'Off — no check', 'monitor': 'Monitor — log only', 'enforce': 'Enforce — 403'}[m] }}</option>
                 {% endfor %}
             </select>
-        </div>
-        <div class="flex-1 min-w-[16rem]">
-            <div class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                 data-tip="Granted one account at a time with the IP toggle in the Users table. Each may open up to 3 of their own addresses at a time from the dashboard, each for at most the max hours. Revoking it ends the addresses they opened.">Self-service users</div>
-            <div class="text-sm py-1.5">
-                {% if ipa.self_service_users %}<span class="font-mono text-t2">{{ ipa.self_service_users | join(', ') }}</span>
-                {% else %}<span class="text-t4">nobody yet</span>{% endif %}
-                <a href="{{ ipa.self_service_url }}" class="text-xs text-ab ml-2">set per user in Users &rarr;</a>
-            </div>
-        </div>
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Max hours</label>
-            <input type="number" step="1" min="{{ ipa.hours_range[0] }}" max="{{ ipa.hours_range[1] }}" required
-                   name="self_service_max_hours" value="{{ ipa.self_service_max_hours }}"
-                   class="gw-input w-20 text-sm font-mono py-1.5 px-2">
         </div>
         <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
     </form>
@@ -853,7 +837,7 @@ function submitExportCsv() {
                         {% if not r.expires %}<span class="text-t2">permanent</span>
                         {% else %}<span class="text-t3">{{ r.expires }}</span>{% if r.remaining and key == 'active' %} <span class="text-t4">· {{ r.remaining }}</span>{% endif %}{% endif %}
                     </td>
-                    <td class="text-xs text-t3 whitespace-nowrap">{{ r.created_by }}{% if r.source == 'self' %} <span class="gw-badge gw-badge-muted">dashboard</span>{% endif %}</td>
+                    <td class="text-xs text-t3 whitespace-nowrap">{{ r.created_by }}</td>
                     <td class="text-right">
                         {% if key != 'expired' %}
                         <form action="/admin/ip-allowlist/rules/{{ r.id }}/end" method="POST" data-ip-form="end" data-cidr="{{ r.cidr }}" class="inline">
@@ -1174,12 +1158,6 @@ function submitExportCsv() {
             bedrock: { key: 'can_use_bedrock',    flag: 'bedrock',
                        ask: function(n, on) { return n + ': ' + (on ? 'revoke' : 'grant') + ' AWS Bedrock access?'; },
                        title: ['No AWS Bedrock access', 'AWS Bedrock granted'] },
-            ipself:  { key: 'can_self_allow_ip',
-                       ask: function(n, on) { return on
-                           ? n + ': revoke IP self-service? Addresses they opened from the dashboard are ended now.'
-                           : n + ': allow opening their own address from the dashboard (IP allowlist)?'; },
-                       title: ['Cannot open their own address — click to allow (IP allowlist self-service)',
-                               'May open their own address from the dashboard — click to revoke'] },
             waive:   { key: 'concurrency_waived',
                        ask: function(n, on) { return n + ': ' + (on ? 'apply the concurrency limit again' : 'waive the concurrency limit') + '?'; },
                        title: ['Concurrency limit applies — click to waive', 'Concurrency limit waived — click to apply it'] }
@@ -1234,7 +1212,6 @@ function submitExportCsv() {
 
         function apply(form, action, data) {
             var name = form.closest('tr').dataset.username;
-            if (data.ended_grants) gwToast(name + ': ' + data.ended_grants + ' open address(es) ended.', 'ok');
             if (TOGGLE[action]) return paintToggle(form, action, !!data[TOGGLE[action].key]);
             if (action === 'disable') return paintDisabled(form, !!data.is_disabled);
             if (action === 'delete') {

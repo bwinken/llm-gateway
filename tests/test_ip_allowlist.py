@@ -1,5 +1,5 @@
 """API IP allowlist (app/services/ip_allowlist.py): the check on the API
-routers, rule windows, the admin card and the dashboard's self-service."""
+routers, rule windows and the admin card (admins only: users have no self-service)."""
 
 from __future__ import annotations
 
@@ -21,17 +21,8 @@ OUTSIDE = "198.51.100.7"
 PARTNER = "203.0.113.5"
 
 
-def _settings(mode: str = "enforce", max_hours: int = 8):
-    return patch(
-        "app.services.ip_allowlist.get_ip_allowlist_settings",
-        return_value={"mode": mode, "self_service_max_hours": max_hours},
-    )
-
-
-def _allow_self_service(session: Session, user: User, allowed: bool = True) -> None:
-    user.can_self_allow_ip = allowed
-    session.add(user)
-    session.commit()
+def _settings(mode: str = "enforce"):
+    return patch("app.services.ip_allowlist.get_ip_allowlist_settings", return_value={"mode": mode})
 
 
 def _rule(session: Session, cidr: str, **kw) -> IpAllowRule:
@@ -200,7 +191,7 @@ class TestAdmin:
         })
         assert r.status_code == 200, r.text
         rule = db_session.exec(select(IpAllowRule)).one()
-        assert (rule.cidr, rule.label, rule.source, rule.created_by) == ("203.0.113.0/24", "Partner office", "admin", "admin")
+        assert (rule.cidr, rule.label, rule.created_by) == ("203.0.113.0/24", "Partner office", "admin")
         assert rule.expires_at.isoformat() == "2099-01-01T01:00:00"  # 09:00 Asia/Taipei
         assert ip_allowlist.is_allowed(ip_allowlist.parse_address(PARTNER))
 
@@ -227,134 +218,39 @@ class TestAdmin:
         assert db_session.get(IpAllowRule, scheduled_id) is None
         assert not ip_allowlist.is_allowed(ip_allowlist.parse_address(PARTNER))
 
-    def test_settings_save_mode_and_hours(self, client_at, admin_user):
+    def test_settings_save_the_mode(self, client_at, admin_user):
         api, headers = self._admin(client_at, admin_user)
         with patch("app.routers.admin.set_ip_allowlist_settings") as save:
-            r = api.post("/admin/ip-allowlist", headers=headers, data={
-                "mode": "monitor", "self_service_max_hours": "12",
-            })
-            assert r.status_code == 200
-        save.assert_called_once_with("monitor", 12)
+            assert api.post("/admin/ip-allowlist", headers=headers, data={"mode": "monitor"}).status_code == 200
+            assert api.post("/admin/ip-allowlist", headers=headers, data={"mode": "block"}).status_code == 400
+        save.assert_called_once_with("monitor")
 
-    def test_settings_reject_bad_mode_and_hours(self, client_at, admin_user):
-        api, headers = self._admin(client_at, admin_user)
-        with patch("app.routers.admin.set_ip_allowlist_settings") as save:
-            for data in ({"mode": "block", "self_service_max_hours": "8"},
-                         {"mode": "enforce", "self_service_max_hours": "0"},
-                         {"mode": "enforce", "self_service_max_hours": "1000"}):
-                assert api.post("/admin/ip-allowlist", headers=headers, data=data).status_code == 400
-        save.assert_not_called()
-
-    def test_admin_page_renders_the_card_while_enforcing(self, client_at, admin_user, db_session, test_user):
+    def test_admin_page_renders_the_card_while_enforcing(self, client_at, admin_user, db_session):
         _rule(db_session, "10.0.0.0/8", label="HQ")
-        _allow_self_service(db_session, test_user)
         api, headers = self._admin(client_at, admin_user, ip=OUTSIDE)
         with _settings("enforce"):
             r = api.get("/admin", headers={"Authorization": headers["Authorization"]})
         assert r.status_code == 200
         assert "IP Allowlist" in r.text and "10.0.0.0/8" in r.text and "not on the allowlist" in r.text
-        # Self-service users are listed, with a link to that filter of the Users table.
-        assert '<span class="font-mono text-t2">testuser</span>' in r.text
-        assert "/admin?status=ip_self#users" in r.text
-
-    def test_toggle_grants_and_revoke_ends_open_grants(self, client_at, admin_user, db_session, test_user):
-        api, headers = self._admin(client_at, admin_user)
-        r = api.post(f"/admin/users/{test_user.id}/toggle-ip-self-service", headers=headers)
-        assert r.json() == {"ok": True, "can_self_allow_ip": True, "ended_grants": 0}
-        ip_allowlist.grant_self(db_session, "testuser", ip_allowlist.parse_address(PARTNER), 4)
-        ip_allowlist.refresh()
-        assert ip_allowlist.is_allowed(ip_allowlist.parse_address(PARTNER))
-
-        r = api.post(f"/admin/users/{test_user.id}/toggle-ip-self-service", headers=headers)
-        assert r.json() == {"ok": True, "can_self_allow_ip": False, "ended_grants": 1}
-        # Ended now, and this worker's snapshot already knows.
-        assert not ip_allowlist.is_allowed(ip_allowlist.parse_address(PARTNER))
-        assert ip_allowlist.self_grants(db_session, "testuser") == []
-
-    def test_patch_api_sets_the_flag_strictly(self, client_at, admin_user, db_session, test_user):
-        api, headers = self._admin(client_at, admin_user)
-        url = f"/admin/users/{test_user.id}"
-        assert api.patch(url, headers=headers, json={"can_self_allow_ip": "true"}).status_code == 400
-        assert api.patch(url, headers=headers, json={"can_self_allow_ip": True}).status_code == 200
-        ip_allowlist.grant_self(db_session, "testuser", ip_allowlist.parse_address(PARTNER), 4)
-        assert api.patch(url, headers=headers, json={"can_self_allow_ip": False}).status_code == 200
-        db_session.expire_all()
-        assert db_session.get(User, test_user.id).can_self_allow_ip is False
-        assert ip_allowlist.self_grants(db_session, "testuser") == []
-        listed = {u["username"]: u for u in api.get("/admin/users", headers=headers).json()}
-        assert listed["testuser"]["can_self_allow_ip"] is False
 
 
-# ── Dashboard self-service ──
+# ── Users have no way to open access themselves ──
 
-class TestSelfService:
-    def _post(self, api, path, **data):
-        return api.post(path, headers={**web_auth_header(), "Accept": "application/json"}, data=data)
-
-    def test_authorized_user_opens_and_extends_their_address(self, client_at, db_session, test_user):
-        _allow_self_service(db_session, test_user)
-        api = client_at(PARTNER)
+class TestNoUserSelfService:
+    def test_dashboard_offers_nothing(self, client_at):
         with _settings("enforce"):
-            page = api.get("/dashboard", headers=web_auth_header())
-            assert "Open this address" in page.text
-            assert api.get("/v1/models", headers=auth_header()).status_code == 403
+            page = client_at(OUTSIDE).get("/dashboard", headers=web_auth_header())
+        assert page.status_code == 200
+        assert OUTSIDE not in page.text  # the dashboard does not even show the address
 
-            assert self._post(api, "/dashboard/ip-access", hours="2").status_code == 200
-            assert api.get("/v1/models", headers=auth_header()).status_code == 200
-
-            assert self._post(api, "/dashboard/ip-access", hours="8").status_code == 200
-        rules = db_session.exec(select(IpAllowRule)).all()
-        assert len(rules) == 1  # extended, not duplicated
-        rule = rules[0]
-        assert (rule.cidr, rule.source, rule.created_by) == (f"{PARTNER}/32", "self", "testuser")
-        assert timedelta(hours=7, minutes=59) < rule.expires_at - ip_allowlist.utcnow() <= timedelta(hours=8)
-
-    def test_unauthorized_user_is_refused(self, client_at):
+    def test_there_is_no_endpoint_for_it(self, client_at, test_user, admin_user):
+        api = client_at(OUTSIDE)
         with _settings("enforce"):
-            assert self._post(client_at(PARTNER), "/dashboard/ip-access", hours="1").status_code == 403
-            page = client_at(PARTNER).get("/dashboard", headers=web_auth_header()).text
-        assert "Open this address" not in page and "Ask an administrator to add it" in page
-
-    def test_hours_are_capped(self, client_at, db_session, test_user):
-        _allow_self_service(db_session, test_user)
-        with _settings("enforce", max_hours=4):
-            assert self._post(client_at(PARTNER), "/dashboard/ip-access", hours="5").status_code == 400
-            assert self._post(client_at(PARTNER), "/dashboard/ip-access", hours="0").status_code == 400
-
-    def test_at_most_three_open_addresses(self, db_session):
-        for i in range(ip_allowlist.MAX_SELF_GRANTS):
-            ip_allowlist.grant_self(db_session, "alice", ip_allowlist.parse_address(f"192.0.2.{i}"), 1)
-        with pytest.raises(ValueError, match="End one"):
-            ip_allowlist.grant_self(db_session, "alice", ip_allowlist.parse_address("192.0.2.99"), 1)
-        # Another user is unaffected.
-        ip_allowlist.grant_self(db_session, "bob", ip_allowlist.parse_address("192.0.2.99"), 1)
-
-    def test_user_ends_only_their_own_grants(self, client_at, db_session, test_user):
-        _allow_self_service(db_session, test_user)
-        db_session.add(User(username="other", api_key="sk-other"))
-        db_session.commit()
-        mine = ip_allowlist.grant_self(db_session, "testuser", ip_allowlist.parse_address(PARTNER), 1)
-        theirs = ip_allowlist.grant_self(db_session, "other", ip_allowlist.parse_address(OUTSIDE), 1)
-        admin_rule = _rule(db_session, "10.0.0.0/8")
-        mine_id, theirs_id, admin_id = mine.id, theirs.id, admin_rule.id
-        api = client_at(PARTNER)
-        with _settings("enforce"):
-            assert self._post(api, f"/dashboard/ip-access/{theirs_id}/end").status_code == 404
-            assert self._post(api, f"/dashboard/ip-access/{admin_id}/end").status_code == 404
-            assert self._post(api, f"/dashboard/ip-access/{mine_id}/end").status_code == 200
-        db_session.expire_all()
-        assert db_session.get(IpAllowRule, mine_id).expires_at <= ip_allowlist.utcnow()
-        assert db_session.get(IpAllowRule, theirs_id).expires_at > ip_allowlist.utcnow()
-
-    def test_no_card_while_off_or_when_nothing_to_do(self, client_at, db_session):
-        api = client_at(PARTNER)
-        assert "API access from this address" not in api.get("/dashboard", headers=web_auth_header()).text
-        _rule(db_session, PARTNER)
-        with _settings("enforce"):
-            assert "API access from this address" not in api.get("/dashboard", headers=web_auth_header()).text
-        with _settings("enforce"):
-            text = client_at(OUTSIDE).get("/dashboard", headers=web_auth_header()).text
-        assert "Ask an administrator to add it" in text
+            r = api.post("/dashboard/ip-access", headers=web_auth_header(), data={"hours": "1"})
+            assert r.status_code == 404
+            r = api.post(f"/admin/users/{test_user.id}/toggle-ip-self-service",
+                         headers=web_auth_header(sub=admin_user.username, scopes=["admin"]))
+            assert r.status_code == 404
 
 
 # ── Special access overview and filters (admin Users tab) ──
@@ -362,7 +258,7 @@ class TestSelfService:
 class TestSpecialAccess:
     def _seed(self, db_session):
         rows = [
-            User(username="alice", api_key="k1", can_self_allow_ip=True),
+            User(username="alice", api_key="k1", can_use_bedrock=True),
             User(username="bob", api_key="k2", can_use_azure=True, cloud_daily_limit_usd=5.0),
             User(username="carol", api_key="k3", concurrency_waived=True),
             User(username="dave", api_key="k4", is_disabled=True),
@@ -382,10 +278,9 @@ class TestSpecialAccess:
         # admin_user (is_admin) and the conftest test_user (Azure + AWS) are users too.
         assert summary["admin"] == (1, 0)
         assert summary["azure"] == (2, 0)
-        assert summary["bedrock"] == (1, 1)
+        assert summary["bedrock"] == (2, 1)
         assert summary["cloud_cap"] == (1, 0)
         assert summary["waiver_changed"] == (1, 1)  # carol waived; app_limited un-waived
-        assert summary["ip_self"] == (1, 0)
         assert summary["disabled"] == (1, 0)
         # Any special access: admin, testuser, alice, bob, carol / app_limited. Not dave, plain, app_batch.
         assert summary["special"] == (5, 1)
@@ -399,19 +294,16 @@ class TestSpecialAccess:
             body = client.get("/admin/user-table", params={"kind": kind, "status": status}, headers=headers).text
             return sorted(n for n in everyone if f'data-username="{n}"' in body)
 
-        assert names("users", "ip_self") == ["alice"]
+        assert names("users", "bedrock") == ["alice", "testuser"]
         assert names("users", "special") == ["admin", "alice", "bob", "carol", "testuser"]
         assert names("apps", "special") == ["app_limited"]
         assert names("apps", "waiver_changed") == ["app_limited"]
         assert names("users", "cloud_cap") == ["bob"]
 
-    def test_admin_page_shows_the_overview_and_the_ip_toggle(self, client, db_session, admin_user):
+    def test_admin_page_shows_the_overview(self, client, db_session, admin_user):
         self._seed(db_session)
-        body = client.get("/admin", params={"status": "ip_self"},
+        body = client.get("/admin", params={"status": "cloud_cap"},
                           headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
         assert "Special access" in body
-        assert 'href="/admin?status=ip_self#users" class="sa-chip  is-active"' in body
-        assert "toggle-ip-self-service" in body
-        # App accounts never sign in to the dashboard: no IP toggle on their rows.
-        apps_panel = body[body.index('data-um-panel="apps"'):]
-        assert "toggle-ip-self-service" not in apps_panel
+        assert 'href="/admin?status=cloud_cap#users" class="sa-chip  is-active"' in body
+        assert 'data-username="bob"' in body and 'data-username="alice"' not in body

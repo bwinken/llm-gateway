@@ -923,48 +923,25 @@ def set_concurrency_settings(mode: str, limit: int) -> None:
 # concurrency limit, "off" is an explicit mode, and a typo never turns it on.
 IP_ALLOWLIST_MODES: tuple[str, ...] = ("off", "monitor", "enforce")
 _IP_ALLOWLIST_MODE_KEY = "ip_allowlist_mode"
-_IP_SELF_SERVICE_HOURS_KEY = "ip_allowlist_self_service_max_hours"
-DEFAULT_IP_SELF_SERVICE_MAX_HOURS = 8
-IP_SELF_SERVICE_HOURS_RANGE: tuple[int, int] = (1, 168)
 
 
 def get_ip_allowlist_settings() -> dict[str, Any]:
-    """``{"mode", "self_service_max_hours"}`` for the API IP allowlist.
-    ``mode`` is ``off`` (no check), ``monitor`` (addresses outside the
-    allowlist are logged but served) or ``enforce`` (they get 403).
-    ``self_service_max_hours`` bounds what a user with
-    ``users.can_self_allow_ip`` may open from the dashboard. Never raises;
-    auto-reloads."""
+    """``{"mode"}`` for the API IP allowlist: ``off`` (no check), ``monitor``
+    (addresses outside the allowlist are logged but served) or ``enforce``
+    (they get 403). Never raises; auto-reloads."""
     _check_auto_reload()
     mode = str(APP_CONFIG.get(_IP_ALLOWLIST_MODE_KEY) or "off").strip().lower()
     if mode not in IP_ALLOWLIST_MODES:
         mode = "off"
-    raw_hours = APP_CONFIG.get(_IP_SELF_SERVICE_HOURS_KEY, DEFAULT_IP_SELF_SERVICE_MAX_HOURS)
-    try:
-        hours = int(raw_hours)
-    except (TypeError, ValueError):
-        hours = DEFAULT_IP_SELF_SERVICE_MAX_HOURS
-    lo, hi = IP_SELF_SERVICE_HOURS_RANGE
-    if isinstance(raw_hours, bool) or not lo <= hours <= hi:
-        hours = DEFAULT_IP_SELF_SERVICE_MAX_HOURS
-    return {
-        "mode": mode,
-        "self_service_max_hours": hours,
-    }
+    return {"mode": mode}
 
 
-def set_ip_allowlist_settings(mode: str, max_hours: int) -> None:
-    """Persist the IP allowlist's ``[app]`` keys. Callers validate first;
-    this re-checks so a bad value never reaches config.toml."""
+def set_ip_allowlist_settings(mode: str) -> None:
+    """Persist ``[app].ip_allowlist_mode``. Callers validate first; this
+    re-checks so a bad value never reaches config.toml."""
     if mode not in IP_ALLOWLIST_MODES:
         raise ValueError(f"ip allowlist mode must be one of {IP_ALLOWLIST_MODES}, got {mode!r}")
-    lo, hi = IP_SELF_SERVICE_HOURS_RANGE
-    if isinstance(max_hours, bool) or not isinstance(max_hours, int) or not lo <= max_hours <= hi:
-        raise ValueError(f"self-service max hours must be an integer in [{lo}, {hi}], got {max_hours!r}")
-    _save_app_keys({
-        _IP_ALLOWLIST_MODE_KEY: mode,
-        _IP_SELF_SERVICE_HOURS_KEY: max_hours,
-    })
+    _save_app_keys({_IP_ALLOWLIST_MODE_KEY: mode})
 
 
 # Guardrail ([guardrail] section; admin panel → "Guardrail" card; applied by

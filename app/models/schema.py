@@ -73,10 +73,6 @@ class User(SQLModel, table=True):
     # are created waived (batch jobs legitimately run many requests at once);
     # an admin can un-waive one to limit it.
     concurrency_waived: bool = Field(default=False)
-    # May open API access for their own current address from the dashboard
-    # (IP allowlist self-service, app/services/ip_allowlist.py). Granted one
-    # account at a time from the admin Users table.
-    can_self_allow_ip: bool = Field(default=False)
     owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     display_name: str = Field(default="")
     org_code: str = Field(default="")
@@ -246,20 +242,18 @@ class IpAllowRule(SQLModel, table=True):
     to ``/v1/*``, ``/azure/*`` or ``/aws/*`` (and their unprefixed twins) is
     admitted only from an address inside an active rule's ``cidr``. A rule is
     active from ``starts_at`` (NULL: at once) until ``expires_at`` (NULL:
-    permanent). ``source`` is ``admin`` (added in the admin panel) or
-    ``self`` (a user allowed to open access for their own current address
-    did so from the dashboard; always time-limited).
+    permanent). Only admins create rules (admin panel → IP Allowlist);
+    ``label`` says who or what a rule is for.
 
-    ``created_by`` is a username, not a foreign key: an expired rule stays as
-    the record of who opened what, and deleting an account never has to
-    touch this table. Timestamps are naive UTC, like ``scheduled_jobs``.
+    ``created_by`` is the admin's username, not a foreign key: an expired
+    rule stays as the record of who opened what, and deleting an account
+    never has to touch this table. Timestamps are naive UTC, like ``scheduled_jobs``.
     """
     __tablename__ = "ip_allow_rules"
 
     id: int | None = Field(default=None, primary_key=True)
     cidr: str = Field()                      # normalized network, e.g. "203.0.113.5/32"
     label: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
-    source: str = Field(default="admin", sa_column=sa.Column(sa.String, nullable=False, server_default="admin"))
     created_by: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     starts_at: datetime | None = Field(default=None)
     expires_at: datetime | None = Field(default=None)

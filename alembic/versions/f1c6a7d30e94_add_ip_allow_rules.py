@@ -5,8 +5,7 @@ Revises: d6e3a9f17b42
 Create Date: 2026-11-02
 
 The API IP allowlist (app/services/ip_allowlist.py): permanent and
-time-limited CIDR rules, added by admins or opened by authorized users for
-their own address. Pure CREATE TABLE, instant and safe under live traffic.
+time-limited CIDR rules, added by admins. Pure CREATE TABLE, instant and safe under live traffic.
 The allowlist stays off ([app].ip_allowlist_mode = "off") until an admin
 turns it on, so an empty table admits everyone.
 """
@@ -29,7 +28,6 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("cidr", sa.String(), nullable=False),
         sa.Column("label", sa.String(), nullable=False, server_default=""),
-        sa.Column("source", sa.String(), nullable=False, server_default="admin"),
         sa.Column("created_by", sa.String(), nullable=False, server_default=""),
         sa.Column("starts_at", sa.DateTime(), nullable=True),
         sa.Column("expires_at", sa.DateTime(), nullable=True),

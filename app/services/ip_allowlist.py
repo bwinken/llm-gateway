@@ -11,8 +11,8 @@ the mode is ``[app].ip_allowlist_mode``:
 Only the API routers (``v1_api``, ``azure_api``, ``aws_api``) carry the check
 (``require_allowed_ip``, a router-level dependency), so the web UI, OAuth and
 ``/healthz`` / ``/readyz`` stay reachable: an admin can never lock themselves
-out of the page that edits the list, and an authorized user can open access
-for their own address from the dashboard (``grant_self``).
+out of the page that edits the list. Only admins add or end rules (admin
+panel); users have no way to open access themselves.
 
 The client address is ``request.client.host``. Behind nginx that is the
 address uvicorn's proxy-header middleware took from ``X-Forwarded-For``
@@ -24,8 +24,9 @@ reloaded every ``REFRESH_S`` seconds (``refresh_loop``) and right after a
 change made through this worker. The request path never touches the
 database. A rule's own window is checked against the clock on every request,
 so a preset end time is exact; a new rule, or one ended early, reaches the
-other workers within ``REFRESH_S``. A failed reload keeps the previous snapshot. Only the start of
-a request is checked: a stream that began inside a window runs to the end.
+other workers within ``REFRESH_S``. A failed reload keeps the previous
+snapshot. Only the start of a request is checked: a stream that began inside
+a window runs to the end.
 """
 
 from __future__ import annotations
@@ -47,8 +48,6 @@ from app.models.schema import IpAllowRule
 from app.services import metrics
 
 REFRESH_S = 15.0
-# How many time-limited grants one user may hold open from the dashboard.
-MAX_SELF_GRANTS = 3
 _LOG_EVERY_S = 60.0
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
@@ -122,9 +121,6 @@ def normalize_cidr(text: str) -> str:
         raise ValueError("A /0 rule would allow every address; set the mode to Off instead.")
     return str(network)
 
-
-def host_cidr(addr: IPAddress) -> str:
-    return f"{addr}/{addr.max_prefixlen}"
 
 
 # ── Snapshot ──
@@ -220,7 +216,7 @@ async def require_allowed_ip(request: Request) -> None:
         )
 
 
-# ── Reads and writes for the admin panel and the dashboard ──
+# ── Reads and writes for the admin panel ──
 
 def list_rules(session: Session, now: datetime | None = None, expired_days: int = 7) -> dict[str, list[IpAllowRule]]:
     """``{"active", "upcoming", "expired"}``: the expired ones of the last
@@ -252,7 +248,6 @@ def add_rule(
     created_by: str,
     starts_at: datetime | None = None,
     expires_at: datetime | None = None,
-    source: str = "admin",
     now: datetime | None = None,
 ) -> IpAllowRule:
     """Validate and insert a rule. Raises ValueError with a message for the
@@ -265,7 +260,7 @@ def add_rule(
         if starts_at is not None and expires_at <= starts_at:
             raise ValueError("The end time must be after the start time.")
     rule = IpAllowRule(
-        cidr=normalized, label=label.strip()[:200], source=source, created_by=created_by,
+        cidr=normalized, label=label.strip()[:200], created_by=created_by,
         starts_at=starts_at, expires_at=expires_at, created_at=now,
     )
     session.add(rule)
@@ -284,41 +279,3 @@ def end_rule(session: Session, rule: IpAllowRule, now: datetime | None = None) -
         rule.expires_at = now
         session.add(rule)
     session.commit()
-
-
-def self_grants(session: Session, username: str, now: datetime | None = None) -> list[IpAllowRule]:
-    """The user's own open dashboard grants."""
-    now = now or utcnow()
-    return list(session.exec(
-        select(IpAllowRule)
-        .where(IpAllowRule.source == "self", IpAllowRule.created_by == username)
-        .where(IpAllowRule.expires_at > now)  # type: ignore[operator]
-        .order_by(IpAllowRule.expires_at)
-    ).all())
-
-
-def grant_self(
-    session: Session, username: str, addr: IPAddress, hours: int, now: datetime | None = None,
-) -> IpAllowRule:
-    """Open access for ``addr`` for ``hours`` on ``username``'s behalf.
-    Re-opening the same address extends that grant instead of adding one.
-    Raises ValueError when the user already holds ``MAX_SELF_GRANTS``."""
-    now = now or utcnow()
-    expires = now + timedelta(hours=hours)
-    cidr = host_cidr(addr)
-    open_grants = self_grants(session, username, now)
-    for grant in open_grants:
-        if grant.cidr == cidr:
-            grant.expires_at = max(grant.expires_at or expires, expires)
-            session.add(grant)
-            session.commit()
-            session.refresh(grant)
-            return grant
-    if len(open_grants) >= MAX_SELF_GRANTS:
-        raise ValueError(
-            f"You already have {MAX_SELF_GRANTS} addresses open. End one before adding another."
-        )
-    return add_rule(
-        session, cidr, label="dashboard", created_by=username,
-        expires_at=expires, source="self", now=now,
-    )

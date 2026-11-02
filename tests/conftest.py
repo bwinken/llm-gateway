@@ -307,7 +307,7 @@ TEST_BEDROCK_MODELS: dict[str, dict[str, Any]] = {
 # patch in their own settings (tests/test_ip_allowlist.py). Every reader goes
 # through ip_allowlist.settings(), so one patch covers the routers too.
 IP_ALLOWLIST_OFF: dict[str, Any] = {
-    "mode": "off", "self_service_max_hours": 8,
+    "mode": "off",
 }
 
 GUARDRAIL_OFF: dict[str, Any] = {
