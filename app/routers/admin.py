@@ -772,7 +772,12 @@ def _ip_rule_view(rule, now: datetime) -> dict:
     remaining = ""
     if rule.expires_at is not None and rule.expires_at > now:
         mins = int((rule.expires_at - now).total_seconds() // 60)
-        remaining = f"{mins // 60}h {mins % 60:02d}m left" if mins >= 60 else f"{max(mins, 1)}m left"
+        if mins >= 48 * 60:
+            remaining = f"{mins // 1440}d {mins % 1440 // 60}h left"
+        elif mins >= 60:
+            remaining = f"{mins // 60}h {mins % 60:02d}m left"
+        else:
+            remaining = f"{max(mins, 1)}m left"
     return {
         "id": rule.id,
         "cidr": rule.cidr,
