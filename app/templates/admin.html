@@ -764,6 +764,118 @@ function submitExportCsv() {
     </form>
 </div>
 
+{# ── IP Allowlist (API surfaces only; rules in ip_allow_rules) ── #}
+<div id="ip-allowlist" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #ff7a45">
+    <div class="mb-4 max-w-3xl">
+        <h2 class="text-sm font-bold text-t2 mb-1">IP Allowlist</h2>
+        <p class="text-xs text-t4 gw-tip gw-tip-wide"
+           data-tip="Checked on /v1, /azure and /aws (and the unprefixed API routes) before the API key. The web UI, sign-in and health checks are never blocked, so this page always stays reachable. Monitor: requests from unlisted addresses are served and logged as 'IP not on allowlist (monitor)'. Enforce: they get 403. A new rule, or ending one early, reaches every worker within 15 seconds; a preset end time is exact. Only the start of a request is checked: a stream already running is not cut off.">
+            Which client addresses may call the API. Rules are permanent (no end time) or open for one window. Users listed under <span class="text-t3">Self-service</span> can open their own current address for a few hours from their dashboard.
+        </p>
+        {% if ip_allowlist is not none %}
+        <p class="text-xs text-t4 mt-1.5">
+            Your address on this page: <span class="font-mono text-t2">{{ ip_allowlist.your_ip or 'unknown' }}</span>
+            — {% if ip_allowlist.your_ip_allowed %}<span class="text-ag">on the allowlist</span>{% else %}<span class="text-ar">not on the allowlist</span>{% endif %}
+        </p>
+        {% endif %}
+    </div>
+    {% if ip_allowlist is none %}
+    <p class="text-xs text-ar">The allowlist could not be loaded (has <span class="font-mono">alembic upgrade head</span> been run?).</p>
+    {% else %}
+    {% set ipa = ip_allowlist %}
+    <form action="/admin/ip-allowlist" method="POST" data-ip-form="settings" class="flex flex-wrap items-end gap-3 mb-5">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Mode</label>
+            <select name="mode" class="gw-input text-sm py-1.5 px-2">
+                {% for m in ipa.modes %}
+                <option value="{{ m }}" {{ 'selected' if m == ipa.mode else '' }}>{{ {'off': 'Off — no check', 'monitor': 'Monitor — log only', 'enforce': 'Enforce — 403'}[m] }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="flex-1 min-w-[16rem]">
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Usernames, comma-separated. Each may open up to 3 of their own addresses at a time from the dashboard, each for at most the max hours. You can end any of them here.">Self-service users</label>
+            <input type="text" name="self_service_users" value="{{ ipa.self_service_users | join(', ') }}"
+                   placeholder="alice, bob" class="gw-input w-full text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Max hours</label>
+            <input type="number" step="1" min="{{ ipa.hours_range[0] }}" max="{{ ipa.hours_range[1] }}" required
+                   name="self_service_max_hours" value="{{ ipa.self_service_max_hours }}"
+                   class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+        </div>
+        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
+    </form>
+
+    {% set sections = [('active', 'Active'), ('upcoming', 'Scheduled'), ('expired', 'Ended in the last 7 days')] %}
+    {% for key, heading in sections %}
+    {% set rows = ipa.rules[key] %}
+    {% if rows or key == 'active' %}
+    <div class="mb-4">
+        <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">{{ heading }} <span class="text-t4 font-mono">{{ rows | length }}</span></div>
+        {% if rows %}
+        <div class="overflow-x-auto">
+        <table class="gw-table">
+            <thead><tr>
+                <th>Address</th><th>Label</th><th>From</th><th>Until</th><th>Added by</th><th></th>
+            </tr></thead>
+            <tbody>
+                {% for r in rows %}
+                <tr>
+                    <td class="font-mono text-sm text-t1 whitespace-nowrap">{{ r.cidr }}</td>
+                    <td class="text-sm text-t3">{{ r.label }}</td>
+                    <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ r.starts or '—' }}</td>
+                    <td class="font-mono text-xs whitespace-nowrap">
+                        {% if not r.expires %}<span class="text-t2">permanent</span>
+                        {% else %}<span class="text-t3">{{ r.expires }}</span>{% if r.remaining and key == 'active' %} <span class="text-t4">· {{ r.remaining }}</span>{% endif %}{% endif %}
+                    </td>
+                    <td class="text-xs text-t3 whitespace-nowrap">{{ r.created_by }}{% if r.source == 'self' %} <span class="gw-badge gw-badge-muted">dashboard</span>{% endif %}</td>
+                    <td class="text-right">
+                        {% if key != 'expired' %}
+                        <form action="/admin/ip-allowlist/rules/{{ r.id }}/end" method="POST" data-ip-form="end" data-cidr="{{ r.cidr }}" class="inline">
+                            <button type="submit" class="gw-btn gw-btn-ghost text-xs px-2 py-1">{{ 'Remove' if key == 'upcoming' else 'End now' }}</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <p class="text-xs text-t4">No active rules{% if ipa.mode == 'enforce' %}: every API request is refused{% endif %}.</p>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% endfor %}
+
+    <form action="/admin/ip-allowlist/rules" method="POST" data-ip-form="add" class="flex flex-wrap items-end gap-3 pt-4" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="One address (203.0.113.5) or a CIDR range (10.0.0.0/8, 2001:db8::/32).">Address or range</label>
+            <input type="text" name="cidr" required placeholder="203.0.113.5 or 10.0.0.0/8"
+                   class="gw-input w-56 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Label</label>
+            <input type="text" name="label" maxlength="200" placeholder="Partner office / alice@partner.com"
+                   class="gw-input w-64 text-sm py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Asia/Taipei time. Empty: from now.">From (optional)</label>
+            <input type="datetime-local" name="starts_at" class="gw-input text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Asia/Taipei time. Empty: permanent.">Until (empty = permanent)</label>
+            <input type="datetime-local" name="expires_at" class="gw-input text-sm font-mono py-1.5 px-2">
+        </div>
+        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Add rule</button>
+    </form>
+    {% endif %}
+</div>
+
 {# ── Site Links (support bot + install guide) ── #}
 <div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #4dd9e8">
     <div class="mb-4">
@@ -1236,6 +1348,35 @@ function submitExportCsv() {
                 .then(function() { box.disabled = false; });
         });
         fbForm.addEventListener('submit', function(e) { e.preventDefault(); });
+    })();
+
+    /* ── IP Allowlist: every form posts as JSON (errors become a toast instead
+       of a JSON page), then the page reloads to show the new list. ── */
+    (function() {
+        var card = document.getElementById('ip-allowlist');
+        if (!card) return;
+        card.addEventListener('submit', function(e) {
+            var form = e.target, kind = form.dataset.ipForm;
+            if (!kind) return;
+            e.preventDefault();
+            var ask = null;
+            if (kind === 'settings' && form.mode.value === 'enforce') {
+                ask = { text: 'Enforce the IP allowlist? API requests from addresses without an active rule will get 403.', okLabel: 'Enforce', danger: true };
+            } else if (kind === 'end') {
+                ask = { text: 'End access for ' + form.dataset.cidr + ' now?', okLabel: 'End', danger: true };
+            }
+            (ask ? gwConfirm(ask.text, ask) : Promise.resolve(true)).then(function(ok) {
+                if (!ok) return;
+                var btn = form.querySelector('button[type="submit"]');
+                if (btn) btn.disabled = true;
+                gwPost(form.action, new FormData(form))
+                    .then(function() { saveAdminScroll(); window.location.reload(); })
+                    .catch(function(err) {
+                        gwToast('IP allowlist — ' + err.message, 'error');
+                        if (btn) btn.disabled = false;
+                    });
+            });
+        });
     })();
 
     /* ── Guardrail: Test connection (judges a sample with the form's values) ── */

@@ -233,3 +233,30 @@ class AnomalyEvent(SQLModel, table=True):
     status: str = Field(default="new")      # new | acknowledged | resolved
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class IpAllowRule(SQLModel, table=True):
+    """One entry of the API IP allowlist (app/services/ip_allowlist.py).
+
+    While ``[app].ip_allowlist_mode`` is ``monitor`` or ``enforce``, a request
+    to ``/v1/*``, ``/azure/*`` or ``/aws/*`` (and their unprefixed twins) is
+    admitted only from an address inside an active rule's ``cidr``. A rule is
+    active from ``starts_at`` (NULL: at once) until ``expires_at`` (NULL:
+    permanent). ``source`` is ``admin`` (added in the admin panel) or
+    ``self`` (a user allowed to open access for their own current address
+    did so from the dashboard; always time-limited).
+
+    ``created_by`` is a username, not a foreign key: an expired rule stays as
+    the record of who opened what, and deleting an account never has to
+    touch this table. Timestamps are naive UTC, like ``scheduled_jobs``.
+    """
+    __tablename__ = "ip_allow_rules"
+
+    id: int | None = Field(default=None, primary_key=True)
+    cidr: str = Field()                      # normalized network, e.g. "203.0.113.5/32"
+    label: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    source: str = Field(default="admin", sa_column=sa.Column(sa.String, nullable=False, server_default="admin"))
+    created_by: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    starts_at: datetime | None = Field(default=None)
+    expires_at: datetime | None = Field(default=None)
+    created_at: datetime = Field()

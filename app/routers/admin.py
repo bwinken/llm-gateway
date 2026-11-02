@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Security
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete, update
@@ -32,6 +32,8 @@ from app.core.config import (
     GUARDRAIL_SCOPES,
     GUARDRAIL_THRESHOLDS,
     GUARDRAIL_TIMEOUT_RANGE_S,
+    IP_ALLOWLIST_MODES,
+    IP_SELF_SERVICE_HOURS_RANGE,
     bedrock_shared_settings,
     get_cloud_budget_fallback,
     get_cloud_daily_limit,
@@ -49,20 +51,22 @@ from app.core.config import (
     set_cloud_daily_limit,
     set_default_daily_limit,
     set_guardrail_settings,
+    set_ip_allowlist_settings,
     set_site_links,
 )
 from app.core.database import get_session
-from app.core.timeutil import local_month_start
+from app.core.timeutil import LOCAL_TZ, local_month_start
 from app.models.schema import (
     AnomalyEvent,
     AppOwner,
+    IpAllowRule,
     User,
     UsageLog,
     app_account_clause,
     is_app_account,
     mask_api_key,
 )
-from app.services import concurrency, guardrail
+from app.services import concurrency, guardrail, ip_allowlist
 from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
@@ -373,6 +377,13 @@ def admin_page(
         logger.warning("Concurrency in-flight summary failed | error={}: {}", type(exc).__name__, exc)
         concurrency_in_flight = None
 
+    try:
+        ip_allowlist_view = _ip_allowlist_view(session, request)
+    except Exception as exc:  # e.g. before `alembic upgrade`: the card says so, the page still renders
+        session.rollback()
+        logger.warning("IP allowlist view failed | error={}: {}", type(exc).__name__, exc)
+        ip_allowlist_view = None
+
     return templates.TemplateResponse(
         "admin.html",
         {
@@ -414,6 +425,7 @@ def admin_page(
             "concurrency_in_flight": concurrency_in_flight,
             "site_links": get_site_links(),
             "guardrail": _guardrail_view(),
+            "ip_allowlist": ip_allowlist_view,
             "guardrail_categories": guardrail.QWEN3GUARD_CATEGORIES,
             "guardrail_model_family": guardrail.GUARD_MODEL_FAMILY,
             "guardrail_endpoints": GUARDRAIL_ENDPOINTS,
@@ -729,6 +741,161 @@ async def update_concurrency_limit(
     )
     if _wants_json(request):
         return JSONResponse({"ok": True, "mode": mode, "limit": limit})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+# ── API IP allowlist ──
+
+_LOCAL_INPUT_FORMAT = "%Y-%m-%dT%H:%M"
+
+
+def _local_input_to_utc(field: str, text: str) -> datetime | None:
+    """A ``<input type="datetime-local">`` value, read as Asia/Taipei time,
+    as naive UTC (the ``ip_allow_rules`` convention). Blank → None."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        local = datetime.strptime(text[:16], _LOCAL_INPUT_FORMAT).replace(tzinfo=LOCAL_TZ)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{field} must be a date and time (YYYY-MM-DDTHH:MM).")
+    return local.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _local_label(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return value.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+
+
+def _ip_rule_view(rule, now: datetime) -> dict:
+    remaining = ""
+    if rule.expires_at is not None and rule.expires_at > now:
+        mins = int((rule.expires_at - now).total_seconds() // 60)
+        remaining = f"{mins // 60}h {mins % 60:02d}m left" if mins >= 60 else f"{max(mins, 1)}m left"
+    return {
+        "id": rule.id,
+        "cidr": rule.cidr,
+        "label": rule.label,
+        "source": rule.source,
+        "created_by": rule.created_by,
+        "starts": _local_label(rule.starts_at),
+        "expires": _local_label(rule.expires_at),
+        "remaining": remaining,
+    }
+
+
+def _ip_allowlist_view(session: Session, request: Request) -> dict:
+    now = ip_allowlist.utcnow()
+    groups = ip_allowlist.list_rules(session, now)
+    addr = ip_allowlist.client_address(request)
+    return {
+        **ip_allowlist.settings(),
+        "modes": IP_ALLOWLIST_MODES,
+        "hours_range": IP_SELF_SERVICE_HOURS_RANGE,
+        "rules": {k: [_ip_rule_view(r, now) for r in rows] for k, rows in groups.items()},
+        "your_ip": str(addr) if addr is not None else "",
+        "your_ip_allowed": ip_allowlist.is_allowed(addr, now),
+    }
+
+
+@router.post("/ip-allowlist")
+def update_ip_allowlist(
+    request: Request,
+    mode: str = Form(""),
+    self_service_users: str = Form(""),
+    self_service_max_hours: str = Form(""),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Save the IP allowlist's mode and who may open access for their own
+    address from the dashboard (``[app].ip_allowlist_*``). Every username
+    must exist, so a typo can't silently authorize nobody."""
+    mode = mode.strip().lower()
+    if mode not in IP_ALLOWLIST_MODES:
+        raise HTTPException(status_code=400, detail=f"mode must be one of: {', '.join(IP_ALLOWLIST_MODES)}.")
+    lo, hi = IP_SELF_SERVICE_HOURS_RANGE
+    try:
+        max_hours = int(self_service_max_hours.strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Max hours must be a whole number.")
+    if not lo <= max_hours <= hi:
+        raise HTTPException(status_code=400, detail=f"Max hours must be between {lo} and {hi}.")
+    names: list[str] = []
+    for part in self_service_users.replace("\n", ",").split(","):
+        name = part.strip()
+        if name and name not in names:
+            names.append(name)
+    if names:
+        known = set(session.exec(select(User.username).where(User.username.in_(names))).all())  # type: ignore[attr-defined]
+        unknown = [n for n in names if n not in known]
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"Unknown user(s): {', '.join(unknown)}.")
+    set_ip_allowlist_settings(mode, names, max_hours)
+    logger.info(
+        "IP allowlist settings saved | mode={} self_service_users={} max_hours={} admin={}",
+        mode, ",".join(names) or "(none)", max_hours, admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "mode": mode, "self_service_users": names, "self_service_max_hours": max_hours})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/ip-allowlist/rules")
+def add_ip_allow_rule(
+    request: Request,
+    cidr: str = Form(""),
+    label: str = Form(""),
+    starts_at: str = Form(""),
+    expires_at: str = Form(""),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Add an allowlist rule: an address or CIDR range, permanent (no end
+    time) or for one window (start optional, end in the future). Times are
+    Asia/Taipei. Takes effect in this worker at once, in the others within
+    ``ip_allowlist.REFRESH_S`` seconds."""
+    start = _local_input_to_utc("Start", starts_at)
+    end = _local_input_to_utc("End", expires_at)
+    try:
+        rule = ip_allowlist.add_rule(
+            session, cidr, label=label, created_by=admin_user.username,
+            starts_at=start, expires_at=end,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    ip_allowlist.refresh()
+    logger.info(
+        "IP allowlist rule added | id={} cidr={} label={!r} starts={} expires={} admin={}",
+        rule.id, rule.cidr, rule.label, rule.starts_at or "now", rule.expires_at or "never",
+        admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "rule": _ip_rule_view(rule, ip_allowlist.utcnow())})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/ip-allowlist/rules/{rule_id}/end")
+def end_ip_allow_rule(
+    rule_id: int,
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """End a rule now (any source, dashboard grants included). It stays in
+    the list as expired for a week; a rule that had not started is deleted."""
+    rule = session.get(IpAllowRule, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    cidr, source, created_by = rule.cidr, rule.source, rule.created_by
+    ip_allowlist.end_rule(session, rule)
+    ip_allowlist.refresh()
+    logger.info(
+        "IP allowlist rule ended | id={} cidr={} source={} created_by={} admin={}",
+        rule_id, cidr, source, created_by, admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "ended": rule_id})
     return RedirectResponse(url="/admin", status_code=303)
 
 

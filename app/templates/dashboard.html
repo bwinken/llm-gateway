@@ -140,6 +140,84 @@
     </div>
 </div>
 
+{# ── API access from this address (IP allowlist; only while it is on) ── #}
+{% if ip_access %}
+<div id="ip-access" class="gw-card p-5 mb-6 gw-anim gw-d2" style="border-left:3px solid {{ '#3dd68c' if ip_access.allowed else '#ff7a45' }}">
+    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+        <div class="text-sm max-w-2xl">
+            <div class="text-t1 font-semibold mb-0.5">API access from this address</div>
+            <div class="text-t3">
+                Your address: <span class="font-mono text-t2">{{ ip_access.your_ip or 'unknown' }}</span> —
+                {% if ip_access.allowed %}<span class="text-ag">on the allowlist</span>.
+                {% elif ip_access.mode == 'enforce' %}<span class="text-ar">not on the allowlist</span>: API requests from here are refused (403).
+                {% else %}<span class="text-ar">not on the allowlist</span> (requests are still served while the allowlist is in monitor mode).{% endif %}
+            </div>
+            <div class="text-t4 text-xs mt-1">This is the address your browser comes from. A tool running on another machine or network (a server, a VPN) needs that address allowed instead.</div>
+            {% if not ip_access.can_self_serve and not ip_access.allowed %}
+            <div class="text-t4 text-xs mt-1">Ask an administrator to add it.</div>
+            {% endif %}
+        </div>
+        {% if ip_access.can_self_serve %}
+        <form action="/dashboard/ip-access" method="POST" data-ip-form="open" class="flex items-end gap-2">
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">For</label>
+                <select name="hours" class="gw-input text-sm py-1.5 px-2">
+                    {% for h in ip_access.hour_choices %}
+                    <option value="{{ h }}" {{ 'selected' if h == ip_access.default_hours else '' }}>{{ h }} hour{{ '' if h == 1 else 's' }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2 whitespace-nowrap">{{ 'Extend this address' if ip_access.has_own_grant else 'Open this address' }}</button>
+        </form>
+        {% endif %}
+    </div>
+    {% if ip_access.grants %}
+    <div class="mt-4 pt-3 text-xs" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <div class="text-t4 uppercase tracking-wider text-[10px] font-bold mb-2">Opened by you ({{ ip_access.grants | length }} / {{ ip_access.max_grants }})</div>
+        {% for g in ip_access.grants %}
+        <div class="flex items-center justify-between gap-3 py-1">
+            <span><span class="font-mono text-t2">{{ g.cidr }}</span> <span class="text-t4">until {{ g.expires }}{% if g.this_address %} · this address{% endif %}</span></span>
+            <form action="/dashboard/ip-access/{{ g.id }}/end" method="POST" data-ip-form="end" data-cidr="{{ g.cidr }}">
+                <button type="submit" class="gw-btn gw-btn-ghost text-xs px-2 py-1">End now</button>
+            </form>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+<script>
+    /* Posts as JSON (errors become a toast), then reloads to show the result. */
+    (function() {
+        var card = document.getElementById('ip-access');
+        card.addEventListener('submit', function(e) {
+            var form = e.target, kind = form.dataset.ipForm;
+            if (!kind) return;
+            e.preventDefault();
+            var ask = kind === 'end'
+                ? gwConfirm('End API access for ' + form.dataset.cidr + ' now?', { okLabel: 'End', danger: true })
+                : Promise.resolve(true);
+            ask.then(function(ok) {
+                if (!ok) return;
+                var btn = form.querySelector('button[type="submit"]');
+                if (btn) btn.disabled = true;
+                fetch(form.action, {
+                    method: 'POST', body: new FormData(form), credentials: 'same-origin',
+                    headers: { 'Accept': 'application/json' }
+                }).then(function(resp) {
+                    return resp.json().catch(function() { return {}; }).then(function(data) {
+                        if (!resp.ok) throw new Error((data && typeof data.detail === 'string' && data.detail) || ('HTTP ' + resp.status));
+                        window.location.reload();
+                    });
+                }).catch(function(err) {
+                    gwToast(err.message, 'error');
+                    if (btn) btn.disabled = false;
+                });
+            });
+        });
+    })();
+</script>
+{% endif %}
+
 {# ── Tabs: models (default) and usage history, below the budget hero ── #}
 <div id="dashTabs" class="gw-tabs gw-anim gw-d2" role="tablist">
     <button type="button" class="gw-tab" data-tab="models" role="tab">

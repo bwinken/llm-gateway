@@ -40,7 +40,7 @@ graph TD
 | `AUTH_CENTER_APP_ID` | `str` | `.env` | JWT audience 驗證值 |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | `str` | `.env` | RS256 公鑰路徑 |
 | `AUTH_BASE_URL` | `str` | `.env` | JWT issuer 驗證值（預設 `auth-center`） |
-| `APP_CONFIG` | `dict` | `config.toml` `[app]` | App 層級設定：`default_daily_limit_usd`、`cloud_daily_limit_usd`、`cloud_budget_fallback`、`concurrency_limit_mode` / `concurrency_limit`、`support_bot_url` / `install_guide_url`。請透過下方 getter 讀取 |
+| `APP_CONFIG` | `dict` | `config.toml` `[app]` | App 層級設定：`default_daily_limit_usd`、`cloud_daily_limit_usd`、`cloud_budget_fallback`、`concurrency_limit_mode` / `concurrency_limit`、`ip_allowlist_*`、`support_bot_url` / `install_guide_url`。請透過下方 getter 讀取 |
 | `MODEL_ROUTING` | `dict[str, dict]` | `config.toml` `[models.<type>.*]` | vLLM 路由表：alias → `{base_url, real_model, api_key, type}`，加上可選的 per-model 欄位 |
 | `PRICING_MAP` | `dict[str, dict]` | `config.toml` `[pricing]` | 定價表：type → `{input_price_per_1m, output_price_per_1m}`（包含 `_default`） |
 | `FALLBACK_MAP` | `dict[str, str]` | `config.toml` `[fallback]` | type → 偏好的 fallback alias（vLLM 路徑） |
@@ -76,6 +76,7 @@ Alias 在 `[models.*]`、`[azure_models.*]`、`[bedrock_models.*]` 之間必須�
 | `get_cloud_daily_limit()` / `set_cloud_daily_limit(value)` | `[app].cloud_daily_limit_usd`，Azure + Bedrock 合計的預設上限。`None` = 無預設上限，`0` = $0 上限。`set_…(None)` 會移除該 key |
 | `get_cloud_budget_fallback()` / `set_cloud_budget_fallback(enabled)` | `[app].cloud_budget_fallback`（預設 `False`）：雲端上限用完時改由地端服務而非回 429，僅適用 `/v1/*` |
 | `get_concurrency_settings()` / `set_concurrency_settings(mode, limit)` | 從 `[app].concurrency_limit_mode` / `concurrency_limit` 讀出 `(mode, limit)`；無效值 fallback 為 `("off", 8)`。setter 遇到錯誤的 mode 或 `limit < 1` 會丟出 `ValueError` |
+| `get_ip_allowlist_settings()` / `set_ip_allowlist_settings(mode, self_service_users, max_hours)` | 從 `[app].ip_allowlist_*` 讀出 `{mode, self_service_users, self_service_max_hours}`；無效值 fallback 為 `off` / `[]` / `8`。setter 遇到錯誤的 mode 或超出 1–168 的時數會丟出 `ValueError`。規則本身存在 `ip_allow_rules` 資料表，不在這裡 |
 | `get_site_links()` / `set_site_links(support_bot_url, install_guide_url)` | 存在 `[app]`、可由管理員編輯的 Web UI 連結；空字串表示隱藏該元素 |
 
 ---

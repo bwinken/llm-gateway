@@ -918,6 +918,58 @@ def set_concurrency_settings(mode: str, limit: int) -> None:
     _save_app_keys({_CONCURRENCY_MODE_KEY: mode, _CONCURRENCY_LIMIT_KEY: limit})
 
 
+# API IP allowlist (admin panel → "IP Allowlist" card; rules live in the
+# ip_allow_rules table, enforced by app/services/ip_allowlist.py). Like the
+# concurrency limit, "off" is an explicit mode, and a typo never turns it on.
+IP_ALLOWLIST_MODES: tuple[str, ...] = ("off", "monitor", "enforce")
+_IP_ALLOWLIST_MODE_KEY = "ip_allowlist_mode"
+_IP_SELF_SERVICE_USERS_KEY = "ip_allowlist_self_service_users"
+_IP_SELF_SERVICE_HOURS_KEY = "ip_allowlist_self_service_max_hours"
+DEFAULT_IP_SELF_SERVICE_MAX_HOURS = 8
+IP_SELF_SERVICE_HOURS_RANGE: tuple[int, int] = (1, 168)
+
+
+def get_ip_allowlist_settings() -> dict[str, Any]:
+    """``{"mode", "self_service_users", "self_service_max_hours"}`` for the
+    API IP allowlist. ``mode`` is ``off`` (no check), ``monitor`` (addresses
+    outside the allowlist are logged but served) or ``enforce`` (they get
+    403). ``self_service_users`` are the usernames an admin authorized to
+    open access for their own current address from the dashboard, for at
+    most ``self_service_max_hours``. Never raises; auto-reloads."""
+    _check_auto_reload()
+    mode = str(APP_CONFIG.get(_IP_ALLOWLIST_MODE_KEY) or "off").strip().lower()
+    if mode not in IP_ALLOWLIST_MODES:
+        mode = "off"
+    raw_hours = APP_CONFIG.get(_IP_SELF_SERVICE_HOURS_KEY, DEFAULT_IP_SELF_SERVICE_MAX_HOURS)
+    try:
+        hours = int(raw_hours)
+    except (TypeError, ValueError):
+        hours = DEFAULT_IP_SELF_SERVICE_MAX_HOURS
+    lo, hi = IP_SELF_SERVICE_HOURS_RANGE
+    if isinstance(raw_hours, bool) or not lo <= hours <= hi:
+        hours = DEFAULT_IP_SELF_SERVICE_MAX_HOURS
+    return {
+        "mode": mode,
+        "self_service_users": _str_list(APP_CONFIG.get(_IP_SELF_SERVICE_USERS_KEY)),
+        "self_service_max_hours": hours,
+    }
+
+
+def set_ip_allowlist_settings(mode: str, self_service_users: list[str], max_hours: int) -> None:
+    """Persist the IP allowlist's ``[app]`` keys. Callers validate first;
+    this re-checks so a bad value never reaches config.toml."""
+    if mode not in IP_ALLOWLIST_MODES:
+        raise ValueError(f"ip allowlist mode must be one of {IP_ALLOWLIST_MODES}, got {mode!r}")
+    lo, hi = IP_SELF_SERVICE_HOURS_RANGE
+    if isinstance(max_hours, bool) or not isinstance(max_hours, int) or not lo <= max_hours <= hi:
+        raise ValueError(f"self-service max hours must be an integer in [{lo}, {hi}], got {max_hours!r}")
+    _save_app_keys({
+        _IP_ALLOWLIST_MODE_KEY: mode,
+        _IP_SELF_SERVICE_USERS_KEY: list(self_service_users),
+        _IP_SELF_SERVICE_HOURS_KEY: max_hours,
+    })
+
+
 # Guardrail ([guardrail] section; admin panel → "Guardrail" card; applied by
 # app/services/guardrail.py). It runs only when enabled AND a base_url is set.
 # The default action is "monitor": every verdict is recorded (Langfuse), no

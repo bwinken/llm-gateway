@@ -47,6 +47,22 @@ cloud_budget_fallback = false
 concurrency_limit_mode = "off"
 concurrency_limit = 8
 
+# API IP allowlist (admin panel → "IP Allowlist" card): which client addresses
+# may call /v1, /azure and /aws (the web UI and health checks are never
+# blocked). The rules themselves (CIDR, optional start / end time) live in the
+# ip_allow_rules table and are edited on the card, not here.
+# ip_allowlist_mode:
+#   "off"     — no check (default)
+#   "monitor" — unlisted addresses are served, but logged as
+#               "IP not on allowlist (monitor)" WARNINGs
+#   "enforce" — unlisted addresses get 403
+# ip_allowlist_self_service_users: usernames allowed to open their own current
+# address from the dashboard, for at most ip_allowlist_self_service_max_hours
+# (1-168) at a time.
+ip_allowlist_mode = "off"
+ip_allowlist_self_service_users = []
+ip_allowlist_self_service_max_hours = 8
+
 # ==========================================
 # Guardrail (admin panel → "Guardrail" card)
 # ==========================================

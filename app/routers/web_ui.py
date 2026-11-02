@@ -7,12 +7,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Security
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Security
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
-from app.models.schema import AppOwner, User
+from app.models.schema import AppOwner, IpAllowRule, User
 
 from app.core.auth import get_web_user
 from app.core.deps import effective_cloud_limit
@@ -26,8 +26,10 @@ from app.core.config import (
     get_site_links,
 )
 from app.core.database import get_session
+from app.core.logger import logger
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ, seconds_until_local_midnight
+from app.services import ip_allowlist
 from app.services.model_order import (
     catalog_key,
     positions,
@@ -393,6 +395,13 @@ def dashboard(
     if user.can_use_bedrock or user.is_admin:
         bedrock_groups = _cloud_groups(get_bedrock_models_snapshot(), "bedrock")
 
+    try:
+        ip_access = _ip_access_view(session, request, user)
+    except Exception as exc:  # the card must not take the dashboard down
+        session.rollback()
+        logger.warning("IP access view failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
+        ip_access = None
+
     return templates.TemplateResponse(
         "dashboard.html",
         _common_ctx(
@@ -430,8 +439,115 @@ def dashboard(
             azure_groups=azure_groups,
             bedrock_access=user.can_use_bedrock or user.is_admin,
             bedrock_groups=bedrock_groups,
+            ip_access=ip_access,
         ),
     )
+
+
+# ── API IP allowlist: the user's own address ──
+
+_SELF_SERVICE_HOUR_CHOICES = (1, 2, 4, 8, 12, 24, 48, 72, 168)
+
+
+def _local_label(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return value.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+
+
+def _ip_access_view(session: Session, request: Request, user: User) -> dict | None:
+    """The dashboard's "API access from this address" card: None (no card)
+    while the allowlist is off, or when the address is already allowed and
+    the user may not open addresses themselves (nothing to act on)."""
+    settings = ip_allowlist.settings()
+    if settings["mode"] == "off":
+        return None
+    now = ip_allowlist.utcnow()
+    addr = ip_allowlist.client_address(request)
+    allowed = ip_allowlist.is_allowed(addr, now)
+    can_self_serve = user.username in settings["self_service_users"]
+    if allowed and not can_self_serve:
+        return None
+    max_hours = settings["self_service_max_hours"]
+    choices = [h for h in _SELF_SERVICE_HOUR_CHOICES if h < max_hours] + [max_hours]
+    grants = ip_allowlist.self_grants(session, user.username, now) if can_self_serve else []
+    own_cidr = ip_allowlist.host_cidr(addr) if addr is not None else ""
+    return {
+        "mode": settings["mode"],
+        "your_ip": str(addr) if addr is not None else "",
+        "allowed": allowed,
+        "can_self_serve": can_self_serve and addr is not None,
+        "hour_choices": choices,
+        "default_hours": min(8, max_hours),
+        "has_own_grant": any(g.cidr == own_cidr for g in grants),
+        "grants": [
+            {"id": g.id, "cidr": g.cidr, "expires": _local_label(g.expires_at), "this_address": g.cidr == own_cidr}
+            for g in grants
+        ],
+        "max_grants": ip_allowlist.MAX_SELF_GRANTS,
+    }
+
+
+def _wants_json(request: Request) -> bool:
+    return "application/json" in (request.headers.get("accept") or "").lower()
+
+
+@router.post("/dashboard/ip-access")
+def open_own_ip_access(
+    request: Request,
+    hours: str = Form(""),
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """Open API access for the address this request comes from, for
+    ``hours`` (at most ``[app].ip_allowlist_self_service_max_hours``). Only
+    for users an admin listed under Self-service. Always the caller's own
+    address: there is no field for another one."""
+    settings = ip_allowlist.settings()
+    if user.username not in settings["self_service_users"]:
+        raise HTTPException(status_code=403, detail="You are not allowed to open API access yourself. Ask an administrator.")
+    addr = ip_allowlist.client_address(request)
+    if addr is None:
+        raise HTTPException(status_code=400, detail="Your address could not be determined.")
+    try:
+        n_hours = int(hours.strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="hours must be a whole number.")
+    if not 1 <= n_hours <= settings["self_service_max_hours"]:
+        raise HTTPException(
+            status_code=400, detail=f"hours must be between 1 and {settings['self_service_max_hours']}.",
+        )
+    try:
+        grant = ip_allowlist.grant_self(session, user.username, addr, n_hours)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    ip_allowlist.refresh()
+    logger.info(
+        "IP allowlist self-service grant | user={} cidr={} hours={} expires={} rule_id={}",
+        user.username, grant.cidr, n_hours, grant.expires_at, grant.id,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "id": grant.id, "cidr": grant.cidr, "expires": _local_label(grant.expires_at)})
+    return RedirectResponse(url="/dashboard", status_code=303)
+
+
+@router.post("/dashboard/ip-access/{rule_id}/end")
+def end_own_ip_access(
+    rule_id: int,
+    request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """End one of the caller's own dashboard grants now."""
+    rule = session.get(IpAllowRule, rule_id)
+    if rule is None or rule.source != "self" or rule.created_by != user.username:
+        raise HTTPException(status_code=404, detail="Grant not found.")
+    ip_allowlist.end_rule(session, rule)
+    ip_allowlist.refresh()
+    logger.info("IP allowlist self-service grant ended | user={} cidr={} rule_id={}", user.username, rule.cidr, rule_id)
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "ended": rule_id})
+    return RedirectResponse(url="/dashboard", status_code=303)
 
 
 @router.get("/dashboard/api/model-breakdown")

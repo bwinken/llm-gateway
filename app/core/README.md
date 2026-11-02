@@ -40,7 +40,7 @@ Parses `config.toml` and `.env`, producing global configuration objects. `config
 | `AUTH_CENTER_APP_ID` | `str` | `.env` | JWT audience validation value |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | `str` | `.env` | RS256 public key path |
 | `AUTH_BASE_URL` | `str` | `.env` | JWT issuer validation value (default `auth-center`) |
-| `APP_CONFIG` | `dict` | `config.toml` `[app]` | App-level settings: `default_daily_limit_usd`, `cloud_daily_limit_usd`, `cloud_budget_fallback`, `concurrency_limit_mode` / `concurrency_limit`, `support_bot_url` / `install_guide_url`. Read through the getters below |
+| `APP_CONFIG` | `dict` | `config.toml` `[app]` | App-level settings: `default_daily_limit_usd`, `cloud_daily_limit_usd`, `cloud_budget_fallback`, `concurrency_limit_mode` / `concurrency_limit`, `ip_allowlist_*`, `support_bot_url` / `install_guide_url`. Read through the getters below |
 | `MODEL_ROUTING` | `dict[str, dict]` | `config.toml` `[models.<type>.*]` | vLLM routing table: alias → `{base_url, real_model, api_key, type}` plus optional per-model fields |
 | `PRICING_MAP` | `dict[str, dict]` | `config.toml` `[pricing]` | Pricing table: type → `{input_price_per_1m, output_price_per_1m}` (with `_default` entry) |
 | `FALLBACK_MAP` | `dict[str, str]` | `config.toml` `[fallback]` | type → preferred fallback alias (vLLM path) |
@@ -76,6 +76,7 @@ Aliases must be unique across `[models.*]`, `[azure_models.*]` and `[bedrock_mod
 | `get_cloud_daily_limit()` / `set_cloud_daily_limit(value)` | `[app].cloud_daily_limit_usd`, the default combined Azure + Bedrock cap. `None` = no default cap, `0` = $0 cap. `set_…(None)` removes the key |
 | `get_cloud_budget_fallback()` / `set_cloud_budget_fallback(enabled)` | `[app].cloud_budget_fallback` (default `False`): exhausted cloud cap serves on-prem instead of 429, `/v1/*` only |
 | `get_concurrency_settings()` / `set_concurrency_settings(mode, limit)` | `(mode, limit)` from `[app].concurrency_limit_mode` / `concurrency_limit`; invalid values fall back to `("off", 8)`. The setter raises `ValueError` on a bad mode or `limit < 1` |
+| `get_ip_allowlist_settings()` / `set_ip_allowlist_settings(mode, self_service_users, max_hours)` | `{mode, self_service_users, self_service_max_hours}` from `[app].ip_allowlist_*`; invalid values fall back to `off` / `[]` / `8`. The setter raises `ValueError` on a bad mode or hours outside 1–168. Rules live in `ip_allow_rules`, not here |
 | `get_site_links()` / `set_site_links(support_bot_url, install_guide_url)` | Admin-editable web-UI links in `[app]`; empty string hides the element |
 
 ---

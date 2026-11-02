@@ -26,7 +26,11 @@ from app.services.bedrock_proxy import (
     bedrock_forward_messages,
 )
 
-router = APIRouter()
+from app.services.ip_allowlist import require_allowed_ip
+
+# Every API route checks the client address against the IP allowlist first
+# (a no-op while [app].ip_allowlist_mode is "off"; app/services/ip_allowlist.py).
+router = APIRouter(dependencies=[Depends(require_allowed_ip)])
 
 _TYPE_CAPABILITIES: dict[str, str] = {
     "llm": "text-generation",
