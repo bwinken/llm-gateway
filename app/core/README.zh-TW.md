@@ -148,8 +148,8 @@ FastAPI dependency：驗證 API key、檢查每日額度與雲端上限，並佔
 
 | 函式 | 回傳 | 說明 |
 |---|---|---|
-| `get_current_user(credentials, x_api_key)` | `User` | 驗證 API key（`Authorization: Bearer` 或 `x-api-key`；兩者都送時逐一嘗試）+ 檢查每日額度。若 `user.is_disabled` 則丟出 `AccountDisabledError`（admin 免檢查） |
-| `get_current_user_unmetered(credentials, x_api_key)` | `User` | 相同認證但不檢查每日額度。供 `GET /v1/me` 使用，額度用完時仍須回應 |
+| `get_current_user(request, credentials, x_api_key)` | `User` | 驗證 API key（`Authorization: Bearer` 或 `x-api-key`；兩者都送時逐一嘗試）、套用 API IP 白名單（`ip_allowlist.check`）+ 檢查每日額度。若 `user.is_disabled` 則丟出 `AccountDisabledError`（admin 免檢查） |
+| `get_current_user_unmetered(request, credentials, x_api_key)` | `User` | 相同認證（含 IP 白名單）但不檢查每日額度。供 `GET /v1/me` 使用，額度用完時仍須回應 |
 | `require_azure_access(user)` | `User` | 包裝 `get_current_user`；若 `not user.can_use_azure and not user.is_admin` 則回 403，再呼叫 `ensure_azure_budget`。`/azure/v1/*` 使用 |
 | `require_bedrock_access(user)` | `User` | 同上，檢查 `can_use_bedrock` + `ensure_bedrock_budget`。`/aws/v1/*` 使用 |
 | `limited_current_user` / `limited_azure_access` / `limited_bedrock_access` | `User`（yield） | 以 `_limited` 包裝上面三個 dependency，持有併發 lease 直到回應（含串流）送完。僅用於推論端點（chat / responses / messages） |

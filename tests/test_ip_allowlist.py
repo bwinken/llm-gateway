@@ -1,5 +1,6 @@
-"""API IP allowlist (app/services/ip_allowlist.py): the check on the API
-routers, rule windows and the admin card (admins only: users have no self-service)."""
+"""API IP allowlist (app/services/ip_allowlist.py): rules of address ×
+account × window, the check inside API-key auth, and the admin card.
+Admins only: users have no way to open access themselves."""
 
 from __future__ import annotations
 
@@ -17,8 +18,12 @@ from tests.conftest import auth_header, web_auth_header
 # app.routers.* are imported inside the tests, never at module level:
 # conftest's _build_test_app imports the routers under its config patches.
 
-OUTSIDE = "198.51.100.7"
-PARTNER = "203.0.113.5"
+OFFICE = "10.20.30.40"      # network A: everyone
+PARTNER = "203.0.113.5"     # network B: some people, for a while
+LAB = "198.51.100.23"       # network C: another group
+OUTSIDE = "192.0.2.99"      # no rule at all
+
+addr = ip_allowlist.parse_address
 
 
 def _settings(mode: str = "enforce"):
@@ -29,6 +34,14 @@ def _rule(session: Session, cidr: str, **kw) -> IpAllowRule:
     rule = ip_allowlist.add_rule(session, cidr, created_by="admin", **kw)
     ip_allowlist.refresh()
     return rule
+
+
+def _account(session: Session, username: str, key: str, org_code: str = "") -> User:
+    user = User(username=username, api_key=key, org_code=org_code, daily_limit_usd=100.0)
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return user
 
 
 @pytest.fixture()
@@ -53,7 +66,11 @@ def client_at(db_session, test_user):
         yield make
 
 
-# ── Addresses and rules ──
+def _status(client_at, ip: str, key: str = "sk-testkey123", path: str = "/v1/models") -> int:
+    return client_at(ip).get(path, headers=auth_header(key)).status_code
+
+
+# ── Addresses ──
 
 class TestNormalize:
     @pytest.mark.parametrize("raw, expected", [
@@ -73,24 +90,61 @@ class TestNormalize:
             ip_allowlist.normalize_cidr(raw)
 
     def test_mapped_client_address_matches_ipv4_rules(self):
-        assert str(ip_allowlist.parse_address("::ffff:203.0.113.5")) == PARTNER
-        assert ip_allowlist.parse_address("testclient") is None
+        assert str(addr("::ffff:203.0.113.5")) == PARTNER
+        assert addr("testclient") is None
 
 
-class TestWindows:
-    def test_permanent_scheduled_and_expired(self, db_session):
+# ── Rules: address × account × window ──
+
+class TestRules:
+    def test_the_three_networks(self, db_session):
+        """A for everyone, B for two people until a time, C for a department."""
         now = ip_allowlist.utcnow()
-        _rule(db_session, "10.0.0.0/8")
+        _account(db_session, "alice", "k-a")
+        _account(db_session, "bob", "k-b")
+        _account(db_session, "carol", "k-c", org_code="RD-7")
+        _account(db_session, "dave", "k-d", org_code="QA-2")
+        _rule(db_session, "10.0.0.0/8", label="A")
+        _rule(db_session, "203.0.113.0/24", label="B", usernames=["alice", "bob"], expires_at=now + timedelta(hours=8))
+        _rule(db_session, "198.51.100.0/24", label="C", org_codes=["rd-7"])
+
+        allowed = ip_allowlist.is_allowed
+        for user, org in (("alice", ""), ("bob", ""), ("carol", "RD-7"), ("dave", "QA-2")):
+            assert allowed(addr(OFFICE), user, org, now)            # A: everyone
+        assert allowed(addr(PARTNER), "alice", "", now)
+        assert allowed(addr(PARTNER), "bob", "", now)
+        assert not allowed(addr(PARTNER), "carol", "RD-7", now)    # B: not carol
+        assert not allowed(addr(PARTNER), "alice", "", now + timedelta(hours=8))  # B has ended
+        assert allowed(addr(LAB), "carol", "RD-7", now)            # C: her department
+        assert allowed(addr(LAB), "carol", "rd-7", now)            # org codes compare case-insensitively
+        assert not allowed(addr(LAB), "dave", "QA-2", now)
+        assert not allowed(addr(LAB), "alice", "", now)
+        assert ip_allowlist.verdict(addr(LAB), "alice", "", now) == "not_for_this_account"
+        assert ip_allowlist.verdict(addr(OUTSIDE), "alice", "", now) == "no_rule_for_address"
+
+    def test_accounts_and_org_codes_combine(self, db_session):
+        _account(db_session, "alice", "k-a")
+        _account(db_session, "carol", "k-c", org_code="RD-7")
+        _rule(db_session, "198.51.100.0/24", usernames=["alice"], org_codes=["RD-7"])
+        assert ip_allowlist.is_allowed(addr(LAB), "alice", "")
+        assert ip_allowlist.is_allowed(addr(LAB), "carol", "RD-7")
+        assert not ip_allowlist.is_allowed(addr(LAB), "someone", "")
+
+    def test_scheduled_window(self, db_session):
+        now = ip_allowlist.utcnow()
         _rule(db_session, PARTNER, starts_at=now + timedelta(hours=1), expires_at=now + timedelta(hours=3))
-        addr = ip_allowlist.parse_address
-        assert ip_allowlist.is_allowed(addr("10.20.30.40"), now)
-        assert ip_allowlist.is_allowed(addr("10.20.30.40"), now + timedelta(days=3650))
-        assert not ip_allowlist.is_allowed(addr(PARTNER), now)
-        assert ip_allowlist.is_allowed(addr(PARTNER), now + timedelta(hours=2))
-        # The end is exact, whatever the snapshot's age.
-        assert not ip_allowlist.is_allowed(addr(PARTNER), now + timedelta(hours=3))
-        assert not ip_allowlist.is_allowed(addr(OUTSIDE), now)
-        assert not ip_allowlist.is_allowed(None, now)
+        assert not ip_allowlist.is_allowed(addr(PARTNER), "x", "", now)
+        assert ip_allowlist.is_allowed(addr(PARTNER), "x", "", now + timedelta(hours=2))
+        assert not ip_allowlist.is_allowed(addr(PARTNER), "x", "", now + timedelta(hours=3))
+
+    def test_unknown_accounts_and_org_codes_are_refused(self, db_session):
+        _account(db_session, "alice", "k-a", org_code="RD-7")
+        with pytest.raises(ValueError, match="nobody"):
+            ip_allowlist.add_rule(db_session, PARTNER, created_by="a", usernames=["alice", "nobody"])
+        with pytest.raises(ValueError, match="XX-9"):
+            ip_allowlist.add_rule(db_session, PARTNER, created_by="a", org_codes=["XX-9"])
+        rule = ip_allowlist.add_rule(db_session, PARTNER, created_by="a", org_codes=["rd-7"])
+        assert rule.org_codes == ["RD-7"]  # spelled as the accounts carry it
 
     def test_bad_windows_are_refused(self, db_session):
         now = ip_allowlist.utcnow()
@@ -106,7 +160,7 @@ class TestWindows:
         _rule(db_session, PARTNER)
         with patch("app.services.ip_allowlist.Session", side_effect=RuntimeError("db down")):
             assert ip_allowlist.refresh() is False
-        assert ip_allowlist.is_allowed(ip_allowlist.parse_address(PARTNER))
+        assert ip_allowlist.is_allowed(addr(PARTNER), "anyone")
 
     def test_expired_rules_are_not_loaded(self, db_session):
         now = ip_allowlist.utcnow()
@@ -117,56 +171,97 @@ class TestWindows:
         assert ip_allowlist._snapshot == ()
 
 
-# ── The check on the API routers ──
+# ── The check inside API-key auth ──
+
+class TestEveryApiRouteIsChecked:
+    def test_every_api_route_authenticates_through_the_checked_dependencies(self):
+        """The allowlist runs inside deps._authenticate. An API route that
+        authenticated some other way would silently skip it."""
+        from app.core import deps
+        from app.routers import aws_api, azure_api, v1_api
+
+        checked = {deps.get_current_user, deps.get_current_user_unmetered}
+
+        def walk(dependant) -> bool:
+            return dependant.call in checked or any(walk(d) for d in dependant.dependencies)
+
+        missing = [
+            (route.path, sorted(route.methods))
+            for router in (v1_api.router, azure_api.router, aws_api.router)
+            for route in router.routes
+            if not walk(route.dependant)
+        ]
+        assert missing == []
+
 
 class TestApiCheck:
     def test_off_by_default(self, client_at):
-        assert client_at(OUTSIDE).get("/v1/models", headers=auth_header()).status_code == 200
+        assert _status(client_at, OUTSIDE) == 200
 
-    def test_enforce_refuses_unlisted_addresses_before_auth(self, client_at, db_session):
+    def test_enforce_refuses_and_says_why(self, client_at):
         with _settings("enforce"):
-            r = client_at(OUTSIDE).get("/v1/models")  # no API key at all: 403, not 401
+            r = client_at(OUTSIDE).get("/v1/models", headers=auth_header())
         assert r.status_code == 403
         assert OUTSIDE in r.json()["detail"]
+
+    def test_a_bad_key_is_still_a_401(self, client_at):
+        with _settings("enforce"):
+            assert client_at(OUTSIDE).get("/v1/models").status_code == 401
+            assert _status(client_at, OUTSIDE, key="sk-wrong") == 401
 
     @pytest.mark.parametrize("path", ["/v1/models", "/models", "/azure/v1/models", "/aws/v1/models", "/v1/me"])
     def test_every_api_router_is_gated(self, client_at, path):
         with _settings("enforce"):
-            assert client_at(OUTSIDE).get(path, headers=auth_header()).status_code == 403
+            assert _status(client_at, OUTSIDE, path=path) == 403
 
-    def test_enforce_admits_listed_addresses(self, client_at, db_session):
-        _rule(db_session, "203.0.113.0/24")
+    def test_rules_for_some_accounts(self, client_at, db_session):
+        _account(db_session, "alice", "sk-alice")
+        _rule(db_session, "10.0.0.0/8")
+        _rule(db_session, "203.0.113.0/24", usernames=["alice"])
         with _settings("enforce"):
-            assert client_at(PARTNER).get("/v1/models", headers=auth_header()).status_code == 200
-            assert client_at("::ffff:203.0.113.9").get("/v1/models", headers=auth_header()).status_code == 200
-            assert client_at(OUTSIDE).get("/v1/models", headers=auth_header()).status_code == 403
+            assert _status(client_at, OFFICE) == 200                    # A: testuser too
+            assert _status(client_at, PARTNER, key="sk-alice") == 200   # B: alice
+            assert _status(client_at, PARTNER) == 403                   # B: not testuser
+            assert _status(client_at, "::ffff:203.0.113.9", key="sk-alice") == 200
+
+    def test_rules_by_org_code(self, client_at, db_session, test_user):
+        test_user.org_code = "RD-7"
+        db_session.add(test_user)
+        db_session.commit()
+        _rule(db_session, "198.51.100.0/24", org_codes=["RD-7"])
+        with _settings("enforce"):
+            assert _status(client_at, LAB) == 200
 
     def test_end_time_is_exact_without_a_refresh(self, client_at, db_session):
         now = ip_allowlist.utcnow()
         _rule(db_session, PARTNER, expires_at=now + timedelta(hours=1))
-        api = client_at(PARTNER)
         with _settings("enforce"):
-            assert api.get("/v1/models", headers=auth_header()).status_code == 200
+            assert _status(client_at, PARTNER) == 200
             with patch("app.services.ip_allowlist.utcnow", return_value=now + timedelta(hours=1)):
-                assert api.get("/v1/models", headers=auth_header()).status_code == 403
+                assert _status(client_at, PARTNER) == 403
 
     def test_ending_a_rule_early_applies_after_the_refresh(self, client_at, db_session):
         rule = _rule(db_session, PARTNER)
-        api = client_at(PARTNER)
         with _settings("enforce"):
             ip_allowlist.end_rule(db_session, rule)
             # The snapshot still holds it as permanent until this worker reloads
-            # (the admin / dashboard endpoints reload at once; others within REFRESH_S).
-            assert api.get("/v1/models", headers=auth_header()).status_code == 200
+            # (the admin endpoints reload at once; other workers within REFRESH_S).
+            assert _status(client_at, PARTNER) == 200
             ip_allowlist.refresh()
-            assert api.get("/v1/models", headers=auth_header()).status_code == 403
+            assert _status(client_at, PARTNER) == 403
 
-    def test_monitor_serves_and_logs(self, client_at):
+    def test_monitor_serves_and_logs_account_address_and_reason(self, client_at, db_session):
+        _account(db_session, "alice", "sk-alice")
+        _rule(db_session, "203.0.113.0/24", usernames=["alice"])
         with _settings("monitor"), patch("app.services.ip_allowlist.logger") as log:
-            assert client_at(OUTSIDE).get("/v1/models", headers=auth_header()).status_code == 200
-            assert client_at(OUTSIDE).get("/v1/models", headers=auth_header()).status_code == 200
-        lines = [c.args[0] for c in log.warning.call_args_list]
-        assert lines == ["IP not on allowlist ({}) | ip={} path={}{}"]  # once per address per minute
+            assert _status(client_at, OUTSIDE) == 200
+            assert _status(client_at, OUTSIDE) == 200   # same account + address: logged once a minute
+            assert _status(client_at, PARTNER) == 200
+        lines = [c.args for c in log.warning.call_args_list]
+        assert [(a[2], a[3], a[4]) for a in lines] == [
+            ("testuser", OUTSIDE, "no_rule_for_address"),
+            ("testuser", PARTNER, "not_for_this_account"),
+        ]
 
     @pytest.mark.parametrize("path", ["/healthz", "/dashboard", "/setup"])
     def test_web_ui_and_health_are_never_gated(self, client_at, path):
@@ -183,17 +278,27 @@ class TestAdmin:
         headers = {**web_auth_header(sub=admin_user.username, scopes=["admin"]), "Accept": "application/json"}
         return api, headers
 
-    def test_add_rule_converts_local_time_and_takes_effect(self, client_at, admin_user, db_session):
+    def test_add_rule_for_accounts_and_org_codes(self, client_at, admin_user, db_session, test_user):
+        _account(db_session, "carol", "k-c", org_code="RD-7")
         api, headers = self._admin(client_at, admin_user)
         r = api.post("/admin/ip-allowlist/rules", headers=headers, data={
-            "cidr": "203.0.113.0/24", "label": "Partner office",
-            "starts_at": "", "expires_at": "2099-01-01T09:00",
+            "cidr": "203.0.113.0/24", "label": "Partner office", "usernames": "testuser, testuser",
+            "org_codes": "rd-7", "starts_at": "", "expires_at": "2099-01-01T09:00",
         })
         assert r.status_code == 200, r.text
         rule = db_session.exec(select(IpAllowRule)).one()
-        assert (rule.cidr, rule.label, rule.created_by) == ("203.0.113.0/24", "Partner office", "admin")
+        assert (rule.cidr, rule.label, rule.usernames, rule.org_codes, rule.created_by) == (
+            "203.0.113.0/24", "Partner office", ["testuser"], ["RD-7"], "admin",
+        )
         assert rule.expires_at.isoformat() == "2099-01-01T01:00:00"  # 09:00 Asia/Taipei
-        assert ip_allowlist.is_allowed(ip_allowlist.parse_address(PARTNER))
+        assert ip_allowlist.is_allowed(addr(PARTNER), "testuser")
+        assert not ip_allowlist.is_allowed(addr(PARTNER), "admin")
+
+    def test_add_rule_for_everyone(self, client_at, admin_user, db_session):
+        api, headers = self._admin(client_at, admin_user)
+        assert api.post("/admin/ip-allowlist/rules", headers=headers, data={"cidr": "10.0.0.0/8"}).status_code == 200
+        rule = db_session.exec(select(IpAllowRule)).one()
+        assert (rule.usernames, rule.org_codes, rule.expires_at) == ([], [], None)
 
     def test_add_rule_rejects_bad_input(self, client_at, admin_user):
         api, headers = self._admin(client_at, admin_user)
@@ -201,9 +306,25 @@ class TestAdmin:
             {"cidr": "partner.example.com"},
             {"cidr": PARTNER, "expires_at": "2000-01-01T00:00"},
             {"cidr": PARTNER, "expires_at": "tomorrow"},
+            {"cidr": PARTNER, "usernames": "nobody"},
+            {"cidr": PARTNER, "org_codes": "XX-9"},
         ):
             r = api.post("/admin/ip-allowlist/rules", headers=headers, data=data)
             assert r.status_code == 400, data
+
+    def test_edit_who_a_rule_is_for(self, client_at, admin_user, db_session, test_user):
+        rule = _rule(db_session, "203.0.113.0/24", usernames=["testuser"])
+        rule_id = rule.id
+        api, headers = self._admin(client_at, admin_user)
+        r = api.post(f"/admin/ip-allowlist/rules/{rule_id}/who", headers=headers,
+                     data={"usernames": "admin", "org_codes": ""})
+        assert r.status_code == 200 and r.json()["rule"]["usernames"] == ["admin"]
+        assert ip_allowlist.is_allowed(addr(PARTNER), "admin")       # this worker reloaded at once
+        assert not ip_allowlist.is_allowed(addr(PARTNER), "testuser")
+        r = api.post(f"/admin/ip-allowlist/rules/{rule_id}/who", headers=headers, data={"usernames": "ghost"})
+        assert r.status_code == 400
+        r = api.post(f"/admin/ip-allowlist/rules/{rule_id}/who", headers=headers, data={})
+        assert r.json()["rule"]["everyone"] is True
 
     def test_end_keeps_a_started_rule_and_deletes_a_scheduled_one(self, client_at, admin_user, db_session):
         now = ip_allowlist.utcnow()
@@ -216,7 +337,7 @@ class TestAdmin:
         db_session.expire_all()
         assert db_session.get(IpAllowRule, started_id).expires_at <= ip_allowlist.utcnow()
         assert db_session.get(IpAllowRule, scheduled_id) is None
-        assert not ip_allowlist.is_allowed(ip_allowlist.parse_address(PARTNER))
+        assert not ip_allowlist.is_allowed(addr(PARTNER), "anyone")
 
     def test_settings_save_the_mode(self, client_at, admin_user):
         api, headers = self._admin(client_at, admin_user)
@@ -225,13 +346,16 @@ class TestAdmin:
             assert api.post("/admin/ip-allowlist", headers=headers, data={"mode": "block"}).status_code == 400
         save.assert_called_once_with("monitor")
 
-    def test_admin_page_renders_the_card_while_enforcing(self, client_at, admin_user, db_session):
+    def test_admin_page_renders_the_card(self, client_at, admin_user, db_session, test_user):
         _rule(db_session, "10.0.0.0/8", label="HQ")
-        api, headers = self._admin(client_at, admin_user, ip=OUTSIDE)
-        with _settings("enforce"):
+        _rule(db_session, "198.51.100.0/24", label="Lab", usernames=["testuser"])
+        api, headers = self._admin(client_at, admin_user, ip=LAB)
+        with _settings("monitor"):
             r = api.get("/admin", headers={"Authorization": headers["Authorization"]})
         assert r.status_code == 200
-        assert "IP Allowlist" in r.text and "10.0.0.0/8" in r.text and "not on the allowlist" in r.text
+        assert "IP Allowlist" in r.text and "10.0.0.0/8" in r.text and "Everyone" in r.text
+        assert "rules cover this address, but none is for your account" in r.text
+        assert '/admin/ip-allowlist/rules/2/who' in r.text
 
 
 # ── Users have no way to open access themselves ──

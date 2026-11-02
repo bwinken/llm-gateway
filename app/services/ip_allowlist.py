@@ -1,18 +1,34 @@
-"""API IP allowlist: which client addresses may call the API surfaces.
+"""API IP allowlist: which accounts may call the API from which addresses.
 
-Rules live in ``ip_allow_rules`` (one CIDR each, optionally time-limited);
-the mode is ``[app].ip_allowlist_mode``:
+Rules live in ``ip_allow_rules``. Each has an address range (``cidr``), an
+optional window (``starts_at`` / ``expires_at``; no end = permanent) and who
+it admits: ``usernames`` and ``org_codes`` both empty means every account,
+otherwise the account's username must be listed or its ``org_code`` must be
+among the listed org codes (compared case-insensitively). A request is
+admitted when at least one active rule covers its address **and** its
+account. For example:
+
+* 10.0.0.0/8, everyone, permanent: the office network.
+* 203.0.113.0/24, alice + bob, until Friday: a partner site, for two people.
+* 198.51.100.0/24, org code RD-7: a lab, for one department.
+
+The mode is ``[app].ip_allowlist_mode``:
 
 * ``off`` (default): no check.
-* ``monitor``: a request from outside the allowlist is served and logged
-  (``IP not on allowlist (monitor)``, once per address per minute).
-* ``enforce``: it gets 403 before authentication.
+* ``monitor``: a request no rule admits is served and logged
+  (``IP allowlist would refuse (monitor)``, once per account and address
+  per minute), with the reason: no rule for that address at all, or rules
+  for it but none for that account.
+* ``enforce``: it gets 403.
 
-Only the API routers (``v1_api``, ``azure_api``, ``aws_api``) carry the check
-(``require_allowed_ip``, a router-level dependency), so the web UI, OAuth and
-``/healthz`` / ``/readyz`` stay reachable: an admin can never lock themselves
-out of the page that edits the list. Only admins add or end rules (admin
-panel); users have no way to open access themselves.
+The check needs the account, so it runs inside API-key auth
+(``deps._authenticate``, right after the key is resolved), which every
+``/v1``, ``/azure`` and ``/aws`` route goes through (``TestEveryApiRouteIsChecked``).
+The web UI, OAuth and ``/healthz`` / ``/readyz`` never authenticate with an
+API key, so they are never checked and an admin can't lock themselves out of
+the page that edits the list. A request without a valid key gets the usual
+401, whatever its address. Only admins add, edit and end rules; users have
+no way to open access themselves.
 
 The client address is ``request.client.host``. Behind nginx that is the
 address uvicorn's proxy-header middleware took from ``X-Forwarded-For``
@@ -23,10 +39,10 @@ Every worker keeps an in-memory snapshot of the active and upcoming rules,
 reloaded every ``REFRESH_S`` seconds (``refresh_loop``) and right after a
 change made through this worker. The request path never touches the
 database. A rule's own window is checked against the clock on every request,
-so a preset end time is exact; a new rule, or one ended early, reaches the
-other workers within ``REFRESH_S``. A failed reload keeps the previous
-snapshot. Only the start of a request is checked: a stream that began inside
-a window runs to the end.
+so a preset end time is exact; a new rule, an edit, or a rule ended early
+reaches the other workers within ``REFRESH_S``. A failed reload keeps the
+previous snapshot. Only the start of a request is checked: a stream that
+began inside a window runs to the end.
 """
 
 from __future__ import annotations
@@ -38,13 +54,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, Request
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
 from app.core.config import get_ip_allowlist_settings
 from app.core.database import engine
 from app.core.logger import logger
-from app.models.schema import IpAllowRule
+from app.models.schema import IpAllowRule, User
 from app.services import metrics
 
 REFRESH_S = 15.0
@@ -59,16 +75,23 @@ class _Rule:
     network: IPNetwork
     starts_at: datetime | None
     expires_at: datetime | None
+    usernames: frozenset[str]
+    org_codes: frozenset[str]  # casefolded
 
     def active(self, now: datetime) -> bool:
         return (self.starts_at is None or self.starts_at <= now) and (
             self.expires_at is None or now < self.expires_at
         )
 
+    def admits(self, username: str, org_code: str) -> bool:
+        if not self.usernames and not self.org_codes:
+            return True
+        return username in self.usernames or bool(org_code and org_code.casefold() in self.org_codes)
+
 
 _snapshot: tuple[_Rule, ...] = ()
 _loaded = False
-_last_logged: dict[str, float] = {}
+_last_logged: dict[tuple[str, str], float] = {}
 
 
 def utcnow() -> datetime:
@@ -77,8 +100,8 @@ def utcnow() -> datetime:
 
 
 def settings() -> dict:
-    """``[app].ip_allowlist_*`` (``config.get_ip_allowlist_settings``). The
-    routers read it through here, so a test patches one name."""
+    """``[app].ip_allowlist_mode`` (``config.get_ip_allowlist_settings``).
+    Every reader goes through here, so a test patches one name."""
     return get_ip_allowlist_settings()
 
 
@@ -122,6 +145,43 @@ def normalize_cidr(text: str) -> str:
     return str(network)
 
 
+# ── Who a rule admits ──
+
+def split_names(text: str) -> list[str]:
+    """``"alice, bob\\ncarol"`` → ``["alice", "bob", "carol"]`` (order kept,
+    duplicates dropped)."""
+    out: list[str] = []
+    for part in (text or "").replace("\n", ",").split(","):
+        name = part.strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def validate_who(session: Session, usernames: list[str], org_codes: list[str]) -> tuple[list[str], list[str]]:
+    """Check that every username is an account and every org code belongs to
+    at least one account (so a typo can't silently admit nobody). Returns the
+    org codes spelled as the accounts carry them. Raises ValueError."""
+    if usernames:
+        known = set(session.exec(select(User.username).where(User.username.in_(usernames))).all())  # type: ignore[attr-defined]
+        unknown = [n for n in usernames if n not in known]
+        if unknown:
+            raise ValueError(f"Unknown account(s): {', '.join(unknown)}.")
+    canonical: list[str] = []
+    if org_codes:
+        wanted = {c.casefold(): c for c in org_codes}
+        found = {
+            str(code).casefold(): str(code)
+            for code in session.exec(
+                select(User.org_code).where(func.lower(User.org_code).in_([c.lower() for c in org_codes])).distinct()
+            ).all()
+        }
+        unknown = [c for k, c in wanted.items() if k not in found]
+        if unknown:
+            raise ValueError(f"No account has org code(s): {', '.join(unknown)}.")
+        canonical = [found[k] for k in wanted]
+    return usernames, canonical
+
 
 # ── Snapshot ──
 
@@ -139,7 +199,11 @@ def _load(session: Session, now: datetime) -> tuple[_Rule, ...]:
         except ValueError:
             logger.warning("IP allowlist: skipping rule {} with invalid cidr {!r}", row.id, row.cidr)
             continue
-        rules.append(_Rule(network, row.starts_at, row.expires_at))
+        rules.append(_Rule(
+            network, row.starts_at, row.expires_at,
+            frozenset(str(u) for u in (row.usernames or [])),
+            frozenset(str(c).casefold() for c in (row.org_codes or [])),
+        ))
     return tuple(rules)
 
 
@@ -171,46 +235,59 @@ async def refresh_loop(interval: float = REFRESH_S) -> None:
         await asyncio.to_thread(refresh)
 
 
-def is_allowed(addr: IPAddress | None, now: datetime | None = None) -> bool:
+def verdict(addr: IPAddress | None, username: str, org_code: str = "", now: datetime | None = None) -> str:
+    """``"allowed"``, ``"not_for_this_account"`` (active rules cover the
+    address, none admits the account) or ``"no_rule_for_address"``."""
     if addr is None:
-        return False
+        return "no_rule_for_address"
     now = now or utcnow()
-    return any(rule.active(now) and addr in rule.network for rule in _snapshot)
+    covering = [r for r in _snapshot if r.active(now) and addr in r.network]
+    if not covering:
+        return "no_rule_for_address"
+    if any(r.admits(username, org_code) for r in covering):
+        return "allowed"
+    return "not_for_this_account"
 
 
-# ── The check on the API routers ──
+def is_allowed(addr: IPAddress | None, username: str, org_code: str = "", now: datetime | None = None) -> bool:
+    return verdict(addr, username, org_code, now) == "allowed"
 
-def _log_outside(addr_text: str, mode: str, path: str) -> None:
+
+# ── The check inside API-key auth ──
+
+def _log_refusal(username: str, addr_text: str, mode: str, reason: str, path: str) -> None:
     now = time.monotonic()
-    last = _last_logged.get(addr_text)
+    key = (username, addr_text)
+    last = _last_logged.get(key)
     if last is not None and now - last < _LOG_EVERY_S:
         return
     if len(_last_logged) > 10_000:
         _last_logged.clear()
-    _last_logged[addr_text] = now
+    _last_logged[key] = now
     logger.warning(
-        "IP not on allowlist ({}) | ip={} path={}{}",
-        mode, addr_text, path, "" if _loaded else " (allowlist not loaded yet)",
+        "IP allowlist would refuse ({}) | user={} ip={} reason={} path={}{}",
+        mode, username, addr_text, reason, path, "" if _loaded else " (allowlist not loaded yet)",
     )
 
 
-async def require_allowed_ip(request: Request) -> None:
-    """Router-level dependency of the API routers. Runs before API-key auth,
-    from memory only (no DB, no thread)."""
+def check(request: Request, user: User) -> None:
+    """Called by ``deps._authenticate`` once the API key is resolved. From
+    memory only (no DB). Raises 403 in ``enforce`` mode."""
     mode = settings()["mode"]
     if mode == "off":
         return
     addr = client_address(request)
-    if is_allowed(addr):
+    result = verdict(addr, user.username, user.org_code or "")
+    if result == "allowed":
         return
     addr_text = str(addr) if addr is not None else str(request.client.host if request.client else "")
-    _log_outside(addr_text, mode, request.url.path)
+    _log_refusal(user.username, addr_text, mode, result, request.url.path)
     if mode == "enforce":
         metrics.observe_rejection("ip_allowlist")
         raise HTTPException(
             status_code=403,
             detail=(
-                f"Your IP address ({addr_text or 'unknown'}) is not on this gateway's allowlist. "
+                f"This account may not use the API from {addr_text or 'this address'}. "
                 "Ask an administrator for access."
             ),
         )
@@ -245,13 +322,15 @@ def add_rule(
     cidr: str,
     *,
     label: str = "",
+    usernames: list[str] | None = None,
+    org_codes: list[str] | None = None,
     created_by: str,
     starts_at: datetime | None = None,
     expires_at: datetime | None = None,
     now: datetime | None = None,
 ) -> IpAllowRule:
     """Validate and insert a rule. Raises ValueError with a message for the
-    admin on a bad address or window."""
+    admin on a bad address, window, account or org code."""
     now = now or utcnow()
     normalized = normalize_cidr(cidr)
     if expires_at is not None:
@@ -259,14 +338,24 @@ def add_rule(
             raise ValueError("The end time is already in the past.")
         if starts_at is not None and expires_at <= starts_at:
             raise ValueError("The end time must be after the start time.")
+    names, codes = validate_who(session, list(usernames or []), list(org_codes or []))
     rule = IpAllowRule(
-        cidr=normalized, label=label.strip()[:200], created_by=created_by,
-        starts_at=starts_at, expires_at=expires_at, created_at=now,
+        cidr=normalized, label=label.strip()[:200], usernames=names, org_codes=codes,
+        created_by=created_by, starts_at=starts_at, expires_at=expires_at, created_at=now,
     )
     session.add(rule)
     session.commit()
     session.refresh(rule)
     return rule
+
+
+def set_who(session: Session, rule: IpAllowRule, usernames: list[str], org_codes: list[str]) -> None:
+    """Replace who ``rule`` admits (both empty = everyone). Raises ValueError."""
+    names, codes = validate_who(session, usernames, org_codes)
+    rule.usernames, rule.org_codes = names, codes
+    session.add(rule)
+    session.commit()
+    session.refresh(rule)
 
 
 def end_rule(session: Session, rule: IpAllowRule, now: datetime | None = None) -> None:

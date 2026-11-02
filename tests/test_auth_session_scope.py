@@ -70,7 +70,7 @@ class TestDependenciesReleaseConnection:
         assert pooled_engine.pool.checkedout() == 0
 
     def test_get_current_user_returns_with_pool_empty(self, pooled_engine):
-        user = deps.get_current_user(credentials=_bearer(), x_api_key=None)
+        user = deps.get_current_user(request=None, credentials=_bearer(), x_api_key=None)
 
         assert user.username == "pooluser"
         assert pooled_engine.pool.checkedout() == 0
@@ -81,11 +81,11 @@ class TestDependenciesReleaseConnection:
 
     def test_get_current_user_releases_on_rejection(self, pooled_engine):
         with pytest.raises(Exception):
-            deps.get_current_user(credentials=_bearer("sk-wrong"), x_api_key=None)
+            deps.get_current_user(request=None, credentials=_bearer("sk-wrong"), x_api_key=None)
         assert pooled_engine.pool.checkedout() == 0
 
     def test_cloud_access_dependencies_release_connection(self, pooled_engine):
-        user = deps.get_current_user(credentials=_bearer(), x_api_key=None)
+        user = deps.get_current_user(request=None, credentials=_bearer(), x_api_key=None)
         user.can_use_azure = True
         user.can_use_bedrock = True
         user.azure_daily_limit_usd = 5.0

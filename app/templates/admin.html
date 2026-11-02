@@ -789,13 +789,15 @@ function submitExportCsv() {
     <div class="mb-4 max-w-3xl">
         <h2 class="text-sm font-bold text-t2 mb-1">IP Allowlist</h2>
         <p class="text-xs text-t4 gw-tip gw-tip-wide"
-           data-tip="Checked on /v1, /azure and /aws (and the unprefixed API routes) before the API key. The web UI, sign-in and health checks are never blocked, so this page always stays reachable. Only admins add or end rules: users cannot open access themselves. Monitor: requests from unlisted addresses are served and logged as 'IP not on allowlist (monitor)'. Enforce: they get 403. A new rule, or ending one early, reaches every worker within 15 seconds; a preset end time is exact. Only the start of a request is checked: a stream already running is not cut off.">
-            Which client addresses may call the API. Rules are permanent (no end time) or open for one window; use the label to note who or what a rule is for.
+           data-tip="Checked on every /v1, /azure and /aws request right after its API key: it is admitted when an active rule covers both its address and its account. A rule with no accounts and no org codes is for everyone. The web UI, sign-in and health checks are never checked, so this page always stays reachable. Only admins add, edit or end rules. Monitor: requests no rule admits are served and logged as 'IP allowlist would refuse (monitor)' with the account, address and reason. Enforce: they get 403. A change reaches every worker within 15 seconds; a preset end time is exact. Only the start of a request is checked: a stream already running is not cut off.">
+            Which accounts may call the API from which addresses. Each rule is an address range for everyone, or for listed accounts and org codes; permanent, or for one window.
         </p>
         {% if ip_allowlist is not none %}
         <p class="text-xs text-t4 mt-1.5">
             Your address on this page: <span class="font-mono text-t2">{{ ip_allowlist.your_ip or 'unknown' }}</span>
-            — {% if ip_allowlist.your_ip_allowed %}<span class="text-ag">on the allowlist</span>{% else %}<span class="text-ar">not on the allowlist</span>{% endif %}
+            — {% if ip_allowlist.your_verdict == 'allowed' %}<span class="text-ag">your API key is allowed from here</span>
+            {% elif ip_allowlist.your_verdict == 'not_for_this_account' %}<span class="text-ar">rules cover this address, but none is for your account</span>
+            {% else %}<span class="text-ar">no rule covers this address</span>{% endif %}
         </p>
         {% endif %}
     </div>
@@ -825,13 +827,35 @@ function submitExportCsv() {
         <div class="overflow-x-auto">
         <table class="gw-table">
             <thead><tr>
-                <th>Address</th><th>Label</th><th>From</th><th>Until</th><th>Added by</th><th></th>
+                <th>Address</th><th>Label</th><th>For</th><th>From</th><th>Until</th><th>Added by</th><th></th>
             </tr></thead>
             <tbody>
                 {% for r in rows %}
                 <tr>
                     <td class="font-mono text-sm text-t1 whitespace-nowrap">{{ r.cidr }}</td>
                     <td class="text-sm text-t3">{{ r.label }}</td>
+                    <td class="text-xs">
+                        {% if r.everyone %}<span class="gw-badge gw-badge-muted">Everyone</span>
+                        {% else %}
+                        {% for u in r.usernames %}<span class="font-mono text-t2">{{ u }}</span>{{ ',' if not loop.last or r.org_codes }} {% endfor %}
+                        {% for c in r.org_codes %}<span class="gw-badge">org {{ c }}</span> {% endfor %}
+                        {% endif %}
+                        {% if key != 'expired' %}
+                        <details class="mt-1">
+                            <summary class="text-ab cursor-pointer select-none">Edit</summary>
+                            <form action="/admin/ip-allowlist/rules/{{ r.id }}/who" method="POST" data-ip-form="who" class="mt-2 flex flex-col gap-1.5">
+                                <input type="text" name="usernames" value="{{ r.usernames | join(', ') }}" placeholder="Accounts: alice, bob"
+                                       aria-label="Accounts for {{ r.cidr }}" class="gw-input w-56 text-xs font-mono py-1 px-2">
+                                <input type="text" name="org_codes" value="{{ r.org_codes | join(', ') }}" placeholder="Org codes: RD-7"
+                                       aria-label="Org codes for {{ r.cidr }}" class="gw-input w-56 text-xs font-mono py-1 px-2">
+                                <div class="flex items-center gap-2">
+                                    <button type="submit" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Save</button>
+                                    <span class="text-t4">both empty = everyone</span>
+                                </div>
+                            </form>
+                        </details>
+                        {% endif %}
+                    </td>
                     <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ r.starts or '—' }}</td>
                     <td class="font-mono text-xs whitespace-nowrap">
                         {% if not r.expires %}<span class="text-t2">permanent</span>
@@ -866,8 +890,20 @@ function submitExportCsv() {
         </div>
         <div>
             <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Label</label>
-            <input type="text" name="label" maxlength="200" placeholder="Partner office / alice@partner.com"
-                   class="gw-input w-64 text-sm py-1.5 px-2">
+            <input type="text" name="label" maxlength="200" placeholder="Partner office"
+                   class="gw-input w-48 text-sm py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Usernames, comma-separated. Leave this and Org codes empty for everyone.">Accounts</label>
+            <input type="text" name="usernames" placeholder="empty = everyone"
+                   class="gw-input w-48 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Org codes (departments), comma-separated: every account with one of them. Combined with Accounts: either one admits.">Org codes</label>
+            <input type="text" name="org_codes" placeholder="RD-7, QA-2"
+                   class="gw-input w-36 text-sm font-mono py-1.5 px-2">
         </div>
         <div>
             <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"

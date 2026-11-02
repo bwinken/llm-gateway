@@ -431,7 +431,7 @@ def admin_page(
         concurrency_in_flight = None
 
     try:
-        ip_allowlist_view = _ip_allowlist_view(session, request)
+        ip_allowlist_view = _ip_allowlist_view(session, request, admin_user)
     except Exception as exc:  # e.g. before `alembic upgrade`: the card says so, the page still renders
         session.rollback()
         logger.warning("IP allowlist view failed | error={}: {}", type(exc).__name__, exc)
@@ -836,6 +836,9 @@ def _ip_rule_view(rule, now: datetime) -> dict:
         "id": rule.id,
         "cidr": rule.cidr,
         "label": rule.label,
+        "usernames": list(rule.usernames or []),
+        "org_codes": list(rule.org_codes or []),
+        "everyone": not rule.usernames and not rule.org_codes,
         "created_by": rule.created_by,
         "starts": _local_label(rule.starts_at),
         "expires": _local_label(rule.expires_at),
@@ -843,7 +846,7 @@ def _ip_rule_view(rule, now: datetime) -> dict:
     }
 
 
-def _ip_allowlist_view(session: Session, request: Request) -> dict:
+def _ip_allowlist_view(session: Session, request: Request, admin_user: User) -> dict:
     now = ip_allowlist.utcnow()
     groups = ip_allowlist.list_rules(session, now)
     addr = ip_allowlist.client_address(request)
@@ -852,7 +855,8 @@ def _ip_allowlist_view(session: Session, request: Request) -> dict:
         "modes": IP_ALLOWLIST_MODES,
         "rules": {k: [_ip_rule_view(r, now) for r in rows] for k, rows in groups.items()},
         "your_ip": str(addr) if addr is not None else "",
-        "your_ip_allowed": ip_allowlist.is_allowed(addr, now),
+        # Whether the admin's own API key would be admitted from here.
+        "your_verdict": ip_allowlist.verdict(addr, admin_user.username, admin_user.org_code or "", now),
     }
 
 
@@ -878,29 +882,71 @@ def add_ip_allow_rule(
     request: Request,
     cidr: str = Form(""),
     label: str = Form(""),
+    usernames: str = Form(""),
+    org_codes: str = Form(""),
     starts_at: str = Form(""),
     expires_at: str = Form(""),
     admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
 ):
-    """Add an allowlist rule: an address or CIDR range, permanent (no end
-    time) or for one window (start optional, end in the future). Times are
-    Asia/Taipei. Takes effect in this worker at once, in the others within
+    """Add an allowlist rule: an address or CIDR range; for everyone (both
+    ``usernames`` and ``org_codes`` empty) or for the listed accounts and
+    org codes (comma-separated); permanent (no end time) or for one window
+    (start optional, end in the future). Times are Asia/Taipei. Takes
+    effect in this worker at once, in the others within
     ``ip_allowlist.REFRESH_S`` seconds."""
     start = _local_input_to_utc("Start", starts_at)
     end = _local_input_to_utc("End", expires_at)
     try:
         rule = ip_allowlist.add_rule(
             session, cidr, label=label, created_by=admin_user.username,
+            usernames=ip_allowlist.split_names(usernames), org_codes=ip_allowlist.split_names(org_codes),
             starts_at=start, expires_at=end,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     ip_allowlist.refresh()
     logger.info(
-        "IP allowlist rule added | id={} cidr={} label={!r} starts={} expires={} admin={}",
-        rule.id, rule.cidr, rule.label, rule.starts_at or "now", rule.expires_at or "never",
+        "IP allowlist rule added | id={} cidr={} label={!r} for={} starts={} expires={} admin={}",
+        rule.id, rule.cidr, rule.label, _who_text(rule), rule.starts_at or "now", rule.expires_at or "never",
         admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "rule": _ip_rule_view(rule, ip_allowlist.utcnow())})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+def _who_text(rule) -> str:
+    if not rule.usernames and not rule.org_codes:
+        return "everyone"
+    return ",".join([*rule.usernames, *(f"org:{c}" for c in rule.org_codes)])
+
+
+@router.post("/ip-allowlist/rules/{rule_id}/who")
+def set_ip_allow_rule_who(
+    rule_id: int,
+    request: Request,
+    usernames: str = Form(""),
+    org_codes: str = Form(""),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Change who a rule admits (both empty = everyone), e.g. when a team
+    changes. The address and window stay as they are."""
+    rule = session.get(IpAllowRule, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    before = _who_text(rule)
+    try:
+        ip_allowlist.set_who(
+            session, rule, ip_allowlist.split_names(usernames), ip_allowlist.split_names(org_codes),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    ip_allowlist.refresh()
+    logger.info(
+        "IP allowlist rule edited | id={} cidr={} for: {} -> {} admin={}",
+        rule.id, rule.cidr, before, _who_text(rule), admin_user.username,
     )
     if _wants_json(request):
         return JSONResponse({"ok": True, "rule": _ip_rule_view(rule, ip_allowlist.utcnow())})

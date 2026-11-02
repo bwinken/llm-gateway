@@ -238,12 +238,14 @@ class AnomalyEvent(SQLModel, table=True):
 class IpAllowRule(SQLModel, table=True):
     """One entry of the API IP allowlist (app/services/ip_allowlist.py).
 
-    While ``[app].ip_allowlist_mode`` is ``monitor`` or ``enforce``, a request
-    to ``/v1/*``, ``/azure/*`` or ``/aws/*`` (and their unprefixed twins) is
-    admitted only from an address inside an active rule's ``cidr``. A rule is
-    active from ``starts_at`` (NULL: at once) until ``expires_at`` (NULL:
-    permanent). Only admins create rules (admin panel → IP Allowlist);
-    ``label`` says who or what a rule is for.
+    While ``[app].ip_allowlist_mode`` is ``monitor`` or ``enforce``, an API
+    request (``/v1/*``, ``/azure/*``, ``/aws/*`` and their unprefixed twins)
+    is admitted only when an active rule covers both its address (``cidr``)
+    and its account: ``usernames`` and ``org_codes`` both empty means
+    everyone; otherwise the account's username must be in ``usernames`` or
+    its ``org_code`` in ``org_codes``. A rule is active from ``starts_at``
+    (NULL: at once) until ``expires_at`` (NULL: permanent). Only admins
+    create rules (admin panel → IP Allowlist); ``label`` describes it.
 
     ``created_by`` is the admin's username, not a foreign key: an expired
     rule stays as the record of who opened what, and deleting an account
@@ -254,6 +256,14 @@ class IpAllowRule(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     cidr: str = Field()                      # normalized network, e.g. "203.0.113.5/32"
     label: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    # Who the rule admits: both empty = every account. Usernames rather than
+    # user ids, like created_by, so deleting an account never touches rules.
+    usernames: list[str] = Field(
+        default_factory=list, sa_column=sa.Column(sa.JSON, nullable=False, server_default=sa.text("'[]'")),
+    )
+    org_codes: list[str] = Field(
+        default_factory=list, sa_column=sa.Column(sa.JSON, nullable=False, server_default=sa.text("'[]'")),
+    )
     created_by: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     starts_at: datetime | None = Field(default=None)
     expires_at: datetime | None = Field(default=None)

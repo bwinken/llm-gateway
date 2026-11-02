@@ -20,7 +20,7 @@ from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
 from app.models.schema import UsageLog, User
-from app.services import metrics
+from app.services import ip_allowlist, metrics
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -228,6 +228,7 @@ def _authenticate(
     x_api_key: str | None,
     *,
     check_daily_limit: bool,
+    request: Request | None = None,
 ) -> User:
     # NOTE: request-header capture for observability lives in
     # RequestMetaMiddleware (pure ASGI), NOT here — a contextvar written in this
@@ -291,6 +292,11 @@ def _authenticate(
             # fix the situation. Non-admins always get rejected.
             logger.warning("Auth rejected: user '{}' is disabled", user.username)
             raise AccountDisabledError(user.username)
+        # API IP allowlist: needs the account, so it runs here, before the
+        # budget check (a refused address is a 403, not a 429). Memory only;
+        # a no-op while [app].ip_allowlist_mode is "off".
+        if request is not None:
+            ip_allowlist.check(request, user)
         if check_daily_limit:
             _check_daily_limit(session, user)
     # ``user`` is now detached: its columns are loaded (SQLModel does not
@@ -308,22 +314,25 @@ def get_today_usage(user: User) -> dict:
 
 
 def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
 ) -> User:
-    """API-key auth for billable endpoints: rejects disabled accounts and
-    429s once today's spend has reached ``daily_limit_usd``."""
-    return _authenticate(credentials, x_api_key, check_daily_limit=True)
+    """API-key auth for billable endpoints: rejects disabled accounts,
+    applies the IP allowlist and 429s once today's spend has reached
+    ``daily_limit_usd``."""
+    return _authenticate(credentials, x_api_key, check_daily_limit=True, request=request)
 
 
 def get_current_user_unmetered(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
 ) -> User:
     """Same auth as ``get_current_user`` but without the daily-limit check,
     for read-only account endpoints (``GET /v1/me``) that must still answer
     once the budget is spent — that is exactly when a client asks."""
-    return _authenticate(credentials, x_api_key, check_daily_limit=False)
+    return _authenticate(credentials, x_api_key, check_daily_limit=False, request=request)
 
 
 def require_azure_access(

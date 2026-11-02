@@ -148,8 +148,8 @@ The auth dependencies open their **own short-lived `Session(engine)`** and close
 
 | Function | Returns | Description |
 |---|---|---|
-| `get_current_user(credentials, x_api_key)` | `User` | Validates the API key (`Authorization: Bearer` or `x-api-key`; each candidate is tried when both are sent) + checks the daily limit. Raises `AccountDisabledError` if `user.is_disabled` (admins bypass) |
-| `get_current_user_unmetered(credentials, x_api_key)` | `User` | Same auth without the daily-limit check. Used by `GET /v1/me`, which must answer when the budget is spent |
+| `get_current_user(request, credentials, x_api_key)` | `User` | Validates the API key (`Authorization: Bearer` or `x-api-key`; each candidate is tried when both are sent), applies the API IP allowlist (`ip_allowlist.check`) + checks the daily limit. Raises `AccountDisabledError` if `user.is_disabled` (admins bypass) |
+| `get_current_user_unmetered(request, credentials, x_api_key)` | `User` | Same auth (IP allowlist included) without the daily-limit check. Used by `GET /v1/me`, which must answer when the budget is spent |
 | `require_azure_access(user)` | `User` | Wraps `get_current_user`; 403 if `not user.can_use_azure and not user.is_admin`, then `ensure_azure_budget`. Used by `/azure/v1/*` |
 | `require_bedrock_access(user)` | `User` | Same for `can_use_bedrock` + `ensure_bedrock_budget`. Used by `/aws/v1/*` |
 | `limited_current_user` / `limited_azure_access` / `limited_bedrock_access` | `User` (yield) | The three dependencies above wrapped by `_limited`, holding a concurrency lease until the response (stream included) has been sent. Inference endpoints only (chat / responses / messages) |
