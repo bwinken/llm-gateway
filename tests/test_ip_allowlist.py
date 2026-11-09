@@ -215,13 +215,15 @@ class TestEveryApiRouteIsChecked:
         def walk(dependant) -> bool:
             return dependant.call in checked or any(walk(d) for d in dependant.dependencies)
 
-        missing = [
-            (route.path, sorted(route.methods))
+        routes = [
+            route
             for router in (v1_api.router, azure_api.router, aws_api.router)
             for route in router.routes
-            if not walk(route.dependant)
         ]
+        missing = [(route.path, sorted(route.methods)) for route in routes if not walk(route.dependant)]
         assert missing == []
+        # Guard against a vacuous pass if FastAPI ever stops listing them here.
+        assert {"/v1/chat/completions", "/azure/v1/messages", "/aws/v1/messages"} <= {r.path for r in routes}
 
 
 class TestApiCheck:
