@@ -20,7 +20,7 @@ from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
 from app.models.schema import UsageLog, User
-from app.services import ip_allowlist, metrics
+from app.services import auth_throttle, ip_allowlist, metrics
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -268,6 +268,18 @@ def _authenticate(
             detail="Missing API key. Provide Authorization: Bearer <key> or x-api-key header.",
         )
 
+    # An address that has tried many different invalid keys is refused before
+    # any lookup, valid key or not (app/services/auth_throttle.py).
+    client_addr = request.client.host if request is not None and request.client else None
+    wait_s = auth_throttle.retry_after(client_addr)
+    if wait_s is not None:
+        metrics.observe_rejection("auth_throttle")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed authentication attempts from this address. Try again later.",
+            headers={"Retry-After": str(wait_s)},
+        )
+
     with Session(engine) as session:
         user: User | None = None
         for key in candidates:
@@ -280,7 +292,11 @@ def _authenticate(
             # operators can tell "wrong key" from "no key" from "mangled key"
             # without leaking the full secret to the log file.
             previews = ", ".join(_mask(k) for k in candidates)
-            logger.warning("Auth rejected: no user found for candidates [{}]", previews)
+            logger.warning(
+                "Auth rejected: no user found for candidates [{}] | client={}",
+                previews, client_addr or "-",
+            )
+            auth_throttle.record_failure(client_addr, candidates)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid API key.",

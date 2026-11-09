@@ -1,18 +1,42 @@
 from __future__ import annotations
 
-import uuid
+import re
+import secrets
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import sqlalchemy as sa
-from sqlalchemy import Index, UniqueConstraint
+from sqlalchemy import Index, UniqueConstraint, func
 from sqlmodel import Field, SQLModel
 
 
+API_KEY_PREFIX = "sk-internal-"
+# 32 random bytes from the OS CSPRNG, hex-encoded: 256 bits. Keys issued before
+# this format were ``sk-internal-<unix time>-<8 hex>`` (32 random bits plus a
+# guessable timestamp). They keep working: auth is an exact lookup, so the
+# format only matters when a key is issued.
+_API_KEY_RANDOM_BYTES = 32
+API_KEY_LENGTH = len(API_KEY_PREFIX) + 2 * _API_KEY_RANDOM_BYTES
+_CURRENT_KEY_RE = re.compile(rf"{re.escape(API_KEY_PREFIX)}[0-9a-f]{{{2 * _API_KEY_RANDOM_BYTES}}}")
+
+
 def _generate_api_key() -> str:
-    ts = int(datetime.now(timezone.utc).timestamp())
-    short_hex = uuid.uuid4().hex[:8]
-    return f"sk-internal-{ts}-{short_hex}"
+    return API_KEY_PREFIX + secrets.token_hex(_API_KEY_RANDOM_BYTES)
+
+
+def is_legacy_api_key(key: str) -> bool:
+    """True for a key not in the current format (older, weaker keys; or one
+    set by hand). The dashboard nudges its holder to regenerate it."""
+    return not _CURRENT_KEY_RE.fullmatch(key or "")
+
+
+def legacy_api_key_clause():
+    """SQL counterpart of ``is_legacy_api_key`` for the admin filter. Checks
+    prefix and length only (portable SQL has no regex); a hand-set key of
+    exactly the current length is the one case the two disagree on."""
+    return (func.length(User.api_key) != API_KEY_LENGTH) | ~User.api_key.startswith(
+        API_KEY_PREFIX, autoescape=True
+    )
 
 
 APP_ACCOUNT_PREFIX = "app_"

@@ -18,7 +18,7 @@ erDiagram
         INTEGER id PK "Auto-increment primary key"
         VARCHAR username UK "Username (SSO sub claim)"
         VARCHAR password_hash "Unused, defaults to empty string"
-        VARCHAR api_key UK "API key sk-internal-{ts}-{hex8}"
+        VARCHAR api_key UK "API key sk-internal-{hex64}"
         FLOAT daily_limit_usd "Daily cost limit (USD), 0 = $0 budget"
         FLOAT azure_daily_limit_usd "Retired, unread (nullable)"
         FLOAT bedrock_daily_limit_usd "Retired, unread (nullable)"
@@ -152,7 +152,7 @@ classDiagram
 | `id` | `INTEGER` | PK, auto-increment | — | Primary key, auto-generated |
 | `username` | `VARCHAR` | UNIQUE, INDEX | — | SSO `sub` claim. App accounts are prefixed with `app_` (`is_app_account()`) |
 | `password_hash` | `VARCHAR` | — | `""` | **Unused.** Legacy field kept for backward compatibility |
-| `api_key` | `VARCHAR` | UNIQUE, INDEX | `_generate_api_key()` | Auto-generated, format `sk-internal-{unix_timestamp}-{8-char hex}`. Used for API auth. Admin listings show `mask_api_key(...)` |
+| `api_key` | `VARCHAR` | UNIQUE, INDEX | `_generate_api_key()` | Auto-generated, format `sk-internal-` + 64 hex (256 random bits). Keys issued earlier (`sk-internal-{unix_timestamp}-{8-char hex}`) keep working; `is_legacy_api_key` flags them. Used for API auth. Admin listings show `mask_api_key(...)` |
 | `daily_limit_usd` | `FLOAT` | — | `10.0` | Daily spend limit (USD) for all backends. API returns 429 when exceeded. Always finite and ≥ 0: **`0` is a $0 budget, not unlimited**. SSO-created users get `[app].default_daily_limit_usd` |
 | `azure_daily_limit_usd` | `FLOAT` | NULLABLE | `None` | **Retired, unread.** Former per-user Azure sub-limit; kept until a migration drops it. The admin API answers 400 to this field |
 | `bedrock_daily_limit_usd` | `FLOAT` | NULLABLE | `None` | **Retired, unread.** Former per-user Bedrock sub-limit; same status as above |
@@ -171,12 +171,10 @@ classDiagram
 
 ```python
 def _generate_api_key() -> str:
-    ts = int(datetime.now(timezone.utc).timestamp())
-    short_hex = uuid.uuid4().hex[:8]
-    return f"sk-internal-{ts}-{short_hex}"
+    return API_KEY_PREFIX + secrets.token_hex(32)   # "sk-internal-" + 64 hex
 ```
 
-Example: `sk-internal-1741651200-a1b2c3d4`
+Example: `sk-internal-3f9c…` (76 characters). Keys issued before this format, `sk-internal-1741651200-a1b2c3d4`, still authenticate (auth is an exact lookup); the dashboard asks their holders to regenerate and the admin Users filter **Older-format API key** lists them.
 
 ### User Type Distinctions
 

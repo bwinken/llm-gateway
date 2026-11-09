@@ -14,7 +14,7 @@ On, ``GET /metrics`` serves the gateway's own counters and histograms:
   llm_gateway_upstream_ttfb_seconds{backend,model}
   llm_gateway_gateway_overhead_seconds{backend}
   llm_gateway_output_tokens_per_second{backend,model}
-  llm_gateway_rejections_total{reason}                  daily_limit|cloud_limit|concurrency_limit
+  llm_gateway_rejections_total{reason}                  daily_limit|cloud_limit|concurrency_limit|auth_throttle
   llm_gateway_in_flight_requests                        open HTTP requests, streams included
   llm_gateway_server_up{server}                         health loop: 1 UP, 0 DOWN
   llm_gateway_vllm_requests_running{server} / _waiting{server}
@@ -249,7 +249,7 @@ def observe_error(endpoint: str, backend: str, model: str, status_code: int) -> 
 
 
 def observe_rejection(reason: str) -> None:
-    """A request refused at the gateway: 429 (budget, concurrency) or 403 (IP allowlist)."""
+    """A request refused at the gateway: 429 (budget, concurrency, auth throttle) or 403 (IP allowlist)."""
     try:
         m = _init()
         if m is None:

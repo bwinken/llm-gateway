@@ -34,6 +34,7 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | `app/services/azure_proxy.py`, `bedrock_proxy.py` | Cloud forwarding; translation via `responses_adapter.py` / `converse_adapter.py` |
 | `app/services/anthropic_adapter.py` | Anthropic Messages ↔ OpenAI chat (the internal pivot format) |
 | `app/services/usage_rollup.py` | `usage_daily` rollup: `aggregate` (the read path for every multi-day report), the in-app `rollup_loop` |
+| `app/services/auth_throttle.py` | Per-address lockout after many distinct invalid API keys (per worker, in memory) |
 | `app/services/ip_allowlist.py` | API IP allowlist: rules of address range × accounts / org codes × window, the check called from API-key auth, the per-worker rule snapshot |
 | `app/services/guardrail.py` | Qwen3Guard-Gen prompt screening of local (vLLM) traffic: policy, fail-open guard call, Langfuse verdict |
 | `app/services/scheduler.py`, `anomaly_scan.py`, `usage_retention.py` | In-gateway periodic jobs (claim in `scheduled_jobs`): the hourly anomaly scan and the opt-in usage-log retention |
@@ -115,6 +116,8 @@ Each of these has broken production or a test before. The parenthesized test pin
 **Security and logs**
 - Never log raw request bodies. Use `redact.summarize_body()` (shape only); `LOG_REQUEST_BODIES=true` is a debugging escape hatch.
 - CORS never sets `allow_credentials=True`: Starlette echoes any `Origin` on cookie-carrying requests, and with that header it would hand admin responses (full API keys included) to other sites. SSO-authenticated writes live under `/admin` or `/dashboard`, where `CrossSiteRequestGuard` refuses cross-site requests; a new prefix goes in `COOKIE_AUTH_PREFIXES` (`tests/test_browser_security.py`).
+- API keys are issued only by `schema._generate_api_key` (256 random bits). Never reject an older-format key by its shape: auth is an exact lookup and existing keys must keep working; `is_legacy_api_key` only drives the dashboard nudge and the admin filter (`tests/test_api_key_hardening.py`).
+- The failed-auth throttle counts **distinct** invalid keys per address and, once locked, refuses before the key lookup. Counting attempts instead would let one stale client lock out a whole office NAT; looking the key up while locked would let a guesser keep testing (`TestThrottle`).
 - Admin listings show `mask_api_key(...)`. Full keys come one at a time from `GET /admin/users/{id}/api-key`, which is logged.
 - Admin-editable site links accept only `http(s)://` or site-relative URLs.
 - Downstream error lines include `user`, `model`, `endpoint` and the exception **type**. httpx timeouts stringify to an empty message.

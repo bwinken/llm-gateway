@@ -438,12 +438,15 @@ def _patch_all():
     import app.services.ip_allowlist as ip_allowlist  # same, for the engine / settings patches
     from contextlib import ExitStack
 
+    import app.services.auth_throttle as auth_throttle
     ip_allowlist.reset()  # the per-worker snapshot is module state
+    auth_throttle.reset()  # so are failed-auth counts and locks
     with ExitStack() as stack:
         for make_patch in _ALL_PATCHES:
             stack.enter_context(make_patch())
         yield
     ip_allowlist.reset()
+    auth_throttle.reset()
 
 
 @pytest.fixture()

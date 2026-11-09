@@ -63,6 +63,7 @@ from app.models.schema import (
     UsageLog,
     app_account_clause,
     is_app_account,
+    legacy_api_key_clause,
     mask_api_key,
 )
 from app.services import concurrency, guardrail, ip_allowlist
@@ -159,6 +160,9 @@ USER_TABLE_STATUSES: dict[str, str] = {
     "waived": "Concurrency waived",
     "waiver_changed": "Waiver not the default",
     "disabled": "Disabled",
+    # Not a permission: tracks how many keys still predate the current format
+    # (schema.is_legacy_api_key). Deliberately not in SPECIAL_ACCESS_KEYS.
+    "legacy_key": "Older-format API key",
 }
 # The "Special access" overview above the tables: one count per permission,
 # each linking to its filter. The waiver counts only what differs from an
@@ -183,6 +187,7 @@ def _status_clause(status: str, is_apps: bool):
         "waived": User.concurrency_waived == True,  # noqa: E712
         "waiver_changed": waived_differs,
         "disabled": User.is_disabled == True,  # noqa: E712
+        "legacy_key": legacy_api_key_clause(),
     }
     if status == "special":
         return (

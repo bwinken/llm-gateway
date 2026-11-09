@@ -18,7 +18,7 @@ erDiagram
         INTEGER id PK "自動遞增主鍵"
         VARCHAR username UK "使用者名稱 (SSO sub claim)"
         VARCHAR password_hash "未使用，預設空字串"
-        VARCHAR api_key UK "API 金鑰 sk-internal-{ts}-{hex8}"
+        VARCHAR api_key UK "API 金鑰 sk-internal-{hex64}"
         FLOAT daily_limit_usd "每日費用上限 (USD)，0 = $0 預算"
         FLOAT azure_daily_limit_usd "已停用，不再讀取 (nullable)"
         FLOAT bedrock_daily_limit_usd "已停用，不再讀取 (nullable)"
@@ -152,7 +152,7 @@ classDiagram
 | `id` | `INTEGER` | PK, auto-increment | — | 主鍵，資料庫自動產生 |
 | `username` | `VARCHAR` | UNIQUE, INDEX | — | SSO 登入時的 `sub` claim。App 帳號以 `app_` 開頭（`is_app_account()`） |
 | `password_hash` | `VARCHAR` | — | `""` | **未使用**。歷史欄位，保留以維持向後相容 |
-| `api_key` | `VARCHAR` | UNIQUE, INDEX | `_generate_api_key()` | 自動產生，格式 `sk-internal-{unix_timestamp}-{8位hex}`。用於 API 認證。Admin 列表顯示 `mask_api_key(...)` |
+| `api_key` | `VARCHAR` | UNIQUE, INDEX | `_generate_api_key()` | 自動產生，格式 `sk-internal-` + 64 位 hex（256 bits 隨機）。舊格式 `sk-internal-{unix_timestamp}-{8位hex}` 仍可使用，由 `is_legacy_api_key` 辨識。用於 API 認證。Admin 列表顯示 `mask_api_key(...)` |
 | `daily_limit_usd` | `FLOAT` | — | `10.0` | 所有 backend 合計的每日花費上限（USD）。超過時 API 回傳 429 Too Many Requests。一律為有限值且 ≥ 0：**`0` 代表 $0 預算，不是無上限**。SSO 自動建立的使用者取 `[app].default_daily_limit_usd` |
 | `azure_daily_limit_usd` | `FLOAT` | NULLABLE | `None` | **已停用，不再讀取**。舊的每人 Azure 子上限；保留到有 migration 移除為止。Admin API 收到此欄位會回 400 |
 | `bedrock_daily_limit_usd` | `FLOAT` | NULLABLE | `None` | **已停用，不再讀取**。舊的每人 Bedrock 子上限；狀態同上 |
@@ -171,12 +171,10 @@ classDiagram
 
 ```python
 def _generate_api_key() -> str:
-    ts = int(datetime.now(timezone.utc).timestamp())
-    short_hex = uuid.uuid4().hex[:8]
-    return f"sk-internal-{ts}-{short_hex}"
+    return API_KEY_PREFIX + secrets.token_hex(32)   # "sk-internal-" + 64 hex
 ```
 
-範例：`sk-internal-1741651200-a1b2c3d4`
+範例：`sk-internal-3f9c…`（共 76 字元）。舊格式 `sk-internal-1741651200-a1b2c3d4` 的 key 仍可驗證（驗證是逐字比對）；dashboard 會提醒持有人重新產生，admin 使用者表可用 **Older-format API key** 篩出。
 
 ### 使用者類型區分
 

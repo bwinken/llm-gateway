@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
-from app.models.schema import AppOwner, User
+from app.models.schema import AppOwner, User, is_legacy_api_key
 
 from app.core.auth import get_web_user
 from app.core.deps import effective_cloud_limit
@@ -424,6 +424,8 @@ def dashboard(
             model_breakdown_groups=model_breakdown_groups,
             today_str=datetime.now(LOCAL_TZ).strftime("%Y-%m-%d"),
             owned_apps=owned_apps,
+            legacy_key=is_legacy_api_key(user.api_key),
+            legacy_app_keys=sum(1 for a in owned_apps if a.get("legacy_key")),
             server_groups=server_groups,
             claude_code_available=claude_code_available,
             azure_access=user.can_use_azure or user.is_admin,
