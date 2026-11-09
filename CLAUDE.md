@@ -44,7 +44,7 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | `app/templates/` | `dashboard.html`, `admin.html`, `_admin_user_table.html` (Users / Apps tables, also served alone by `/admin/user-table`), `admin_models.html` (model-config SPA), `base.html` (`gwTabs`, `gwToast`, `gwConfirm`) |
 | `alembic/versions/` | Migrations (PostgreSQL-only: they do not run on SQLite) |
 | `scripts/` | Manual runs of the in-gateway jobs: `scan_anomalies.py`, `rollup_usage_daily.py` (inspect / `--recompute`), `cleanup_usage_logs.py` (retention preview); plus `azure_latency_probe.py` (per-phase Azure latency, direct vs. via gateway), SQLite → PG migration, legacy `add_owner_id.py`, dev PG helper |
-| `deploy/` | gateway systemd unit (no timers: jobs run in the gateway), nginx example, docker-compose (PG + oauth2-proxy), `setup.sh` |
+| `deploy/` | gateway systemd unit (no timers: jobs run in the gateway), nginx example, docker-compose (PG + oauth2-proxy), `setup.sh`, `backup-db.sh` (online `pg_dump` with verify + retention; a host cron task, not a gateway job) |
 | `setup/install-claude-code-example.bat` | Windows Claude Code installer, personalized with the user's key by `/dashboard/install-claude-code.bat` |
 
 ## Request flow

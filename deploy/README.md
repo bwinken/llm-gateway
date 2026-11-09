@@ -72,6 +72,7 @@ bash deploy/setup.sh
 ```bash
 cd /path/to/llm-gateway   # original clone directory
 git pull
+bash deploy/backup-db.sh  # back up the database first (online, see Database Backup)
 bash deploy/setup.sh      # keeps existing config; updates code + deps, migrates, restarts
 ```
 
@@ -183,6 +184,33 @@ With both off, a failed request logs the **shape** of the body — fields presen
 - **Failed-auth throttle.** `AUTH_FAIL_DISTINCT_KEYS` / `AUTH_FAIL_WINDOW_S` / `AUTH_LOCKOUT_S` (default 10 distinct invalid keys in 600 s → 429 for 900 s). It keys on the client address, so uvicorn must trust nginx's forwarded headers; loopback is never locked, which is what you would see if it didn't.
 - **Dependency and secret scanning** run in GitHub Actions (`.github/workflows/security.yml`). For Dependabot to open security-fix PRs, turn on *Dependabot security updates* in the repository's Settings → Code security.
 
+## Database Backup
+
+`deploy/backup-db.sh` takes an online backup: `pg_dump` reads the whole database in one snapshot, so the dump is consistent and the gateway keeps serving. It only blocks schema changes, so never run it alongside `alembic upgrade` / `setup.sh` (the script refuses while an `alembic upgrade` is running).
+
+```bash
+bash ~/opt/llm-gateway/deploy/backup-db.sh                  # → ~/backup/llm-gateway
+bash ~/opt/llm-gateway/deploy/backup-db.sh /mnt/nas/llmgw   # another directory
+bash ~/opt/llm-gateway/deploy/backup-db.sh --check FILE     # is this dump readable?
+```
+
+It reads `PG_USER` / `PG_DB` from `deploy/.env`, checks free space against the database size, writes `daily/llm-gateway-<date>_<time>.dump` (`pg_dump -Fc`) through a temporary file, verifies it with `pg_restore --list` before keeping it, copies the first backup of each month to `monthly/`, and prunes to `KEEP_DAILY` (30) and `KEEP_MONTHLY` (12). Files are `600`, directories `700`: a dump holds every API key. Set `BACKUP_COPY_TO=user@host:/path/` to rsync each backup off the host; without it the script warns that the backup only lives on this machine. Exit code 0 on success; a failure leaves no partial file.
+
+Run it before every upgrade, and daily from cron at an off-peak hour. A database backup is a host task, not one of the gateway's in-process jobs (those never touch Docker):
+
+```bash
+30 2 * * * BACKUP_COPY_TO=user@nas:/backup/llmgw/ bash $HOME/opt/llm-gateway/deploy/backup-db.sh >> $HOME/backup/llm-gateway/backup.log 2>&1
+```
+
+Restore into a scratch container to rehearse (quarterly), or into a fresh database after a loss:
+
+```bash
+docker run -d --name pg-restore-test -e POSTGRES_PASSWORD=test postgres:16
+docker exec -i pg-restore-test pg_restore -U postgres --create -d postgres < FILE
+docker exec pg-restore-test psql -U postgres -d <PG_DB> -c "SELECT count(*) FROM users" -c "SELECT * FROM alembic_version"
+docker rm -f pg-restore-test
+```
+
 ## PostgreSQL Data Migration (Volume Change)
 
 When moving PG data to a different volume (e.g., wrong disk mount, capacity expansion), using `pg_dumpall` logical backup is safest — unaffected by filesystem or permission differences.
@@ -225,6 +253,7 @@ docker compose -f deploy/docker-compose.yml up -d
     ├── .env                  # Docker services env vars (template: .env.example)
     ├── pgdata/               # PostgreSQL data
     ├── setup.sh              # Deployment script
+    ├── backup-db.sh          # Online database backup (pg_dump, verify, retention)
     ├── gen-selfsigned-cert.sh               # Self-signed TLS cert for :443
     ├── llm-gateway.service                  # Gateway systemd unit
     ├── llm-gateway-example.nginx.conf       # Nginx template

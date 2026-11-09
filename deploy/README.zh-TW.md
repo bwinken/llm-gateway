@@ -72,6 +72,7 @@ bash deploy/setup.sh
 ```bash
 cd /path/to/llm-gateway   # 原始 clone 目錄
 git pull
+bash deploy/backup-db.sh  # 先備份資料庫（線上執行，見「資料庫備份」）
 bash deploy/setup.sh      # 保留既有設定；更新程式碼 + 依賴、遷移、重啟
 ```
 
@@ -183,6 +184,33 @@ scrape_configs:
 - **驗證失敗節流。** `AUTH_FAIL_DISTINCT_KEYS` / `AUTH_FAIL_WINDOW_S` / `AUTH_LOCKOUT_S`（預設 600 秒內 10 把不同的錯誤 key → 封鎖 900 秒，回 429）。依來源位址判斷，所以 uvicorn 必須信任 nginx 轉送的 header；loopback 永不封鎖，若沒設定好，所有請求都會變成 loopback，節流也就形同關閉。
 - **套件與密鑰掃描** 在 GitHub Actions 執行（`.github/workflows/security.yml`）。要讓 Dependabot 自動開安全修補 PR，需到 repo 的 Settings → Code security 打開 *Dependabot security updates*。
 
+## 資料庫備份
+
+`deploy/backup-db.sh` 做線上備份：`pg_dump` 在一個快照裡讀完整個資料庫，備份內容一致，gateway 不用停。它只會擋住改表結構的動作，所以不要和 `alembic upgrade` / `setup.sh` 同時跑（偵測到 `alembic upgrade` 正在執行時，腳本會拒絕執行）。
+
+```bash
+bash ~/opt/llm-gateway/deploy/backup-db.sh                  # → ~/backup/llm-gateway
+bash ~/opt/llm-gateway/deploy/backup-db.sh /mnt/nas/llmgw   # 指定其他目錄
+bash ~/opt/llm-gateway/deploy/backup-db.sh --check FILE     # 檢查備份檔能否讀取
+```
+
+腳本會從 `deploy/.env` 讀 `PG_USER` / `PG_DB`，先確認剩餘空間大於資料庫大小，經由暫存檔寫出 `daily/llm-gateway-<日期>_<時間>.dump`（`pg_dump -Fc`），用 `pg_restore --list` 驗證通過才保留；每個月的第一份另存到 `monthly/`，並只保留 `KEEP_DAILY`（30）份每日、`KEEP_MONTHLY`（12）份每月備份。檔案權限 `600`、目錄 `700`：備份裡有所有人的 API key。設 `BACKUP_COPY_TO=user@host:/path/` 會把每份備份 rsync 到主機以外的地方；沒設時腳本會提醒備份只在本機。成功回傳 0；失敗時不會留下不完整的檔案。
+
+每次升版前跑一次，平常用 cron 在離峰時段每天跑。資料庫備份是主機層級的工作，不是 gateway 程式內的定期工作（那些不會碰 Docker）：
+
+```bash
+30 2 * * * BACKUP_COPY_TO=user@nas:/backup/llmgw/ bash $HOME/opt/llm-gateway/deploy/backup-db.sh >> $HOME/backup/llm-gateway/backup.log 2>&1
+```
+
+還原演練（每季一次）或資料遺失時，還原到一個暫時的容器或新的資料庫：
+
+```bash
+docker run -d --name pg-restore-test -e POSTGRES_PASSWORD=test postgres:16
+docker exec -i pg-restore-test pg_restore -U postgres --create -d postgres < FILE
+docker exec pg-restore-test psql -U postgres -d <PG_DB> -c "SELECT count(*) FROM users" -c "SELECT * FROM alembic_version"
+docker rm -f pg-restore-test
+```
+
 ## PostgreSQL 資料遷移（更換 Volume）
 
 當需要將 PG 資料搬移到其他 volume（例如掛錯磁碟、擴容）時，使用 `pg_dumpall` 邏輯備份最安全，不受檔案系統或權限差異影響。
@@ -225,6 +253,7 @@ docker compose -f deploy/docker-compose.yml up -d
     ├── .env                  # Docker 服務環境變數（範本：.env.example）
     ├── pgdata/               # PostgreSQL 資料
     ├── setup.sh              # 部署腳本
+    ├── backup-db.sh          # 資料庫線上備份（pg_dump、驗證、保留期）
     ├── gen-selfsigned-cert.sh               # 產生 :443 用的自簽 TLS 憑證
     ├── llm-gateway.service                  # Gateway systemd unit
     ├── llm-gateway-example.nginx.conf       # Nginx 範本
