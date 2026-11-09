@@ -34,26 +34,13 @@ jobs:
       - name: Export locked dependencies
         run: uv export --locked --no-dev --no-emit-project --format requirements-txt -o requirements-audit.txt
 
-      # Each --ignore-vuln is an accepted, reviewed exception. Remove it as
-      # soon as the fix ships; never add one without a reason here.
-      #
-      # starlette 0.52.x: every fix is in 1.x, which breaks the template
-      # rendering (TemplateResponse) and needs its own migration. Assessed:
-      #   PYSEC-2026-161 / -248  request.url rebuilt from an unvalidated Host /
-      #     path. Behind nginx (Host = $host, server_name), low.
-      #   PYSEC-2026-249  urlencoded form limits ignored. Forms are only on
-      #     /admin and /dashboard, which nginx only passes once logged in.
-      #   PYSEC-2026-2280 HTTPEndpoint method lookup: not used.
-      #   PYSEC-2026-2281 StaticFiles on Windows: not used (nginx serves /static/).
+      # Any known vulnerability fails the job. An accepted exception is an
+      # `--ignore-vuln <ID>` line here, with its assessment in a comment
+      # above it; remove it as soon as the fix ships. None today.
       - name: pip-audit
         run: >-
           uvx pip-audit==2.10.1
           -r requirements-audit.txt --require-hashes --disable-pip
-          --ignore-vuln PYSEC-2026-161
-          --ignore-vuln PYSEC-2026-248
-          --ignore-vuln PYSEC-2026-249
-          --ignore-vuln PYSEC-2026-2280
-          --ignore-vuln PYSEC-2026-2281
 
   secrets:
     name: Committed secrets

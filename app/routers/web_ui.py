@@ -259,6 +259,7 @@ def index(
     )
 
     return templates.TemplateResponse(
+        request,
         "welcome.html",
         _common_ctx(
             request,
@@ -394,6 +395,7 @@ def dashboard(
         bedrock_groups = _cloud_groups(get_bedrock_models_snapshot(), "bedrock")
 
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
         _common_ctx(
             request,
@@ -538,6 +540,7 @@ def setup_page(
     """Setup page for the Claude Code installer. Requires login."""
     claude_code_available = (_SETUP_DIR / "install-claude-code.bat").is_file()
     return templates.TemplateResponse(
+        request,
         "setup.html",
         _common_ctx(
             request,

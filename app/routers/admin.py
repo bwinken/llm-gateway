@@ -486,6 +486,7 @@ def admin_page(
         ip_allowlist_view = None
 
     return templates.TemplateResponse(
+        request,
         "admin.html",
         {
             "request": request,
@@ -559,6 +560,7 @@ def user_table_panel(
     fragment in. Plain ``def`` for the same reason as ``admin_page``."""
     state = _table_state(q, sort, status, offset, limit, app_offset, app_limit)
     return templates.TemplateResponse(
+        request,
         "_admin_user_table.html",
         {
             "request": request,
@@ -1529,6 +1531,7 @@ def admin_models_page(
     session: Session = Depends(get_session),
 ):
     return templates.TemplateResponse(
+        request,
         "admin_models.html",
         {
             "request": request,
