@@ -145,8 +145,9 @@ else
 
     echo -e "${BOLD}── 網域設定 ──${NC}"
     ask "Gateway 域名（用於 oauth2-proxy callback）" "llm-gateway.your-domain.com" DOMAIN
-    OAUTH2_REDIRECT_URL="http://${DOMAIN}/oauth2/callback"
+    OAUTH2_REDIRECT_URL="https://${DOMAIN}/oauth2/callback"
     info "OAuth2 Redirect URL: $OAUTH2_REDIRECT_URL"
+    info "  請在 AuthCenter（OIDC）的 client 設定允許這個 callback URL"
     echo ""
 
     # 產生 cookie secret
@@ -437,6 +438,12 @@ fi
 if grep -q "change-me" "$DEPLOY_DIR/.env" 2>/dev/null; then
     TODOS+=("編輯 deploy/.env 填入正確的 OAUTH2_CLIENT_SECRET")
 fi
+# 全站 HTTPS：callback 與憑證
+if grep -q '^OAUTH2_REDIRECT_URL=http://' "$DEPLOY_DIR/.env" 2>/dev/null; then
+    TODOS+=("deploy/.env 的 OAUTH2_REDIRECT_URL 仍是 http://：改成 https://<domain>/oauth2/callback，AuthCenter 允許新 callback 後執行 docker compose -f $DEPLOY_DIR/docker-compose.yml up -d")
+fi
+TODOS+=("確認 Nginx 的 TLS 憑證（ssl_certificate）存在且瀏覽器信任：Let's Encrypt、公司 CA，或 deploy/gen-selfsigned-cert.sh（自簽憑證瀏覽器會警告，建議用公司 CA）")
+TODOS+=("確認 AuthCenter（OIDC）的 client 允許 https://<domain>/oauth2/callback")
 # config.toml 總是需要檢查
 TODOS+=("編輯 config.toml 設定 vLLM server 位址與 API key")
 

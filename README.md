@@ -104,20 +104,20 @@ Clients authenticate with their gateway API key (shown on the dashboard).
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://your-gateway/v1", api_key="sk-your-api-key")
+client = OpenAI(base_url="https://your-gateway/v1", api_key="sk-your-api-key")
 client.chat.completions.create(model="my-model", messages=[{"role": "user", "content": "Hello!"}])
 ```
 
 ```bash
 # Claude Code
-ANTHROPIC_BASE_URL=http://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key claude
+ANTHROPIC_BASE_URL=https://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key claude
 ```
 
 The **[Client Guide](docs/client-guide.md)** covers the rest: every endpoint, Azure and Bedrock access, tool-calling setup for Roo Code, Cursor and others, the error responses clients should handle, and System One.
 
 ## Administration
 
-Open `http://your-gateway` and sign in through SSO. Accounts with the `admin` scope in AuthCenter see the admin panel, where they can:
+Open `https://your-gateway` and sign in through SSO. Accounts with the `admin` scope in AuthCenter see the admin panel, where they can:
 
 - set each user's daily budget and grant Azure or AWS access, plus a daily cloud cap (a default, overridable per user);
 - grant Azure or Bedrock access, or disable an account;

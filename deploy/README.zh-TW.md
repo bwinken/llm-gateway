@@ -15,7 +15,8 @@
 ## 架構
 
 ```
-Browser    → Nginx (:80)
+瀏覽器 / API client → Nginx (:80)   → 308 轉到 https://（保留 method 與 body）；/healthz、/readyz 可選擇留在 HTTP
+瀏覽器 / API client → Nginx (:443, TLS)
                ├─ /oauth2/*            → oauth2-proxy (:4180)  ← 處理登入/登出
                ├─ /v1/*, = /me         → Gateway               ← API key 認證（統一分派：vLLM / Azure / Bedrock）
                ├─ /azure/*             → Gateway               ← API key 認證（Azure OpenAI 後端）
@@ -24,10 +25,9 @@ Browser    → Nginx (:80)
                ├─ /static/             → 磁碟上的靜態檔案
                └─ /*                   → auth_request → oauth2-proxy 驗證
                                        → Gateway               ← JWT header 認證
-API client → Nginx (:443, TLS)  只開放 /v1/、/azure/、/aws/、= /me、/healthz、/readyz；其他路徑一律 404
 ```
 
-範例 nginx 設定（`deploy/llm-gateway-example.nginx.conf`）在 HTTP 與 HTTPS 兩個 server context 中都有平行的 `/v1/`、`/azure/`、`/aws/` 和 `= /me` 區塊。它們都不經 oauth2-proxy，直接保留客戶端的 `Authorization: Bearer <api_key>` 轉發給 gateway。Web UI 只走 HTTP，所以 oauth2-proxy 的 cookie 設定（`COOKIE_SECURE=false`）不需要另一套 HTTPS 版本。
+全站都走 HTTPS。範例 nginx 設定（`deploy/llm-gateway-example.nginx.conf`）把所有 location 都放在 `:443` server；`:80` server 只做 **308** 轉址，保留原本的 method 與 body（301 會讓很多 client 把 POST 改成 GET）。API 路徑（`/v1/`、`/azure/`、`/aws/`、`= /me`）不經 oauth2-proxy，直接保留客戶端的 `Authorization: Bearer <api_key>` 轉發給 gateway。登入 cookie 設為 `Secure`（`OAUTH2_PROXY_COOKIE_SECURE`，`docker-compose.yml` 預設 `true`），不會在明文 HTTP 上傳送。
 
 - **Gateway**：user-level systemd service（Python/FastAPI，`127.0.0.1:8050`，2 個 worker）。週期性工作（用量彙總、異常掃描、選用的 usage log 保留期清理）在 gateway 內執行，不需要 timer
 - **PostgreSQL + oauth2-proxy**：Docker Compose（`deploy/docker-compose.yml`，兩者都只綁 `127.0.0.1`）
@@ -47,7 +47,7 @@ bash deploy/setup.sh
 腳本會互動式引導完成所有設定。一開始先做 **pre-flight 檢查**（uv、docker、rsync、openssl、Docker daemon 是否在跑；有設定 `http_proxy` 就會套用），接著：
 
 1. **rsync 程式碼** 到 `~/opt/llm-gateway`（排除設定檔、金鑰、各 `.env` 與 pgdata）
-2. **`deploy/.env`**：提示輸入 PostgreSQL 使用者/密碼/資料庫/port、OIDC issuer URL、OAuth2 client ID/secret 與網域；自動產生 cookie secret
+2. **`deploy/.env`**：提示輸入 PostgreSQL 使用者/密碼/資料庫/port、OIDC issuer URL、OAuth2 client ID/secret 與網域（callback 會是 `https://<domain>/oauth2/callback`，請在 AuthCenter 的 client 允許它）；自動產生 cookie secret
 3. **docker compose up**：啟動 PostgreSQL + oauth2-proxy 並等待 PostgreSQL 就緒（檢查點：可在此停下）
 4. **uv sync** `--frozen --no-dev`：安裝 Python 依賴
 5. **應用程式設定檔**：複製 `config.toml.example` → `config.toml`、`.env.example` → `.env`，並從 `deploy/.env` 自動填入 `DATABASE_URL` 與 `AUTH_BASE_URL`
@@ -253,7 +253,7 @@ docker compose -f deploy/docker-compose.yml up -d
 
 `setup.sh` 以 **`deploy/llm-gateway.nginx.conf`**（你從 `deploy/llm-gateway-example.nginx.conf` 複製的副本）產生站台設定，並替換 `__APP_DIR__` 與 `llm-gateway.your-domain.com`。請在 step 9 之前建立這份副本，並把修改都留在這裡：每次執行到 step 9 都會重寫 `/etc/nginx/sites-available/llm-gateway`。
 
-範例的 `:443` 區塊指向 Let's Encrypt 路徑（`/etc/letsencrypt/live/<domain>/`），在這些檔案存在之前 `nginx -t` 會失敗。安裝前請擇一：取得憑證、執行 `bash deploy/gen-selfsigned-cert.sh`（離線環境適用；預設寫到 `/etc/nginx/ssl/llm-gateway.{crt,key}`，並列出要修改的設定），或刪掉 `:443` 區塊。
+範例的 `:443` 區塊指向 Let's Encrypt 路徑（`/etc/letsencrypt/live/<domain>/`），在這些檔案存在之前 `nginx -t` 會失敗。所有頁面都由這個區塊服務，所以安裝前要先準備憑證：Let's Encrypt、公司 CA，或執行 `bash deploy/gen-selfsigned-cert.sh`（離線環境適用；預設寫到 `/etc/nginx/ssl/llm-gateway.{crt,key}`，並列出要修改的設定；自簽憑證瀏覽器會警告）。
 
 手動調整已安裝的站台設定：
 
@@ -266,6 +266,26 @@ Let's Encrypt 憑證（可選）：
 
 ```bash
 sudo certbot --nginx -d your-domain.com
+```
+
+### 既有的 HTTP 部署改為全站 HTTPS
+
+舊版的 Web UI 走 HTTP，只有 API 走 `:443`。既有安裝要切換時：
+
+1. **憑證。** 現在整個站都需要瀏覽器信任的憑證：Let's Encrypt、公司 CA，或 `deploy/gen-selfsigned-cert.sh`（自簽憑證每個瀏覽器都會警告；內網建議用公司 CA）。
+2. **AuthCenter。** 在 OIDC client 允許 `https://<domain>/oauth2/callback`。切換完成前先保留舊的 `http://` callback。
+3. **`deploy/.env`。** 手動把 `OAUTH2_REDIRECT_URL` 改成 `https://<domain>/oauth2/callback`：`setup.sh` 不會覆蓋已存在的 `deploy/.env`。
+4. **Nginx。** 把新範例合併進你的 `deploy/llm-gateway.nginx.conf`（所有 location 放在 `:443`，`:80` = 308），再執行 `setup.sh` 或 `sudo nginx -t && sudo systemctl reload nginx`。如果 `:443` 有 `allow` / `deny`，現在也會擋到 Web UI 與登入。
+5. **oauth2-proxy。** 執行 `docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml up -d`，以新的 https callback 與 `Secure` cookie 重建容器。所有人需要重新登入一次：舊的 cookie 不是 `Secure`。
+6. **Client。** 把所有 base URL 改成 `https://`：Claude Code 的 `ANTHROPIC_BASE_URL`、SDK 的 `base_url`、`setup/install-claude-code.bat` 的 `GATEWAY_URL`。308 只是保險：有些 client 被轉址時會丟掉 `Authorization` header 或 body。
+7. **（選用）過渡期。** 範例 `:80` 裡註解掉的區塊可以讓 API 暫時繼續走 HTTP，並記在獨立的 access log，先看還有誰在用 `http://`，再把它們交給 308。
+8. **之後再開 HSTS。** 全站 https 都正常後，取消 `Strict-Transport-Security` 那行的註解，先用短的 `max-age`，過一陣子再拉長。
+
+確認：
+
+```bash
+curl -sI http://your-domain.com/dashboard | head -3      # 應為 308，Location: https://...
+curl -s https://your-domain.com/v1/models -H "Authorization: Bearer <key>" | head -c 200
 ```
 
 ## Proxy 設定
