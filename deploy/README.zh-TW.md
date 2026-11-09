@@ -177,6 +177,12 @@ scrape_configs:
 
 兩者都關閉時，失敗的請求只會記錄請求的**結構** —— 有哪些欄位、訊息的 role 順序、content block 型別、各字串長度 —— 這些足以診斷下游的 400，但不包含內容本身。要追特定問題時再開 `LOG_REQUEST_BODIES`，追完關掉；它寫下的東西會保留 `LOG_RETENTION`（預設 14 天），且任何有主機存取權的人都讀得到。
 
+## 安全相關設定
+
+- **稽核紀錄。** 每個 admin / dashboard 的變更、每次顯示完整 API key、每次匯出，都會在 `audit_log` 留一列（admin *Settings* → *Audit Log*，可下載 CSV）。只能新增：PostgreSQL 的 trigger 會拒絕 UPDATE、DELETE 和 TRUNCATE，要刪資料必須由 DBA 刻意拿掉 trigger。每一筆也會寫成 `Audit | {...}` log（含使用者名稱、位址、送出的欄位；密鑰已遮蔽）。
+- **驗證失敗節流。** `AUTH_FAIL_DISTINCT_KEYS` / `AUTH_FAIL_WINDOW_S` / `AUTH_LOCKOUT_S`（預設 600 秒內 10 把不同的錯誤 key → 封鎖 900 秒，回 429）。依來源位址判斷，所以 uvicorn 必須信任 nginx 轉送的 header；loopback 永不封鎖，若沒設定好，所有請求都會變成 loopback，節流也就形同關閉。
+- **套件與密鑰掃描** 在 GitHub Actions 執行（`.github/workflows/security.yml`）。要讓 Dependabot 自動開安全修補 PR，需到 repo 的 Settings → Code security 打開 *Dependabot security updates*。
+
 ## PostgreSQL 資料遷移（更換 Volume）
 
 當需要將 PG 資料搬移到其他 volume（例如掛錯磁碟、擴容）時，使用 `pg_dumpall` 邏輯備份最安全，不受檔案系統或權限差異影響。

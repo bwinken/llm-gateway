@@ -951,6 +951,40 @@ function submitExportCsv() {
     </form>
 </div>
 
+{# ── Audit log (app/services/audit.py): newest entries, full trail as CSV ── #}
+<div id="auditLogCard" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #94a3b8">
+    <div class="flex flex-wrap items-start justify-between gap-4 mb-3">
+        <div class="max-w-2xl">
+            <h2 class="text-sm font-bold text-t2 mb-1">Audit Log</h2>
+            <p class="text-xs text-t4 gw-tip gw-tip-wide"
+               data-tip="Recorded automatically for every POST / PUT / PATCH / DELETE under /admin and /dashboard, every full API key shown and every export: who, when, from which address, what was submitted (secrets redacted) and the result. Append-only: the gateway never edits or deletes entries.">
+                Every change made in the admin and dashboard pages, every API key revealed and every export. Times in Asia/Taipei.
+            </p>
+        </div>
+        <a href="/admin/api/export/audit-log.csv?days=365" class="gw-btn gw-btn-ghost text-xs px-3 py-1.5">Download CSV (last 365 days)</a>
+    </div>
+    {% if audit_recent %}
+    <div class="overflow-x-auto">
+        <table class="gw-table w-full text-xs">
+            <thead><tr><th>Time</th><th>Who</th><th>Action</th><th>Result</th><th>Details</th></tr></thead>
+            <tbody>
+            {% for e in audit_recent %}
+                <tr>
+                    <td class="whitespace-nowrap font-mono text-t3">{{ e.at }}</td>
+                    <td class="whitespace-nowrap">{{ e.actor or '—' }}<span class="text-t4 font-mono"> {{ e.client }}</span></td>
+                    <td class="whitespace-nowrap font-mono text-t2">{{ e.method }} {{ e.route }}</td>
+                    <td class="whitespace-nowrap font-mono {{ 'text-ag' if e.status < 400 else 'text-ar' }}">{{ e.status }}</td>
+                    <td class="text-t3 break-all">{{ e.summary }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-xs text-t4">No entries yet.</p>
+    {% endif %}
+</div>
+
 </div>
 <script>gwTabs('adminTabs', 'adminTab');</script>
 

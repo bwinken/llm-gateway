@@ -49,6 +49,7 @@ The budget hero stays at the top; the lower half is split into two tabs (**Model
 |---|---|---|
 | **Header** | — | "Set up Claude Code" link (→ `/setup`) and **My API Key** button (opens the key modal) |
 | **Get started** | — | Shown while the account has no requests this month; links to `/setup` |
+| **Please regenerate your API key** | — | Shown when the user's key, or a key of an app they own, predates the current 256-bit format (`schema.is_legacy_api_key`). Asks them to regenerate when they can update their clients; nothing is forced, the old key keeps working. Removed in place once the user regenerates their own key |
 | **Spent today (budget hero)** | — | Today's cost vs `daily_limit_usd`, Remaining, time until the reset (local midnight), and a color-banded progress bar (ok < 70 % · warn < 90 % · crit < 100 % · over). `daily_limit_usd = 0` shows "No daily budget on this account". When the user may use a cloud backend (admins always), a split row shows **On-prem / Azure / AWS Bedrock** columns — only for the backends the user can use — plus a **Cloud (Azure + AWS)** row with today's combined cloud spend against the user's cloud cap (`deps.effective_cloud_limit`; hidden when there is no cap) |
 | **This month** | — | Monthly cost, requests, tokens in / out (with today's figures) |
 | **On-Prem Models** | Models | Every non-hidden vLLM model, grouped by type and sorted by price: ONLINE / DOWN, live load (running / queued from `/metrics`), Context, Max Out, billed In / Out $/1M (per-model → per-type → default, same as billing), capability badges (`reasoning`, `tools`, `vision`, `cache`). Header shows online / queueing / down counts and the base URL |
@@ -91,13 +92,14 @@ Above the tab bar: the **Needs attention** panel and the key-number cards. Below
 | **User Leaderboard** | Overview | User ranking, top-10 by monthly cost descending, shows display_name and org_code badge |
 | **Department Usage** | Overview | Usage grouped by org_code: Users, Cost, Input / Output Tokens, Reqs; client-side pager past 15 rows |
 | **Export Usage Report** | Overview | Month range (max 24 months) → **Download xlsx** (`GET /admin/api/export/usage.xlsx`, 4 sheets) or **Backend costs (CSV)** (`GET /admin/api/export/user-backend-costs.csv`, one row per month × account with On-prem / Azure / Bedrock cost columns) |
-| **User Management** | Users | Users / Apps sub-toggle, server-side search (`q`, ILIKE on username / display_name / org_code), server-side pagination (`limit/offset`, `app_limit/app_offset`), **Export Users (CSV)** (`GET /admin/api/export/users.csv`). Users table: User, API Key (View Key), Total Spend, Daily Limit (+ *Cloud $*), Actions. Apps table adds an editable Owner column |
+| **User Management** | Users | Users / Apps sub-toggle, server-side search (`q`, ILIKE on username / display_name / org_code), server-side pagination (`limit/offset`, `app_limit/app_offset`), **Export Users (CSV)** (`GET /admin/api/export/users.csv`). Users table: User, API Key (View Key, with *used N d ago* / *never used* — amber past 90 days — and *old format* for keys predating the current format; the tooltip gives the key's issue and last-use dates), Total Spend, Daily Limit (+ *Cloud $*), Actions. Apps table adds an editable Owner column. The status filter includes **Older-format API key** (`legacy_key`) and **Key unused 90+ days** (`stale_key`), for access reviews |
 | **Concurrency Limit** | Settings | Mode (`off` / `monitor` / `enforce`) + per-account limit (≥ 1) → `POST /admin/concurrency-limit`; shows requests in flight, accounts and busiest account. Enforce asks for confirmation |
 | **Default Daily Limit** | Settings | `POST /admin/default-limit` — sets `[app].default_daily_limit_usd` and bulk-bumps any user with `0 < daily_limit_usd < new_floor` up to the floor (users at `daily_limit_usd = 0`, a deliberate $0 budget, are never modified) |
 | **Cloud Daily Limit** | Settings | `POST /admin/cloud-limit` — default cap on each user's combined Azure + AWS spend per day (`[app].cloud_daily_limit_usd`) for users with cloud access and no *Cloud $* of their own. Blank = no default cap; 0 = cloud refused |
 | **Cloud Budget Fallback** | Settings | Checkbox → `POST /admin/cloud-budget-fallback`. When on, a `/v1/*` cloud request over the cloud cap is served on-prem instead of a 429 (the overall daily limit still applies; `/azure/v1/*` and `/aws/v1/*` never fall back) |
 | **Create App Account** | Settings | Username (auto-prefixed with `app_`), Daily Limit, Owner → `POST /admin/users/create`. App accounts are created concurrency-waived |
 | **Site Links** | Settings | Support Bot URL (floating button on every page) and Install Guide URL (card on `/setup`) → `POST /admin/site-links`. Only `http(s)://` or site-relative URLs; empty hides the element |
+| **Audit Log** | Settings | The newest 20 entries of `audit_log` (time in Asia/Taipei, who and from which address, method + route, status, a one-line summary of target and submitted fields) and **Download CSV (last 365 days)** (`GET /admin/api/export/audit-log.csv`). Every write under `/admin` and `/dashboard`, every full key shown and every export is recorded; secrets are redacted |
 
 ### Actions column
 
@@ -120,7 +122,7 @@ Every Actions button asks for confirmation first. The in-place toggles (Azure, A
 | Update Daily Limit | `POST /admin/users/{id}/limit` | Change user's daily spend limit (finite, ≥ 0; 0 is a $0 budget) |
 | Update Cloud $ | `POST /admin/users/{id}/cloud-limit` | User's own Azure + AWS daily cap. Shown for users with Azure or AWS access and for admins; the placeholder shows the default; empty clears it back to the default, 0 refuses cloud |
 | Set Owners | `POST /admin/users/{id}/owner` | Apps table: replace the app's owners (comma-separated usernames) |
-| View API Key | `GET /admin/users/{id}/api-key` | Listings carry masked keys only; the modal fetches the full key per account (logged) |
+| View API Key | `GET /admin/users/{id}/api-key` | Listings carry masked keys only; the modal fetches the full key per account (recorded in the audit log) |
 | Regenerate Key | `POST /admin/users/{id}/refresh-key` | Regenerate any user's API key (from the key modal) |
 | Ack / Resolve anomaly | `POST /admin/api/anomalies/{id}/ack` · `/resolve` | From the Needs attention panel |
 
@@ -149,6 +151,7 @@ Master–detail editor over `GET` / `PUT /admin/api/config`, rendered under the 
 ### Behavior
 
 - Selection lives in the URL hash (`#vllm/<alias>`, `#azure/<alias>`, `#bedrock/<alias>`, `#settings`), so a reload stays put.
+- Saved secrets (`api_key`, Bedrock `aws_secret_access_key`) never reach the page: `GET /admin/api/config` sends a `<stored:…>` reference, shown as an empty box with the placeholder *saved — type to replace* and no Show button. Untouched, the reference stays in `config` and the server keeps the stored value on save (rename and duplicate included); typing replaces it.
 - Every input writes straight into the page's `config` object through `setField` (`data-kind` / `data-alias` / `data-field` / `data-t` coercion; blank optional fields delete their key). There is no DOM re-collection at save time — only the selected model's form is in the DOM.
 - Dirty tracking compares `JSON.stringify(config)` with the last saved snapshot; Ctrl/Cmd+S saves, `beforeunload` warns.
 - Add / Duplicate / Rename share one dialog that enforces alias uniqueness across all three backends. Rename and Delete repoint or clear type fallbacks and `rate_limit_fallback` references.

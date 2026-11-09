@@ -792,7 +792,8 @@ function fieldAttrs(kind, alias, field, t) {
 }
 
 // Blank Bedrock region / IAM fields fall back to the values shared in .env;
-// the placeholder says so (GET /admin/api/config reports them, never the secret).
+// the placeholder says so (GET /admin/api/config reports them, never the secret;
+// saved secrets come back as <stored:...> references, see renderConnection).
 function connectionPlaceholder(kind, fd) {
     const shared = kind === 'bedrock' ? (config.bedrock_shared || {}) : {};
     if (fd.f === 'region' && shared.region) return `${shared.region} (shared)`;
@@ -810,14 +811,18 @@ function renderConnection(kind, alias, info) {
         const v = info[fd.f] ?? '';
         const missing = fd.req && !String(v).trim();
         const secret = fd.t === 'secret' || fd.t === 'optsecret';
+        // A saved secret arrives as a reference (<stored:section/alias/field>),
+        // never its value: show an empty box that says so. The reference stays
+        // in `config` until something is typed, and the server swaps it back.
+        const stored = secret && typeof v === 'string' && v.startsWith('<stored:');
         return `
             <label class="flex flex-col gap-1 ${fd.f === 'base_url' || (fd.f === 'endpoint' && kind === 'azure') ? 'md:col-span-2' : ''}">
                 <span class="mc-label ${fd.req ? 'mc-req' : ''} ${fd.tip ? 'gw-tip gw-tip-wide' : ''}" ${fd.tip ? `data-tip="${escAttr(fd.tip)}"` : ''}>${fd.label}</span>
                 <div class="relative">
-                    <input type="text" value="${escAttr(v)}" ${fieldAttrs(kind, alias, fd.f, fd.t)} ${fd.req ? 'data-req="1"' : ''} oninput="setField(this)"
-                           autocomplete="off" spellcheck="false" placeholder="${escAttr(connectionPlaceholder(kind, fd) || '')}"
+                    <input type="text" value="${stored ? '' : escAttr(v)}" ${fieldAttrs(kind, alias, fd.f, fd.t)} ${fd.req ? 'data-req="1"' : ''} oninput="setField(this)"
+                           autocomplete="off" spellcheck="false" placeholder="${escAttr(stored ? 'saved \u2014 type to replace' : (connectionPlaceholder(kind, fd) || ''))}"
                            class="gw-input w-full text-sm py-1.5 px-2.5 ${fd.mono ? 'font-mono' : ''} ${secret ? 'mc-secret pr-14' : ''} ${missing ? 'mc-bad' : ''}">
-                    ${secret ? `<button type="button" onclick="toggleSecret(this)" class="absolute right-1.5 top-1.5 text-[11px] text-t4 hover:text-t2 px-1.5 py-0.5">Show</button>` : ''}
+                    ${secret && !stored ? `<button type="button" onclick="toggleSecret(this)" class="absolute right-1.5 top-1.5 text-[11px] text-t4 hover:text-t2 px-1.5 py-0.5">Show</button>` : ''}
                 </div>
             </label>`;
     }).join('');

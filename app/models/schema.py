@@ -1,18 +1,46 @@
 from __future__ import annotations
 
-import uuid
+import re
+import secrets
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import sqlalchemy as sa
-from sqlalchemy import Index, UniqueConstraint
+from sqlalchemy import Index, UniqueConstraint, func
 from sqlmodel import Field, SQLModel
 
 
+API_KEY_PREFIX = "sk-internal-"
+# 32 random bytes from the OS CSPRNG, hex-encoded: 256 bits. Keys issued before
+# this format were ``sk-internal-<unix time>-<8 hex>`` (32 random bits plus a
+# guessable timestamp). They keep working: auth is an exact lookup, so the
+# format only matters when a key is issued.
+_API_KEY_RANDOM_BYTES = 32
+API_KEY_LENGTH = len(API_KEY_PREFIX) + 2 * _API_KEY_RANDOM_BYTES
+_CURRENT_KEY_RE = re.compile(rf"{re.escape(API_KEY_PREFIX)}[0-9a-f]{{{2 * _API_KEY_RANDOM_BYTES}}}")
+
+
+def _naive_utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _generate_api_key() -> str:
-    ts = int(datetime.now(timezone.utc).timestamp())
-    short_hex = uuid.uuid4().hex[:8]
-    return f"sk-internal-{ts}-{short_hex}"
+    return API_KEY_PREFIX + secrets.token_hex(_API_KEY_RANDOM_BYTES)
+
+
+def is_legacy_api_key(key: str) -> bool:
+    """True for a key not in the current format (older, weaker keys; or one
+    set by hand). The dashboard nudges its holder to regenerate it."""
+    return not _CURRENT_KEY_RE.fullmatch(key or "")
+
+
+def legacy_api_key_clause():
+    """SQL counterpart of ``is_legacy_api_key`` for the admin filter. Checks
+    prefix and length only (portable SQL has no regex); a hand-set key of
+    exactly the current length is the one case the two disagree on."""
+    return (func.length(User.api_key) != API_KEY_LENGTH) | ~User.api_key.startswith(
+        API_KEY_PREFIX, autoescape=True
+    )
 
 
 APP_ACCOUNT_PREFIX = "app_"
@@ -77,6 +105,21 @@ class User(SQLModel, table=True):
     display_name: str = Field(default="")
     org_code: str = Field(default="")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # When the current API key was issued (NULL: before this was tracked and
+    # not recoverable from the key) and when it last authenticated, at most
+    # one write per KEY_USE_RESOLUTION_S (deps._record_key_use). Both reset
+    # when the key is reissued (issue_api_key). Access reviews read them.
+    # Naive UTC, like concurrency_leases (compared in SQL against naive values).
+    api_key_created_at: datetime | None = Field(default_factory=lambda: _naive_utcnow())
+    api_key_last_used_at: datetime | None = Field(default=None)
+
+
+def issue_api_key(user: User) -> str:
+    """Give ``user`` a new key: the old one stops working at once."""
+    user.api_key = _generate_api_key()
+    user.api_key_created_at = _naive_utcnow()
+    user.api_key_last_used_at = None
+    return user.api_key
 
 
 class AppOwner(SQLModel, table=True):
@@ -268,3 +311,29 @@ class IpAllowRule(SQLModel, table=True):
     starts_at: datetime | None = Field(default=None)
     expires_at: datetime | None = Field(default=None)
     created_at: datetime = Field()
+
+
+class AuditLog(SQLModel, table=True):
+    """Who changed what through the Web UI / admin, and who read credentials
+    or exported data (app/services/audit.py). Append-only: the app never
+    updates or deletes a row, and on PostgreSQL a trigger refuses both.
+
+    ``actor`` is a username, not a foreign key, so deleting an account keeps
+    its trail. ``detail`` is JSON text: the submitted fields and the JSON
+    reply (secrets redacted), the target account, and whatever the handler
+    noted (e.g. the model-config diff). Timestamps are naive UTC."""
+    __tablename__ = "audit_log"
+    __table_args__ = (
+        Index("ix_audit_log_created_at", "created_at"),
+        Index("ix_audit_log_actor_created", "actor", "created_at"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    created_at: datetime = Field(default_factory=_naive_utcnow)
+    actor: str = Field(default="")       # username from the JWT; "" if unauthenticated
+    method: str = Field(default="")
+    route: str = Field(default="")       # path template, e.g. /admin/users/{user_id}/limit
+    path: str = Field(default="")
+    status: int = Field(default=0)       # response status; 500 if the handler raised
+    client: str = Field(default="")      # request.client.host
+    detail: str = Field(default="{}")

@@ -1,0 +1,18 @@
+# gitleaks configuration: the default rules, minus files that hold fake keys
+# on purpose. Used by .github/workflows/security.yml.
+#
+# A real finding: rotate the secret first (it is in the history either way),
+# then add the commit's fingerprint to .gitleaksignore if it must stay.
+
+title = "llm-gateway"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures and example configuration carry placeholder keys"
+paths = [
+    '''^tests/''',
+    '''\.example$''',
+    '''-example\.[A-Za-z0-9]+$''',
+]

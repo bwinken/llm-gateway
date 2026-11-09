@@ -37,9 +37,12 @@ from app.core.config import (
     get_cloud_budget_fallback,
     get_cloud_daily_limit,
     get_concurrency_settings,
+    get_config_data,
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
-    get_config_data,
+    masked_config_data,
+    resolve_secret,
+    resolve_secret_refs,
     get_default_daily_limit,
     get_guardrail_settings,
     get_model_routing_snapshot,
@@ -63,9 +66,11 @@ from app.models.schema import (
     UsageLog,
     app_account_clause,
     is_app_account,
+    is_legacy_api_key,
+    legacy_api_key_clause,
     mask_api_key,
 )
-from app.services import concurrency, guardrail, ip_allowlist
+from app.services import audit, concurrency, guardrail, ip_allowlist
 from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
@@ -159,13 +164,46 @@ USER_TABLE_STATUSES: dict[str, str] = {
     "waived": "Concurrency waived",
     "waiver_changed": "Waiver not the default",
     "disabled": "Disabled",
+    # Not a permission: tracks how many keys still predate the current format
+    # (schema.is_legacy_api_key). Deliberately not in SPECIAL_ACCESS_KEYS.
+    "legacy_key": "Older-format API key",
+    # Access review: keys that have not authenticated in STALE_KEY_DAYS.
+    "stale_key": "Key unused 90+ days",
 }
+STALE_KEY_DAYS = 90
 # The "Special access" overview above the tables: one count per permission,
 # each linking to its filter. The waiver counts only what differs from an
 # account kind's default (users are created limited, app accounts waived).
 SPECIAL_ACCESS_KEYS: tuple[str, ...] = (
     "admin", "azure", "bedrock", "cloud_cap", "waiver_changed", "disabled",
 )
+
+
+def _stale_key_clause():
+    """Keys unused for STALE_KEY_DAYS: last use before the cutoff, or never
+    used and issued before it (a key issued yesterday is not stale)."""
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=STALE_KEY_DAYS)
+    used = User.api_key_last_used_at
+    issued = User.api_key_created_at
+    return (used < cutoff) | (  # type: ignore[operator]
+        used.is_(None) & (issued.is_(None) | (issued < cutoff))  # type: ignore[union-attr,operator]
+    )
+
+
+def _is_stale(u: User, now: datetime) -> bool:
+    cutoff = now - timedelta(days=STALE_KEY_DAYS)
+    if u.api_key_last_used_at is not None:
+        return u.api_key_last_used_at < cutoff
+    return u.api_key_created_at is None or u.api_key_created_at < cutoff
+
+
+def _key_use_label(last_used: datetime | None, now: datetime) -> str:
+    if last_used is None:
+        return "never used"
+    days = (now - last_used).days
+    if days <= 0:
+        return "used today"
+    return "used yesterday" if days == 1 else f"used {days} d ago"
 
 
 def _status_clause(status: str, is_apps: bool):
@@ -183,6 +221,8 @@ def _status_clause(status: str, is_apps: bool):
         "waived": User.concurrency_waived == True,  # noqa: E712
         "waiver_changed": waived_differs,
         "disabled": User.is_disabled == True,  # noqa: E712
+        "legacy_key": legacy_api_key_clause(),
+        "stale_key": _stale_key_clause(),
     }
     if status == "special":
         return (
@@ -308,6 +348,7 @@ def _user_table(
             owners.setdefault(int(app_id), []).append(str(owner_name))
 
     empty = {"cost": 0.0, "input_tokens": 0, "output_tokens": 0, "requests": 0}
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     rows = []
     for u in page:
         monthly = monthly_map.get(u.id, empty)
@@ -324,6 +365,13 @@ def _user_table(
             "can_use_azure": u.can_use_azure,
             "can_use_bedrock": u.can_use_bedrock,
             "concurrency_waived": u.concurrency_waived,
+            "key_legacy": is_legacy_api_key(u.api_key),
+            "key_use": _key_use_label(u.api_key_last_used_at, now_naive),
+            "key_stale": _is_stale(u, now_naive),
+            "key_detail": (
+                f"Key issued {_local_label(u.api_key_created_at) or 'before tracking began'}; "
+                f"last used {_local_label(u.api_key_last_used_at) or 'never'} (Asia/Taipei)."
+            ),
             "owners": owners.get(u.id, []),
             "monthly_cost": monthly["cost"],
             "monthly_tokens": monthly["input_tokens"] + monthly["output_tokens"],
@@ -477,6 +525,7 @@ def admin_page(
             "concurrency_modes": CONCURRENCY_MODES,
             "concurrency_in_flight": concurrency_in_flight,
             "site_links": get_site_links(),
+            "audit_recent": _audit_rows(session, limit=20),
             "guardrail": _guardrail_view(),
             "ip_allowlist": ip_allowlist_view,
             "special_access": _special_access_summary(session),
@@ -1269,8 +1318,8 @@ def refresh_user_key(
     if not target:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    from app.models.schema import _generate_api_key
-    target.api_key = _generate_api_key()
+    from app.models.schema import issue_api_key
+    issue_api_key(target)
     session.add(target)
     session.commit()
     session.refresh(target)
@@ -1495,7 +1544,8 @@ def admin_models_page(
 
 @router.get("/api/config")
 def get_config_api():
-    return JSONResponse(get_config_data())
+    # Secrets go out as references (config.masked_config_data), never values.
+    return JSONResponse(masked_config_data())
 
 
 def _clean_display_order(
@@ -1551,7 +1601,10 @@ async def test_model_connection(body: dict):
     base_url = str(body.get("base_url") or "").strip().rstrip("/")
     if not base_url.lower().startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="base_url must start with http:// or https://.")
-    api_key = str(body.get("api_key") or "").strip()
+    try:
+        api_key = str(resolve_secret(body.get("api_key")) or "").strip()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"API key: {exc}")
     real_model = str(body.get("real_model") or "").strip()
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     client = get_health_client()
@@ -1626,6 +1679,13 @@ async def save_config_api(
         raise HTTPException(status_code=400, detail="Invalid bedrock_models format.")
     if bedrock_fallback is not None and not isinstance(bedrock_fallback, dict):
         raise HTTPException(status_code=400, detail="Invalid bedrock_fallback format.")
+    # The editor holds references to stored secrets, not the secrets.
+    try:
+        resolve_secret_refs(
+            {"models": models, "azure_models": azure_models, "bedrock_models": bedrock_models}
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"API key: {exc}")
     display_order = _clean_display_order(
         body.get("display_order"),
         {"vllm": models, "azure": azure_models, "bedrock": bedrock_models},
@@ -1852,6 +1912,16 @@ async def save_config_api(
                         detail=f"{backend} model '{alias}' field '{key}' must be non-negative.",
                     )
 
+    # Audit trail: which aliases and fields changed (names only).
+    audit.note(config_changes=audit.config_diff(
+        get_config_data(),
+        {
+            "models": models, "pricing": pricing, "fallback": fallback or {},
+            "azure_models": azure_models, "azure_fallback": azure_fallback,
+            "bedrock_models": bedrock_models, "bedrock_fallback": bedrock_fallback,
+            "display_order": display_order,
+        },
+    ))
     save_config(
         models, pricing, fallback or {}, azure_models, azure_fallback,
         bedrock_models, bedrock_fallback, display_order,
@@ -2002,6 +2072,91 @@ def export_user_backend_costs_csv(
         content=buf.getvalue(),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _audit_summary(detail: dict) -> str:
+    """One line for the admin card: target, then the submitted fields."""
+    parts = []
+    if detail.get("target"):
+        parts.append(f"target={detail['target']}")
+    req = detail.get("request")
+    if isinstance(req, dict):
+        parts.extend(f"{k}={v}" for k, v in list(req.items())[:6])
+    if detail.get("config_changes"):
+        parts.append("config: " + ", ".join(sorted(detail["config_changes"])))
+    return " · ".join(str(p) for p in parts)[:300]
+
+
+def _audit_rows(
+    session: Session, *, limit: int, actor: str = "", before_id: int | None = None,
+    since: datetime | None = None,
+) -> list[dict]:
+    import json as _json
+
+    from app.models.schema import AuditLog
+
+    q = select(AuditLog)
+    if actor:
+        q = q.where(AuditLog.actor == actor)
+    if before_id is not None:
+        q = q.where(AuditLog.id < before_id)  # type: ignore[operator]
+    if since is not None:
+        q = q.where(AuditLog.created_at >= since)  # type: ignore[operator]
+    rows = session.exec(q.order_by(AuditLog.id.desc()).limit(limit)).all()  # type: ignore[union-attr]
+    out = []
+    for r in rows:
+        try:
+            detail = _json.loads(r.detail or "{}")
+        except Exception:
+            detail = {"raw": r.detail}
+        out.append({
+            "id": r.id, "at": _local_label(r.created_at), "created_at": r.created_at.isoformat() + "Z",
+            "actor": r.actor, "method": r.method, "route": r.route, "path": r.path,
+            "status": r.status, "client": r.client, "detail": detail,
+            "summary": _audit_summary(detail),
+        })
+    return out
+
+
+@router.get("/api/audit-log")
+def audit_log_api(
+    session: Session = Depends(get_session),
+    limit: int = Query(100, ge=1, le=1000),
+    before_id: int | None = None,
+    actor: str = "",
+):
+    """Newest first; page with ``before_id`` = the last id received."""
+    return JSONResponse({"entries": _audit_rows(session, limit=limit, actor=actor, before_id=before_id)})
+
+
+@router.get("/api/export/audit-log.csv")
+def export_audit_log_csv(
+    session: Session = Depends(get_session),
+    days: int = Query(365, ge=1, le=3650),
+):
+    """The audit trail of the last ``days`` days, newest first (this download
+    is itself recorded)."""
+    import csv
+    import io
+    import json as _json
+
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+    rows = _audit_rows(session, limit=1_000_000, since=since)
+    buf = io.StringIO()
+    buf.write("\ufeff")  # UTF-8 BOM so Excel opens CJK correctly
+    writer = csv.writer(buf)
+    writer.writerow(["id", "created_at_utc", "actor", "method", "route", "path", "status", "client", "detail"])
+    for r in rows:
+        writer.writerow([
+            r["id"], r["created_at"], r["actor"], r["method"], r["route"], r["path"],
+            r["status"], r["client"], _json.dumps(r["detail"], ensure_ascii=False),
+        ])
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="audit_log_{today}.csv"'},
     )
 
 

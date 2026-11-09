@@ -27,17 +27,20 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | `app/core/config.py` | `config.toml` → `MODEL_ROUTING`, `AZURE_MODELS`, `BEDROCK_MODELS`, pricing and fallback maps; `[app]` getters/setters; `save_config` |
 | `app/core/deps.py` | API-key auth, daily limit and cloud cap, concurrency-limited dependencies |
 | `app/core/auth.py` | Web-UI JWT auth (`get_web_user`, scopes) |
+| `app/core/browser_security.py` | CORS policy (no credentials) and `CrossSiteRequestGuard` for the cookie-authenticated `/admin`, `/dashboard` writes |
 | `app/core/server_state.py` | Shared / Azure / Bedrock / health httpx clients, health and metrics caches |
 | `app/routers/` | `v1_api` (`/v1/*`, unified dispatch), `azure_api` (`/azure/v1/*`), `aws_api` (`/aws/v1/*`), `web_ui` (dashboard, setup), `admin`, `health_api` |
 | `app/services/vllm_proxy.py` | vLLM forwarding, failover, SSE pump, `_log_usage` (billing + Langfuse seam) |
 | `app/services/azure_proxy.py`, `bedrock_proxy.py` | Cloud forwarding; translation via `responses_adapter.py` / `converse_adapter.py` |
 | `app/services/anthropic_adapter.py` | Anthropic Messages ↔ OpenAI chat (the internal pivot format) |
 | `app/services/usage_rollup.py` | `usage_daily` rollup: `aggregate` (the read path for every multi-day report), the in-app `rollup_loop` |
+| `app/services/auth_throttle.py` | Per-address lockout after many distinct invalid API keys (per worker, in memory) |
+| `app/services/audit.py` | `audit_log` trail: `AuditMiddleware` records every write under `/admin`, `/dashboard`, key reveals and exports; `note()`, `redact()` |
 | `app/services/ip_allowlist.py` | API IP allowlist: rules of address range × accounts / org codes × window, the check called from API-key auth, the per-worker rule snapshot |
 | `app/services/guardrail.py` | Qwen3Guard-Gen prompt screening of local (vLLM) traffic: policy, fail-open guard call, Langfuse verdict |
 | `app/services/scheduler.py`, `anomaly_scan.py`, `usage_retention.py` | In-gateway periodic jobs (claim in `scheduled_jobs`): the hourly anomaly scan and the opt-in usage-log retention |
 | `app/services/` (rest) | `model_order` (the one display order for model lists), `concurrency`, `rate_limit_fallback`, `reasoning_effort`, `health`, `observability`, `metrics` (Prometheus), `redact`, `stats`, `analytics` / `usage_export`, `aws_eventstream` |
-| `app/models/schema.py` | `User`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AppOwner`, `AnomalyEvent`, `ConcurrencyLease`, `IpAllowRule` |
+| `app/models/schema.py` | `User`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AppOwner`, `AnomalyEvent`, `ConcurrencyLease`, `IpAllowRule`, `AuditLog` |
 | `app/templates/` | `dashboard.html`, `admin.html`, `_admin_user_table.html` (Users / Apps tables, also served alone by `/admin/user-table`), `admin_models.html` (model-config SPA), `base.html` (`gwTabs`, `gwToast`, `gwConfirm`) |
 | `alembic/versions/` | Migrations (PostgreSQL-only: they do not run on SQLite) |
 | `scripts/` | Manual runs of the in-gateway jobs: `scan_anomalies.py`, `rollup_usage_daily.py` (inspect / `--recompute`), `cleanup_usage_logs.py` (retention preview); plus `azure_latency_probe.py` (per-phase Azure latency, direct vs. via gateway), SQLite → PG migration, legacy `add_owner_id.py`, dev PG helper |
@@ -113,9 +116,14 @@ Each of these has broken production or a test before. The parenthesized test pin
 
 **Security and logs**
 - Never log raw request bodies. Use `redact.summarize_body()` (shape only); `LOG_REQUEST_BODIES=true` is a debugging escape hatch.
+- CORS never sets `allow_credentials=True`: Starlette echoes any `Origin` on cookie-carrying requests, and with that header it would hand admin responses (full API keys included) to other sites. SSO-authenticated writes live under `/admin` or `/dashboard`, where `CrossSiteRequestGuard` refuses cross-site requests; a new prefix goes in `COOKIE_AUTH_PREFIXES` (`tests/test_browser_security.py`).
+- API keys are issued only by `schema._generate_api_key` (256 random bits). Never reject an older-format key by its shape: auth is an exact lookup and existing keys must keep working; `is_legacy_api_key` only drives the dashboard nudge and the admin filter (`tests/test_api_key_hardening.py`).
+- (Re)issue a key only through `schema.issue_api_key` (it resets `api_key_created_at` / `api_key_last_used_at`). Last use is stamped from `deps._authenticate` at most hourly per user per worker, after the auth session closed, never per request (`tests/test_key_last_use.py`).
+- The failed-auth throttle counts **distinct** invalid keys per address and, once locked, refuses before the key lookup. Counting attempts instead would let one stale client lock out a whole office NAT; looking the key up while locked would let a guesser keep testing (`TestThrottle`).
 - Admin listings show `mask_api_key(...)`. Full keys come one at a time from `GET /admin/users/{id}/api-key`, which is logged.
 - Admin-editable site links accept only `http(s)://` or site-relative URLs.
 - Downstream error lines include `user`, `model`, `endpoint` and the exception **type**. httpx timeouts stringify to an empty message.
+- A client never sees a downstream exception's text (internal hosts and URLs): 502 details and mid-stream error events go through `redact.downstream_error_detail` (type only); the full text goes to the log (`TestClientSeesNoInternals`).
 - Bedrock bodies go out as `content=_encode_body(...)`, signed by `_build_headers` over those exact bytes. Passing `json=` re-serializes the body and breaks every SigV4 signature (`test_iam_credentials_sign_with_sigv4`).
 - The Bedrock-native Messages path never forwards the client's `anthropic-beta` header, and drops the beta-only body fields with it (`_NATIVE_TOP_LEVEL_KEYS`): Bedrock 400s a beta it does not serve, which would fail every Claude Code request. Billed input there is `input_tokens` + cache reads + cache writes, because Anthropic's `input_tokens` excludes both (`test_bedrock_native_messages.py`).
 
@@ -136,11 +144,18 @@ Each of these has broken production or a test before. The parenthesized test pin
 - A blocked request records its own Langfuse generation (it never reaches `_log_usage`); every other screened request carries the verdict on its normal generation via the request-meta contextvar. Never log the screened text.
 - Only `block` waits for the verdict. `monitor` runs the guard as a background task alongside the vLLM call, and the request's Langfuse generation is deferred until the verdict is in (`PendingVerdict.add_done_callback`). Never block a thread or the loop waiting for it: the executor threads also carry the `usage_logs` writes (`test_monitor_does_not_wait_for_the_guard`, `test_monitor_langfuse_generation_waits_for_the_verdict`, `test_block_mode_judges_before_forwarding`).
 
+**Audit log**
+- Audit coverage comes from `AuditMiddleware`, not from handlers: never replace it with per-endpoint calls, and keep new SSO-authenticated writes under `/admin` or `/dashboard`. A new read that reveals credentials or exports data goes in `audit._AUDITED_READS` (`tests/test_audit_log.py`).
+- Nothing updates or deletes `audit_log` rows (PostgreSQL triggers refuse it). It stores usernames, never user ids, so `delete_user` leaves it alone.
+- Secrets never reach it: request and reply fields go through `audit.redact`; a handler whose body is too large or sensitive is added to `_BODY_NOT_RECORDED` and notes a summary instead (`PUT /admin/api/config` notes `config_changes`, field names only).
+- The write never fails the request; a failed write logs the whole record.
+
 **Admin UI**
 - In-place actions POST with `Accept: application/json` and repaint one element; without that header `fetch` follows the 303 and the server renders the whole admin page for nothing. Send explicit values (`enabled=on|off`): disabled controls are dropped from `FormData`. Use `gwToast` / `gwConfirm`, never `alert()` / `confirm()`.
 - The Users and Apps tables are one partial, `_admin_user_table.html`, with one row macro: change a column there, not in two copies. It renders inside `/admin` and alone from `GET /admin/user-table`, both from `_user_table` and the same query parameters. Links into it are built by `_admin_url` (URL-encoded), never by interpolating `q` into an `href` (`tests/test_admin_users_panel.py`).
 - `/dashboard` and `/admin` split their lower half into tabs via `gwTabs(barId, storageKey)` in `base.html`: buttons `data-tab="x"`, panels `data-panel="x"` (several panels may share a name). The active tab comes from the URL hash, else `sessionStorage`. The fallback is required because every admin form POST redirects to plain `/admin`, dropping the hash. The budget hero and the "Needs attention" panel stay above the tab bar. Charts inside a hidden tab are sized on the `resize` event the switch fires. The admin bar is the shared partial `_admin_tabs.html`: its fourth tab, **Models**, is a link to the separate `/admin/models` page, which renders the same bar with links back to `/admin#<tab>`. Model Config is deliberately not embedded: its URL hash is the model selection (`#settings` would collide with the admin tab of that name) and its unsaved-changes guard must keep firing on navigation.
 - `admin_models.html` writes every input straight into its `config` object through `setField`. There is no DOM re-collection at save time.
+- `GET /admin/api/config` sends model secrets as `<stored:section/alias/field>` references, never values; `PUT` and *Test connection* resolve them. A new secret config key goes in `config.SECRET_FIELDS` (`tests/test_config_secrets.py`).
 
 **Lint and config**
 - Ruff's rule set is deliberately narrow (`E4`, `E7`, `E9`, `F`). Don't widen it: the default set fights intentional patterns such as blind excepts and `Depends()` defaults.
@@ -171,7 +186,8 @@ One paragraph each. Follow the link for the full behavior.
 - **[Admin Model Config](docs/architecture.md#admin-model-config-page-apptemplatesadmin_modelshtml)**: master–detail editor over `GET/PUT /admin/api/config`. Selection lives in the URL hash; dirty tracking compares JSON snapshots.
 - **[Daily usage rollup](docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy)**: closed local days of `usage_logs` are summed into `usage_daily` (one row per day × user × backend × model × model_type × endpoint, plus `empty_turns`). Every worker runs `rollup_loop` from the lifespan (`USAGE_ROLLUP_INTERVAL_S`, default 600, `0` off), one day per transaction under `pg_try_advisory_xact_lock`, so exactly one worker rolls each day and no external scheduler is needed; days are rolled 15 min after they end, and the first run backfills. Reads go through `aggregate`: up to the watermark from `usage_daily`, the rest from `usage_logs`. `scripts/rollup_usage_daily.py` inspects and repairs (`--recompute`).
 - **[In-gateway jobs](docs/architecture.md#in-gateway-jobs-appservicesschedulerpy)**: no systemd timers. `job_loop` per job per worker, ~60 s ticks; `run_if_due` claims with a conditional UPDATE on `scheduled_jobs` (`last_started_at <= now - interval`), so each job runs once per interval across workers and hosts, and records `last_status` / `last_detail`. Jobs: anomaly scan (hourly, `ANOMALY_SCAN_INTERVAL_S`) and usage-log retention (daily, off unless `USAGE_LOG_RETENTION_DAYS`). `setup.sh` removes the old scan / cleanup timers.
-- **[Database](docs/architecture.md#database)**: `users`, `usage_logs`, `usage_daily` + `usage_rollup_state`, `scheduled_jobs`, `app_owners`, `anomaly_events`, `concurrency_leases`, `ip_allow_rules`. The hourly anomaly scan is detection only, never blocking. Usage-log retention ships off on purpose.
+- **[Audit log](docs/architecture.md#audit-log-appservicesauditpy)**: `AuditMiddleware` writes one `audit_log` row per write under `/admin` / `/dashboard` (any outcome), per full API key shown and per export: actor, route template, status, client, target account (looked up before the handler), redacted request fields and JSON reply, handler notes. After the response, in a thread, never failing the request. Append-only (PG triggers). Admin *Settings* → *Audit Log* card, JSON API and CSV.
+- **[Database](docs/architecture.md#database)**: `users`, `usage_logs`, `usage_daily` + `usage_rollup_state`, `scheduled_jobs`, `app_owners`, `anomaly_events`, `concurrency_leases`, `ip_allow_rules`, `audit_log`. The hourly anomaly scan is detection only, never blocking. Usage-log retention ships off on purpose.
 
 ## Testing
 
@@ -198,4 +214,4 @@ Pitfalls:
 
 ## CI
 
-`.github/workflows/ci.yml`: `uv sync --locked --dev` → `ruff check .` → `pytest tests/ -q` on Python 3.11 for pushes to `main` and every PR. `--locked` fails a PR that edits `pyproject.toml` without re-running `uv lock`.
+`.github/workflows/ci.yml`: `uv sync --locked --dev` → `ruff check .` → `pytest tests/ -q` on Python 3.11 for pushes to `main` and every PR. `--locked` fails a PR that edits `pyproject.toml` without re-running `uv lock`. `.github/workflows/security.yml` runs `pip-audit` on the locked runtime dependencies and gitleaks on new commits (whole history weekly). Every `--ignore-vuln` there carries its reason; add none without one, and drop it when the fix ships. Fake keys belong under `tests/` or in `*.example` files, which `.gitleaks.toml` allowlists.

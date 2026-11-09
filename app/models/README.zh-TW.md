@@ -8,7 +8,7 @@
 
 | 檔案 | 說明 |
 |---|---|
-| `schema.py` | `User`、`AppOwner`、`UsageLog`、`UsageDaily`、`UsageRollupState`、`ScheduledJob`、`AnomalyEvent`、`ConcurrencyLease` 八個 ORM Model，以及輔助函式 `is_app_account()`（`app_*` 前綴）與 `mask_api_key()`（Admin 列表的金鑰遮罩顯示） |
+| `schema.py` | `User`、`AppOwner`、`UsageLog`、`UsageDaily`、`UsageRollupState`、`ScheduledJob`、`AnomalyEvent`、`ConcurrencyLease`、`IpAllowRule`、`AuditLog` 十個 ORM Model，以及輔助函式 `is_app_account()`（`app_*` 前綴）、`mask_api_key()`（Admin 列表的金鑰遮罩顯示）、`issue_api_key()`（發放／重發 key 的唯一入口）與 `is_legacy_api_key()`（判斷舊格式 key） |
 
 ## ER Diagram
 
@@ -18,7 +18,7 @@ erDiagram
         INTEGER id PK "自動遞增主鍵"
         VARCHAR username UK "使用者名稱 (SSO sub claim)"
         VARCHAR password_hash "未使用，預設空字串"
-        VARCHAR api_key UK "API 金鑰 sk-internal-{ts}-{hex8}"
+        VARCHAR api_key UK "API 金鑰 sk-internal-{hex64}"
         FLOAT daily_limit_usd "每日費用上限 (USD)，0 = $0 預算"
         FLOAT azure_daily_limit_usd "已停用，不再讀取 (nullable)"
         FLOAT bedrock_daily_limit_usd "已停用，不再讀取 (nullable)"
@@ -28,6 +28,8 @@ erDiagram
         BOOLEAN can_use_azure "可使用 Azure 模型"
         BOOLEAN can_use_bedrock "可使用 Bedrock 模型"
         BOOLEAN concurrency_waived "免除並行上限"
+        DATETIME api_key_created_at "目前 key 的發放時間 (naive UTC，NULL = 不明)"
+        DATETIME api_key_last_used_at "目前 key 最後驗證成功時間 (最多每小時寫一次)"
         INTEGER owner_id FK "舊版 App 擁有者 → users.id"
         VARCHAR display_name "顯示名稱 (來自 IdP)"
         VARCHAR org_code "組織代碼 (來自 IdP)"
@@ -108,6 +110,18 @@ erDiagram
         VARCHAR last_detail "摘要或錯誤"
     }
 
+    audit_log {
+        INTEGER id PK "自動遞增主鍵"
+        DATETIME created_at "時間 (naive UTC)"
+        VARCHAR actor "JWT 的使用者名稱 (非外鍵)"
+        VARCHAR method "HTTP 方法"
+        VARCHAR route "路徑樣板"
+        VARCHAR path "實際路徑"
+        INTEGER status "回應狀態碼"
+        VARCHAR client "來源位址"
+        VARCHAR detail "JSON：對象、送出欄位、回應、備註"
+    }
+
     users ||--o{ usage_logs : "產生用量記錄"
     users ||--o{ app_owners : "被擁有 (app)"
     users ||--o{ app_owners : "擁有 (owner)"
@@ -152,7 +166,7 @@ classDiagram
 | `id` | `INTEGER` | PK, auto-increment | — | 主鍵，資料庫自動產生 |
 | `username` | `VARCHAR` | UNIQUE, INDEX | — | SSO 登入時的 `sub` claim。App 帳號以 `app_` 開頭（`is_app_account()`） |
 | `password_hash` | `VARCHAR` | — | `""` | **未使用**。歷史欄位，保留以維持向後相容 |
-| `api_key` | `VARCHAR` | UNIQUE, INDEX | `_generate_api_key()` | 自動產生，格式 `sk-internal-{unix_timestamp}-{8位hex}`。用於 API 認證。Admin 列表顯示 `mask_api_key(...)` |
+| `api_key` | `VARCHAR` | UNIQUE, INDEX | `_generate_api_key()` | 自動產生，格式 `sk-internal-` + 64 位 hex（256 bits 隨機）。舊格式 `sk-internal-{unix_timestamp}-{8位hex}` 仍可使用，由 `is_legacy_api_key` 辨識。用於 API 認證。Admin 列表顯示 `mask_api_key(...)` |
 | `daily_limit_usd` | `FLOAT` | — | `10.0` | 所有 backend 合計的每日花費上限（USD）。超過時 API 回傳 429 Too Many Requests。一律為有限值且 ≥ 0：**`0` 代表 $0 預算，不是無上限**。SSO 自動建立的使用者取 `[app].default_daily_limit_usd` |
 | `azure_daily_limit_usd` | `FLOAT` | NULLABLE | `None` | **已停用，不再讀取**。舊的每人 Azure 子上限；保留到有 migration 移除為止。Admin API 收到此欄位會回 400 |
 | `bedrock_daily_limit_usd` | `FLOAT` | NULLABLE | `None` | **已停用，不再讀取**。舊的每人 Bedrock 子上限；狀態同上 |
@@ -166,17 +180,17 @@ classDiagram
 | `display_name` | `VARCHAR` | — | `""` | 使用者顯示名稱，來自 IdP JWT 的 `display_name` 欄位。每次 Web 登入時自動同步更新 |
 | `org_code` | `VARCHAR` | — | `""` | 組織代碼，來自 IdP JWT 的 `org_code` 欄位。每次 Web 登入時自動同步更新。顯示於 Admin 使用者表格 |
 | `created_at` | `DATETIME` | — | `datetime.now(UTC)` | 帳號建立時間 |
+| `api_key_created_at` | `DATETIME` | 可為 NULL | `datetime.now(UTC)`（naive） | 目前這把 key 的發放時間；`issue_api_key` 重設。NULL = 不明（只有舊格式 key 能回填） |
+| `api_key_last_used_at` | `DATETIME` | 可為 NULL | — | 這把 key 最後一次驗證成功的時間，**naive UTC**，最多每小時寫一次（`deps._record_key_use`）；NULL = 從未使用。由 `usage_logs` 回填 |
 
 ### API Key 產生邏輯
 
 ```python
 def _generate_api_key() -> str:
-    ts = int(datetime.now(timezone.utc).timestamp())
-    short_hex = uuid.uuid4().hex[:8]
-    return f"sk-internal-{ts}-{short_hex}"
+    return API_KEY_PREFIX + secrets.token_hex(32)   # "sk-internal-" + 64 hex
 ```
 
-範例：`sk-internal-1741651200-a1b2c3d4`
+範例：`sk-internal-3f9c…`（共 76 字元）。舊格式 `sk-internal-1741651200-a1b2c3d4` 的 key 仍可驗證（驗證是逐字比對）；dashboard 會提醒持有人重新產生，admin 使用者表可用 **Older-format API key** 篩出。
 
 ### 使用者類型區分
 
@@ -341,3 +355,23 @@ cost_usd = (uncached_input_tokens × input_price_per_1m
 ## ScheduledJob 模型
 
 對應 `scheduled_jobs` 資料表。gateway 內建週期性工作（異常掃描、usage log 保留期清理；`app/services/scheduler.py`）每個工作一列：`name`（PK）、`last_started_at`、`last_finished_at`（naive UTC）、`last_status`（`running` / `ok` / `error`）、`last_detail`。worker 以條件式 UPDATE `last_started_at` 認領工作，所以每個週期在所有 worker 與主機之間只會執行一次。
+
+## IpAllowRule 模型
+
+對應 `ip_allow_rules` 資料表：API IP 白名單（`app/services/ip_allowlist.py`）。欄位有 `cidr`、`label`、`usernames` / `org_codes`（JSON 清單；兩者皆空 = 所有帳號）、`created_by`（使用者名稱，非外鍵）、可選的 `starts_at` / `expires_at`（naive UTC；沒有結束時間 = 永久）、`created_at`。存的是使用者名稱與部門代碼，不是 user id，所以刪除帳號不會動到這張表。
+
+## AuditLog 模型
+
+對應 `audit_log` 資料表：由 `AuditMiddleware`（`app/services/audit.py`）寫入的 Web UI / admin 操作稽核紀錄。`/admin`、`/dashboard` 底下每一個 POST / PUT / PATCH / DELETE（不論成功與否）、每次顯示完整 API key、每次資料匯出，各記一列。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `id` | `INTEGER` | 主鍵 |
+| `created_at` | `DATETIME` | 時間，**naive UTC**（有索引，另有 `(actor, created_at)` 索引） |
+| `actor` | `VARCHAR` | JWT 的 `sub`（使用者名稱）；未登入時為空。不是外鍵：帳號刪除後紀錄仍保留 |
+| `method`、`route`、`path` | `VARCHAR` | HTTP 方法、路徑樣板（`/admin/users/{user_id}/limit`）與實際路徑 |
+| `status` | `INTEGER` | 回應狀態碼；handler 拋出例外時為 500 |
+| `client` | `VARCHAR` | `request.client.host` |
+| `detail` | `VARCHAR`（JSON） | `target`（路徑指到的帳號，在 handler 執行前查好）、`request`（送出的欄位）、`response`（小型 JSON 回應）、handler 補充的備註（例如 `config_changes`）。像金鑰的欄位一律記成 `<redacted>` |
+
+只能新增：程式不會修改或刪除任何一列；PostgreSQL 上另有 trigger 拒絕 UPDATE、DELETE 和 TRUNCATE（migration `07899844c700`）。不做保留期清理。

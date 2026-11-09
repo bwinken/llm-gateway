@@ -11,7 +11,14 @@ from sqlalchemy import case as sa_case
 from sqlmodel import Session, func, select
 
 from app.core.timeutil import local_day_start_utc, local_month_start, local_today
-from app.models.schema import AppOwner, UsageLog, User, app_account_clause, is_app_account
+from app.models.schema import (
+    AppOwner,
+    UsageLog,
+    User,
+    app_account_clause,
+    is_app_account,
+    is_legacy_api_key,
+)
 from app.services.usage_rollup import aggregate
 
 # Days and months are local (Asia/Taipei) calendar days and months, the same
@@ -259,6 +266,7 @@ def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
             "id": app.id,
             "username": app.username,
             "api_key": app.api_key,
+            "legacy_key": is_legacy_api_key(app.api_key),
             "daily_limit_usd": app.daily_limit_usd,
             "monthly_cost": usage_by_id.get(app.id, {}).get("cost", 0.0),
             "monthly_input": usage_by_id.get(app.id, {}).get("input_tokens", 0),

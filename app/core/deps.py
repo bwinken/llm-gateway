@@ -5,13 +5,16 @@ Dependency: extract and validate API key from Authorization header.
 from __future__ import annotations
 
 import os
+import threading
+import time
+from datetime import datetime, timedelta, timezone
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 import anyio
 from fastapi import Depends, Header, HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlmodel import Session, func, select
+from sqlmodel import Session, func, select, update
 from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import AccountDisabledError
@@ -20,7 +23,7 @@ from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
 from app.models.schema import UsageLog, User
-from app.services import ip_allowlist, metrics
+from app.services import auth_throttle, ip_allowlist, metrics
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -223,6 +226,51 @@ def ensure_bedrock_budget(user: User) -> None:
     check_cloud_budget(user, "bedrock")
 
 
+# ── API key last use ──
+# users.api_key_last_used_at feeds access reviews (stale keys), so it needs
+# hour precision, not per-request writes: each worker writes a user's row at
+# most once per KEY_USE_RESOLUTION_S, and the UPDATE is conditional so
+# several workers don't rewrite it within the same window.
+KEY_USE_RESOLUTION_S = 3600
+_key_use_lock = threading.Lock()
+_key_use_last: dict[int, float] = {}
+
+
+def _key_use_due(user_id: int | None, now: float | None = None) -> bool:
+    if user_id is None:
+        return False
+    now = time.monotonic() if now is None else now
+    with _key_use_lock:
+        last = _key_use_last.get(user_id)
+        if last is not None and now - last < KEY_USE_RESOLUTION_S:
+            return False
+        _key_use_last[user_id] = now
+        return True
+
+
+def _record_key_use(user_id: int) -> None:
+    """Stamp ``api_key_last_used_at``. A side effect: never fails the request."""
+    try:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        stale = now - timedelta(seconds=KEY_USE_RESOLUTION_S)
+        col = User.api_key_last_used_at
+        with Session(engine) as session:
+            session.exec(
+                update(User)
+                .where(User.id == user_id, (col.is_(None)) | (col < stale))  # type: ignore[union-attr,operator]
+                .values(api_key_last_used_at=now)
+            )
+            session.commit()
+    except Exception as exc:
+        logger.warning("Recording API key use failed | user_id={} error={}: {}", user_id, type(exc).__name__, exc)
+
+
+def reset_key_use_cache() -> None:
+    """Forget which users were stamped recently (tests)."""
+    with _key_use_lock:
+        _key_use_last.clear()
+
+
 def _authenticate(
     credentials: HTTPAuthorizationCredentials | None,
     x_api_key: str | None,
@@ -268,37 +316,62 @@ def _authenticate(
             detail="Missing API key. Provide Authorization: Bearer <key> or x-api-key header.",
         )
 
-    with Session(engine) as session:
-        user: User | None = None
-        for key in candidates:
-            user = session.exec(select(User).where(User.api_key == key)).first()
-            if user is not None:
-                break
+    # An address that has tried many different invalid keys is refused before
+    # any lookup, valid key or not (app/services/auth_throttle.py).
+    client_addr = request.client.host if request is not None and request.client else None
+    wait_s = auth_throttle.retry_after(client_addr)
+    if wait_s is not None:
+        metrics.observe_rejection("auth_throttle")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed authentication attempts from this address. Try again later.",
+            headers={"Retry-After": str(wait_s)},
+        )
 
-        if user is None:
-            # Log a masked preview of every credential the client sent so
-            # operators can tell "wrong key" from "no key" from "mangled key"
-            # without leaking the full secret to the log file.
-            previews = ", ".join(_mask(k) for k in candidates)
-            logger.warning("Auth rejected: no user found for candidates [{}]", previews)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid API key.",
-            )
-        if user.is_disabled and not user.is_admin:
-            # Admin bypass mirrors get_web_user — if an admin row is somehow
-            # flagged disabled (only possible via direct DB edit; the toggle
-            # endpoint blocks self-disable), they can still call the API to
-            # fix the situation. Non-admins always get rejected.
-            logger.warning("Auth rejected: user '{}' is disabled", user.username)
-            raise AccountDisabledError(user.username)
-        # API IP allowlist: needs the account, so it runs here, before the
-        # budget check (a refused address is a 403, not a 429). Memory only;
-        # a no-op while [app].ip_allowlist_mode is "off".
-        if request is not None:
-            ip_allowlist.check(request, user)
-        if check_daily_limit:
-            _check_daily_limit(session, user)
+    # Recorded after the session is closed (a separate short write), and even
+    # when the budget check below refuses the request: the key was valid.
+    touch_id: int | None = None
+    try:
+        with Session(engine) as session:
+            user: User | None = None
+            for key in candidates:
+                user = session.exec(select(User).where(User.api_key == key)).first()
+                if user is not None:
+                    break
+
+            if user is None:
+                # Log a masked preview of every credential the client sent so
+                # operators can tell "wrong key" from "no key" from "mangled key"
+                # without leaking the full secret to the log file.
+                previews = ", ".join(_mask(k) for k in candidates)
+                logger.warning(
+                    "Auth rejected: no user found for candidates [{}] | client={}",
+                    previews, client_addr or "-",
+                )
+                auth_throttle.record_failure(client_addr, candidates)
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid API key.",
+                )
+            if user.is_disabled and not user.is_admin:
+                # Admin bypass mirrors get_web_user — if an admin row is somehow
+                # flagged disabled (only possible via direct DB edit; the toggle
+                # endpoint blocks self-disable), they can still call the API to
+                # fix the situation. Non-admins always get rejected.
+                logger.warning("Auth rejected: user '{}' is disabled", user.username)
+                raise AccountDisabledError(user.username)
+            # API IP allowlist: needs the account, so it runs here, before the
+            # budget check (a refused address is a 403, not a 429). Memory only;
+            # a no-op while [app].ip_allowlist_mode is "off".
+            if request is not None:
+                ip_allowlist.check(request, user)
+            if _key_use_due(user.id):
+                touch_id = user.id
+            if check_daily_limit:
+                _check_daily_limit(session, user)
+    finally:
+        if touch_id is not None:
+            _record_key_use(touch_id)
     # ``user`` is now detached: its columns are loaded (SQLModel does not
     # expire on close) and downstream code only ever reads them.
     return user

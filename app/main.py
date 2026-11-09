@@ -2,7 +2,7 @@
 FastAPI application entry point.
 
 Lifespan: DB init, global httpx client, background health checks.
-Middleware: CORS.
+Middleware: CORS + cross-site request guard (app/core/browser_security.py).
 Router mounting: health_api, web_ui, v1_api, azure_api, aws_api, admin.
 """
 
@@ -13,11 +13,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from app.core.auth import AccountDisabledError
+from app.core.browser_security import add_browser_security
 from app.core.config import APP_TITLE, get_site_links
 from app.core.database import init_db
 from app.core.logger import logger
@@ -99,13 +99,13 @@ app = FastAPI(
 )
 
 # --- Middleware ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS (any origin, never credentials) + refusal of cross-site writes to the
+# cookie-authenticated Web UI / admin paths. See app/core/browser_security.py.
+add_browser_security(app)
+# Audit trail of Web UI / admin changes, credential reads and exports
+# (app/services/audit.py). Outside the cross-site guard, so refusals are kept.
+from app.services.audit import AuditMiddleware  # noqa: E402
+app.add_middleware(AuditMiddleware)
 
 # Stash request headers for the observability hook (read at the _log_usage
 # seam). Pure-ASGI so the contextvar survives into streaming response bodies.

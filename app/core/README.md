@@ -19,6 +19,7 @@ graph TD
     deps --> |get_current_user / limited_current_user<br/>check_cloud_budget| LLM_API["routers/v1_api.py"]
     deps --> |require_azure_access / limited_azure_access| AzureAPI["routers/azure_api.py"]
     deps --> |require_bedrock_access / limited_bedrock_access| AwsAPI["routers/aws_api.py"]
+    browser["browser_security.py<br/>CORS + cross-site guard"] --> |add_browser_security| Main["main.py"]
     server_state["server_state.py<br/>HTTP Clients + Health/Metrics Cache"] --> VllmProxy["services/vllm_proxy.py"]
     server_state --> AzureProxy["services/azure_proxy.py"]
     server_state --> BedrockProxy["services/bedrock_proxy.py"]
@@ -89,6 +90,7 @@ See `.env.example`. Read once at startup unless noted.
 |---|---|---|---|
 | `APP_TITLE`, `DATABASE_URL`, `AUTH_CENTER_APP_ID`, `AUTH_CENTER_PUBLIC_KEY_PATH`, `AUTH_BASE_URL` | `config.py` | see table above | Core settings |
 | `LOG_DIR` / `LOG_LEVEL` / `LOG_ROTATION` / `LOG_RETENTION` | `logger.py` | `./logs` / `WARNING` / `100 MB` / `14 days` | File-sink settings (passed through to loguru) |
+| `AUTH_FAIL_DISTINCT_KEYS` / `AUTH_FAIL_WINDOW_S` / `AUTH_LOCKOUT_S` | `services/auth_throttle.py` | `10` / `600` / `900` | An address that sends this many **distinct** invalid API keys within the window is refused (429) for the lockout, valid key or not. Per worker, in memory; loopback is never locked; `0` turns it off |
 | `ENFORCE_DAILY_LIMIT` | `deps.py` (per call) | `true` | `false` = soft mode: daily and cloud overages are logged as WARNING but not refused. The only escape hatch; there is no per-user "unlimited" |
 | `AZURE_HTTP_PROXY` / `AZURE_INSECURE` | `server_state.py` | unset / `false` | Proxy (inline credentials allowed) / disable TLS verification for Azure traffic only |
 | `BEDROCK_HTTP_PROXY` / `BEDROCK_INSECURE` | `server_state.py` | unset / `false` | Same contract for Bedrock traffic only |
@@ -160,6 +162,7 @@ The auth dependencies open their **own short-lived `Session(engine)`** and close
 | `_check_backend_daily_limit(session, user, backend, *, allow_fallback=False)` | `bool` | One cap for Azure + Bedrock together: sums today's `usage_logs` with `backend in ("azure", "bedrock")` against `effective_cloud_limit`. `None` = no cap; `0` = cloud refused |
 | `_check_daily_limit(session, user)` | — | Sums today's `cost_usd`; 429 when it reaches `daily_limit_usd`. `daily_limit_usd = 0` is a **$0 budget**, never "unlimited" |
 | `_enforce_daily_limit()` | `bool` | Reads `ENFORCE_DAILY_LIMIT` at call time; `False` turns both checks into WARNING-only |
+| `_key_use_due(user_id)` / `_record_key_use(user_id)` | `bool` / — | Stamp `users.api_key_last_used_at` at most once per `KEY_USE_RESOLUTION_S` (1 h) per user per worker, after the auth session has closed, with a conditional UPDATE. Never fails the request |
 | `get_today_usage(user)` | `dict` | Today's spend and tokens split by backend (`stats.get_user_daily_summary`); short-lived session |
 
 All daily-limit 429s carry `Retry-After` until the next local midnight (`timeutil`).
@@ -169,16 +172,33 @@ All daily-limit 429s carry `Retry-After` until the next local midnight (`timeuti
 ```
 Request header: Authorization: Bearer sk-... and/or x-api-key: sk-...
        ↓
+auth_throttle: address locked after too many distinct invalid keys → 429 (no lookup)
+       ↓
 Own short-lived Session: SELECT * FROM users WHERE api_key = ? (each candidate)
-       ↓  none → 401; disabled (non-admin) → AccountDisabledError (403)
+       ↓  none → 401 (+ counted by auth_throttle); disabled (non-admin) → AccountDisabledError (403)
+IP allowlist → 403
 Check today's cost_usd vs daily_limit_usd → 429  (skipped by get_current_user_unmetered)
-       ↓  session closed
+       ↓  session closed; api_key_last_used_at stamped (at most hourly)
 require_azure_access / require_bedrock_access: access flag → 403, cloud cap → 429
        ↓
 limited_*: take a concurrency lease (inference endpoints), released after the response
        ↓
 Return User object
 ```
+
+---
+
+### `browser_security.py` — CORS and Cross-Site Guard
+
+Installed by `add_browser_security(app)` in `app/main.py` (and the test app).
+
+| Name | Description |
+|---|---|
+| `CORS_OPTIONS` | Any origin, **never credentials** (`allow_credentials=False`). API clients send their key in a header they set themselves, which CORS does not count as a credential; the SSO cookie is, so another site can't read `/admin` or `/dashboard` responses |
+| `CrossSiteRequestGuard` | Pure ASGI. 403 for POST / PUT / PATCH / DELETE under `COOKIE_AUTH_PREFIXES` (`/admin`, `/dashboard`) when `Sec-Fetch-Site` is anything but `same-origin` / `none`, or, without that header, when the `Origin` hostname differs from `Host` (port ignored) or is `null`. Requests with neither header (curl, scripts) pass. API paths are never checked |
+| `is_cookie_auth_path(path)` | True under `/admin` or `/dashboard`. Also used by the audit log (`services/audit.py`) |
+
+`SameSite=lax` on the SSO cookie is not enough on its own: a sibling host under the same domain is *same-site*, so its form posts carry the cookie.
 
 ---
 

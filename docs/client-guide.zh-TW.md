@@ -157,6 +157,8 @@ Gateway 直接轉送 chat completions，不檢查 tool call 和 tool result 是�
 | `429` "Too many concurrent requests" | 你的帳號同時進行中的請求已達上限，`Retry-After: 5` | 稍後重試，Claude Code 會自動重試 |
 | `403` "Azure / Bedrock access not granted" | 你的帳號沒有開通這個後端 | 請找管理員 |
 | `403` "Account disabled" | 帳號已被停用 | 請找管理員 |
+| `429` "Too many failed authentication attempts from this address" | 你的位址送出太多把不同的錯誤 key，被暫時封鎖（見 `Retry-After`），期間連正確的 key 也會被拒絕 | 先修正 client 裡的 key，再等封鎖結束 |
+| `502` "Downstream error (ConnectError)"（或其他錯誤類型） | 連不上模型伺服器或它出錯；細節記在 gateway 的 log，不會出現在回應裡 | 重試；持續發生請把時間與模型告訴管理員 |
 
 ## System One
 

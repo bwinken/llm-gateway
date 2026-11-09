@@ -177,6 +177,12 @@ Two settings decide whether user prompts reach durable storage:
 
 With both off, a failed request logs the **shape** of the body — fields present, message roles, content-block types, string lengths — which is what diagnoses a downstream 400, without the prose. Turn `LOG_REQUEST_BODIES` on to chase a specific bug and turn it back off; anything it writes stays for `LOG_RETENTION` (14 days by default) and is readable by anyone with host access.
 
+## Security Settings
+
+- **Audit log.** Every admin / dashboard change, every full API key shown and every export is a row in `audit_log` (admin *Settings* → *Audit Log*, CSV download). It is append-only: PostgreSQL triggers refuse UPDATE, DELETE and TRUNCATE, so removing entries means a DBA dropping the trigger on purpose. Each entry is also logged as `Audit | {...}` (usernames, addresses, submitted fields; secrets redacted).
+- **Failed-auth throttle.** `AUTH_FAIL_DISTINCT_KEYS` / `AUTH_FAIL_WINDOW_S` / `AUTH_LOCKOUT_S` (default 10 distinct invalid keys in 600 s → 429 for 900 s). It keys on the client address, so uvicorn must trust nginx's forwarded headers; loopback is never locked, which is what you would see if it didn't.
+- **Dependency and secret scanning** run in GitHub Actions (`.github/workflows/security.yml`). For Dependabot to open security-fix PRs, turn on *Dependabot security updates* in the repository's Settings → Code security.
+
 ## PostgreSQL Data Migration (Volume Change)
 
 When moving PG data to a different volume (e.g., wrong disk mount, capacity expansion), using `pg_dumpall` logical backup is safest — unaffected by filesystem or permission differences.

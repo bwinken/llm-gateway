@@ -8,7 +8,7 @@ Defines PostgreSQL table structures using [SQLModel](https://sqlmodel.tiangolo.c
 
 | File | Description |
 |---|---|
-| `schema.py` | `User`, `AppOwner`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AnomalyEvent`, `ConcurrencyLease` — eight ORM models, plus helpers `is_app_account()` (`app_*` prefix) and `mask_api_key()` (key display in admin listings) |
+| `schema.py` | `User`, `AppOwner`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AnomalyEvent`, `ConcurrencyLease`, `IpAllowRule`, `AuditLog` — ten ORM models, plus helpers `is_app_account()` (`app_*` prefix), `mask_api_key()` (key display in admin listings), `issue_api_key()` (the one way to (re)issue a key) and `is_legacy_api_key()` (keys older than the current format) |
 
 ## ER Diagram
 
@@ -18,7 +18,7 @@ erDiagram
         INTEGER id PK "Auto-increment primary key"
         VARCHAR username UK "Username (SSO sub claim)"
         VARCHAR password_hash "Unused, defaults to empty string"
-        VARCHAR api_key UK "API key sk-internal-{ts}-{hex8}"
+        VARCHAR api_key UK "API key sk-internal-{hex64}"
         FLOAT daily_limit_usd "Daily cost limit (USD), 0 = $0 budget"
         FLOAT azure_daily_limit_usd "Retired, unread (nullable)"
         FLOAT bedrock_daily_limit_usd "Retired, unread (nullable)"
@@ -28,6 +28,8 @@ erDiagram
         BOOLEAN can_use_azure "Allowed to use Azure models"
         BOOLEAN can_use_bedrock "Allowed to use Bedrock models"
         BOOLEAN concurrency_waived "Exempt from concurrency limit"
+        DATETIME api_key_created_at "Current key issued (naive UTC, NULL = unknown)"
+        DATETIME api_key_last_used_at "Current key last authenticated (≤ hourly)"
         INTEGER owner_id FK "Legacy app owner → users.id"
         VARCHAR display_name "Display name (from IdP)"
         VARCHAR org_code "Organization code (from IdP)"
@@ -108,6 +110,18 @@ erDiagram
         VARCHAR last_detail "Summary or error"
     }
 
+    audit_log {
+        INTEGER id PK "Auto-increment primary key"
+        DATETIME created_at "When (naive UTC)"
+        VARCHAR actor "Username from the JWT (not a FK)"
+        VARCHAR method "HTTP method"
+        VARCHAR route "Path template"
+        VARCHAR path "Actual path"
+        INTEGER status "Response status"
+        VARCHAR client "Client address"
+        VARCHAR detail "JSON: target, request, response, notes"
+    }
+
     users ||--o{ usage_logs : "generates usage logs"
     users ||--o{ app_owners : "owned as app"
     users ||--o{ app_owners : "owns"
@@ -152,7 +166,7 @@ classDiagram
 | `id` | `INTEGER` | PK, auto-increment | — | Primary key, auto-generated |
 | `username` | `VARCHAR` | UNIQUE, INDEX | — | SSO `sub` claim. App accounts are prefixed with `app_` (`is_app_account()`) |
 | `password_hash` | `VARCHAR` | — | `""` | **Unused.** Legacy field kept for backward compatibility |
-| `api_key` | `VARCHAR` | UNIQUE, INDEX | `_generate_api_key()` | Auto-generated, format `sk-internal-{unix_timestamp}-{8-char hex}`. Used for API auth. Admin listings show `mask_api_key(...)` |
+| `api_key` | `VARCHAR` | UNIQUE, INDEX | `_generate_api_key()` | Auto-generated, format `sk-internal-` + 64 hex (256 random bits). Keys issued earlier (`sk-internal-{unix_timestamp}-{8-char hex}`) keep working; `is_legacy_api_key` flags them. Used for API auth. Admin listings show `mask_api_key(...)` |
 | `daily_limit_usd` | `FLOAT` | — | `10.0` | Daily spend limit (USD) for all backends. API returns 429 when exceeded. Always finite and ≥ 0: **`0` is a $0 budget, not unlimited**. SSO-created users get `[app].default_daily_limit_usd` |
 | `azure_daily_limit_usd` | `FLOAT` | NULLABLE | `None` | **Retired, unread.** Former per-user Azure sub-limit; kept until a migration drops it. The admin API answers 400 to this field |
 | `bedrock_daily_limit_usd` | `FLOAT` | NULLABLE | `None` | **Retired, unread.** Former per-user Bedrock sub-limit; same status as above |
@@ -166,17 +180,17 @@ classDiagram
 | `display_name` | `VARCHAR` | — | `""` | Display name from IdP JWT `display_name` field. Auto-synced on each web login |
 | `org_code` | `VARCHAR` | — | `""` | Org code from IdP JWT `org_code` field. Auto-synced on each web login. Shown in Admin user table |
 | `created_at` | `DATETIME` | — | `datetime.now(UTC)` | Account creation time |
+| `api_key_created_at` | `DATETIME` | nullable | `datetime.now(UTC)` (naive) | When the current key was issued; reset by `issue_api_key`. NULL = unknown (backfilled from old-format keys only) |
+| `api_key_last_used_at` | `DATETIME` | nullable | — | Last successful auth with the key, **naive UTC**, at most hourly (`deps._record_key_use`); NULL = never. Backfilled from `usage_logs` |
 
 ### API Key Generation
 
 ```python
 def _generate_api_key() -> str:
-    ts = int(datetime.now(timezone.utc).timestamp())
-    short_hex = uuid.uuid4().hex[:8]
-    return f"sk-internal-{ts}-{short_hex}"
+    return API_KEY_PREFIX + secrets.token_hex(32)   # "sk-internal-" + 64 hex
 ```
 
-Example: `sk-internal-1741651200-a1b2c3d4`
+Example: `sk-internal-3f9c…` (76 characters). Keys issued before this format, `sk-internal-1741651200-a1b2c3d4`, still authenticate (auth is an exact lookup); the dashboard asks their holders to regenerate and the admin Users filter **Older-format API key** lists them.
 
 ### User Type Distinctions
 
@@ -341,3 +355,23 @@ Maps to `usage_rollup_state` table. One row (`name = "usage_daily"`) holding `ro
 ## ScheduledJob Model
 
 Maps to `scheduled_jobs` table. One row per in-gateway periodic job (anomaly scan, usage-log retention; `app/services/scheduler.py`): `name` (PK), `last_started_at`, `last_finished_at` (naive UTC), `last_status` (`running` / `ok` / `error`), `last_detail`. Workers claim a run with a conditional UPDATE of `last_started_at`, so each job runs once per interval across every worker and host.
+
+## IpAllowRule Model
+
+Maps to `ip_allow_rules` table: the API IP allowlist (`app/services/ip_allowlist.py`). `cidr`, `label`, `usernames` / `org_codes` (JSON lists; both empty = every account), `created_by` (a username, not a foreign key), optional `starts_at` / `expires_at` (naive UTC; no end = permanent), `created_at`. Usernames and org codes, never user ids, so deleting an account never touches this table.
+
+## AuditLog Model
+
+Maps to `audit_log` table: the trail of Web UI / admin actions written by `AuditMiddleware` (`app/services/audit.py`). One row per POST / PUT / PATCH / DELETE under `/admin` and `/dashboard` (whatever the outcome), per full API key revealed and per export.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `INTEGER` | Primary key |
+| `created_at` | `DATETIME` | When, **naive UTC** (indexed, and `(actor, created_at)`) |
+| `actor` | `VARCHAR` | JWT `sub` (username); empty when unauthenticated. Not a foreign key: deleting an account keeps its trail |
+| `method`, `route`, `path` | `VARCHAR` | HTTP method, path template (`/admin/users/{user_id}/limit`) and actual path |
+| `status` | `INTEGER` | Response status; 500 when the handler raised |
+| `client` | `VARCHAR` | `request.client.host` |
+| `detail` | `VARCHAR` (JSON) | `target` (the account the path names, looked up before the handler), `request` (submitted fields), `response` (small JSON reply), handler notes such as `config_changes`. Credential-like keys are `<redacted>` |
+
+Append-only: the app never updates or deletes a row, and on PostgreSQL triggers refuse UPDATE, DELETE and TRUNCATE (migration `07899844c700`). No retention.

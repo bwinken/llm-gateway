@@ -1,0 +1,21 @@
+# Weekly update PRs for Python dependencies (uv.lock) and the GitHub Actions
+# used by the workflows. Security updates additionally need "Dependabot
+# security updates" switched on in the repository's Settings → Code security.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      # Patch and minor bumps in one PR; majors one PR each, to review alone.
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"

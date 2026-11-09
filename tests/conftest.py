@@ -364,6 +364,12 @@ def _build_test_app() -> FastAPI:
     from app.core.auth import AccountDisabledError
     test_app.add_exception_handler(AccountDisabledError, account_disabled_handler)
 
+    # Same browser protections as production (CORS policy, cross-site guard).
+    from app.core.browser_security import add_browser_security
+    add_browser_security(test_app)
+    from app.services.audit import AuditMiddleware
+    test_app.add_middleware(AuditMiddleware)
+
     test_app.include_router(health_api.router)
     test_app.include_router(web_ui.router)
     test_app.include_router(v1_api.router)
@@ -397,6 +403,7 @@ _ALL_PATCHES = [
     lambda: patch("app.services.concurrency.engine", _test_engine),
     lambda: patch("app.services.usage_rollup.engine", _test_engine),
     lambda: patch("app.services.scheduler.engine", _test_engine),
+    lambda: patch("app.services.audit.engine", _test_engine),
     lambda: patch("app.services.vllm_proxy.is_alive", return_value=True),
     lambda: patch("app.services.azure_proxy.AZURE_MODELS", TEST_AZURE_MODELS),
     lambda: patch("app.services.azure_proxy.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),
@@ -434,12 +441,17 @@ def _patch_all():
     import app.services.ip_allowlist as ip_allowlist  # same, for the engine / settings patches
     from contextlib import ExitStack
 
+    import app.services.auth_throttle as auth_throttle
     ip_allowlist.reset()  # the per-worker snapshot is module state
+    auth_throttle.reset()  # so are failed-auth counts and locks
+    from app.core.deps import reset_key_use_cache
+    reset_key_use_cache()  # and which users' key use was stamped recently
     with ExitStack() as stack:
         for make_patch in _ALL_PATCHES:
             stack.enter_context(make_patch())
         yield
     ip_allowlist.reset()
+    auth_throttle.reset()
 
 
 @pytest.fixture()

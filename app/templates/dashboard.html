@@ -36,6 +36,20 @@
     </div>
 </div>
 
+{# ── Older-format API keys: nudge the holder to regenerate (nothing is forced) ── #}
+{% if legacy_key or legacy_app_keys %}
+{% set n_legacy = (1 if legacy_key else 0) + legacy_app_keys %}
+<div id="legacyKeyNotice" class="gw-card p-4 mb-6 gw-anim gw-d1 text-sm"
+     style="background:rgba(245,166,35,0.06);border-color:rgba(245,166,35,0.3)">
+    <div class="text-t1 font-semibold mb-0.5">Please regenerate your API key{{ '' if n_legacy == 1 else 's' }}</div>
+    <div class="text-t3">
+        {% if legacy_key %}Your key{% if legacy_app_keys %} and {{ legacy_app_keys }} of your app key{{ '' if legacy_app_keys == 1 else 's' }}{% endif %}{% else %}{{ legacy_app_keys }} of your app key{{ '' if legacy_app_keys == 1 else 's' }}{% endif %}
+        {{ 'is' if n_legacy == 1 else 'are' }} in an older, weaker format. {{ 'It keeps' if n_legacy == 1 else 'They keep' }} working, but a newly generated key is far harder to guess.
+        Regenerate ({% if legacy_key %}<b>My API Key → Regenerate</b>{% endif %}{% if legacy_key and legacy_app_keys %}; {% endif %}{% if legacy_app_keys %}<b>Refresh</b> under My Apps{% endif %}) when you can update your clients: the old key stops working at once.
+    </div>
+</div>
+{% endif %}
+
 {# ── First-time setup: only until the account has made its first request ── #}
 {% if total_reqs == 0 and today_reqs == 0 %}
 <div class="gw-card p-5 mb-6 gw-anim gw-d1 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
@@ -994,7 +1008,7 @@ result = client.system_one(
         if (!confirm('Regenerate your API key? The old key will stop working immediately.')) return;
         var btn=document.getElementById('dashRefreshBtn'); btn.disabled=true; btn.classList.add('opacity-50');
         fetch('/dashboard/refresh-key',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
-            if(d.ok){document.getElementById('dashKeyValue').value=d.api_key;document.getElementById('dashCopyFeedback').textContent='Key regenerated!';setTimeout(function(){document.getElementById('dashCopyFeedback').textContent='';},3000);}else alert('Failed.');
+            if(d.ok){document.getElementById('dashKeyValue').value=d.api_key;{% if legacy_key and not legacy_app_keys %}var n=document.getElementById('legacyKeyNotice');if(n)n.remove();{% endif %}document.getElementById('dashCopyFeedback').textContent='Key regenerated!';setTimeout(function(){document.getElementById('dashCopyFeedback').textContent='';},3000);}else alert('Failed.');
         }).catch(function(){alert('Error.');}).finally(function(){btn.disabled=false;btn.classList.remove('opacity-50');});
     }
     document.addEventListener('keydown',function(e){if(e.key==='Escape')document.getElementById('apiKeyModal').classList.add('hidden');});

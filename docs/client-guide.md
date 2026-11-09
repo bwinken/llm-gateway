@@ -157,6 +157,8 @@ Every Azure call goes through the Responses API, which rejects (400) any `functi
 | `429` "Too many concurrent requests" | Your account already has the maximum number of requests in flight; `Retry-After: 5` | Retry shortly. Claude Code does this automatically |
 | `403` "Azure / Bedrock access not granted" | Your account isn't enabled for that backend | Ask an admin |
 | `403` "Account disabled" | Your account was disabled | Ask an admin |
+| `429` "Too many failed authentication attempts from this address" | Your address sent many different invalid keys and is locked for a while (`Retry-After`); even a valid key is refused until then | Fix the key in your client, then wait |
+| `502` "Downstream error (ConnectError)" (or another error type) | The model server could not be reached or failed; details are in the gateway log, not in the reply | Retry; if it persists, tell an admin the time and model |
 
 ## System One
 
