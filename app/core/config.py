@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import tempfile
 import threading
 from pathlib import Path
@@ -737,6 +738,73 @@ def get_config_data() -> dict[str, Any]:
         # What blank Bedrock fields fall back to. Never the secret itself.
         "bedrock_shared": _bedrock_shared_summary(),
     }
+
+
+# Secret fields of model entries. GET /admin/api/config never sends their
+# values to the browser: a set secret becomes a reference to where it is
+# stored, and PUT swaps references back for the stored values. A reference
+# names its section, alias and field, so renaming or duplicating an entry in
+# the editor (which copies the reference) keeps the secret it pointed at.
+SECRET_FIELDS: dict[str, tuple[str, ...]] = {
+    "models": ("api_key",),
+    "azure_models": ("api_key",),
+    "bedrock_models": ("api_key", "aws_secret_access_key"),
+}
+_SECRET_REF_PREFIX = "<stored:"
+_SECRET_REF_RE = re.compile(r"<stored:(models|azure_models|bedrock_models)/(.+)/([a-z_]+)>")
+
+
+def secret_ref(section: str, alias: str, field: str) -> str:
+    return f"{_SECRET_REF_PREFIX}{section}/{alias}/{field}>"
+
+
+def masked_config_data() -> dict[str, Any]:
+    """``get_config_data`` with every set secret replaced by its reference.
+
+    An empty secret stays empty, so the editor still shows "(none)"."""
+    data = get_config_data()
+    for section, fields in SECRET_FIELDS.items():
+        masked = {}
+        for alias, info in (data.get(section) or {}).items():
+            entry = dict(info)
+            for field in fields:
+                if entry.get(field):
+                    entry[field] = secret_ref(section, alias, field)
+            masked[alias] = entry
+        data[section] = masked
+    return data
+
+
+def resolve_secret(value: Any) -> Any:
+    """The stored secret a reference points at; any other value unchanged.
+
+    Raises ``ValueError`` for a reference to nothing (an entry deleted or
+    renamed and saved elsewhere since the editor loaded)."""
+    if not isinstance(value, str) or not value.startswith(_SECRET_REF_PREFIX):
+        return value
+    m = _SECRET_REF_RE.fullmatch(value)
+    if m is None:
+        raise ValueError("malformed stored-secret reference")
+    section, alias, field = m.groups()
+    if field not in SECRET_FIELDS[section]:
+        raise ValueError(f"{field} is not a secret field")
+    stored = (get_config_data().get(section) or {}).get(alias) or {}
+    secret = stored.get(field)
+    if not secret:
+        raise ValueError(f"no stored {field} for {section} '{alias}'; enter it again")
+    return secret
+
+
+def resolve_secret_refs(sections: dict[str, Any]) -> None:
+    """Swap every secret reference in ``{section: {alias: entry}}`` for its
+    stored value, in place."""
+    for section, fields in SECRET_FIELDS.items():
+        for info in (sections.get(section) or {}).values():
+            if not isinstance(info, dict):
+                continue
+            for field in fields:
+                if field in info:
+                    info[field] = resolve_secret(info[field])
 
 
 def _bedrock_shared_summary() -> dict[str, Any]:

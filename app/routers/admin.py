@@ -39,7 +39,9 @@ from app.core.config import (
     get_concurrency_settings,
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
-    get_config_data,
+    masked_config_data,
+    resolve_secret,
+    resolve_secret_refs,
     get_default_daily_limit,
     get_guardrail_settings,
     get_model_routing_snapshot,
@@ -1500,7 +1502,8 @@ def admin_models_page(
 
 @router.get("/api/config")
 def get_config_api():
-    return JSONResponse(get_config_data())
+    # Secrets go out as references (config.masked_config_data), never values.
+    return JSONResponse(masked_config_data())
 
 
 def _clean_display_order(
@@ -1556,7 +1559,10 @@ async def test_model_connection(body: dict):
     base_url = str(body.get("base_url") or "").strip().rstrip("/")
     if not base_url.lower().startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="base_url must start with http:// or https://.")
-    api_key = str(body.get("api_key") or "").strip()
+    try:
+        api_key = str(resolve_secret(body.get("api_key")) or "").strip()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"API key: {exc}")
     real_model = str(body.get("real_model") or "").strip()
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     client = get_health_client()
@@ -1631,6 +1637,13 @@ async def save_config_api(
         raise HTTPException(status_code=400, detail="Invalid bedrock_models format.")
     if bedrock_fallback is not None and not isinstance(bedrock_fallback, dict):
         raise HTTPException(status_code=400, detail="Invalid bedrock_fallback format.")
+    # The editor holds references to stored secrets, not the secrets.
+    try:
+        resolve_secret_refs(
+            {"models": models, "azure_models": azure_models, "bedrock_models": bedrock_models}
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"API key: {exc}")
     display_order = _clean_display_order(
         body.get("display_order"),
         {"vllm": models, "azure": azure_models, "bedrock": bedrock_models},
