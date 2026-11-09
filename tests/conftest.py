@@ -364,6 +364,10 @@ def _build_test_app() -> FastAPI:
     from app.core.auth import AccountDisabledError
     test_app.add_exception_handler(AccountDisabledError, account_disabled_handler)
 
+    # Same browser protections as production (CORS policy, cross-site guard).
+    from app.core.browser_security import add_browser_security
+    add_browser_security(test_app)
+
     test_app.include_router(health_api.router)
     test_app.include_router(web_ui.router)
     test_app.include_router(v1_api.router)

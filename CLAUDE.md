@@ -27,6 +27,7 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | `app/core/config.py` | `config.toml` → `MODEL_ROUTING`, `AZURE_MODELS`, `BEDROCK_MODELS`, pricing and fallback maps; `[app]` getters/setters; `save_config` |
 | `app/core/deps.py` | API-key auth, daily limit and cloud cap, concurrency-limited dependencies |
 | `app/core/auth.py` | Web-UI JWT auth (`get_web_user`, scopes) |
+| `app/core/browser_security.py` | CORS policy (no credentials) and `CrossSiteRequestGuard` for the cookie-authenticated `/admin`, `/dashboard` writes |
 | `app/core/server_state.py` | Shared / Azure / Bedrock / health httpx clients, health and metrics caches |
 | `app/routers/` | `v1_api` (`/v1/*`, unified dispatch), `azure_api` (`/azure/v1/*`), `aws_api` (`/aws/v1/*`), `web_ui` (dashboard, setup), `admin`, `health_api` |
 | `app/services/vllm_proxy.py` | vLLM forwarding, failover, SSE pump, `_log_usage` (billing + Langfuse seam) |
@@ -113,6 +114,7 @@ Each of these has broken production or a test before. The parenthesized test pin
 
 **Security and logs**
 - Never log raw request bodies. Use `redact.summarize_body()` (shape only); `LOG_REQUEST_BODIES=true` is a debugging escape hatch.
+- CORS never sets `allow_credentials=True`: Starlette echoes any `Origin` on cookie-carrying requests, and with that header it would hand admin responses (full API keys included) to other sites. SSO-authenticated writes live under `/admin` or `/dashboard`, where `CrossSiteRequestGuard` refuses cross-site requests; a new prefix goes in `COOKIE_AUTH_PREFIXES` (`tests/test_browser_security.py`).
 - Admin listings show `mask_api_key(...)`. Full keys come one at a time from `GET /admin/users/{id}/api-key`, which is logged.
 - Admin-editable site links accept only `http(s)://` or site-relative URLs.
 - Downstream error lines include `user`, `model`, `endpoint` and the exception **type**. httpx timeouts stringify to an empty message.
