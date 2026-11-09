@@ -96,3 +96,20 @@ def summarize_body(body: Any, limit: int = _DEFAULT_LIMIT) -> str:
     if len(rendered) > limit:
         return rendered[:limit] + f"…(+{len(rendered) - limit} chars)"
     return rendered
+
+
+def downstream_error_detail(exc: BaseException) -> str:
+    """What a client is told when a downstream call raised.
+
+    The exception's own text names internal hosts, ports and URLs (httpx
+    errors quote the request URL), so the client gets only its type, e.g.
+    ``Downstream error (ConnectTimeout)``. The full text stays in the
+    gateway log line and the ``_log_error`` record written next to it.
+    An ``HTTPException`` was written by the gateway itself and keeps its
+    detail.
+    """
+    from fastapi import HTTPException
+
+    if isinstance(exc, HTTPException):
+        return f"Downstream error: {exc.detail}"
+    return f"Downstream error ({type(exc).__name__})"

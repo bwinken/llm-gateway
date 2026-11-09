@@ -96,3 +96,50 @@ class TestBedrock:
         for field in ("user=testuser", "model=bedrock-claude",
                       "endpoint=/aws/v1/messages", "error=ConnectError: refused"):
             assert field in line, line
+
+
+class TestClientSeesNoInternals:
+    """The client is told the error type, never the exception text: httpx
+    errors quote internal hosts, ports and URLs. The log keeps the full text."""
+
+    LEAK = "connect to http://10.9.8.7:8000/v1/chat/completions failed"
+
+    def test_vllm_non_stream(self, client, errors):
+        from unittest.mock import patch
+
+        with patch.object(client.__httpx_mock__, "post",
+                          new=AsyncMock(side_effect=httpx.ConnectError(self.LEAK))):
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "test-llm", "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+        assert resp.status_code == 502
+        assert resp.json()["detail"] == "Downstream error (ConnectError)"
+        assert "10.9.8.7" not in resp.text
+        assert any("10.9.8.7" in line for line in errors)
+
+    def test_azure_non_stream(self, client, errors):
+        from unittest.mock import patch
+
+        with patch.object(client.__httpx_mock__, "post",
+                          new=AsyncMock(side_effect=httpx.ConnectError(self.LEAK))):
+            resp = client.post(
+                "/azure/v1/messages",
+                json={"model": "azure-gpt-4", "max_tokens": 16,
+                      "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+        assert resp.status_code == 502
+        assert "10.9.8.7" not in resp.text
+        assert "ConnectError" in resp.text
+
+    def test_gateway_written_http_exception_keeps_its_detail(self):
+        from fastapi import HTTPException
+
+        from app.services.redact import downstream_error_detail
+
+        assert downstream_error_detail(HTTPException(503, "No server for model x")) == (
+            "Downstream error: No server for model x"
+        )
+        assert downstream_error_detail(httpx.ReadTimeout("")) == "Downstream error (ReadTimeout)"

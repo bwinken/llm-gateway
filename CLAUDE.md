@@ -121,6 +121,7 @@ Each of these has broken production or a test before. The parenthesized test pin
 - Admin listings show `mask_api_key(...)`. Full keys come one at a time from `GET /admin/users/{id}/api-key`, which is logged.
 - Admin-editable site links accept only `http(s)://` or site-relative URLs.
 - Downstream error lines include `user`, `model`, `endpoint` and the exception **type**. httpx timeouts stringify to an empty message.
+- A client never sees a downstream exception's text (internal hosts and URLs): 502 details and mid-stream error events go through `redact.downstream_error_detail` (type only); the full text goes to the log (`TestClientSeesNoInternals`).
 - Bedrock bodies go out as `content=_encode_body(...)`, signed by `_build_headers` over those exact bytes. Passing `json=` re-serializes the body and breaks every SigV4 signature (`test_iam_credentials_sign_with_sigv4`).
 - The Bedrock-native Messages path never forwards the client's `anthropic-beta` header, and drops the beta-only body fields with it (`_NATIVE_TOP_LEVEL_KEYS`): Bedrock 400s a beta it does not serve, which would fail every Claude Code request. Billed input there is `input_tokens` + cache reads + cache writes, because Anthropic's `input_tokens` excludes both (`test_bedrock_native_messages.py`).
 
