@@ -6,13 +6,15 @@ How to point clients at the gateway: base URLs, SDK examples, per-client tool-ca
 
 Every request authenticates with your gateway API key, sent as either `Authorization: Bearer <key>` or `x-api-key: <key>`. Get the key from the web dashboard.
 
+Use `https://`. A request to `http://` is redirected (308), but some clients drop the API key or the request body on a redirect, so set the base URL to `https://` rather than relying on it.
+
 ## Base URLs
 
 | Base URL | Serves | Models listed |
 |---|---|---|
-| `http://your-gateway/v1` | Everything: on-prem vLLM, plus Azure / AWS Bedrock aliases you have access to | vLLM models, plus Azure and Bedrock models if your account is granted them |
-| `http://your-gateway/azure/v1` | Azure OpenAI only | Azure models only |
-| `http://your-gateway/aws/v1` | AWS Bedrock only | Bedrock models only |
+| `https://your-gateway/v1` | Everything: on-prem vLLM, plus Azure / AWS Bedrock aliases you have access to | vLLM models, plus Azure and Bedrock models if your account is granted them |
+| `https://your-gateway/azure/v1` | Azure OpenAI only | Azure models only |
+| `https://your-gateway/aws/v1` | AWS Bedrock only | Bedrock models only |
 
 **Use `/v1` unless you have a reason not to.** You pick the backend by picking the model name, and one base URL covers all of them. Use `/azure/v1` or `/aws/v1` only for a client that must never reach anything else.
 
@@ -25,7 +27,7 @@ An unknown model name is not an error on any surface: the request is served by t
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://your-gateway/v1", api_key="sk-your-api-key")
+client = OpenAI(base_url="https://your-gateway/v1", api_key="sk-your-api-key")
 
 resp = client.chat.completions.create(
     model="my-model",              # any alias from GET /v1/models
@@ -40,7 +42,7 @@ emb = client.embeddings.create(model="bge-m3", input=["The quick brown fox"])
 ```python
 from anthropic import Anthropic
 
-client = Anthropic(base_url="http://your-gateway", api_key="sk-your-api-key")  # gateway key, not Anthropic's
+client = Anthropic(base_url="https://your-gateway", api_key="sk-your-api-key")  # gateway key, not Anthropic's
 resp = client.messages.create(
     model="my-model",
     max_tokens=1024,
@@ -49,7 +51,7 @@ resp = client.messages.create(
 ```
 
 ```bash
-ANTHROPIC_BASE_URL=http://your-gateway \
+ANTHROPIC_BASE_URL=https://your-gateway \
 ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
 ```
@@ -73,7 +75,7 @@ Windows users can get a pre-configured Claude Code installer from the **Setup** 
 | `POST /v1/systemone` | Typed decisions; see [System One](#system-one) |
 
 ```bash
-curl http://your-gateway/v1/rerank \
+curl https://your-gateway/v1/rerank \
   -H "Authorization: Bearer sk-your-api-key" \
   -H "Content-Type: application/json" \
   -d '{"model": "bge-reranker-v2-m3", "query": "What is AI?", "documents": ["AI is...", "Machine learning is..."]}'
@@ -82,7 +84,7 @@ curl http://your-gateway/v1/rerank \
 ## Checking your quota
 
 ```bash
-curl http://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
+curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 ```
 
 ```json
@@ -127,9 +129,9 @@ The gateway passes chat completions through without checking that tool calls and
 
 | Client | Model supports function calling | Model doesn't |
 |---|---|---|
-| Roo Code | **OpenAI** provider, base URL `http://your-gateway/v1` | **OpenAI Compatible** provider, same base URL |
+| Roo Code | **OpenAI** provider, base URL `https://your-gateway/v1` | **OpenAI Compatible** provider, same base URL |
 | Cline / Continue.dev / Cursor | OpenAI provider | Most have no XML fallback; use a model with tool calling |
-| Claude Code | `ANTHROPIC_BASE_URL=http://your-gateway` | Same |
+| Claude Code | `ANTHROPIC_BASE_URL=https://your-gateway` | Same |
 
 ### Azure models: strict
 
@@ -137,11 +139,11 @@ Every Azure call goes through the Responses API, which rejects (400) any `functi
 
 | Client | Setup | Endpoint |
 |---|---|---|
-| Claude Code / Anthropic SDK | `ANTHROPIC_BASE_URL=http://your-gateway` (or `/azure`) | `/v1/messages` |
-| Roo Code, **OpenAI** provider (recommended) | Base URL `http://your-gateway/v1`, Custom Model ID = the Azure alias | `/v1/chat/completions` |
+| Claude Code / Anthropic SDK | `ANTHROPIC_BASE_URL=https://your-gateway` (or `/azure`) | `/v1/messages` |
+| Roo Code, **OpenAI** provider (recommended) | Base URL `https://your-gateway/v1`, Custom Model ID = the Azure alias | `/v1/chat/completions` |
 | Roo Code, Anthropic provider | Base URL pointing at the gateway | `/v1/messages` |
 | Roo Code, **OpenAI Compatible** | ⚠️ **Avoid**: it mixes native tool calls with inline results | — |
-| Cursor / Continue.dev / OpenAI SDK | `base_url=http://your-gateway/v1` | `/v1/chat/completions` |
+| Cursor / Continue.dev / OpenAI SDK | `base_url=https://your-gateway/v1` | `/v1/chat/completions` |
 | OpenAI SDK, Responses API | `client.responses.create(...)` on `/azure/v1` | `/azure/v1/responses` (sampling params are not stripped here) |
 
 **Rule of thumb:** Anthropic-style client → `/messages`; OpenAI-style client → `/chat/completions`; and on Azure, never use a mode that mixes tool-calling styles.
@@ -166,7 +168,7 @@ A `systemone` model, such as [Mapika's decider](https://huggingface.co/Mapika/de
 
 ```bash
 pip install typesafe-sdk
-export TYPESAFE_BASE_URL=http://your-gateway     # gateway root, WITHOUT /v1 (the SDK appends /v1/systemone)
+export TYPESAFE_BASE_URL=https://your-gateway     # gateway root, WITHOUT /v1 (the SDK appends /v1/systemone)
 export TYPESAFE_API_KEY=sk-your-api-key
 export TYPESAFE_DEFAULT_MODEL=decider-4b         # a [models.systemone.*] alias
 ```
@@ -193,7 +195,7 @@ with TypeSafeClient() as client:
 - Plain HTTP works too, and `model` may be omitted:
 
 ```bash
-curl http://your-gateway/v1/systemone \
+curl https://your-gateway/v1/systemone \
   -H "Authorization: Bearer sk-your-api-key" \
   -H "Content-Type: application/json" \
   -d '{"state": "I was charged twice.", "questions": {"refund": {"type": "noul", "instructions": "Does the customer ask for a refund?"}}}'

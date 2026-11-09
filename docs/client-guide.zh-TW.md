@@ -6,13 +6,15 @@
 
 所有請求都用你的 gateway API key 認證，可以放在 `Authorization: Bearer <key>` 或 `x-api-key: <key>` 標頭。API key 在 Web 儀表板上取得。
 
+請使用 `https://`。打到 `http://` 的請求會被轉址（308），但有些 client 在轉址時會丟掉 API key 或 request body，所以請直接把 base URL 設成 `https://`，不要依賴轉址。
+
 ## Base URL
 
 | Base URL | 服務範圍 | 列出的模型 |
 |---|---|---|
-| `http://your-gateway/v1` | 全部：地端 vLLM，加上你有權限的 Azure / AWS Bedrock 模型 | vLLM 模型；帳號有授權時另含 Azure、Bedrock 模型 |
-| `http://your-gateway/azure/v1` | 只有 Azure OpenAI | 只有 Azure 模型 |
-| `http://your-gateway/aws/v1` | 只有 AWS Bedrock | 只有 Bedrock 模型 |
+| `https://your-gateway/v1` | 全部：地端 vLLM，加上你有權限的 Azure / AWS Bedrock 模型 | vLLM 模型；帳號有授權時另含 Azure、Bedrock 模型 |
+| `https://your-gateway/azure/v1` | 只有 Azure OpenAI | 只有 Azure 模型 |
+| `https://your-gateway/aws/v1` | 只有 AWS Bedrock | 只有 Bedrock 模型 |
 
 **沒有特殊理由就用 `/v1`。** 選模型名稱就等於選後端，一個 base URL 全部涵蓋。只有在某個 client 絕對不能碰到其他後端時，才用 `/azure/v1` 或 `/aws/v1`。
 
@@ -25,7 +27,7 @@
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://your-gateway/v1", api_key="sk-your-api-key")
+client = OpenAI(base_url="https://your-gateway/v1", api_key="sk-your-api-key")
 
 resp = client.chat.completions.create(
     model="my-model",              # GET /v1/models 列出的任一 alias
@@ -40,7 +42,7 @@ emb = client.embeddings.create(model="bge-m3", input=["The quick brown fox"])
 ```python
 from anthropic import Anthropic
 
-client = Anthropic(base_url="http://your-gateway", api_key="sk-your-api-key")  # gateway 的 key，不是 Anthropic 的
+client = Anthropic(base_url="https://your-gateway", api_key="sk-your-api-key")  # gateway 的 key，不是 Anthropic 的
 resp = client.messages.create(
     model="my-model",
     max_tokens=1024,
@@ -49,7 +51,7 @@ resp = client.messages.create(
 ```
 
 ```bash
-ANTHROPIC_BASE_URL=http://your-gateway \
+ANTHROPIC_BASE_URL=https://your-gateway \
 ANTHROPIC_AUTH_TOKEN=sk-your-api-key \
 claude
 ```
@@ -73,7 +75,7 @@ Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 C
 | `POST /v1/systemone` | 型別化決策，見 [System One](#system-one) |
 
 ```bash
-curl http://your-gateway/v1/rerank \
+curl https://your-gateway/v1/rerank \
   -H "Authorization: Bearer sk-your-api-key" \
   -H "Content-Type: application/json" \
   -d '{"model": "bge-reranker-v2-m3", "query": "What is AI?", "documents": ["AI is...", "Machine learning is..."]}'
@@ -82,7 +84,7 @@ curl http://your-gateway/v1/rerank \
 ## 查詢額度
 
 ```bash
-curl http://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
+curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 ```
 
 ```json
@@ -127,9 +129,9 @@ Gateway 直接轉送 chat completions，不檢查 tool call 和 tool result 是�
 
 | Client | 模型支援 function calling | 模型不支援 |
 |---|---|---|
-| Roo Code | **OpenAI** provider，base URL `http://your-gateway/v1` | **OpenAI Compatible** provider，同一個 base URL |
+| Roo Code | **OpenAI** provider，base URL `https://your-gateway/v1` | **OpenAI Compatible** provider，同一個 base URL |
 | Cline / Continue.dev / Cursor | OpenAI provider | 多數沒有 XML 備案，請用支援 tool calling 的模型 |
-| Claude Code | `ANTHROPIC_BASE_URL=http://your-gateway` | 同左 |
+| Claude Code | `ANTHROPIC_BASE_URL=https://your-gateway` | 同左 |
 
 ### Azure 模型：嚴格
 
@@ -137,11 +139,11 @@ Gateway 直接轉送 chat completions，不檢查 tool call 和 tool result 是�
 
 | Client | 設定方式 | 端點 |
 |---|---|---|
-| Claude Code / Anthropic SDK | `ANTHROPIC_BASE_URL=http://your-gateway`（或 `/azure`） | `/v1/messages` |
-| Roo Code **OpenAI** provider（推薦） | Base URL `http://your-gateway/v1`，Custom Model ID 填 Azure alias | `/v1/chat/completions` |
+| Claude Code / Anthropic SDK | `ANTHROPIC_BASE_URL=https://your-gateway`（或 `/azure`） | `/v1/messages` |
+| Roo Code **OpenAI** provider（推薦） | Base URL `https://your-gateway/v1`，Custom Model ID 填 Azure alias | `/v1/chat/completions` |
 | Roo Code Anthropic provider | Base URL 指向 gateway | `/v1/messages` |
 | Roo Code **OpenAI Compatible** | ⚠️ **避免使用**：會混用 native tool call 和 inline 結果 | — |
-| Cursor / Continue.dev / OpenAI SDK | `base_url=http://your-gateway/v1` | `/v1/chat/completions` |
+| Cursor / Continue.dev / OpenAI SDK | `base_url=https://your-gateway/v1` | `/v1/chat/completions` |
 | OpenAI SDK Responses API | 在 `/azure/v1` 上呼叫 `client.responses.create(...)` | `/azure/v1/responses`（這條路徑不會移除 sampling 參數） |
 
 **原則：** Anthropic 風格的 client 打 `/messages`；OpenAI 風格的 client 打 `/chat/completions`；接 Azure 時絕對不要用混合 tool calling 風格的模式。
@@ -166,7 +168,7 @@ Gateway 直接轉送 chat completions，不檢查 tool call 和 tool result 是�
 
 ```bash
 pip install typesafe-sdk
-export TYPESAFE_BASE_URL=http://your-gateway     # gateway 根網址，不要加 /v1（SDK 會自己補 /v1/systemone）
+export TYPESAFE_BASE_URL=https://your-gateway     # gateway 根網址，不要加 /v1（SDK 會自己補 /v1/systemone）
 export TYPESAFE_API_KEY=sk-your-api-key
 export TYPESAFE_DEFAULT_MODEL=decider-4b         # [models.systemone.*] 底下的 alias
 ```
@@ -193,7 +195,7 @@ with TypeSafeClient() as client:
 - 直接打 HTTP 也可以，而且 `model` 可以省略：
 
 ```bash
-curl http://your-gateway/v1/systemone \
+curl https://your-gateway/v1/systemone \
   -H "Authorization: Bearer sk-your-api-key" \
   -H "Content-Type: application/json" \
   -d '{"state": "I was charged twice.", "questions": {"refund": {"type": "noul", "instructions": "Does the customer ask for a refund?"}}}'

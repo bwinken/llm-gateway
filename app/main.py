@@ -129,6 +129,7 @@ async def account_disabled_handler(request: Request, exc: AccountDisabledError):
     accept = request.headers.get("accept", "")
     if "text/html" in accept.lower():
         return _templates.TemplateResponse(
+            request,
             "disabled.html",
             {
                 "request": request,

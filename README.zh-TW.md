@@ -104,20 +104,20 @@ Client 用自己的 gateway API key 認證（在儀表板上可以看到）。
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://your-gateway/v1", api_key="sk-your-api-key")
+client = OpenAI(base_url="https://your-gateway/v1", api_key="sk-your-api-key")
 client.chat.completions.create(model="my-model", messages=[{"role": "user", "content": "Hello!"}])
 ```
 
 ```bash
 # Claude Code
-ANTHROPIC_BASE_URL=http://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key claude
+ANTHROPIC_BASE_URL=https://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key claude
 ```
 
 其他內容請見 **[Client 使用指南](docs/client-guide.zh-TW.md)**：所有端點、Azure 與 Bedrock 的使用方式、Roo Code、Cursor 等 client 的 tool calling 設定、client 需要處理的錯誤回應，以及 System One。
 
 ## 管理
 
-開啟 `http://your-gateway` 並透過 SSO 登入。在 AuthCenter 擁有 `admin` scope 的帳號會看到管理面板，可以：
+開啟 `https://your-gateway` 並透過 SSO 登入。在 AuthCenter 擁有 `admin` scope 的帳號會看到管理面板，可以：
 
 - 設定每位使用者的每日預算、開關 Azure 或 AWS 權限，以及雲端每日上限（預設值，可逐人覆寫）；
 - 授權 Azure 或 Bedrock，或停用帳號；

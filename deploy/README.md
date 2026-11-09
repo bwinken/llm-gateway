@@ -15,7 +15,8 @@
 ## Architecture
 
 ```
-Browser    → Nginx (:80)
+Browser / API client → Nginx (:80)   → 308 to https:// (method and body kept); /healthz, /readyz optionally served on HTTP
+Browser / API client → Nginx (:443, TLS)
                ├─ /oauth2/*            → oauth2-proxy (:4180)  ← handles login/logout
                ├─ /v1/*, = /me         → Gateway               ← API key auth (unified dispatch: vLLM / Azure / Bedrock)
                ├─ /azure/*             → Gateway               ← API key auth (Azure OpenAI backend)
@@ -24,10 +25,9 @@ Browser    → Nginx (:80)
                ├─ /static/             → files on disk
                └─ /*                   → auth_request → oauth2-proxy validation
                                        → Gateway               ← JWT header auth
-API client → Nginx (:443, TLS)  only /v1/, /azure/, /aws/, = /me, /healthz, /readyz; everything else 404
 ```
 
-The example nginx config (`deploy/llm-gateway-example.nginx.conf`) defines parallel `/v1/`, `/azure/`, `/aws/` and `= /me` blocks in both the HTTP and HTTPS server contexts. All of them bypass oauth2-proxy and forward straight to the gateway with the client's `Authorization: Bearer <api_key>` header preserved. The Web UI is served over HTTP only, so oauth2-proxy's cookie settings (`COOKIE_SECURE=false`) need no HTTPS variant.
+Everything is served over HTTPS. The example nginx config (`deploy/llm-gateway-example.nginx.conf`) puts every location in the `:443` server; the `:80` server only redirects with **308**, which keeps the method and body (a 301 makes many clients turn a POST into a GET). The API locations (`/v1/`, `/azure/`, `/aws/`, `= /me`) bypass oauth2-proxy and forward the client's `Authorization: Bearer <api_key>` header as is. The login cookie is `Secure` (`OAUTH2_PROXY_COOKIE_SECURE`, default `true` in `docker-compose.yml`), so it is never sent over plain HTTP.
 
 - **Gateway**: user-level systemd service (Python/FastAPI, `127.0.0.1:8050`, 2 workers). Its periodic jobs (usage rollup, anomaly scan, optional usage-log retention) run inside it: no timers
 - **PostgreSQL + oauth2-proxy**: Docker Compose (`deploy/docker-compose.yml`, both bound to `127.0.0.1`)
@@ -47,7 +47,7 @@ bash deploy/setup.sh
 The script interactively guides you through all setup steps. It starts with **pre-flight checks** (uv, docker, rsync, openssl, a running Docker daemon; `http_proxy` is picked up if set), then:
 
 1. **rsync code** to `~/opt/llm-gateway` (config, keys, `.env` files and pgdata are excluded)
-2. **`deploy/.env`**: prompts for the PostgreSQL user/password/DB/port, OIDC issuer URL, OAuth2 client ID/secret and domain; generates the cookie secret
+2. **`deploy/.env`**: prompts for the PostgreSQL user/password/DB/port, OIDC issuer URL, OAuth2 client ID/secret and domain (the callback becomes `https://<domain>/oauth2/callback`; allow it on the AuthCenter client); generates the cookie secret
 3. **docker compose up**: starts PostgreSQL + oauth2-proxy and waits for PostgreSQL (checkpoint: you may stop here)
 4. **uv sync** `--frozen --no-dev`: installs Python dependencies
 5. **App config**: copies `config.toml.example` → `config.toml` and `.env.example` → `.env`, filling in `DATABASE_URL` and `AUTH_BASE_URL` from `deploy/.env`
@@ -72,6 +72,7 @@ bash deploy/setup.sh
 ```bash
 cd /path/to/llm-gateway   # original clone directory
 git pull
+bash deploy/backup-db.sh  # back up the database first (online, see Database Backup)
 bash deploy/setup.sh      # keeps existing config; updates code + deps, migrates, restarts
 ```
 
@@ -183,6 +184,33 @@ With both off, a failed request logs the **shape** of the body — fields presen
 - **Failed-auth throttle.** `AUTH_FAIL_DISTINCT_KEYS` / `AUTH_FAIL_WINDOW_S` / `AUTH_LOCKOUT_S` (default 10 distinct invalid keys in 600 s → 429 for 900 s). It keys on the client address, so uvicorn must trust nginx's forwarded headers; loopback is never locked, which is what you would see if it didn't.
 - **Dependency and secret scanning** run in GitHub Actions (`.github/workflows/security.yml`). For Dependabot to open security-fix PRs, turn on *Dependabot security updates* in the repository's Settings → Code security.
 
+## Database Backup
+
+`deploy/backup-db.sh` takes an online backup: `pg_dump` reads the whole database in one snapshot, so the dump is consistent and the gateway keeps serving. It only blocks schema changes, so never run it alongside `alembic upgrade` / `setup.sh` (the script refuses while an `alembic upgrade` is running).
+
+```bash
+bash ~/opt/llm-gateway/deploy/backup-db.sh                  # → ~/backup/llm-gateway
+bash ~/opt/llm-gateway/deploy/backup-db.sh /mnt/nas/llmgw   # another directory
+bash ~/opt/llm-gateway/deploy/backup-db.sh --check FILE     # is this dump readable?
+```
+
+It reads `PG_USER` / `PG_DB` from `deploy/.env`, checks free space against the database size, writes `daily/llm-gateway-<date>_<time>.dump` (`pg_dump -Fc`) through a temporary file, verifies it with `pg_restore --list` before keeping it, copies the first backup of each month to `monthly/`, and prunes to `KEEP_DAILY` (30) and `KEEP_MONTHLY` (12). Files are `600`, directories `700`: a dump holds every API key. Set `BACKUP_COPY_TO=user@host:/path/` to rsync each backup off the host; without it the script warns that the backup only lives on this machine. Exit code 0 on success; a failure leaves no partial file.
+
+Run it before every upgrade, and daily from cron at an off-peak hour. A database backup is a host task, not one of the gateway's in-process jobs (those never touch Docker):
+
+```bash
+30 2 * * * BACKUP_COPY_TO=user@nas:/backup/llmgw/ bash $HOME/opt/llm-gateway/deploy/backup-db.sh >> $HOME/backup/llm-gateway/backup.log 2>&1
+```
+
+Restore into a scratch container to rehearse (quarterly), or into a fresh database after a loss:
+
+```bash
+docker run -d --name pg-restore-test -e POSTGRES_PASSWORD=test postgres:16
+docker exec -i pg-restore-test pg_restore -U postgres --create -d postgres < FILE
+docker exec pg-restore-test psql -U postgres -d <PG_DB> -c "SELECT count(*) FROM users" -c "SELECT * FROM alembic_version"
+docker rm -f pg-restore-test
+```
+
 ## PostgreSQL Data Migration (Volume Change)
 
 When moving PG data to a different volume (e.g., wrong disk mount, capacity expansion), using `pg_dumpall` logical backup is safest — unaffected by filesystem or permission differences.
@@ -225,6 +253,7 @@ docker compose -f deploy/docker-compose.yml up -d
     ├── .env                  # Docker services env vars (template: .env.example)
     ├── pgdata/               # PostgreSQL data
     ├── setup.sh              # Deployment script
+    ├── backup-db.sh          # Online database backup (pg_dump, verify, retention)
     ├── gen-selfsigned-cert.sh               # Self-signed TLS cert for :443
     ├── llm-gateway.service                  # Gateway systemd unit
     ├── llm-gateway-example.nginx.conf       # Nginx template
@@ -253,7 +282,7 @@ docker compose -f deploy/docker-compose.yml up -d
 
 `setup.sh` builds the site from **`deploy/llm-gateway.nginx.conf`**, your copy of `deploy/llm-gateway-example.nginx.conf`, replacing `__APP_DIR__` and `llm-gateway.your-domain.com`. Create that copy before step 9, and keep your edits there: every run that reaches step 9 rewrites `/etc/nginx/sites-available/llm-gateway`.
 
-The example's `:443` block points at Let's Encrypt paths (`/etc/letsencrypt/live/<domain>/`) and `nginx -t` fails until those files exist. Before installing, either obtain a certificate, run `bash deploy/gen-selfsigned-cert.sh` (airgapped hosts; writes `/etc/nginx/ssl/llm-gateway.{crt,key}` by default and prints the edits to make), or delete the `:443` block.
+The example's `:443` block points at Let's Encrypt paths (`/etc/letsencrypt/live/<domain>/`) and `nginx -t` fails until those files exist. Every page is served from that block, so get a certificate before installing: Let's Encrypt, a company CA, or `bash deploy/gen-selfsigned-cert.sh` (airgapped hosts; writes `/etc/nginx/ssl/llm-gateway.{crt,key}` by default and prints the edits to make; browsers warn about a self-signed certificate).
 
 To adjust the installed site by hand:
 
@@ -266,6 +295,29 @@ Let's Encrypt certificate (optional):
 
 ```bash
 sudo certbot --nginx -d your-domain.com
+```
+
+### Moving an existing HTTP deployment to HTTPS
+
+Earlier versions served the Web UI over HTTP and only the API on `:443`. To switch an existing install:
+
+> **Updating the code before switching?** `docker-compose.yml` now makes the SSO cookie `Secure`, which a browser never sends over plain HTTP: sign-in to the Web UI stops working. Until step 5, add `OAUTH2_COOKIE_SECURE=false` to `deploy/.env` before running `setup.sh`, and remove it when you switch.
+
+
+1. **Certificate.** The whole site now needs one the browsers trust: Let's Encrypt, a company CA, or `deploy/gen-selfsigned-cert.sh` (self-signed makes every browser warn; prefer a company CA on an intranet).
+2. **AuthCenter.** Allow `https://<domain>/oauth2/callback` on the OIDC client. Keep the old `http://` callback until the switch is done.
+3. **`deploy/.env`.** Edit `OAUTH2_REDIRECT_URL` to `https://<domain>/oauth2/callback` by hand: `setup.sh` never overwrites an existing `deploy/.env`.
+4. **Nginx.** Merge the new example into your `deploy/llm-gateway.nginx.conf` (all locations under `:443`, `:80` = 308), then run `setup.sh` or `sudo nginx -t && sudo systemctl reload nginx`. If `:443` carries `allow` / `deny` lines, they now gate the Web UI and login too.
+5. **oauth2-proxy.** `docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml up -d` recreates it with the https callback and the `Secure` cookie. Everyone signs in once more: the old cookie was not `Secure`.
+6. **Clients.** Change every base URL to `https://`: Claude Code `ANTHROPIC_BASE_URL`, SDK `base_url`, and `GATEWAY_URL` in `setup/install-claude-code.bat`. The 308 is only a safety net: some clients drop the `Authorization` header or the body when redirected.
+7. **Optional transition.** The example's commented `:80` block keeps the API on HTTP with its own access log for a while, so you can see who still calls `http://` before turning them over to the 308.
+8. **HSTS, later.** Once everything works over https, uncomment the `Strict-Transport-Security` line with a short `max-age` and raise it after a while.
+
+Check:
+
+```bash
+curl -sI http://your-domain.com/dashboard | head -3      # expect 308 and Location: https://...
+curl -s https://your-domain.com/v1/models -H "Authorization: Bearer <key>" | head -c 200
 ```
 
 ## Proxy Configuration

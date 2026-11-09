@@ -57,7 +57,10 @@ services:
 
       # ─── Cookie ───
       OAUTH2_PROXY_COOKIE_SECRET: "${OAUTH2_COOKIE_SECRET}"
-      OAUTH2_PROXY_COOKIE_SECURE: "false"          # HTTPS 環境改 true
+      # 全站走 HTTPS（deploy/llm-gateway-example.nginx.conf）：登入 cookie 只在
+      # https 上傳送，避免在明文 HTTP 被竊聽。只有在暫時還沒有憑證、Web UI 仍走
+      # HTTP 的環境，才在 deploy/.env 設 OAUTH2_COOKIE_SECURE=false。
+      OAUTH2_PROXY_COOKIE_SECURE: "${OAUTH2_COOKIE_SECURE:-true}"
       OAUTH2_PROXY_COOKIE_SAMESITE: "lax"
       OAUTH2_PROXY_COOKIE_NAME: "${OAUTH2_COOKIE_NAME:-_llm_gw_oauth2}"
       OAUTH2_PROXY_COOKIE_REFRESH: "1h"
