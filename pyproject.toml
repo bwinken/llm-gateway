@@ -21,7 +21,7 @@ dependencies = [
     # doesn't ship tz data (Windows, slim/Alpine Docker images). Required
     # by app/core/timeutil.py's ZoneInfo lookup.
     "tzdata>=2024.1",
-    "langfuse>=4.7.1",
+    "langfuse>=5.2.0",
     "prometheus-client>=0.20",
     "starlette>=1.3.1",
 ]
