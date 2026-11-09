@@ -301,6 +301,9 @@ sudo certbot --nginx -d your-domain.com
 
 舊版的 Web UI 走 HTTP，只有 API 走 `:443`。既有安裝要切換時：
 
+> **先更新程式、之後才切換？** `docker-compose.yml` 現在把 SSO cookie 設為 `Secure`，瀏覽器不會在純 HTTP 下送出它，Web UI 會登入不了。在做到第 5 步之前，跑 `setup.sh` 前先在 `deploy/.env` 加上 `OAUTH2_COOKIE_SECURE=false`，切換時再拿掉。
+
+
 1. **憑證。** 現在整個站都需要瀏覽器信任的憑證：Let's Encrypt、公司 CA，或 `deploy/gen-selfsigned-cert.sh`（自簽憑證每個瀏覽器都會警告；內網建議用公司 CA）。
 2. **AuthCenter。** 在 OIDC client 允許 `https://<domain>/oauth2/callback`。切換完成前先保留舊的 `http://` callback。
 3. **`deploy/.env`。** 手動把 `OAUTH2_REDIRECT_URL` 改成 `https://<domain>/oauth2/callback`：`setup.sh` 不會覆蓋已存在的 `deploy/.env`。

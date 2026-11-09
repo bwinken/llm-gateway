@@ -301,6 +301,9 @@ sudo certbot --nginx -d your-domain.com
 
 Earlier versions served the Web UI over HTTP and only the API on `:443`. To switch an existing install:
 
+> **Updating the code before switching?** `docker-compose.yml` now makes the SSO cookie `Secure`, which a browser never sends over plain HTTP: sign-in to the Web UI stops working. Until step 5, add `OAUTH2_COOKIE_SECURE=false` to `deploy/.env` before running `setup.sh`, and remove it when you switch.
+
+
 1. **Certificate.** The whole site now needs one the browsers trust: Let's Encrypt, a company CA, or `deploy/gen-selfsigned-cert.sh` (self-signed makes every browser warn; prefer a company CA on an intranet).
 2. **AuthCenter.** Allow `https://<domain>/oauth2/callback` on the OIDC client. Keep the old `http://` callback until the switch is done.
 3. **`deploy/.env`.** Edit `OAUTH2_REDIRECT_URL` to `https://<domain>/oauth2/callback` by hand: `setup.sh` never overwrites an existing `deploy/.env`.
