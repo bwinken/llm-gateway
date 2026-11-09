@@ -11,6 +11,20 @@ Pick items off as time allows. New entries go to the top.
 
 ---
 
+## starlette held below 1.x, with five advisories ignored (2026-11-09)
+
+**What.** `uv.lock` pins starlette 0.52.1. pip-audit reports five advisories against it (PYSEC-2026-161, -248, -249, -2280, -2281) whose fixes exist only in starlette 1.x; `.github/workflows/security.yml` ignores them with a written assessment.
+
+**Context.** The security-hardening PR upgraded every other flagged dependency. Letting starlette move to 1.x (FastAPI 0.135 accepts it) made admin pages return 500: the `TemplateResponse(name, context)` call style used across `app/main.py`, `app/routers/web_ui.py` and `app/routers/admin.py` changed in 1.x, and the test client warns that httpx is deprecated there.
+
+**Impact.** Assessed as low behind nginx: the Host / path `request.url` advisories need a Host nginx would not pass (`server_name`), the urlencoded form limits only matter on `/admin` and `/dashboard`, which nginx serves to logged-in users only, and `HTTPEndpoint` / Windows `StaticFiles` are unused. The ignore list must still be emptied.
+
+**Suggested fix.** Move every `TemplateResponse` call to `TemplateResponse(request, name, context)`, upgrade starlette (and FastAPI if needed) to ≥ 1.3.1, run the whole suite (watch `TestLeaseSpansTheResponse`: the yield-dependency exit timing the concurrency limit relies on), then drop the five `--ignore-vuln` lines.
+
+**Added** 2026-11-09.
+
+---
+
 ## Azure `api_version` field is loaded but unused (2026-05-22)
 
 **What.** `api_version` is still threaded through the config loader and exposed in the admin model-config UI, but no longer used by any HTTP request. The v1 Responses surface (`/openai/v1/responses`) does not accept an `api-version` query string.

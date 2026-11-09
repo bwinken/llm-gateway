@@ -8,7 +8,7 @@ Defines PostgreSQL table structures using [SQLModel](https://sqlmodel.tiangolo.c
 
 | File | Description |
 |---|---|
-| `schema.py` | `User`, `AppOwner`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AnomalyEvent`, `ConcurrencyLease` — eight ORM models, plus helpers `is_app_account()` (`app_*` prefix) and `mask_api_key()` (key display in admin listings) |
+| `schema.py` | `User`, `AppOwner`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AnomalyEvent`, `ConcurrencyLease`, `IpAllowRule`, `AuditLog` — ten ORM models, plus helpers `is_app_account()` (`app_*` prefix), `mask_api_key()` (key display in admin listings), `issue_api_key()` (the one way to (re)issue a key) and `is_legacy_api_key()` (keys older than the current format) |
 
 ## ER Diagram
 
@@ -28,6 +28,8 @@ erDiagram
         BOOLEAN can_use_azure "Allowed to use Azure models"
         BOOLEAN can_use_bedrock "Allowed to use Bedrock models"
         BOOLEAN concurrency_waived "Exempt from concurrency limit"
+        DATETIME api_key_created_at "Current key issued (naive UTC, NULL = unknown)"
+        DATETIME api_key_last_used_at "Current key last authenticated (≤ hourly)"
         INTEGER owner_id FK "Legacy app owner → users.id"
         VARCHAR display_name "Display name (from IdP)"
         VARCHAR org_code "Organization code (from IdP)"
@@ -106,6 +108,18 @@ erDiagram
         DATETIME last_finished_at "Finish time (naive UTC)"
         VARCHAR last_status "running / ok / error"
         VARCHAR last_detail "Summary or error"
+    }
+
+    audit_log {
+        INTEGER id PK "Auto-increment primary key"
+        DATETIME created_at "When (naive UTC)"
+        VARCHAR actor "Username from the JWT (not a FK)"
+        VARCHAR method "HTTP method"
+        VARCHAR route "Path template"
+        VARCHAR path "Actual path"
+        INTEGER status "Response status"
+        VARCHAR client "Client address"
+        VARCHAR detail "JSON: target, request, response, notes"
     }
 
     users ||--o{ usage_logs : "generates usage logs"
@@ -341,3 +355,23 @@ Maps to `usage_rollup_state` table. One row (`name = "usage_daily"`) holding `ro
 ## ScheduledJob Model
 
 Maps to `scheduled_jobs` table. One row per in-gateway periodic job (anomaly scan, usage-log retention; `app/services/scheduler.py`): `name` (PK), `last_started_at`, `last_finished_at` (naive UTC), `last_status` (`running` / `ok` / `error`), `last_detail`. Workers claim a run with a conditional UPDATE of `last_started_at`, so each job runs once per interval across every worker and host.
+
+## IpAllowRule Model
+
+Maps to `ip_allow_rules` table: the API IP allowlist (`app/services/ip_allowlist.py`). `cidr`, `label`, `usernames` / `org_codes` (JSON lists; both empty = every account), `created_by` (a username, not a foreign key), optional `starts_at` / `expires_at` (naive UTC; no end = permanent), `created_at`. Usernames and org codes, never user ids, so deleting an account never touches this table.
+
+## AuditLog Model
+
+Maps to `audit_log` table: the trail of Web UI / admin actions written by `AuditMiddleware` (`app/services/audit.py`). One row per POST / PUT / PATCH / DELETE under `/admin` and `/dashboard` (whatever the outcome), per full API key revealed and per export.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `INTEGER` | Primary key |
+| `created_at` | `DATETIME` | When, **naive UTC** (indexed, and `(actor, created_at)`) |
+| `actor` | `VARCHAR` | JWT `sub` (username); empty when unauthenticated. Not a foreign key: deleting an account keeps its trail |
+| `method`, `route`, `path` | `VARCHAR` | HTTP method, path template (`/admin/users/{user_id}/limit`) and actual path |
+| `status` | `INTEGER` | Response status; 500 when the handler raised |
+| `client` | `VARCHAR` | `request.client.host` |
+| `detail` | `VARCHAR` (JSON) | `target` (the account the path names, looked up before the handler), `request` (submitted fields), `response` (small JSON reply), handler notes such as `config_changes`. Credential-like keys are `<redacted>` |
+
+Append-only: the app never updates or deletes a row, and on PostgreSQL triggers refuse UPDATE, DELETE and TRUNCATE (migration `07899844c700`). No retention.

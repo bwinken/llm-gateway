@@ -19,6 +19,7 @@ graph TD
     deps --> |get_current_user / limited_current_user<br/>check_cloud_budget| LLM_API["routers/v1_api.py"]
     deps --> |require_azure_access / limited_azure_access| AzureAPI["routers/azure_api.py"]
     deps --> |require_bedrock_access / limited_bedrock_access| AwsAPI["routers/aws_api.py"]
+    browser["browser_security.py<br/>CORS + 跨站防護"] --> |add_browser_security| Main["main.py"]
     server_state["server_state.py<br/>HTTP Clients + 健康/指標快取"] --> VllmProxy["services/vllm_proxy.py"]
     server_state --> AzureProxy["services/azure_proxy.py"]
     server_state --> BedrockProxy["services/bedrock_proxy.py"]
@@ -89,6 +90,7 @@ Alias 在 `[models.*]`、`[azure_models.*]`、`[bedrock_models.*]` 之間必須�
 |---|---|---|---|
 | `APP_TITLE`、`DATABASE_URL`、`AUTH_CENTER_APP_ID`、`AUTH_CENTER_PUBLIC_KEY_PATH`、`AUTH_BASE_URL` | `config.py` | 見上表 | 核心設定 |
 | `LOG_DIR` / `LOG_LEVEL` / `LOG_ROTATION` / `LOG_RETENTION` | `logger.py` | `./logs` / `WARNING` / `100 MB` / `14 days` | 檔案 sink 設定（直接傳給 loguru） |
+| `AUTH_FAIL_DISTINCT_KEYS` / `AUTH_FAIL_WINDOW_S` / `AUTH_LOCKOUT_S` | `services/auth_throttle.py` | `10` / `600` / `900` | 同一個位址在時間窗內送出這麼多把**不同**的錯誤 API key，就在鎖定期間一律回 429，即使 key 正確也一樣。每個 worker 各自記在記憶體；loopback 永不鎖定；設 `0` 關閉 |
 | `ENFORCE_DAILY_LIMIT` | `deps.py`（每次呼叫時讀取） | `true` | `false` = 軟性模式：每日與雲端超額只記錄 WARNING，不拒絕。這是唯一的豁免開關，沒有 per-user「無上限」 |
 | `AZURE_HTTP_PROXY` / `AZURE_INSECURE` | `server_state.py` | 未設定 / `false` | 僅 Azure 流量使用的 proxy（可內嵌帳密）/ 停用 TLS 驗證 |
 | `BEDROCK_HTTP_PROXY` / `BEDROCK_INSECURE` | `server_state.py` | 未設定 / `false` | 同上，僅 Bedrock 流量 |
@@ -160,6 +162,7 @@ FastAPI dependency：驗證 API key、檢查每日額度與雲端上限，並佔
 | `_check_backend_daily_limit(session, user, backend, *, allow_fallback=False)` | `bool` | Azure + Bedrock 共用一個上限：加總今日 `backend in ("azure", "bedrock")` 的 `usage_logs`，與 `effective_cloud_limit` 比較。`None` = 無上限；`0` = 拒絕雲端 |
 | `_check_daily_limit(session, user)` | — | 加總今日 `cost_usd`，達到 `daily_limit_usd` 時回 429。`daily_limit_usd = 0` 是 **$0 額度**，絕非「無上限」 |
 | `_enforce_daily_limit()` | `bool` | 每次呼叫時讀取 `ENFORCE_DAILY_LIMIT`；`False` 時兩種檢查都只記錄 WARNING |
+| `_key_use_due(user_id)` / `_record_key_use(user_id)` | `bool` / — | 寫入 `users.api_key_last_used_at`：每個 worker 對每個使用者最多每 `KEY_USE_RESOLUTION_S`（1 小時）寫一次，在驗證 session 關閉後以條件式 UPDATE 寫入。失敗也不影響請求 |
 | `get_today_usage(user)` | `dict` | 依後端拆分的今日花費與 token 數（`stats.get_user_daily_summary`）；短期 session |
 
 所有額度相關的 429 都帶 `Retry-After`，值為距離下一個本地午夜的秒數（`timeutil`）。
@@ -169,16 +172,33 @@ FastAPI dependency：驗證 API key、檢查每日額度與雲端上限，並佔
 ```
 Request header: Authorization: Bearer sk-... 和/或 x-api-key: sk-...
        ↓
+auth_throttle：位址因過多不同的錯誤 key 被鎖定 → 429（不查詢 key）
+       ↓
 自己的短期 Session: SELECT * FROM users WHERE api_key = ?（逐一嘗試）
-       ↓  找不到 → 401；停用（非 admin）→ AccountDisabledError (403)
+       ↓  找不到 → 401（並由 auth_throttle 計數）；停用（非 admin）→ AccountDisabledError (403)
+IP 白名單 → 403
 檢查今日 cost_usd vs daily_limit_usd → 429（get_current_user_unmetered 略過）
-       ↓  session 關閉
+       ↓  session 關閉；寫入 api_key_last_used_at（最多每小時一次）
 require_azure_access / require_bedrock_access：權限旗標 → 403，雲端上限 → 429
        ↓
 limited_*：取得併發 lease（推論端點），回應送完後釋放
        ↓
 回傳 User 物件
 ```
+
+---
+
+### `browser_security.py` — CORS 與跨站防護
+
+由 `app/main.py`（以及測試 app）的 `add_browser_security(app)` 安裝。
+
+| 名稱 | 說明 |
+|---|---|
+| `CORS_OPTIONS` | 允許任何來源，但**永不帶 credentials**（`allow_credentials=False`）。API client 的 key 放在自己設定的 header，CORS 不把它算成 credentials；SSO cookie 則會，所以其他網站讀不到 `/admin`、`/dashboard` 的回應 |
+| `CrossSiteRequestGuard` | 純 ASGI。`COOKIE_AUTH_PREFIXES`（`/admin`、`/dashboard`）底下的 POST / PUT / PATCH / DELETE，若 `Sec-Fetch-Site` 不是 `same-origin` / `none`，或沒有該 header 時 `Origin` 的主機名稱和 `Host` 不同（不看 port）或為 `null`，回 403。兩個 header 都沒有的請求（curl、腳本）放行。API 路徑一律不檢查 |
+| `is_cookie_auth_path(path)` | 路徑在 `/admin` 或 `/dashboard` 底下時為 True。稽核紀錄（`services/audit.py`）也用它 |
+
+SSO cookie 的 `SameSite=lax` 單獨不夠：同網域底下的其他子網站算 *same-site*，它送出的表單仍會附上 cookie。
 
 ---
 

@@ -49,6 +49,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 |---|---|---|
 | **Header** | — | 「Set up Claude Code」連結（→ `/setup`）與 **My API Key** 按鈕（開啟 key modal） |
 | **Get started** | — | 帳號本月尚無任何請求時才顯示，連到 `/setup` |
+| **Please regenerate your API key** | — | 使用者自己的 key，或他擁有的 app 帳號的 key，早於目前的 256 bits 格式時顯示（`schema.is_legacy_api_key`）。請他在方便更新 client 設定時重新產生；不強制，舊 key 照常可用。使用者重新產生自己的 key 後當場移除 |
 | **Spent today（預算主卡）** | — | 今日費用對比 `daily_limit_usd`、Remaining、距重置（當地午夜）時間，以及依比例變色的進度條（ok < 70 % · warn < 90 % · crit < 100 % · over）。`daily_limit_usd = 0` 時顯示 "No daily budget on this account"。使用者可用任一雲端後端時（admin 一律可用），下方多一列 **On-prem / Azure / AWS Bedrock** 分欄，只列出使用者有權使用的後端；另有 **Cloud (Azure + AWS)** 列，顯示今日雲端合計費用對比使用者的雲端上限（`deps.effective_cloud_limit`；無上限時不顯示） |
 | **This month** | — | 本月費用、請求數、Tokens in / out（附今日數字） |
 | **On-Prem Models** | Models | 所有未隱藏的 vLLM 模型，依類型分組、依價格排序：ONLINE / DOWN、即時負載（來自 `/metrics` 的 running / queued）、Context、Max Out、實際計費的 In / Out $/1M（per-model → per-type → default，與計費一致）、能力 badge（`reasoning`、`tools`、`vision`、`cache`）。標題列顯示 online / queueing / down 數量與 base URL |
@@ -91,13 +92,14 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | **User Leaderboard** | Overview | 使用者排行榜，按月費用降序 top-10，顯示 display_name、org_code badge |
 | **Department Usage** | Overview | 依 org_code 分組：Users、Cost、Input / Output Tokens、Reqs；超過 15 列時前端分頁 |
 | **Export Usage Report** | Overview | 選擇月份區間（最多 24 個月）→ **Download xlsx**（`GET /admin/api/export/usage.xlsx`，4 個工作表）或 **Backend costs (CSV)**（`GET /admin/api/export/user-backend-costs.csv`，每列為「月份 × 帳號」，分 On-prem / Azure / Bedrock 費用欄） |
-| **User Management** | Users | Users / Apps 子切換、後端搜尋（`q`，對 username / display_name / org_code 做 ILIKE）、後端分頁（`limit/offset`、`app_limit/app_offset`）、**Export Users (CSV)**（`GET /admin/api/export/users.csv`）。Users 表格：User、API Key（View Key）、Total Spend、Daily Limit（+ *Cloud $*）、Actions。Apps 表格另有可編輯的 Owner 欄 |
+| **User Management** | Users | Users / Apps 子切換、後端搜尋（`q`，對 username / display_name / org_code 做 ILIKE）、後端分頁（`limit/offset`、`app_limit/app_offset`）、**Export Users (CSV)**（`GET /admin/api/export/users.csv`）。Users 表格：User、API Key（View Key，下方顯示 *used N d ago* / *never used* — 超過 90 天變琥珀色 — 舊格式 key 另標 *old format*；滑鼠移上去可看 key 的發放與最後使用時間）、Total Spend、Daily Limit（+ *Cloud $*）、Actions。Apps 表格另有可編輯的 Owner 欄。狀態篩選多了 **Older-format API key**（`legacy_key`）與 **Key unused 90+ days**（`stale_key`），供權限審查使用 |
 | **Concurrency Limit** | Settings | 模式（`off` / `monitor` / `enforce`）+ 每帳號上限（≥ 1）→ `POST /admin/concurrency-limit`；顯示目前進行中的請求數、帳號數與最忙的帳號。切到 Enforce 前會要求確認 |
 | **Default Daily Limit** | Settings | `POST /admin/default-limit` — 寫入 `[app].default_daily_limit_usd`，並批次將 `0 < daily_limit_usd < new_floor` 的使用者拉高到新 floor（`daily_limit_usd = 0` 的使用者是刻意設成 $0，不會被改動） |
 | **Cloud Daily Limit** | Settings | `POST /admin/cloud-limit` — 每位使用者每日 Azure + AWS 合計費用的預設上限（`[app].cloud_daily_limit_usd`），套用於有雲端權限且沒有自訂 *Cloud $* 的使用者。留空 = 無預設上限；0 = 拒絕雲端 |
 | **Cloud Budget Fallback** | Settings | 勾選框 → `POST /admin/cloud-budget-fallback`。開啟時，超過雲端上限的 `/v1/*` 雲端請求改由地端模型服務，而非回 429（整體每日上限仍然有效；`/azure/v1/*` 與 `/aws/v1/*` 永不 fallback） |
 | **Create App Account** | Settings | Username（自動加 `app_` 前綴）、Daily Limit、Owner → `POST /admin/users/create`。App 帳號建立時即免除並行上限 |
 | **Site Links** | Settings | Support Bot URL（每頁右下角的浮動按鈕）與 Install Guide URL（`/setup` 上的卡片）→ `POST /admin/site-links`。只接受 `http(s)://` 或站內相對路徑；留空則隱藏 |
+| **Audit Log** | Settings | `audit_log` 最新 20 筆（Asia/Taipei 時間、誰從哪個位址、method + route、狀態碼、對象與送出欄位的一行摘要），以及 **Download CSV (last 365 days)**（`GET /admin/api/export/audit-log.csv`）。`/admin`、`/dashboard` 的每一個寫入、每次顯示完整 key、每次匯出都會記錄；密鑰一律遮蔽 |
 
 ### Actions 欄
 
@@ -120,7 +122,7 @@ Actions 欄的每個按鈕都會先要求確認。原地更新的切換按鈕（
 | Update Daily Limit | `POST /admin/users/{id}/limit` | 修改使用者的每日費用上限（有限值且 ≥ 0；0 代表 $0 預算） |
 | Update Cloud $ | `POST /admin/users/{id}/cloud-limit` | 使用者自己的 Azure + AWS 每日上限。只對有 Azure 或 AWS 權限的使用者及 admin 顯示；placeholder 顯示預設值；留空則回到預設，0 為拒絕雲端 |
 | Set Owners | `POST /admin/users/{id}/owner` | Apps 表格：替換 App 的 owner（以逗號分隔的 username） |
-| View API Key | `GET /admin/users/{id}/api-key` | 清單只帶遮罩後的 key；modal 每次針對單一帳號取得完整 key（會記錄 log） |
+| View API Key | `GET /admin/users/{id}/api-key` | 清單只帶遮罩後的 key；modal 每次針對單一帳號取得完整 key（會記入稽核紀錄） |
 | Regenerate Key | `POST /admin/users/{id}/refresh-key` | 重新產生任意使用者的 API key（在 key modal 內操作） |
 | Ack / Resolve 異常 | `POST /admin/api/anomalies/{id}/ack` · `/resolve` | 在 Needs attention 面板操作 |
 
@@ -149,6 +151,7 @@ Actions 欄的每個按鈕都會先要求確認。原地更新的切換按鈕（
 ### 行為
 
 - 選取狀態存在 URL hash（`#vllm/<alias>`、`#azure/<alias>`、`#bedrock/<alias>`、`#settings`），重新整理後仍停在原處。
+- 已儲存的密鑰（`api_key`、Bedrock 的 `aws_secret_access_key`）不會傳到頁面：`GET /admin/api/config` 送來的是 `<stored:…>` 參照，畫面上顯示成空白輸入框，提示 *saved — type to replace*，也沒有 Show 按鈕。沒有動它時，參照留在 `config` 裡，存檔時伺服器沿用原值（重新命名、複製也一樣）；輸入新值就會取代。
 - 每個輸入欄位都透過 `setField` 直接寫入頁面的 `config` 物件（依 `data-kind` / `data-alias` / `data-field` / `data-t` 轉型；選填欄位留空即刪除該 key）。儲存時不會重新從 DOM 收集 — DOM 中只有目前選取模型的表單。
 - 是否有未儲存變更以 `JSON.stringify(config)` 與上次儲存的快照比對；Ctrl/Cmd+S 儲存，`beforeunload` 會提出警告。
 - Add / Duplicate / Rename 共用同一個對話框，強制 alias 在三種後端間不可重複。Rename 與 Delete 會一併更新或清除類型 fallback 及 `rate_limit_fallback` 的參照。

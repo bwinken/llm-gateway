@@ -29,6 +29,7 @@ Clients ──▶ LLM Gateway ──────────┼──▶ Azure O
 - **Reliable under load.** Health checks every 30 seconds, automatic failover to another server of the same model type, and keepalive pings so long reasoning turns don't time out.
 - **Cost control.** Per-user daily budgets with a daily cap on cloud (Azure + Bedrock) spend, per-user concurrency limits, and per-model pricing (including prompt-cache discounts).
 - **Access control.** Disable accounts, and grant Azure or Bedrock access per user.
+- **Security and audit.** 256-bit API keys, a lockout for addresses that try many invalid keys, admin pages that refuse cross-site requests, model secrets that never reach the browser, and an append-only audit log of every admin change, key reveal and export.
 - **Web UI.** Users see their usage, remaining budget, and live server load. Admins manage users, models, pricing, and limits without editing files, and can export monthly cost reports.
 - **Observability.** Optional [Langfuse](https://langfuse.com) tracing per request, plus `/healthz` and `/readyz` probes for load balancers.
 
@@ -84,6 +85,7 @@ Model names must be unique across all three backends. [`config.toml.example`](co
 | `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | Enable Langfuse tracing (all three required) | unset |
 | `LANGFUSE_CAPTURE_IO` | Also send prompt and response **content** to Langfuse. Contains personal data, so confirm notice and consent first. | `false` |
 | `LANGFUSE_SAMPLE_RATE` | Fraction of requests traced, `0.0`–`1.0` (billing always records every request) | `1.0` |
+| `AUTH_FAIL_DISTINCT_KEYS`, `AUTH_FAIL_WINDOW_S`, `AUTH_LOCKOUT_S` | An address that sends this many different invalid API keys within the window is refused (429) for the lockout (`0` turns it off) | `10`, `600`, `900` |
 | `ENFORCE_DAILY_LIMIT` | `false` logs budget overruns instead of rejecting them | `true` |
 | `SLOW_REQUEST_WARN_S` | Log a warning for requests slower than this many seconds (`0` turns it off) | `120` |
 | `LOG_DIR`, `LOG_LEVEL`, `LOG_ROTATION`, `LOG_RETENTION` | Log files, one per worker | `./logs`, `WARNING`, `100 MB`, `14 days` |
@@ -122,7 +124,8 @@ Open `http://your-gateway` and sign in through SSO. Accounts with the `admin` sc
 - set the per-user **concurrency limit** (Off, Monitor, or Enforce) and waive it for individual accounts (app accounts start out waived);
 - choose whether a spent cloud cap falls back to on-prem models instead of returning 429;
 - edit models, pricing, and fallbacks under **Model Config**;
-- export monthly cost reports (xlsx, or CSV split by backend) and review usage anomalies.
+- export monthly cost reports (xlsx, or CSV split by backend) and review usage anomalies;
+- review the **audit log** (Settings tab, CSV download) and, for access reviews, list API keys unused for 90+ days or still in the older format (Users tab filters).
 
 ## Deployment
 
@@ -143,7 +146,7 @@ uv run pytest tests/ -q     # tests: in-memory SQLite, mocked downstreams, no co
 uv run ruff check .         # lint
 ```
 
-CI runs both on every push to `main` and every pull request. [CLAUDE.md](CLAUDE.md) is the contributor map: architecture, conventions, and the rules that are easy to break.
+CI runs both on every push to `main` and every pull request. A security workflow also runs pip-audit on `uv.lock` and gitleaks on new commits (and weekly on the whole history); Dependabot opens weekly update PRs. [CLAUDE.md](CLAUDE.md) is the contributor map: architecture, conventions, and the rules that are easy to break.
 
 | Docs | |
 |---|---|

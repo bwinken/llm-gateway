@@ -167,7 +167,7 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 
 ## `web_ui.py` — User Dashboard
 
-**Auth**: `auth.get_web_user` (JWT scope must include `read` or `admin`)
+**Auth**: `auth.get_web_user` (JWT scope must include `read` or `admin`). Its POSTs are refused cross-site (403, `CrossSiteRequestGuard`) and recorded in `audit_log` (`AuditMiddleware`).
 
 ### Endpoints
 
@@ -176,7 +176,7 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 | `GET` | `/` | Welcome page: API guide, available models, quick start |
 | `GET` | `/dashboard` | Dashboard page: today's budget, usage stats, trend charts, cost by model, server status, app accounts |
 | `GET` | `/dashboard/api/model-breakdown` | Cost by Model card data as JSON (`?period=month` default, or `day`; else 400). Backs the Month/Today toggle and refresh button |
-| `POST` | `/dashboard/refresh-key` | Regenerate own API key, returns JSON `{ok, api_key}` |
+| `POST` | `/dashboard/refresh-key` | Regenerate own API key (`schema.issue_api_key`: 256-bit key, resets its issue / last-use dates), returns JSON `{ok, api_key}` |
 | `POST` | `/dashboard/app/{app_id}/refresh-key` | Regenerate owned app account's API key (must be owner, else 403) |
 | `GET` | `/dashboard/install-claude-code.bat` | Windows Claude Code installer download, `setup/install-claude-code.bat` with `__USER_API_KEY__` replaced by the caller's key and line endings normalized to CRLF (404 when the template is absent) |
 | `GET` | `/setup` | Claude Code installer page |
@@ -198,6 +198,8 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 
 **Auth**: Router-level `Security(get_web_user, scopes=["admin"])` — all `/admin/*` endpoints (including REST API) use JWT auth
 
+Every POST / PUT / PATCH / DELETE here, every full API key shown and every export is recorded in `audit_log` by `AuditMiddleware` (`app/services/audit.py`), whatever the outcome. Cross-site writes are refused (403) by `CrossSiteRequestGuard`.
+
 Limits are validated by `_limit_usd`: a finite number ≥ 0, where `0` is a $0 budget (never "unlimited"). Form endpoints redirect (303) back to `/admin`; those marked JSON reply with JSON when sent `Accept: application/json` (in-place toggles).
 
 ### Web UI Endpoints
@@ -210,7 +212,7 @@ Limits are validated by `_limit_usd`: a finite number ≥ 0, where `0` is a $0 b
 | `POST` | `/admin/users/{id}/limit` | Update user daily limit (form `new_limit`) |
 | `POST` | `/admin/users/{id}/cloud-limit` | Set the user's own cloud cap (form `new_cloud_limit`; blank clears it so the user follows the default, `0` is a $0 cap) |
 | `POST` | `/admin/users/{id}/delete` | Delete user after clearing every row referencing it (app owners, legacy `owner_id`, anomaly events, concurrency leases). Usage logs and the daily rollup are kept (billing / audit record); the id → account mapping is logged. Cannot delete self |
-| `GET` | `/admin/users/{id}/api-key` | One account's full API key, JSON (listings only carry masked keys). Logged with who asked for whose key |
+| `GET` | `/admin/users/{id}/api-key` | One account's full API key, JSON (listings only carry masked keys). Recorded in the audit log (who, whose key; never the key) |
 | `POST` | `/admin/users/{id}/refresh-key` | Regenerate any user's API key, returns JSON |
 | `POST` | `/admin/users/{id}/toggle-disable` | Flip the user's `is_disabled` flag. Refuses to disable yourself (400). Allows enabling yourself |
 | `POST` | `/admin/users/{id}/toggle-azure` | Flip the user's `can_use_azure` flag (gates `/azure/v1/*` and Azure dispatch on `/v1/*`). JSON |
@@ -233,6 +235,7 @@ Limits are validated by `_limit_usd`: a finite number ≥ 0, where `0` is a $0 b
 | `GET` | `/admin/api/anomalies` | Anomaly findings written by the gateway's hourly scan (`app/services/anomaly_scan.py`) (`?status=new` default, `acknowledged`, `resolved` or `all`; `?limit=50`, max 200) |
 | `POST` | `/admin/api/anomalies/{id}/ack` | Mark a finding `acknowledged` |
 | `POST` | `/admin/api/anomalies/{id}/resolve` | Mark a finding `resolved` |
+| `GET` | `/admin/api/audit-log` | Audit trail, newest first (`?limit=100`, max 1000; `?before_id=` pages; `?actor=` filters) |
 
 `POST` / `PATCH /admin/users` reject the retired per-backend fields `azure_daily_limit_usd` / `bedrock_daily_limit_usd` with 400: Azure and AWS share one cloud cap, `cloud_daily_limit_usd`.
 
@@ -243,6 +246,7 @@ Limits are validated by `_limit_usd`: a finite number ≥ 0, where `0` is a $0 b
 | `GET` | `/admin/api/export/usage.xlsx` | Monthly usage report workbook (4 sheets) for `?from=YYYY-MM&to=YYYY-MM` (inclusive, at most 24 months) |
 | `GET` | `/admin/api/export/user-backend-costs.csv` | One row per month × account (users and `app_*`), cost split into vLLM / Azure / Bedrock columns; same `from` / `to` |
 | `GET` | `/admin/api/export/users.csv` | All human users (no `app_*`) with flags, daily limit, this month's cost/requests and last activity |
+| `GET` | `/admin/api/export/audit-log.csv` | The audit trail of the last `?days=` days (default 365), newest first |
 
 CSV exports start with a UTF-8 BOM so Excel opens CJK text correctly.
 
@@ -250,8 +254,8 @@ CSV exports start with a UTF-8 BOM so Excel opens CJK text correctly.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/admin/api/config` | Get `config.toml` contents (`models`, `pricing`, `fallback`, `azure_models`, `azure_fallback`, `bedrock_models`, `bedrock_fallback`) plus `bedrock_shared` (`region`, `iam_credentials: bool` — never the secret) |
-| `PUT` | `/admin/api/config` | Validate (alias uniqueness across backends, field types, reasoning-effort keys, `rate_limit_fallback` targets), save to `config.toml` and reload immediately |
+| `GET` | `/admin/api/config` | Get `config.toml` contents (`models`, `pricing`, `fallback`, `azure_models`, `azure_fallback`, `bedrock_models`, `bedrock_fallback`) plus `bedrock_shared` (`region`, `iam_credentials: bool` — never the secret). Set secrets (`api_key`, `aws_secret_access_key`) come back as `<stored:section/alias/field>` references, never values |
+| `PUT` | `/admin/api/config` | Validate (alias uniqueness across backends, field types, reasoning-effort keys, `rate_limit_fallback` targets), save to `config.toml` and reload immediately. References are swapped back for the stored secrets first (400 if one points at nothing); the audit log records which fields changed, not their values |
 
 ---
 
@@ -304,3 +308,5 @@ graph TD
     Dashboard -->|get_web_user| JWT["JWT: sub → users.username"]
     Admin -->|get_web_user| JWT
 ```
+
+On every route: CORS allows any origin but never credentials (`app/core/browser_security.py`). On `/admin` and `/dashboard` writes: `CrossSiteRequestGuard` (403 cross-site) and `AuditMiddleware` (`audit_log`). API-key auth also runs the failed-auth throttle (`services/auth_throttle.py`, 429 after many distinct invalid keys from one address).

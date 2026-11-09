@@ -29,6 +29,7 @@ Clients ──▶ LLM Gateway ──────────┼──▶ Azure O
 - **高負載下也穩定。** 每 30 秒健康檢查、自動切換到同類型的其他伺服器，並送出 keepalive ping，長時間推理也不會逾時斷線。
 - **成本控管。** 每人每日預算（雲端 Azure + Bedrock 另有每日上限，可設預設值並逐人調整）、每人並行上限、逐模型計價（含 prompt cache 折扣價）。
 - **存取控制。** 可停用帳號，也可逐人授權 Azure 或 Bedrock。
+- **安全與稽核。** 256 bits 的 API key、對嘗試大量錯誤 key 的位址暫時封鎖、admin 頁面拒絕跨站請求、模型金鑰不會傳到瀏覽器，以及只能新增的稽核紀錄，涵蓋每一個管理操作、每次查看 key 和每次匯出。
 - **Web UI。** 使用者可查看自己的用量、剩餘預算與伺服器即時負載。管理員不用改檔案就能管理使用者、模型、價格與限制，並匯出每月費用報表。
 - **可觀測性。** 可選用 [Langfuse](https://langfuse.com) 記錄每個請求，並提供 `/healthz`、`/readyz` 給負載平衡器檢查。
 
@@ -84,6 +85,7 @@ api_key    = ""                        # vLLM 的 --api-key（有設才填）
 | `LANGFUSE_HOST`、`LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY` | 啟用 Langfuse（三個都要設） | 未設定 |
 | `LANGFUSE_CAPTURE_IO` | 也把 prompt 與回應**內容**送到 Langfuse。含個人資料，開啟前請先確認告知與同意 | `false` |
 | `LANGFUSE_SAMPLE_RATE` | 記錄到 Langfuse 的比例，`0.0`–`1.0`（計費永遠記錄每一筆） | `1.0` |
+| `AUTH_FAIL_DISTINCT_KEYS`、`AUTH_FAIL_WINDOW_S`、`AUTH_LOCKOUT_S` | 同一位址在時間窗內送出這麼多把不同的錯誤 API key，就在鎖定期間回 429（設 `0` 關閉） | `10`、`600`、`900` |
 | `ENFORCE_DAILY_LIMIT` | 設為 `false` 時，超過預算只記 log、不擋請求 | `true` |
 | `SLOW_REQUEST_WARN_S` | 請求超過這個秒數就記一筆 warning（`0` 為關閉） | `120` |
 | `LOG_DIR`、`LOG_LEVEL`、`LOG_ROTATION`、`LOG_RETENTION` | Log 檔，每個 worker 一個 | `./logs`、`WARNING`、`100 MB`、`14 days` |
@@ -122,7 +124,8 @@ ANTHROPIC_BASE_URL=http://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key clau
 - 設定每人**並行上限**（Off、Monitor、Enforce），並可個別豁免帳號（App 帳號預設豁免）；
 - 決定雲端上限用完時，是改由地端模型回答，還是回 429；
 - 在 **Model Config** 編輯模型、價格與備援；
-- 匯出每月費用報表（xlsx，或依後端拆分的 CSV），並查看用量異常。
+- 匯出每月費用報表（xlsx，或依後端拆分的 CSV），並查看用量異常；
+- 查看**稽核紀錄**（Settings 分頁，可下載 CSV），並在權限審查時列出 90 天以上沒用過或仍是舊格式的 API key（Users 分頁的篩選）。
 
 ## 部署
 
@@ -143,7 +146,7 @@ uv run pytest tests/ -q     # 測試：in-memory SQLite、下游全部 mock，�
 uv run ruff check .         # lint
 ```
 
-每次 push 到 `main` 與每個 pull request，CI 都會跑這兩項。[CLAUDE.md](CLAUDE.md) 是給開發者的導覽：架構、慣例，以及容易踩到的規則。
+每次 push 到 `main` 與每個 pull request，CI 都會跑這兩項。另有安全掃描 workflow：對 `uv.lock` 跑 pip-audit、對新的 commit 跑 gitleaks（每週另掃整段歷史）；Dependabot 每週開更新 PR。[CLAUDE.md](CLAUDE.md) 是給開發者的導覽：架構、慣例，以及容易踩到的規則。
 
 | 文件 | |
 |---|---|

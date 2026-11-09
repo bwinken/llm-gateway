@@ -167,7 +167,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 ## `web_ui.py` — 使用者 Dashboard
 
-**認證**：`auth.get_web_user`（JWT scope 需含 `read` 或 `admin`）
+**認證**：`auth.get_web_user`（JWT scope 需含 `read` 或 `admin`）。這裡的 POST 若來自其他網站會被拒絕（403，`CrossSiteRequestGuard`），並記入 `audit_log`（`AuditMiddleware`）。
 
 ### 端點
 
@@ -176,7 +176,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `GET` | `/` | Welcome 首頁：API 使用指南、可用模型、快速上手 |
 | `GET` | `/dashboard` | Dashboard 頁面：今日額度、用量統計、趨勢圖、各模型費用、伺服器狀態、App 帳號 |
 | `GET` | `/dashboard/api/model-breakdown` | Cost by Model 卡片的 JSON 資料（`?period=month` 為預設，或 `day`；其他值回 400）。供 Month/Today 切換與重新整理按鈕使用 |
-| `POST` | `/dashboard/refresh-key` | 重新產生自己的 API key，回傳 JSON `{ok, api_key}` |
+| `POST` | `/dashboard/refresh-key` | 重新產生自己的 API key（`schema.issue_api_key`：256 bits 的 key，並重設發放／最後使用時間），回傳 JSON `{ok, api_key}` |
 | `POST` | `/dashboard/app/{app_id}/refresh-key` | 重新產生所屬 App 帳號的 API key（需為 owner，否則 403） |
 | `GET` | `/dashboard/install-claude-code.bat` | 下載 Windows Claude Code 安裝檔：`setup/install-claude-code.bat` 中的 `__USER_API_KEY__` 換成呼叫者的 key，換行統一為 CRLF（範本不存在時回 404） |
 | `GET` | `/setup` | Claude Code 安裝說明頁 |
@@ -198,6 +198,8 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 **認證**：Router 層統一 `Security(get_web_user, scopes=["admin"])`，所有 `/admin/*` 端點（含 REST API）皆走 JWT 認證
 
+這裡每一個 POST / PUT / PATCH / DELETE、每次顯示完整 API key、每次匯出，不論成功與否，都由 `AuditMiddleware`（`app/services/audit.py`）記入 `audit_log`。來自其他網站的寫入會被 `CrossSiteRequestGuard` 拒絕（403）。
+
 額度由 `_limit_usd` 驗證：必須是 ≥ 0 的有限數字，`0` 代表 $0 額度（絕不是「無上限」）。表單端點會 303 導回 `/admin`；標示 JSON 的端點在帶 `Accept: application/json` 時改回 JSON（頁面上的原地切換）。
 
 ### Web UI 端點
@@ -210,7 +212,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `POST` | `/admin/users/{id}/limit` | 修改使用者每日限額（表單 `new_limit`） |
 | `POST` | `/admin/users/{id}/cloud-limit` | 設定使用者自己的雲端上限（表單 `new_cloud_limit`；空白則清除、改依預設值，`0` 為 $0 上限） |
 | `POST` | `/admin/users/{id}/delete` | 先清掉所有參照該使用者的資料（app owner、舊版 `owner_id`、anomaly event、並行租約）再刪除使用者。usage log 與每日彙總保留（計費／稽核紀錄），並在 log 記下 id 對應的帳號。不可刪除自己 |
-| `GET` | `/admin/users/{id}/api-key` | 取得單一帳號的完整 API key，回傳 JSON（列表只顯示遮罩後的 key）。會記錄是誰查了誰的 key |
+| `GET` | `/admin/users/{id}/api-key` | 取得單一帳號的完整 API key，回傳 JSON（列表只顯示遮罩後的 key）。會記入稽核紀錄（誰查了誰的 key；不記 key 本身） |
 | `POST` | `/admin/users/{id}/refresh-key` | 重新產生任意使用者的 API key，回傳 JSON |
 | `POST` | `/admin/users/{id}/toggle-disable` | 翻轉使用者的 `is_disabled` 旗標。禁止停用自己（回 400）；可以重新啟用自己 |
 | `POST` | `/admin/users/{id}/toggle-azure` | 翻轉使用者的 `can_use_azure` 旗標（控制 `/azure/v1/*` 存取與 `/v1/*` 的 Azure dispatch）。JSON |
@@ -233,6 +235,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `GET` | `/admin/api/anomalies` | gateway 每小時異常掃描（`app/services/anomaly_scan.py`）寫入的異常紀錄（`?status=new` 為預設，或 `acknowledged`、`resolved`、`all`；`?limit=50`，上限 200） |
 | `POST` | `/admin/api/anomalies/{id}/ack` | 將異常標為 `acknowledged` |
 | `POST` | `/admin/api/anomalies/{id}/resolve` | 將異常標為 `resolved` |
+| `GET` | `/admin/api/audit-log` | 稽核紀錄，新的在前（`?limit=100`，上限 1000；`?before_id=` 分頁；`?actor=` 篩選） |
 
 `POST` / `PATCH /admin/users` 收到已退役的各後端欄位 `azure_daily_limit_usd` / `bedrock_daily_limit_usd` 會回 400：Azure 與 AWS 共用同一個雲端上限 `cloud_daily_limit_usd`。
 
@@ -243,6 +246,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `GET` | `/admin/api/export/usage.xlsx` | 月用量報表活頁簿（4 個工作表），範圍 `?from=YYYY-MM&to=YYYY-MM`（含頭尾，最多 24 個月） |
 | `GET` | `/admin/api/export/user-backend-costs.csv` | 每個月 × 帳號一列（含使用者與 `app_*`），費用拆成 vLLM / Azure / Bedrock 欄位；同樣用 `from` / `to` |
 | `GET` | `/admin/api/export/users.csv` | 所有真人使用者（不含 `app_*`），附旗標、每日額度、本月費用/requests 與最後活動時間 |
+| `GET` | `/admin/api/export/audit-log.csv` | 最近 `?days=` 天（預設 365）的稽核紀錄，新的在前 |
 
 CSV 開頭帶 UTF-8 BOM，Excel 開啟中文才不會亂碼。
 
@@ -250,8 +254,8 @@ CSV 開頭帶 UTF-8 BOM，Excel 開啟中文才不會亂碼。
 
 | 方法 | 路徑 | 說明 |
 |---|---|---|
-| `GET` | `/admin/api/config` | 取得 `config.toml` 內容（`models`、`pricing`、`fallback`、`azure_models`、`azure_fallback`、`bedrock_models`、`bedrock_fallback`），另附 `bedrock_shared`（`region`、`iam_credentials: bool` — 不含密鑰） |
-| `PUT` | `/admin/api/config` | 驗證（跨後端 alias 不可重複、欄位型別、reasoning-effort 設定、`rate_limit_fallback` 目標）後儲存到 `config.toml` 並即時 reload |
+| `GET` | `/admin/api/config` | 取得 `config.toml` 內容（`models`、`pricing`、`fallback`、`azure_models`、`azure_fallback`、`bedrock_models`、`bedrock_fallback`），另附 `bedrock_shared`（`region`、`iam_credentials: bool` — 不含密鑰）。已設定的密鑰（`api_key`、`aws_secret_access_key`）以 `<stored:section/alias/field>` 參照回傳，不回傳值 |
+| `PUT` | `/admin/api/config` | 驗證（跨後端 alias 不可重複、欄位型別、reasoning-effort 設定、`rate_limit_fallback` 目標）後儲存到 `config.toml` 並即時 reload。會先把參照換回已存的密鑰（參照找不到對象則 400）；稽核紀錄只記改了哪些欄位，不記值 |
 
 ---
 
@@ -298,3 +302,5 @@ graph TD
     Dashboard -->|get_web_user| JWT["JWT: sub → users.username"]
     Admin -->|get_web_user| JWT
 ```
+
+所有路由：CORS 允許任何來源，但永不帶 credentials（`app/core/browser_security.py`）。`/admin`、`/dashboard` 的寫入：`CrossSiteRequestGuard`（跨站回 403）與 `AuditMiddleware`（`audit_log`）。API key 驗證另有驗證失敗節流（`services/auth_throttle.py`：同一位址送出太多不同的錯誤 key 後回 429）。
