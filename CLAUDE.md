@@ -35,11 +35,12 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | `app/services/anthropic_adapter.py` | Anthropic Messages ↔ OpenAI chat (the internal pivot format) |
 | `app/services/usage_rollup.py` | `usage_daily` rollup: `aggregate` (the read path for every multi-day report), the in-app `rollup_loop` |
 | `app/services/auth_throttle.py` | Per-address lockout after many distinct invalid API keys (per worker, in memory) |
+| `app/services/audit.py` | `audit_log` trail: `AuditMiddleware` records every write under `/admin`, `/dashboard`, key reveals and exports; `note()`, `redact()` |
 | `app/services/ip_allowlist.py` | API IP allowlist: rules of address range × accounts / org codes × window, the check called from API-key auth, the per-worker rule snapshot |
 | `app/services/guardrail.py` | Qwen3Guard-Gen prompt screening of local (vLLM) traffic: policy, fail-open guard call, Langfuse verdict |
 | `app/services/scheduler.py`, `anomaly_scan.py`, `usage_retention.py` | In-gateway periodic jobs (claim in `scheduled_jobs`): the hourly anomaly scan and the opt-in usage-log retention |
 | `app/services/` (rest) | `model_order` (the one display order for model lists), `concurrency`, `rate_limit_fallback`, `reasoning_effort`, `health`, `observability`, `metrics` (Prometheus), `redact`, `stats`, `analytics` / `usage_export`, `aws_eventstream` |
-| `app/models/schema.py` | `User`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AppOwner`, `AnomalyEvent`, `ConcurrencyLease`, `IpAllowRule` |
+| `app/models/schema.py` | `User`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AppOwner`, `AnomalyEvent`, `ConcurrencyLease`, `IpAllowRule`, `AuditLog` |
 | `app/templates/` | `dashboard.html`, `admin.html`, `_admin_user_table.html` (Users / Apps tables, also served alone by `/admin/user-table`), `admin_models.html` (model-config SPA), `base.html` (`gwTabs`, `gwToast`, `gwConfirm`) |
 | `alembic/versions/` | Migrations (PostgreSQL-only: they do not run on SQLite) |
 | `scripts/` | Manual runs of the in-gateway jobs: `scan_anomalies.py`, `rollup_usage_daily.py` (inspect / `--recompute`), `cleanup_usage_logs.py` (retention preview); plus `azure_latency_probe.py` (per-phase Azure latency, direct vs. via gateway), SQLite → PG migration, legacy `add_owner_id.py`, dev PG helper |
@@ -143,6 +144,12 @@ Each of these has broken production or a test before. The parenthesized test pin
 - A blocked request records its own Langfuse generation (it never reaches `_log_usage`); every other screened request carries the verdict on its normal generation via the request-meta contextvar. Never log the screened text.
 - Only `block` waits for the verdict. `monitor` runs the guard as a background task alongside the vLLM call, and the request's Langfuse generation is deferred until the verdict is in (`PendingVerdict.add_done_callback`). Never block a thread or the loop waiting for it: the executor threads also carry the `usage_logs` writes (`test_monitor_does_not_wait_for_the_guard`, `test_monitor_langfuse_generation_waits_for_the_verdict`, `test_block_mode_judges_before_forwarding`).
 
+**Audit log**
+- Audit coverage comes from `AuditMiddleware`, not from handlers: never replace it with per-endpoint calls, and keep new SSO-authenticated writes under `/admin` or `/dashboard`. A new read that reveals credentials or exports data goes in `audit._AUDITED_READS` (`tests/test_audit_log.py`).
+- Nothing updates or deletes `audit_log` rows (PostgreSQL triggers refuse it). It stores usernames, never user ids, so `delete_user` leaves it alone.
+- Secrets never reach it: request and reply fields go through `audit.redact`; a handler whose body is too large or sensitive is added to `_BODY_NOT_RECORDED` and notes a summary instead (`PUT /admin/api/config` notes `config_changes`, field names only).
+- The write never fails the request; a failed write logs the whole record.
+
 **Admin UI**
 - In-place actions POST with `Accept: application/json` and repaint one element; without that header `fetch` follows the 303 and the server renders the whole admin page for nothing. Send explicit values (`enabled=on|off`): disabled controls are dropped from `FormData`. Use `gwToast` / `gwConfirm`, never `alert()` / `confirm()`.
 - The Users and Apps tables are one partial, `_admin_user_table.html`, with one row macro: change a column there, not in two copies. It renders inside `/admin` and alone from `GET /admin/user-table`, both from `_user_table` and the same query parameters. Links into it are built by `_admin_url` (URL-encoded), never by interpolating `q` into an `href` (`tests/test_admin_users_panel.py`).
@@ -179,7 +186,8 @@ One paragraph each. Follow the link for the full behavior.
 - **[Admin Model Config](docs/architecture.md#admin-model-config-page-apptemplatesadmin_modelshtml)**: master–detail editor over `GET/PUT /admin/api/config`. Selection lives in the URL hash; dirty tracking compares JSON snapshots.
 - **[Daily usage rollup](docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy)**: closed local days of `usage_logs` are summed into `usage_daily` (one row per day × user × backend × model × model_type × endpoint, plus `empty_turns`). Every worker runs `rollup_loop` from the lifespan (`USAGE_ROLLUP_INTERVAL_S`, default 600, `0` off), one day per transaction under `pg_try_advisory_xact_lock`, so exactly one worker rolls each day and no external scheduler is needed; days are rolled 15 min after they end, and the first run backfills. Reads go through `aggregate`: up to the watermark from `usage_daily`, the rest from `usage_logs`. `scripts/rollup_usage_daily.py` inspects and repairs (`--recompute`).
 - **[In-gateway jobs](docs/architecture.md#in-gateway-jobs-appservicesschedulerpy)**: no systemd timers. `job_loop` per job per worker, ~60 s ticks; `run_if_due` claims with a conditional UPDATE on `scheduled_jobs` (`last_started_at <= now - interval`), so each job runs once per interval across workers and hosts, and records `last_status` / `last_detail`. Jobs: anomaly scan (hourly, `ANOMALY_SCAN_INTERVAL_S`) and usage-log retention (daily, off unless `USAGE_LOG_RETENTION_DAYS`). `setup.sh` removes the old scan / cleanup timers.
-- **[Database](docs/architecture.md#database)**: `users`, `usage_logs`, `usage_daily` + `usage_rollup_state`, `scheduled_jobs`, `app_owners`, `anomaly_events`, `concurrency_leases`, `ip_allow_rules`. The hourly anomaly scan is detection only, never blocking. Usage-log retention ships off on purpose.
+- **[Audit log](docs/architecture.md#audit-log-appservicesauditpy)**: `AuditMiddleware` writes one `audit_log` row per write under `/admin` / `/dashboard` (any outcome), per full API key shown and per export: actor, route template, status, client, target account (looked up before the handler), redacted request fields and JSON reply, handler notes. After the response, in a thread, never failing the request. Append-only (PG triggers). Admin *Settings* → *Audit Log* card, JSON API and CSV.
+- **[Database](docs/architecture.md#database)**: `users`, `usage_logs`, `usage_daily` + `usage_rollup_state`, `scheduled_jobs`, `app_owners`, `anomaly_events`, `concurrency_leases`, `ip_allow_rules`, `audit_log`. The hourly anomaly scan is detection only, never blocking. Usage-log retention ships off on purpose.
 
 ## Testing
 

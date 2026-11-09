@@ -37,6 +37,7 @@ from app.core.config import (
     get_cloud_budget_fallback,
     get_cloud_daily_limit,
     get_concurrency_settings,
+    get_config_data,
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
     masked_config_data,
@@ -69,7 +70,7 @@ from app.models.schema import (
     legacy_api_key_clause,
     mask_api_key,
 )
-from app.services import concurrency, guardrail, ip_allowlist
+from app.services import audit, concurrency, guardrail, ip_allowlist
 from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
@@ -524,6 +525,7 @@ def admin_page(
             "concurrency_modes": CONCURRENCY_MODES,
             "concurrency_in_flight": concurrency_in_flight,
             "site_links": get_site_links(),
+            "audit_recent": _audit_rows(session, limit=20),
             "guardrail": _guardrail_view(),
             "ip_allowlist": ip_allowlist_view,
             "special_access": _special_access_summary(session),
@@ -1910,6 +1912,16 @@ async def save_config_api(
                         detail=f"{backend} model '{alias}' field '{key}' must be non-negative.",
                     )
 
+    # Audit trail: which aliases and fields changed (names only).
+    audit.note(config_changes=audit.config_diff(
+        get_config_data(),
+        {
+            "models": models, "pricing": pricing, "fallback": fallback or {},
+            "azure_models": azure_models, "azure_fallback": azure_fallback,
+            "bedrock_models": bedrock_models, "bedrock_fallback": bedrock_fallback,
+            "display_order": display_order,
+        },
+    ))
     save_config(
         models, pricing, fallback or {}, azure_models, azure_fallback,
         bedrock_models, bedrock_fallback, display_order,
@@ -2060,6 +2072,91 @@ def export_user_backend_costs_csv(
         content=buf.getvalue(),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _audit_summary(detail: dict) -> str:
+    """One line for the admin card: target, then the submitted fields."""
+    parts = []
+    if detail.get("target"):
+        parts.append(f"target={detail['target']}")
+    req = detail.get("request")
+    if isinstance(req, dict):
+        parts.extend(f"{k}={v}" for k, v in list(req.items())[:6])
+    if detail.get("config_changes"):
+        parts.append("config: " + ", ".join(sorted(detail["config_changes"])))
+    return " · ".join(str(p) for p in parts)[:300]
+
+
+def _audit_rows(
+    session: Session, *, limit: int, actor: str = "", before_id: int | None = None,
+    since: datetime | None = None,
+) -> list[dict]:
+    import json as _json
+
+    from app.models.schema import AuditLog
+
+    q = select(AuditLog)
+    if actor:
+        q = q.where(AuditLog.actor == actor)
+    if before_id is not None:
+        q = q.where(AuditLog.id < before_id)  # type: ignore[operator]
+    if since is not None:
+        q = q.where(AuditLog.created_at >= since)  # type: ignore[operator]
+    rows = session.exec(q.order_by(AuditLog.id.desc()).limit(limit)).all()  # type: ignore[union-attr]
+    out = []
+    for r in rows:
+        try:
+            detail = _json.loads(r.detail or "{}")
+        except Exception:
+            detail = {"raw": r.detail}
+        out.append({
+            "id": r.id, "at": _local_label(r.created_at), "created_at": r.created_at.isoformat() + "Z",
+            "actor": r.actor, "method": r.method, "route": r.route, "path": r.path,
+            "status": r.status, "client": r.client, "detail": detail,
+            "summary": _audit_summary(detail),
+        })
+    return out
+
+
+@router.get("/api/audit-log")
+def audit_log_api(
+    session: Session = Depends(get_session),
+    limit: int = Query(100, ge=1, le=1000),
+    before_id: int | None = None,
+    actor: str = "",
+):
+    """Newest first; page with ``before_id`` = the last id received."""
+    return JSONResponse({"entries": _audit_rows(session, limit=limit, actor=actor, before_id=before_id)})
+
+
+@router.get("/api/export/audit-log.csv")
+def export_audit_log_csv(
+    session: Session = Depends(get_session),
+    days: int = Query(365, ge=1, le=3650),
+):
+    """The audit trail of the last ``days`` days, newest first (this download
+    is itself recorded)."""
+    import csv
+    import io
+    import json as _json
+
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+    rows = _audit_rows(session, limit=1_000_000, since=since)
+    buf = io.StringIO()
+    buf.write("\ufeff")  # UTF-8 BOM so Excel opens CJK correctly
+    writer = csv.writer(buf)
+    writer.writerow(["id", "created_at_utc", "actor", "method", "route", "path", "status", "client", "detail"])
+    for r in rows:
+        writer.writerow([
+            r["id"], r["created_at"], r["actor"], r["method"], r["route"], r["path"],
+            r["status"], r["client"], _json.dumps(r["detail"], ensure_ascii=False),
+        ])
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="audit_log_{today}.csv"'},
     )
 
 

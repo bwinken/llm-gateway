@@ -102,6 +102,10 @@ app = FastAPI(
 # CORS (any origin, never credentials) + refusal of cross-site writes to the
 # cookie-authenticated Web UI / admin paths. See app/core/browser_security.py.
 add_browser_security(app)
+# Audit trail of Web UI / admin changes, credential reads and exports
+# (app/services/audit.py). Outside the cross-site guard, so refusals are kept.
+from app.services.audit import AuditMiddleware  # noqa: E402
+app.add_middleware(AuditMiddleware)
 
 # Stash request headers for the observability hook (read at the _log_usage
 # seam). Pure-ASGI so the contextvar survives into streaming response bodies.

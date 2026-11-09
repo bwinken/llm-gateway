@@ -311,3 +311,29 @@ class IpAllowRule(SQLModel, table=True):
     starts_at: datetime | None = Field(default=None)
     expires_at: datetime | None = Field(default=None)
     created_at: datetime = Field()
+
+
+class AuditLog(SQLModel, table=True):
+    """Who changed what through the Web UI / admin, and who read credentials
+    or exported data (app/services/audit.py). Append-only: the app never
+    updates or deletes a row, and on PostgreSQL a trigger refuses both.
+
+    ``actor`` is a username, not a foreign key, so deleting an account keeps
+    its trail. ``detail`` is JSON text: the submitted fields and the JSON
+    reply (secrets redacted), the target account, and whatever the handler
+    noted (e.g. the model-config diff). Timestamps are naive UTC."""
+    __tablename__ = "audit_log"
+    __table_args__ = (
+        Index("ix_audit_log_created_at", "created_at"),
+        Index("ix_audit_log_actor_created", "actor", "created_at"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    created_at: datetime = Field(default_factory=_naive_utcnow)
+    actor: str = Field(default="")       # username from the JWT; "" if unauthenticated
+    method: str = Field(default="")
+    route: str = Field(default="")       # path template, e.g. /admin/users/{user_id}/limit
+    path: str = Field(default="")
+    status: int = Field(default=0)       # response status; 500 if the handler raised
+    client: str = Field(default="")      # request.client.host
+    detail: str = Field(default="{}")

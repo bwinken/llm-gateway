@@ -367,6 +367,8 @@ def _build_test_app() -> FastAPI:
     # Same browser protections as production (CORS policy, cross-site guard).
     from app.core.browser_security import add_browser_security
     add_browser_security(test_app)
+    from app.services.audit import AuditMiddleware
+    test_app.add_middleware(AuditMiddleware)
 
     test_app.include_router(health_api.router)
     test_app.include_router(web_ui.router)
@@ -401,6 +403,7 @@ _ALL_PATCHES = [
     lambda: patch("app.services.concurrency.engine", _test_engine),
     lambda: patch("app.services.usage_rollup.engine", _test_engine),
     lambda: patch("app.services.scheduler.engine", _test_engine),
+    lambda: patch("app.services.audit.engine", _test_engine),
     lambda: patch("app.services.vllm_proxy.is_alive", return_value=True),
     lambda: patch("app.services.azure_proxy.AZURE_MODELS", TEST_AZURE_MODELS),
     lambda: patch("app.services.azure_proxy.AZURE_FALLBACK_MAP", TEST_AZURE_FALLBACK_MAP),
