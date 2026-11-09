@@ -16,3 +16,9 @@ paths = [
     '''\.example$''',
     '''-example\.[A-Za-z0-9]+$''',
 ]
+# Placeholders the docs use where a key goes (e.g. the curl examples in
+# docs/client-guide*.md): a match whose secret contains one is not a leak.
+# Keep this to literal placeholder spellings; never a real key's prefix.
+stopwords = [
+    "your-api-key",
+]
