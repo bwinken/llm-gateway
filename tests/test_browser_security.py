@@ -140,26 +140,40 @@ def _depends_on(dependant, target) -> bool:
     return any(d.call is target or _depends_on(d, target) for d in dependant.dependencies)
 
 
+def _api_routes(app):
+    """(path, methods, dependant) of every API route, through included routers.
+
+    FastAPI >= 0.16x no longer flattens ``include_router`` into ``app.routes``
+    (it keeps nested ``_IncludedRouter`` entries); ``iter_route_contexts`` walks
+    them and gives each route its full path and its dependant, router-level
+    dependencies included."""
+    from fastapi.routing import iter_route_contexts
+
+    for rc in iter_route_contexts(app.routes):
+        dependant = getattr(rc, "dependant", None)
+        if dependant is not None and rc.methods:
+            yield rc.path, set(rc.methods), dependant
+
+
 def test_every_cookie_authenticated_write_is_under_a_guarded_prefix():
     """A new SSO-authenticated POST/PUT/PATCH/DELETE outside /admin or /dashboard
     would skip the guard: add its prefix to COOKIE_AUTH_PREFIXES."""
-    from fastapi.routing import APIRoute
-
     from app.core.auth import get_web_user
     from app.core.browser_security import SAFE_METHODS, is_cookie_auth_path
 
-    app = _build_test_app()
+    routes = list(_api_routes(_build_test_app()))
     unguarded = [
-        (sorted(r.methods - SAFE_METHODS), r.path)
-        for r in app.routes
-        if isinstance(r, APIRoute)
-        and r.methods - SAFE_METHODS
-        and _depends_on(r.dependant, get_web_user)
-        and not is_cookie_auth_path(r.path)
+        (sorted(methods - SAFE_METHODS), path)
+        for path, methods, dependant in routes
+        if methods - SAFE_METHODS
+        and _depends_on(dependant, get_web_user)
+        and not is_cookie_auth_path(path)
     ]
     assert unguarded == []
-    # The walk must actually see the SSO routes, or the check above proves nothing.
-    assert any(
-        isinstance(r, APIRoute) and r.path == "/dashboard/refresh-key" and _depends_on(r.dependant, get_web_user)
-        for r in app.routes
-    )
+    # The walk must actually see the SSO routes, the router-level admin
+    # dependency included, or the check above proves nothing.
+    sso_writes = {
+        path for path, methods, dependant in routes
+        if methods - SAFE_METHODS and _depends_on(dependant, get_web_user)
+    }
+    assert {"/dashboard/refresh-key", "/admin/users/{user_id}/limit"} <= sso_writes

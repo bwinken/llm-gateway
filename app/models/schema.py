@@ -8,6 +8,13 @@ from decimal import Decimal
 import sqlalchemy as sa
 from sqlalchemy import Index, UniqueConstraint, func
 from sqlmodel import Field, SQLModel
+from pydantic import NaiveDatetime
+
+# Every timestamp column is `timestamp without time zone` holding UTC, and the
+# code reads and compares them as naive values. sqlmodel >= 0.0.48 maps a plain
+# `datetime` field to a timezone-aware UTCDateTime (TIMESTAMPTZ DDL, rejects
+# naive values on write, returns aware values on read); `NaiveDatetime` keeps
+# the plain DateTime(timezone=False) mapping. Use it for every new timestamp.
 
 
 API_KEY_PREFIX = "sk-internal-"
@@ -104,14 +111,14 @@ class User(SQLModel, table=True):
     owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     display_name: str = Field(default="")
     org_code: str = Field(default="")
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: NaiveDatetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     # When the current API key was issued (NULL: before this was tracked and
     # not recoverable from the key) and when it last authenticated, at most
     # one write per KEY_USE_RESOLUTION_S (deps._record_key_use). Both reset
     # when the key is reissued (issue_api_key). Access reviews read them.
     # Naive UTC, like concurrency_leases (compared in SQL against naive values).
-    api_key_created_at: datetime | None = Field(default_factory=lambda: _naive_utcnow())
-    api_key_last_used_at: datetime | None = Field(default=None)
+    api_key_created_at: NaiveDatetime | None = Field(default_factory=lambda: _naive_utcnow())
+    api_key_last_used_at: NaiveDatetime | None = Field(default=None)
 
 
 def issue_api_key(user: User) -> str:
@@ -155,8 +162,8 @@ class ConcurrencyLease(SQLModel, table=True):
     user_id: int = Field()
     worker_id: str = Field(index=True)      # "<hostname>:<pid>:<boot token>"
     endpoint: str = Field(default="")
-    created_at: datetime = Field()
-    expires_at: datetime = Field()
+    created_at: NaiveDatetime = Field()
+    expires_at: NaiveDatetime = Field()
 
 
 class UsageLog(SQLModel, table=True):
@@ -178,7 +185,7 @@ class UsageLog(SQLModel, table=True):
     # "bedrock". Lets billing/limits/reports split cloud spend from on-prem
     # spend without parsing the endpoint label.
     backend: str = Field(default="vllm", sa_column=sa.Column(sa.String, nullable=False, server_default="vllm"))
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: NaiveDatetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class UsageDaily(SQLModel, table=True):
@@ -223,7 +230,7 @@ class UsageRollupState(SQLModel, table=True):
 
     name: str = Field(primary_key=True)
     rolled_through: date = Field()
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: NaiveDatetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ScheduledJob(SQLModel, table=True):
@@ -237,8 +244,8 @@ class ScheduledJob(SQLModel, table=True):
     __tablename__ = "scheduled_jobs"
 
     name: str = Field(primary_key=True)
-    last_started_at: datetime | None = Field(default=None)
-    last_finished_at: datetime | None = Field(default=None)
+    last_started_at: NaiveDatetime | None = Field(default=None)
+    last_finished_at: NaiveDatetime | None = Field(default=None)
     last_status: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     last_detail: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
 
@@ -267,15 +274,15 @@ class AnomalyEvent(SQLModel, table=True):
     severity: str = Field(default="warning")  # info | warning | critical
     user_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     model: str | None = Field(default=None)
-    window_start: datetime = Field()
-    window_end: datetime = Field()
+    window_start: NaiveDatetime = Field()
+    window_end: NaiveDatetime = Field()
     observed: float = Field(default=0.0)
     baseline: float = Field(default=0.0)
     ratio: float = Field(default=0.0)
     detail: str = Field(default="{}")       # JSON: summary + structured context
     status: str = Field(default="new")      # new | acknowledged | resolved
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: NaiveDatetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: NaiveDatetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class IpAllowRule(SQLModel, table=True):
@@ -308,9 +315,9 @@ class IpAllowRule(SQLModel, table=True):
         default_factory=list, sa_column=sa.Column(sa.JSON, nullable=False, server_default=sa.text("'[]'")),
     )
     created_by: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
-    starts_at: datetime | None = Field(default=None)
-    expires_at: datetime | None = Field(default=None)
-    created_at: datetime = Field()
+    starts_at: NaiveDatetime | None = Field(default=None)
+    expires_at: NaiveDatetime | None = Field(default=None)
+    created_at: NaiveDatetime = Field()
 
 
 class AuditLog(SQLModel, table=True):
@@ -329,7 +336,7 @@ class AuditLog(SQLModel, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    created_at: datetime = Field(default_factory=_naive_utcnow)
+    created_at: NaiveDatetime = Field(default_factory=_naive_utcnow)
     actor: str = Field(default="")       # username from the JWT; "" if unauthenticated
     method: str = Field(default="")
     route: str = Field(default="")       # path template, e.g. /admin/users/{user_id}/limit
