@@ -441,6 +441,8 @@ def _patch_all():
     import app.services.auth_throttle as auth_throttle
     ip_allowlist.reset()  # the per-worker snapshot is module state
     auth_throttle.reset()  # so are failed-auth counts and locks
+    from app.core.deps import reset_key_use_cache
+    reset_key_use_cache()  # and which users' key use was stamped recently
     with ExitStack() as stack:
         for make_patch in _ALL_PATCHES:
             stack.enter_context(make_patch())

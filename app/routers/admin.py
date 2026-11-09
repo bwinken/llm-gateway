@@ -65,6 +65,7 @@ from app.models.schema import (
     UsageLog,
     app_account_clause,
     is_app_account,
+    is_legacy_api_key,
     legacy_api_key_clause,
     mask_api_key,
 )
@@ -165,13 +166,43 @@ USER_TABLE_STATUSES: dict[str, str] = {
     # Not a permission: tracks how many keys still predate the current format
     # (schema.is_legacy_api_key). Deliberately not in SPECIAL_ACCESS_KEYS.
     "legacy_key": "Older-format API key",
+    # Access review: keys that have not authenticated in STALE_KEY_DAYS.
+    "stale_key": "Key unused 90+ days",
 }
+STALE_KEY_DAYS = 90
 # The "Special access" overview above the tables: one count per permission,
 # each linking to its filter. The waiver counts only what differs from an
 # account kind's default (users are created limited, app accounts waived).
 SPECIAL_ACCESS_KEYS: tuple[str, ...] = (
     "admin", "azure", "bedrock", "cloud_cap", "waiver_changed", "disabled",
 )
+
+
+def _stale_key_clause():
+    """Keys unused for STALE_KEY_DAYS: last use before the cutoff, or never
+    used and issued before it (a key issued yesterday is not stale)."""
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=STALE_KEY_DAYS)
+    used = User.api_key_last_used_at
+    issued = User.api_key_created_at
+    return (used < cutoff) | (  # type: ignore[operator]
+        used.is_(None) & (issued.is_(None) | (issued < cutoff))  # type: ignore[union-attr,operator]
+    )
+
+
+def _is_stale(u: User, now: datetime) -> bool:
+    cutoff = now - timedelta(days=STALE_KEY_DAYS)
+    if u.api_key_last_used_at is not None:
+        return u.api_key_last_used_at < cutoff
+    return u.api_key_created_at is None or u.api_key_created_at < cutoff
+
+
+def _key_use_label(last_used: datetime | None, now: datetime) -> str:
+    if last_used is None:
+        return "never used"
+    days = (now - last_used).days
+    if days <= 0:
+        return "used today"
+    return "used yesterday" if days == 1 else f"used {days} d ago"
 
 
 def _status_clause(status: str, is_apps: bool):
@@ -190,6 +221,7 @@ def _status_clause(status: str, is_apps: bool):
         "waiver_changed": waived_differs,
         "disabled": User.is_disabled == True,  # noqa: E712
         "legacy_key": legacy_api_key_clause(),
+        "stale_key": _stale_key_clause(),
     }
     if status == "special":
         return (
@@ -315,6 +347,7 @@ def _user_table(
             owners.setdefault(int(app_id), []).append(str(owner_name))
 
     empty = {"cost": 0.0, "input_tokens": 0, "output_tokens": 0, "requests": 0}
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     rows = []
     for u in page:
         monthly = monthly_map.get(u.id, empty)
@@ -331,6 +364,13 @@ def _user_table(
             "can_use_azure": u.can_use_azure,
             "can_use_bedrock": u.can_use_bedrock,
             "concurrency_waived": u.concurrency_waived,
+            "key_legacy": is_legacy_api_key(u.api_key),
+            "key_use": _key_use_label(u.api_key_last_used_at, now_naive),
+            "key_stale": _is_stale(u, now_naive),
+            "key_detail": (
+                f"Key issued {_local_label(u.api_key_created_at) or 'before tracking began'}; "
+                f"last used {_local_label(u.api_key_last_used_at) or 'never'} (Asia/Taipei)."
+            ),
             "owners": owners.get(u.id, []),
             "monthly_cost": monthly["cost"],
             "monthly_tokens": monthly["input_tokens"] + monthly["output_tokens"],
@@ -1276,8 +1316,8 @@ def refresh_user_key(
     if not target:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    from app.models.schema import _generate_api_key
-    target.api_key = _generate_api_key()
+    from app.models.schema import issue_api_key
+    issue_api_key(target)
     session.add(target)
     session.commit()
     session.refresh(target)

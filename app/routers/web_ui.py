@@ -464,8 +464,8 @@ def refresh_own_key(
 
     # Re-fetch from DB for write operation (user was expunged in get_web_user)
     db_user = session.get(User, user.id)
-    from app.models.schema import _generate_api_key
-    db_user.api_key = _generate_api_key()
+    from app.models.schema import issue_api_key
+    issue_api_key(db_user)
     session.add(db_user)
     session.commit()
     session.refresh(db_user)
@@ -491,8 +491,8 @@ def refresh_owned_app_key(
     if not ownership:
         raise HTTPException(status_code=403, detail="You do not own this app account.")
 
-    from app.models.schema import _generate_api_key
-    target.api_key = _generate_api_key()
+    from app.models.schema import issue_api_key
+    issue_api_key(target)
     session.add(target)
     session.commit()
     session.refresh(target)

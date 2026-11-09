@@ -166,6 +166,8 @@ classDiagram
 | `display_name` | `VARCHAR` | — | `""` | 使用者顯示名稱，來自 IdP JWT 的 `display_name` 欄位。每次 Web 登入時自動同步更新 |
 | `org_code` | `VARCHAR` | — | `""` | 組織代碼，來自 IdP JWT 的 `org_code` 欄位。每次 Web 登入時自動同步更新。顯示於 Admin 使用者表格 |
 | `created_at` | `DATETIME` | — | `datetime.now(UTC)` | 帳號建立時間 |
+| `api_key_created_at` | `DATETIME` | 可為 NULL | `datetime.now(UTC)`（naive） | 目前這把 key 的發放時間；`issue_api_key` 重設。NULL = 不明（只有舊格式 key 能回填） |
+| `api_key_last_used_at` | `DATETIME` | 可為 NULL | — | 這把 key 最後一次驗證成功的時間，**naive UTC**，最多每小時寫一次（`deps._record_key_use`）；NULL = 從未使用。由 `usage_logs` 回填 |
 
 ### API Key 產生邏輯
 

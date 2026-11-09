@@ -20,6 +20,10 @@ API_KEY_LENGTH = len(API_KEY_PREFIX) + 2 * _API_KEY_RANDOM_BYTES
 _CURRENT_KEY_RE = re.compile(rf"{re.escape(API_KEY_PREFIX)}[0-9a-f]{{{2 * _API_KEY_RANDOM_BYTES}}}")
 
 
+def _naive_utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _generate_api_key() -> str:
     return API_KEY_PREFIX + secrets.token_hex(_API_KEY_RANDOM_BYTES)
 
@@ -101,6 +105,21 @@ class User(SQLModel, table=True):
     display_name: str = Field(default="")
     org_code: str = Field(default="")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # When the current API key was issued (NULL: before this was tracked and
+    # not recoverable from the key) and when it last authenticated, at most
+    # one write per KEY_USE_RESOLUTION_S (deps._record_key_use). Both reset
+    # when the key is reissued (issue_api_key). Access reviews read them.
+    # Naive UTC, like concurrency_leases (compared in SQL against naive values).
+    api_key_created_at: datetime | None = Field(default_factory=lambda: _naive_utcnow())
+    api_key_last_used_at: datetime | None = Field(default=None)
+
+
+def issue_api_key(user: User) -> str:
+    """Give ``user`` a new key: the old one stops working at once."""
+    user.api_key = _generate_api_key()
+    user.api_key_created_at = _naive_utcnow()
+    user.api_key_last_used_at = None
+    return user.api_key
 
 
 class AppOwner(SQLModel, table=True):

@@ -166,6 +166,8 @@ classDiagram
 | `display_name` | `VARCHAR` | — | `""` | Display name from IdP JWT `display_name` field. Auto-synced on each web login |
 | `org_code` | `VARCHAR` | — | `""` | Org code from IdP JWT `org_code` field. Auto-synced on each web login. Shown in Admin user table |
 | `created_at` | `DATETIME` | — | `datetime.now(UTC)` | Account creation time |
+| `api_key_created_at` | `DATETIME` | nullable | `datetime.now(UTC)` (naive) | When the current key was issued; reset by `issue_api_key`. NULL = unknown (backfilled from old-format keys only) |
+| `api_key_last_used_at` | `DATETIME` | nullable | — | Last successful auth with the key, **naive UTC**, at most hourly (`deps._record_key_use`); NULL = never. Backfilled from `usage_logs` |
 
 ### API Key Generation
 
