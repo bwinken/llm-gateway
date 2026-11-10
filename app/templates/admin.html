@@ -42,7 +42,7 @@
 
 {# ── Needs attention: anomalies, servers, budgets — what to act on first ── #}
 {% set n_crit = anomalies|selectattr('severity', 'equalto', 'critical')|list|length + system_status.down|length + budget_pressure|selectattr('percent', 'ge', 100)|list|length %}
-{% set n_attention = anomalies|length + system_status.down|length + system_status.queueing|length + budget_pressure|length %}
+{% set n_attention = anomalies|length + system_status.down|length + system_status.queueing|length + budget_pressure|length + auto_mode_waiting|length %}
 <div class="gw-card mb-6 gw-anim gw-d1 overflow-hidden"
      style="border-color:{{ 'rgba(255,92,92,0.35)' if n_crit else 'rgba(245,166,35,0.3)' if n_attention else 'rgba(61,214,140,0.25)' }}">
     <div class="px-5 py-3 flex items-center gap-3" style="border-bottom:1px solid rgba(255,255,255,0.04);background:{{ 'rgba(255,92,92,0.06)' if n_crit else 'rgba(245,166,35,0.05)' if n_attention else 'rgba(61,214,140,0.05)' }}">
@@ -119,6 +119,23 @@
             {% endfor %}
         </div>
     </div>
+    {# Claude Code sessions whose auto mode waits for a review no backend gives #}
+    {% if auto_mode_waiting %}
+    <div id="autoModeWaiting" class="p-4" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <div class="text-[11px] font-bold uppercase tracking-wider text-t3 mb-1">Claude Code auto mode not working
+            <span class="ml-1 normal-case tracking-normal font-normal text-t4">{{ auto_mode_waiting|length }} account{{ '' if auto_mode_waiting|length == 1 else 's' }} in the last {{ auto_mode_window_days }} days</span></div>
+        <div class="text-xs text-t3 mb-2">
+            Their Claude Code waits for a server-side safety check that this gateway's backends do not provide, so auto mode refuses every action.
+            Each of them sees the fix on their dashboard: set <code class="font-mono">CLAUDE_CODE_AUTO_MODE_SERVER=0</code> and <code class="font-mono">CLAUDE_CODE_AUTO_MODE_MODEL</code>. An account leaves this list {{ auto_mode_window_days }} days after its last such request.
+        </div>
+        <div class="flex flex-wrap gap-1.5">
+            {% for w in auto_mode_waiting %}
+            <a href="?q={{ w.username | urlencode }}#users" class="text-xs px-2 py-1 rounded hover:bg-[rgba(255,255,255,0.06)]"
+               style="background:rgba(245,166,35,0.08);color:#f5a623" title="Last seen {{ w.seen_local }}">{{ w.display_name or w.username }}</a>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
     {% endif %}
 </div>
 <script>

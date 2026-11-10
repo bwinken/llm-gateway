@@ -60,6 +60,21 @@ REM  so background tasks silently fail. Set this to one of your gateway
 REM  aliases — a small/cheap LLM is ideal.
 set "SMALL_FAST_MODEL="
 
+REM  Auto mode. Behind a gateway, Claude Code asks the upstream to run
+REM  auto mode's safety check and waits for its verdict. This gateway's
+REM  backends do not give one, so auto mode refuses every action ("Auto
+REM  mode is unavailable: its safety check does not run for this session").
+REM  1 = write CLAUDE_CODE_AUTO_MODE_SERVER=0, so Claude Code runs the check
+REM  itself, as ordinary requests through the gateway (billed like any
+REM  other). 0 = leave the setting alone.
+set "AUTO_MODE_CLIENT_CHECK=1"
+
+REM  The model those checks run on (CLAUDE_CODE_AUTO_MODE_MODEL, Claude
+REM  Code 2.1.302+). Set it to a capable gateway alias: this model decides
+REM  which commands may run unattended. Empty = Claude Code asks for its
+REM  default Claude model, which the gateway answers with a fallback model.
+set "AUTO_MODE_MODEL="
+
 set "CUSTOM_MODEL_ALIAS="
 set "CUSTOM_MODEL_DESCRIPTION="
 set "CUSTOM_MODEL_CAPABILITIES=tools"
@@ -347,6 +362,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "if('%PROXY_URL%'){$e['HTTP_PROXY']='%PROXY_URL%';$e['HTTPS_PROXY']='%PROXY_URL%';$e['NO_PROXY']='%NO_PROXY%'};" ^
   "if('%DEFAULT_MODEL%'){$s['model']='%DEFAULT_MODEL%';$e['ANTHROPIC_MODEL']='%DEFAULT_MODEL%'};" ^
   "if('%SMALL_FAST_MODEL%'){$e['ANTHROPIC_SMALL_FAST_MODEL']='%SMALL_FAST_MODEL%'};" ^
+  "if('%AUTO_MODE_CLIENT_CHECK%' -eq '1'){$e['CLAUDE_CODE_AUTO_MODE_SERVER']='0'};" ^
+  "if('%AUTO_MODE_MODEL%'){$e['CLAUDE_CODE_AUTO_MODE_MODEL']='%AUTO_MODE_MODEL%'};" ^
   "$s|ConvertTo-Json -Depth 10|Set-Content -Path $f -Encoding UTF8;" ^
   "Write-Host '   [OK] Wrote' $f"
 
@@ -373,6 +390,8 @@ if "%ENABLE_MODEL_DISCOVERY%"=="1" (
 )
 if not "%DEFAULT_MODEL%"=="" echo      model                     = %DEFAULT_MODEL%
 if not "%SMALL_FAST_MODEL%"=="" echo      ANTHROPIC_SMALL_FAST_MODEL = %SMALL_FAST_MODEL%
+if "%AUTO_MODE_CLIENT_CHECK%"=="1" echo      CLAUDE_CODE_AUTO_MODE_SERVER = 0
+if not "%AUTO_MODE_MODEL%"=="" echo      CLAUDE_CODE_AUTO_MODE_MODEL = %AUTO_MODE_MODEL%
 if defined GIT_BASH_PATH (
     echo      CLAUDE_CODE_GIT_BASH_PATH = %GIT_BASH_PATH%
 ) else (

@@ -70,7 +70,7 @@ from app.models.schema import (
     legacy_api_key_clause,
     mask_api_key,
 )
-from app.services import audit, concurrency, guardrail, ip_allowlist
+from app.services import audit, auto_mode_notice, concurrency, guardrail, ip_allowlist
 from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
@@ -464,6 +464,10 @@ def admin_page(
     # the page can lead with it instead of burying it under the analytics.
     today_totals = get_today_totals(session)
     budget_pressure = get_budget_pressure(session)
+    auto_mode_waiting = [
+        {**row, "seen_local": row["seen_at"].replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime("%m-%d %H:%M")}
+        for row in auto_mode_notice.affected(session)
+    ]
     system_status = summarize_server_status([
         {"name": alias, "alive": is_alive(route["base_url"]),
          "waiting": (get_metrics(route["base_url"]) or {}).get("waiting")}
@@ -520,6 +524,8 @@ def admin_page(
             "cloud_budget_fallback": get_cloud_budget_fallback(),
             "today_totals": today_totals,
             "budget_pressure": budget_pressure,
+            "auto_mode_waiting": auto_mode_waiting,
+            "auto_mode_window_days": auto_mode_notice.WINDOW_DAYS,
             "system_status": system_status,
             "concurrency_mode": concurrency_mode,
             "concurrency_limit": concurrency_limit,

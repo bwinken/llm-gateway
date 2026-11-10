@@ -426,6 +426,7 @@ _ALL_PATCHES = [
     # patch in their own settings (tests/test_guardrail.py).
     lambda: patch("app.services.guardrail.get_guardrail_settings", return_value=dict(GUARDRAIL_OFF)),
     lambda: patch("app.services.ip_allowlist.engine", _test_engine),
+    lambda: patch("app.services.auto_mode_notice.engine", _test_engine),
     lambda: patch("app.services.ip_allowlist.get_ip_allowlist_settings", return_value=dict(IP_ALLOWLIST_OFF)),
 ]
 
@@ -438,11 +439,13 @@ def _patch_all():
     import app.services.usage_rollup  # noqa: F401 — same, for the rollup engine patch
     import app.services.scheduler  # noqa: F401 — same, for the job-claim engine patch
     import app.services.guardrail  # noqa: F401 — same, for the settings patch
+    import app.services.auto_mode_notice as auto_mode_notice  # same, for the engine patch
     import app.services.ip_allowlist as ip_allowlist  # same, for the engine / settings patches
     from contextlib import ExitStack
 
     import app.services.auth_throttle as auth_throttle
     ip_allowlist.reset()  # the per-worker snapshot is module state
+    auto_mode_notice.reset_cache()  # so is the hourly write throttle
     auth_throttle.reset()  # so are failed-auth counts and locks
     from app.core.deps import reset_key_use_cache
     reset_key_use_cache()  # and which users' key use was stamped recently

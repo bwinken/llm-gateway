@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Request
 from app.core.config import _MODEL_METADATA_KEYS, get_azure_models_snapshot
 from app.core.deps import limited_azure_access, require_azure_access
 from app.models.schema import User
+from app.services import auto_mode_notice
 from app.services.azure_proxy import (
     azure_forward_chat_completions,
     azure_forward_count_tokens,
@@ -112,6 +113,7 @@ async def azure_messages(
     Anthropic SDK / Claude Code clients work regardless of whether their
     ``ANTHROPIC_BASE_URL`` already includes the ``/v1`` prefix.
     """
+    await auto_mode_notice.observe_request(request, user)
     return await azure_forward_messages(request, user)
 
 

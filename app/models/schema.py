@@ -119,6 +119,10 @@ class User(SQLModel, table=True):
     # Naive UTC, like concurrency_leases (compared in SQL against naive values).
     api_key_created_at: NaiveDatetime | None = Field(default_factory=lambda: _naive_utcnow())
     api_key_last_used_at: NaiveDatetime | None = Field(default=None)
+    # Last time this account's Claude Code asked for a server-side auto mode
+    # review, which no backend here gives (app/services/auto_mode_notice.py).
+    # Drives the dashboard notice and the admin list; at most one write an hour.
+    auto_mode_server_seen_at: NaiveDatetime | None = Field(default=None)
 
 
 def issue_api_key(user: User) -> str:

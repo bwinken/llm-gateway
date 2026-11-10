@@ -147,6 +147,10 @@
                             ("CLAUDE_CODE_DISABLE_1M_CONTEXT", "Set to 1 to disable the 1M-context mode if your downstream model doesn't support it."),
                             ("DISABLE_INTERLEAVED_THINKING", "Set to 1 to suppress interleaved thinking blocks."),
                         ]),
+                        ("Auto mode", [
+                            ("CLAUDE_CODE_AUTO_MODE_SERVER", "Set to 0 on this gateway. Otherwise Claude Code waits for a server-side safety check that the gateway's models do not provide, and auto mode refuses every action. With 0, Claude Code runs the check itself as ordinary requests, which count toward your usage."),
+                            ("CLAUDE_CODE_AUTO_MODE_MODEL", "The gateway model those checks run on (Claude Code 2.1.302+). Pick a capable one: it decides which commands may run unattended."),
+                        ]),
                         ("Telemetry & updates", [
                             ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "Master switch bundling DISABLE_TELEMETRY, DISABLE_ERROR_REPORTING, feedback/surveys and the auto-updater. Presence counts — even \"0\" enables it; remove the key to turn it off. Also disables gateway model discovery: use the granular flags instead if you want CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY."),
                             ("DISABLE_ERROR_REPORTING", "Set to 1 to disable Sentry crash reporting (granular alternative to the master switch)."),

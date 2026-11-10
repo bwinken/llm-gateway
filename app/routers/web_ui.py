@@ -28,6 +28,7 @@ from app.core.config import (
 from app.core.database import get_session
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ, seconds_until_local_midnight
+from app.services import auto_mode_notice
 from app.services.model_order import (
     catalog_key,
     positions,
@@ -428,6 +429,13 @@ def dashboard(
             owned_apps=owned_apps,
             legacy_key=is_legacy_api_key(user.api_key),
             legacy_app_keys=sum(1 for a in owned_apps if a.get("legacy_key")),
+            auto_mode_notice=auto_mode_notice.is_active(user.auto_mode_server_seen_at),
+            auto_mode_seen=(
+                user.auto_mode_server_seen_at.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+                if user.auto_mode_server_seen_at else ""
+            ),
+            auto_mode_window_days=auto_mode_notice.WINDOW_DAYS,
+            installer_fixes_auto_mode=claude_code_available and _installer_sets_auto_mode(),
             server_groups=server_groups,
             claude_code_available=claude_code_available,
             azure_access=user.can_use_azure or user.is_admin,
@@ -499,6 +507,17 @@ def refresh_owned_app_key(
     session.commit()
     session.refresh(target)
     return JSONResponse({"ok": True, "api_key": target.api_key})
+
+
+def _installer_sets_auto_mode() -> bool:
+    """Whether the deployed installer (the operator's copy of the example,
+    possibly older) writes the auto mode setting, so the dashboard notice
+    only recommends re-running it when that helps."""
+    try:
+        text = (_SETUP_DIR / "install-claude-code.bat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return auto_mode_notice.SERVER_ENV in text
 
 
 @router.get("/dashboard/install-claude-code.bat")
