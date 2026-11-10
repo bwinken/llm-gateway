@@ -520,20 +520,20 @@ def _client_notices(session: Session, user: User) -> list[dict]:
 
 @router.get("/dashboard/client-rules/{rule_id}/patch.bat")
 def client_rule_patch(
-    rule_id: int,
+    rule_id: str,
     user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
 ):
     """The Windows script that sets a rule's environment variables in the
     ``env`` block of the user's ``~/.claude/settings.json`` (the variant for
-    this account: local-only, Azure or AWS). Only for an account that
-    matched the rule."""
+    this account: local-only, Azure or AWS). Only for an account with a
+    recorded violation of that check."""
     found = client_rules.patch_for(session, rule_id, user)
     if found is None:
         raise HTTPException(status_code=404, detail="No settings patch for this account.")
     rule, env = found
     return Response(
-        content=client_rules.render_patch_bat(rule.name, env).encode("utf-8"),
+        content=client_rules.render_patch_bat(f"{rule.id} {rule.name}", env).encode("utf-8"),
         media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="claude-code-patch-{rule.id}.bat"'},
     )

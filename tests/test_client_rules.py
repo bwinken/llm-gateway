@@ -1,12 +1,13 @@
-"""Client rules (app/services/client_rules.py) and mail (app/services/mailer.py).
+"""Client rules (app/services/client_checks.py, client_rules.py) and mail (mailer.py).
 
-An admin-written rule picks Messages requests (a body field, a Claude Code
-version, a model). A matching account is recorded; it then sees the rule's
-notice on its dashboard, can download a script that merges the rule's patch
-into its settings.json, can be reminded once a day in the terminal, and can
-be mailed (by hand or automatically). The Claude Code version of every
-Messages request is recorded per account. None of it may fail a request,
-except the reminder an admin chose.
+The checks are code, each with a violation id (CC001, ...). A Messages
+request that trips an enabled check records a violation for the account;
+the account then sees the check's notice on its dashboard, can download a
+script that sets the check's environment variables in its settings.json,
+can be reminded once a day in the terminal, and can be mailed (by hand or
+automatically). An admin sets how each check is used, never what it
+detects. The Claude Code version of every Messages request is recorded per
+account. None of it may fail a request, except the reminder an admin chose.
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ from unittest.mock import patch
 import pytest
 from sqlmodel import select
 
-from app.models.schema import ClientRule, ClientRuleHit, ClientVersion, User
-from app.services import client_rules, mailer
+from app.models.schema import ClientRuleSetting, ClientVersion, ClientViolation, User
+from app.services import client_checks, client_rules, mailer
 from tests.conftest import auth_header, make_httpx_response, web_auth_header
 
 _DOWNSTREAM = {
@@ -34,27 +35,34 @@ _DOWNSTREAM = {
 }
 _UA = "claude-cli/2.1.280 (external, cli)"
 _ENV = {"CLAUDE_CODE_AUTO_MODE_SERVER": "0"}
+AUTO = "CC001"      # auto mode waits for a server-side check (request has `safeguards`); on by default
+HTTP = "CC002"
+OUTDATED = "CC003"
+UNKNOWN_MODEL = "CC004"
+NO_CLOUD_ACCESS = "CC005"
+RETIRING = "CC006"
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _rule(db_session, **kw) -> ClientRule:
+def _configure(db_session, rule_id: str, **kw) -> client_rules.Rule:
+    """Save settings for a check the way the admin form does (starting from
+    its current ones), and load them into this worker."""
+    rule = client_rules.get_rule(db_session, rule_id)
     values = dict(
-        name="Auto mode", body_field="safeguards", title="Auto mode needs a setting", message="Apply the patch.",
-        patch=json.dumps(_ENV), created_at=_now(), updated_at=_now(),
+        enabled=True, action=rule.action, param=rule.param, title=rule.title, message=rule.message,
+        patch=rule.patch, patch_azure=rule.patch_azure, patch_aws=rule.patch_aws,
+        email_subject=rule.email_subject, auto_email=rule.auto_email, email_repeat_days=rule.email_repeat_days,
     )
     values.update(kw)
-    rule = ClientRule(**values)
-    db_session.add(rule)
-    db_session.commit()
-    db_session.refresh(rule)
+    rule = client_rules.save_settings(db_session, rule.check, values, updated_by="test")
     client_rules.refresh()
     return rule
 
 
-def _messages(client, key: str = "sk-testkey123", ua: str | None = _UA, **extra):
+def _messages(client, key: str = "sk-testkey123", ua: str | None = _UA, url: str = "https://testserver/v1/messages", **extra):
     async def _post(*args, **kwargs):
         return make_httpx_response(200, _DOWNSTREAM)
 
@@ -63,21 +71,26 @@ def _messages(client, key: str = "sk-testkey123", ua: str | None = _UA, **extra)
     if ua:
         headers["User-Agent"] = ua
     with patch.object(client.__httpx_mock__, "post", side_effect=_post) as post:
-        resp = client.post("/v1/messages", json=body, headers=headers)
+        resp = client.post(url, json=body, headers=headers)
     return resp, post
 
 
-def _hits(db_session, rule: ClientRule) -> list[ClientRuleHit]:
+def _violators(db_session, rule_id: str) -> list[str]:
     db_session.expire_all()
-    return list(db_session.exec(select(ClientRuleHit).where(ClientRuleHit.rule_id == rule.id)).all())
+    return sorted(v.username for v in db_session.exec(select(ClientViolation).where(ClientViolation.rule_id == rule_id)).all())
 
 
-def _hit(db_session, rule: ClientRule, username: str, **kw) -> ClientRuleHit:
-    hit = ClientRuleHit(rule_id=rule.id, username=username, first_seen_at=_now(), last_seen_at=_now(), **kw)
-    db_session.add(hit)
+def _violations(db_session, rule_id: str) -> list[ClientViolation]:
+    db_session.expire_all()
+    return list(db_session.exec(select(ClientViolation).where(ClientViolation.rule_id == rule_id)).all())
+
+
+def _violation(db_session, rule_id: str, username: str, **kw) -> ClientViolation:
+    row = ClientViolation(rule_id=rule_id, username=username, first_seen_at=_now(), last_seen_at=_now(), **kw)
+    db_session.add(row)
     db_session.commit()
-    db_session.refresh(hit)
-    return hit
+    db_session.refresh(row)
+    return row
 
 
 def _admin(admin: User) -> dict:
@@ -85,8 +98,8 @@ def _admin(admin: User) -> dict:
 
 
 _FORM = {
-    "name": "Auto mode", "enabled": "on", "body_field": "safeguards", "title": "Fix auto mode",
-    "message": "Apply the patch.", "patch": "CLAUDE_CODE_AUTO_MODE_SERVER=0", "action": "notice",
+    "enabled": "on", "action": "notice", "title": "Fix auto mode", "message": "Apply the patch.",
+    "patch": "CLAUDE_CODE_AUTO_MODE_SERVER=0",
 }
 
 
@@ -107,6 +120,80 @@ def mail_on(monkeypatch):
         yield sent
 
 
+def _facts(**kw) -> client_checks.Facts:
+    values = dict(body={}, model="", version="", scheme="https", azure_access=False, aws_access=False, param="")
+    values.update(kw)
+    return client_checks.Facts(**values)
+
+
+class TestRegistry:
+    def test_ids_are_unique_and_stable(self):
+        ids = [c.id for c in client_checks.CHECKS]
+        assert len(ids) == len(set(ids)) and all(i.startswith("CC") and len(i) == 5 for i in ids)
+        # Never renumber: these ids are in the database and in mail people received.
+        assert ids[:6] == ["CC001", "CC002", "CC003", "CC004", "CC005", "CC006"]
+
+    def test_every_check_can_tell_its_user_something(self):
+        for check in client_checks.CHECKS:
+            assert check.name and check.description and check.title and check.message, check.id
+            client_rules.parse_env(check.env), client_rules.parse_env(check.env_azure), client_rules.parse_env(check.env_aws)
+
+    def test_only_auto_mode_is_on_before_an_admin_decides(self):
+        assert [c.id for c in client_checks.CHECKS if c.enabled] == [AUTO]
+
+    def test_a_retired_check_is_no_longer_evaluated_or_shown(self, client, db_session, test_user, admin_user):
+        from dataclasses import replace
+
+        retired = tuple(replace(c, retired="superseded") if c.id == AUTO else c for c in client_checks.CHECKS)
+        with patch.object(client_checks, "ACTIVE", tuple(c for c in retired if not c.retired)), \
+             patch.object(client_checks, "BY_ID", {c.id: c for c in retired}):
+            client_rules.refresh()
+            assert _messages(client, safeguards={})[0].status_code == 200
+            assert _violators(db_session, AUTO) == []
+            assert client_rules.get_rule(db_session, AUTO) is None
+            assert AUTO not in [r.id for r in client_rules.rules(db_session)]
+            resp = client.post(f"/admin/client-rules/{AUTO}", data=_FORM, headers=_admin(admin_user))
+            assert resp.status_code == 404
+
+
+class TestChecks:
+    """One test per check: what trips it and what does not."""
+
+    def test_cc001_auto_mode_server_review(self):
+        detect = client_checks.BY_ID[AUTO].detect
+        assert detect(_facts(body={"safeguards": {}})) and not detect(_facts(body={"model": "x"}))
+
+    def test_cc002_plain_http(self):
+        detect = client_checks.BY_ID[HTTP].detect
+        assert detect(_facts(scheme="http")) and not detect(_facts(scheme="https"))
+
+    def test_cc003_outdated_claude_code(self):
+        detect = client_checks.BY_ID[OUTDATED].detect
+        assert detect(_facts(version="2.1.99", param="2.1.302"))
+        assert not detect(_facts(version="2.1.302", param="2.1.302"))
+        assert not detect(_facts(version="", param="2.1.302"))          # other clients are never listed
+        assert not detect(_facts(version="2.1.99", param=""))
+
+    def test_cc004_unknown_model(self):
+        detect = client_checks.BY_ID[UNKNOWN_MODEL].detect
+        assert detect(_facts(model="claude-haiku-9"))
+        for known in ("test-llm", "azure-gpt-4", "bedrock-claude", ""):
+            assert not detect(_facts(model=known)), known
+
+    def test_cc005_cloud_model_without_access(self):
+        detect = client_checks.BY_ID[NO_CLOUD_ACCESS].detect
+        assert detect(_facts(model="azure-gpt-4")) and detect(_facts(model="bedrock-claude"))
+        assert not detect(_facts(model="azure-gpt-4", azure_access=True))
+        assert not detect(_facts(model="bedrock-claude", aws_access=True))
+        assert detect(_facts(model="bedrock-claude", azure_access=True))      # the wrong cloud does not help
+        assert not detect(_facts(model="test-llm")) and not detect(_facts(model="nope"))
+
+    def test_cc006_retiring_model(self):
+        detect = client_checks.BY_ID[RETIRING].detect
+        assert detect(_facts(model="old-a", param="old-a, old-b")) and detect(_facts(model="old-b", param="old-a old-b"))
+        assert not detect(_facts(model="test-llm", param="old-a")) and not detect(_facts(model="old-a", param=""))
+
+
 class TestVersionParsing:
     def test_claude_code_user_agent(self):
         assert client_rules.parse_version("claude-cli/2.1.302 (external, cli)") == "2.1.302"
@@ -114,87 +201,90 @@ class TestVersionParsing:
         assert client_rules.parse_version(None) == ""
 
     def test_versions_order_numerically(self):
-        assert client_rules.version_key("2.1.99") < client_rules.version_key("2.1.302")
+        assert client_checks.version_key("2.1.99") < client_checks.version_key("2.1.302")
+        assert client_checks.version_key("latest") == ()
 
 
-class TestMatching:
-    def test_a_matching_request_is_recorded_and_still_served(self, client, db_session, test_user):
-        rule = _rule(db_session)
+class TestRequestPath:
+    def test_a_violation_is_recorded_under_its_id_and_the_request_is_still_served(self, client, db_session, test_user):
+        client_rules.refresh()                       # CC001 is on by default: no settings row needed
         resp, post = _messages(client, safeguards={"x": 1})
         assert resp.status_code == 200 and resp.json()["content"][0]["text"] == "ok"
-        [hit] = _hits(db_session, rule)
-        assert hit.username == "testuser" and hit.client_version == "2.1.280"
+        [row] = _violations(db_session, AUTO)
+        assert (row.rule_id, row.username, row.client_version) == ("CC001", "testuser", "2.1.280")
         assert "safeguards" not in post.call_args.kwargs["json"]   # still not forwarded
 
-    def test_an_ordinary_request_matches_nothing(self, client, db_session, test_user):
-        rule = _rule(db_session)
+    def test_an_ordinary_request_violates_nothing(self, client, db_session, test_user):
+        client_rules.refresh()
         assert _messages(client)[0].status_code == 200
-        assert _hits(db_session, rule) == []
+        assert db_session.exec(select(ClientViolation)).all() == []
 
-    def test_version_condition(self, client, db_session, test_user):
-        rule = _rule(db_session, body_field="", version_below="2.1.302")
-        _messages(client, ua="claude-cli/2.1.302 (external, cli)")
-        _messages(client, ua="curl/8")                       # other clients never match a version rule
-        assert _hits(db_session, rule) == []
-        _messages(client, ua="claude-cli/2.1.99 (external, cli)")
-        assert len(_hits(db_session, rule)) == 1
+    def test_a_check_that_is_off_records_nothing(self, client, db_session, test_user):
+        client_rules.refresh()
+        _messages(client, url="http://testserver/v1/messages")     # CC002 is off by default
+        assert _violators(db_session, HTTP) == []
+        _configure(db_session, AUTO, enabled=False)
+        _messages(client, safeguards={})
+        assert _violators(db_session, AUTO) == []
 
-    def test_model_condition(self, client, db_session, test_user):
-        rule = _rule(db_session, body_field="", models=["retired-model"])
-        _messages(client)
-        assert _hits(db_session, rule) == []
-        _messages(client, model="retired-model")
-        assert len(_hits(db_session, rule)) == 1
-
-    def test_plain_http_condition(self, client, db_session, test_user):
-        rule = _rule(db_session, body_field="", plain_http=True)
-
+    def test_plain_http_is_the_connections_scheme_not_a_header(self, client, db_session, test_user):
+        _configure(db_session, HTTP)
+        _messages(client)                                           # https
+        assert _violators(db_session, HTTP) == []
         async def _post(*args, **kwargs):
             return make_httpx_response(200, _DOWNSTREAM)
-
         body = {"model": "test-llm", "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]}
+        sneaky = {**auth_header(), "X-Forwarded-Proto": "https"}    # a client cannot hide behind its own header
         with patch.object(client.__httpx_mock__, "post", side_effect=_post):
-            assert client.post("https://testserver/v1/messages", json=body, headers=auth_header()).status_code == 200
-            assert _hits(db_session, rule) == []
-            # A client cannot hide behind its own header: the scheme is the connection's.
-            sneaky = {**auth_header(), "X-Forwarded-Proto": "https"}
             assert client.post("http://testserver/v1/messages", json=body, headers=sneaky).status_code == 200
-        assert [h.username for h in _hits(db_session, rule)] == ["testuser"]
+        assert _violators(db_session, HTTP) == ["testuser"]
 
-    def test_plain_http_alone_is_a_condition(self, client, db_session, admin_user):
-        form = {**_FORM, "body_field": "", "plain_http": "on"}
-        resp = client.post("/admin/client-rules", data=form, headers=_admin(admin_user))
-        assert resp.status_code == 200, resp.text
-        rule = db_session.get(ClientRule, resp.json()["id"])
-        assert rule.plain_http and client_rules.condition_text(rule) == "sent over http://"
+    def test_the_admins_parameter_reaches_the_check(self, client, db_session, test_user):
+        _configure(db_session, OUTDATED, param="2.1.200")
+        _messages(client)                                           # 2.1.280 is new enough for 2.1.200
+        assert _violators(db_session, OUTDATED) == []
+        _configure(db_session, OUTDATED, param="2.1.302")
+        _messages(client)
+        assert _violators(db_session, OUTDATED) == ["testuser"]
 
-    def test_every_condition_must_hold(self, client, db_session, test_user):
-        rule = _rule(db_session, version_below="2.0.0")
-        _messages(client, safeguards={})                     # has the field, but 2.1.280 is not older
-        assert _hits(db_session, rule) == []
+    def test_access_flags_reach_the_check(self, client, db_session, test_user):
+        _configure(db_session, NO_CLOUD_ACCESS)
+        _messages(client, model="bedrock-claude")                   # the test user has cloud access
+        assert _violators(db_session, NO_CLOUD_ACCESS) == []
+        db_session.add(User(username="local.only", password_hash="x", api_key="sk-localonly", daily_limit_usd=10.0))
+        db_session.commit()
+        assert _messages(client, key="sk-localonly", model="bedrock-claude")[0].status_code == 200
+        assert _violators(db_session, NO_CLOUD_ACCESS) == ["local.only"]
 
-    def test_scope_limits_who_matches(self, client, db_session, test_user):
-        other = _rule(db_session, name="others", usernames=["somebody-else"])
-        mine = _rule(db_session, name="mine", usernames=["testuser"])
-        _messages(client, safeguards={})
-        assert _hits(db_session, other) == [] and len(_hits(db_session, mine)) == 1
-
-    def test_a_disabled_rule_matches_nothing(self, client, db_session, test_user):
-        rule = _rule(db_session, enabled=False)
-        _messages(client, safeguards={})
-        assert _hits(db_session, rule) == []
+    def test_one_request_can_trip_several_checks(self, client, db_session, test_user):
+        _configure(db_session, UNKNOWN_MODEL)
+        _configure(db_session, AUTO)
+        _messages(client, model="claude-haiku-9", safeguards={})
+        assert _violators(db_session, AUTO) == ["testuser"] and _violators(db_session, UNKNOWN_MODEL) == ["testuser"]
 
     def test_at_most_one_write_per_window(self, client, db_session, test_user):
-        _rule(db_session)
+        client_rules.refresh()
         with patch.object(client_rules, "_record", wraps=client_rules._record) as rec:
             for _ in range(4):
                 _messages(client, safeguards={})
         assert rec.call_count == 1
 
     def test_a_broken_store_never_fails_the_request(self, client, db_session, test_user):
-        _rule(db_session)
+        client_rules.refresh()
         with patch.object(client_rules, "_record", side_effect=RuntimeError("db down")):
             assert _messages(client, safeguards={})[0].status_code == 200
+
+    def test_a_check_that_raises_finds_nothing_and_spares_the_others(self, client, db_session, test_user):
+        from dataclasses import replace
+
+        def _boom(facts):
+            raise RuntimeError("bug in a check")
+
+        broken = tuple(replace(c, detect=_boom, enabled=True) if c.id == HTTP else c for c in client_checks.CHECKS)
+        with patch.object(client_checks, "ACTIVE", broken):
+            client_rules.refresh()
+            assert _messages(client, safeguards={})[0].status_code == 200
+        assert _violators(db_session, HTTP) == [] and _violators(db_session, AUTO) == ["testuser"]
 
     def test_cloud_messages_routes_are_watched_too(self):
         import inspect
@@ -230,33 +320,33 @@ class TestVersions:
 
 
 class TestReminder:
-    def test_first_matching_request_of_the_day_carries_the_message(self, client, db_session, test_user):
-        _rule(db_session, action="remind")
+    def test_first_violating_request_of_the_day_carries_the_message(self, client, db_session, test_user):
+        _configure(db_session, AUTO, action="remind", title="Auto mode needs a setting")
         first, post = _messages(client, safeguards={})
-        assert first.status_code == 400
+        assert first.status_code == 400 and first.headers["X-Gateway-Reminder"] == "CC001"
         error = first.json()
         assert error["type"] == "error" and "Auto mode needs a setting" in error["error"]["message"]
-        assert "send your message again" in error["error"]["message"]
+        assert "[CC001]" in error["error"]["message"] and "send your message again" in error["error"]["message"]
         post.assert_not_called()
         assert _messages(client, safeguards={})[0].status_code == 200   # the retry goes through
 
     def test_one_reminder_a_day_across_workers(self, client, db_session, test_user):
-        _rule(db_session, action="remind")
+        _configure(db_session, AUTO, action="remind")
         assert _messages(client, safeguards={})[0].status_code == 400
         client_rules.reset()            # another worker: no memory of the first reminder
         client_rules.refresh()
         assert _messages(client, safeguards={})[0].status_code == 200
 
-    def test_notice_rules_never_fail_a_request(self, client, db_session, test_user):
-        _rule(db_session, action="notice")
+    def test_notice_never_fails_a_request(self, client, db_session, test_user):
+        _configure(db_session, AUTO, action="notice")
         assert _messages(client, safeguards={})[0].status_code == 200
 
     def test_app_accounts_are_never_reminded(self, client, db_session):
         db_session.add(User(username="app_batch", password_hash="x", api_key="sk-appkey", daily_limit_usd=10.0))
         db_session.commit()
-        rule = _rule(db_session, action="remind")
+        _configure(db_session, AUTO, action="remind")
         assert _messages(client, key="sk-appkey", safeguards={})[0].status_code == 200
-        assert [h.username for h in _hits(db_session, rule)] == ["app_batch"]   # still recorded
+        assert _violators(db_session, AUTO) == ["app_batch"]   # still recorded
 
 
 class TestPatch:
@@ -346,19 +436,24 @@ class TestDashboard:
     def _page(self, client, user: User) -> str:
         return client.get("/dashboard", headers=web_auth_header(sub=user.username)).text
 
-    def test_matching_account_sees_notice_patch_and_download(self, client, db_session, test_user):
-        rule = _rule(db_session)
-        _hit(db_session, rule, "testuser", client_version="2.1.280")
+    def test_violating_account_sees_notice_patch_and_download(self, client, db_session, test_user):
+        _violation(db_session, AUTO, "testuser", client_version="2.1.280")
         body = self._page(client, test_user)
-        assert f'id="clientNotice-{rule.id}"' in body and "Auto mode needs a setting" in body
+        assert 'id="clientNotice-CC001"' in body and client_checks.BY_ID[AUTO].title in body
         assert "CLAUDE_CODE_AUTO_MODE_SERVER" in body
-        assert f"/dashboard/client-rules/{rule.id}/patch.bat" in body
+        assert "/dashboard/client-rules/CC001/patch.bat" in body
+
+    def test_the_admins_wording_replaces_the_default(self, client, db_session, test_user):
+        _configure(db_session, AUTO, title="Our own title", message="Our own words.")
+        _violation(db_session, AUTO, "testuser")
+        body = self._page(client, test_user)
+        assert "Our own title" in body and "Our own words." in body and client_checks.BY_ID[AUTO].title not in body
 
     def test_the_patch_follows_the_accounts_access(self, client, db_session, test_user):
-        rule = _rule(db_session, patch='{"MODEL": "local-m"}', patch_azure='{"MODEL": "azure-m"}', patch_aws='{"MODEL": "claude-m"}')
-        _hit(db_session, rule, "testuser")
+        _configure(db_session, AUTO, patch='{"MODEL": "local-m"}', patch_azure='{"MODEL": "azure-m"}', patch_aws='{"MODEL": "claude-m"}')
+        _violation(db_session, AUTO, "testuser")
         headers = web_auth_header(sub=test_user.username)
-        url = f"/dashboard/client-rules/{rule.id}/patch.bat"
+        url = "/dashboard/client-rules/CC001/patch.bat"
 
         def script_env() -> dict:
             import base64
@@ -375,113 +470,142 @@ class TestDashboard:
             assert script_env() == {"MODEL": model}
 
     def test_others_see_nothing(self, client, db_session, test_user):
-        rule = _rule(db_session)
-        _hit(db_session, rule, "somebody-else")
+        _violation(db_session, AUTO, "somebody-else")
         assert "data-client-notice" not in self._page(client, test_user)
 
-    def test_notice_clears_after_the_window_or_when_the_rule_is_off(self, client, db_session, test_user):
-        rule = _rule(db_session)
-        hit = _hit(db_session, rule, "testuser")
-        hit.last_seen_at = _now() - timedelta(days=client_rules.WINDOW_DAYS + 1)
-        db_session.add(hit)
+    def test_notice_clears_after_the_window_or_when_the_check_is_off(self, client, db_session, test_user):
+        row = _violation(db_session, AUTO, "testuser")
+        row.last_seen_at = _now() - timedelta(days=client_rules.WINDOW_DAYS + 1)
+        db_session.add(row)
         db_session.commit()
         assert "data-client-notice" not in self._page(client, test_user)
-        hit.last_seen_at = _now()
-        rule.enabled = False
-        db_session.add_all([hit, rule])
+        row.last_seen_at = _now()
+        db_session.add(row)
         db_session.commit()
+        assert "data-client-notice" in self._page(client, test_user)
+        _configure(db_session, AUTO, enabled=False)
         assert "data-client-notice" not in self._page(client, test_user)
 
     def test_message_is_escaped(self, client, db_session, test_user):
-        rule = _rule(db_session, title="<script>alert(1)</script>")
-        _hit(db_session, rule, "testuser")
+        _configure(db_session, AUTO, title="<script>alert(1)</script>")
+        _violation(db_session, AUTO, "testuser")
         assert "<script>alert(1)</script>" not in self._page(client, test_user)
 
-    def test_patch_download_only_for_an_account_that_matched(self, client, db_session, test_user):
-        rule = _rule(db_session)
-        url = f"/dashboard/client-rules/{rule.id}/patch.bat"
+    def test_patch_download_only_for_an_account_with_the_violation(self, client, db_session, test_user):
+        url = "/dashboard/client-rules/CC001/patch.bat"
         headers = web_auth_header(sub=test_user.username)
         assert client.get(url, headers=headers).status_code == 404
-        _hit(db_session, rule, "testuser")
+        _violation(db_session, AUTO, "testuser")
         resp = client.get(url, headers=headers)
         assert resp.status_code == 200 and "attachment" in resp.headers["content-disposition"]
         assert b"GW-PATCH-BEGIN" in resp.content and b"\r\n" in resp.content
+        assert client.get("/dashboard/client-rules/CC999/patch.bat", headers=headers).status_code == 404
 
     def test_no_download_without_a_patch(self, client, db_session, test_user):
-        rule = _rule(db_session, patch="")
-        _hit(db_session, rule, "testuser")
+        _violation(db_session, NO_CLOUD_ACCESS, "testuser")           # this check has no default patch
+        _configure(db_session, NO_CLOUD_ACCESS)
         headers = web_auth_header(sub=test_user.username)
-        assert client.get(f"/dashboard/client-rules/{rule.id}/patch.bat", headers=headers).status_code == 404
-        assert "patch.bat" not in self._page(client, test_user)
+        assert client.get(f"/dashboard/client-rules/{NO_CLOUD_ACCESS}/patch.bat", headers=headers).status_code == 404
+        body = self._page(client, test_user)
+        assert f'id="clientNotice-{NO_CLOUD_ACCESS}"' in body and "patch.bat" not in body
 
 
-class TestAdminRules:
-    def test_add_edit_delete(self, client, db_session, admin_user, test_user):
-        resp = client.post("/admin/client-rules", data=_FORM, headers=_admin(admin_user))
-        assert resp.status_code == 200, resp.text
-        rule_id = resp.json()["id"]
-        rule = db_session.get(ClientRule, rule_id)
-        assert rule.created_by == "admin" and json.loads(rule.patch) == _ENV and rule.enabled
+class TestAdminSettings:
+    def test_defaults_come_from_code_until_an_admin_saves(self, client, db_session, admin_user, test_user):
+        rule = client_rules.get_rule(db_session, AUTO)
+        assert not rule.customized and rule.enabled and rule.title == client_checks.BY_ID[AUTO].title
+        assert json.loads(rule.patch) == _ENV
+        assert db_session.exec(select(ClientRuleSetting)).all() == []
 
-        _messages(client, safeguards={})          # the new rule is live in this worker at once
-        assert len(_hits(db_session, rule)) == 1
-
-        edited = {**_FORM, "enabled": "off", "version_below": "v2.1.302", "auto_email": "on", "email_repeat_days": "7"}
-        assert client.post(f"/admin/client-rules/{rule_id}", data=edited, headers=_admin(admin_user)).status_code == 200
+        form = {**_FORM, "patch_aws": "CLAUDE_CODE_AUTO_MODE_MODEL=claude-m", "auto_email": "on", "email_repeat_days": "7"}
+        resp = client.post(f"/admin/client-rules/{AUTO}", data=form, headers=_admin(admin_user))
+        assert resp.status_code == 200 and resp.json() == {"ok": True, "id": "CC001"}
         db_session.expire_all()
-        rule = db_session.get(ClientRule, rule_id)
-        assert (rule.enabled, rule.version_below, rule.auto_email, rule.email_repeat_days) == (False, "2.1.302", True, 7)
+        rule = client_rules.get_rule(db_session, AUTO)
+        assert rule.customized and rule.updated_by == "admin" and rule.title == "Fix auto mode"
+        assert (rule.auto_email, rule.email_repeat_days) == (True, 7)
+        assert json.loads(rule.patch_aws) == {"CLAUDE_CODE_AUTO_MODE_MODEL": "claude-m"}
 
-        assert client.post(f"/admin/client-rules/{rule_id}/delete", headers=_admin(admin_user)).status_code == 200
+        _messages(client, safeguards={})          # still live in this worker
+        assert _violators(db_session, AUTO) == ["testuser"]
+
+    def test_turning_a_check_on_takes_effect_at_once(self, client, db_session, admin_user, test_user):
+        form = {"enabled": "on", "action": "notice", "title": "Use https", "patch": "ANTHROPIC_BASE_URL=https://gw.example.test"}
+        assert client.post(f"/admin/client-rules/{HTTP}", data=form, headers=_admin(admin_user)).status_code == 200
+        _messages(client, url="http://testserver/v1/messages")
+        assert _violators(db_session, HTTP) == ["testuser"]
+
+    def test_reset_goes_back_to_the_code_and_keeps_the_violations(self, client, db_session, admin_user):
+        _configure(db_session, AUTO, title="Changed")
+        _violation(db_session, AUTO, "testuser")
+        assert client.post(f"/admin/client-rules/{AUTO}/reset", headers=_admin(admin_user)).status_code == 200
         db_session.expire_all()
-        assert db_session.get(ClientRule, rule_id) is None
-        assert db_session.exec(select(ClientRuleHit)).all() == []
+        rule = client_rules.get_rule(db_session, AUTO)
+        assert not rule.customized and rule.title == client_checks.BY_ID[AUTO].title
+        assert _violators(db_session, AUTO) == ["testuser"]
 
-    @pytest.mark.parametrize("change, message", [
-        ({"body_field": ""}, "at least one condition"),
-        ({"patch": "{broken"}, "not valid JSON"),
-        ({"patch": "permissions.allow=x"}, "not an environment variable"),
-        ({"patch_aws": "just words"}, "NAME=value"),
-        ({"usernames": "nobody-here"}, "Unknown account"),
-        ({"version_below": "latest"}, "Version"),
-        ({"action": "block"}, "Action"),
-        ({"title": ""}, "title"),
-        ({"body_field": "a b"}, "field"),
+    def test_what_a_check_detects_is_not_in_the_form(self, client, db_session, admin_user, test_user):
+        """Posting condition-like fields changes nothing: detection is code."""
+        form = {**_FORM, "body_field": "anything", "plain_http": "on", "param": "ignored: CC001 takes no parameter"}
+        assert client.post(f"/admin/client-rules/{AUTO}", data=form, headers=_admin(admin_user)).status_code == 200
+        db_session.expire_all()
+        assert client_rules.get_rule(db_session, AUTO).param == ""
+        _messages(client, url="http://testserver/v1/messages")
+        assert _violators(db_session, AUTO) == []
+
+    @pytest.mark.parametrize("rule_id, change, message", [
+        (AUTO, {"patch": "{broken"}, "not valid JSON"),
+        (AUTO, {"patch": "permissions.allow=x"}, "not an environment variable"),
+        (AUTO, {"patch_aws": "just words"}, "NAME=value"),
+        (AUTO, {"action": "block"}, "Action"),
+        (AUTO, {"title": ""}, "title"),
+        (AUTO, {"email_repeat_days": "999"}, "between 0 and 365"),
+        (OUTDATED, {"param": "latest"}, "Minimum version"),
     ])
-    def test_bad_input_is_refused(self, client, db_session, admin_user, change, message):
-        resp = client.post("/admin/client-rules", data={**_FORM, **change}, headers=_admin(admin_user))
+    def test_bad_input_is_refused(self, client, db_session, admin_user, rule_id, change, message):
+        resp = client.post(f"/admin/client-rules/{rule_id}", data={**_FORM, **change}, headers=_admin(admin_user))
         assert resp.status_code == 400 and message in resp.json()["detail"]
-        assert db_session.exec(select(ClientRule)).all() == []
+        assert db_session.exec(select(ClientRuleSetting)).all() == []
+
+    def test_unknown_ids_are_404(self, client, admin_user):
+        for url in ("/admin/client-rules/CC999", "/admin/client-rules/CC999/mail", "/admin/client-rules/CC999/reset"):
+            assert client.post(url, data=_FORM, headers=_admin(admin_user)).status_code == 404
+
+    def test_there_is_no_way_to_add_or_delete_a_check(self, client, admin_user):
+        assert client.post("/admin/client-rules", data=_FORM, headers=_admin(admin_user)).status_code in (404, 405)
+        assert client.post(f"/admin/client-rules/{AUTO}/delete", headers=_admin(admin_user)).status_code in (404, 405)
 
     def test_only_admins(self, client, test_user):
         headers = {**web_auth_header(sub=test_user.username), "Accept": "application/json"}
-        assert client.post("/admin/client-rules", data=_FORM, headers=headers).status_code in (401, 403)
+        assert client.post(f"/admin/client-rules/{AUTO}", data=_FORM, headers=headers).status_code in (401, 403)
 
-    def test_admin_page_shows_rules_versions_and_attention(self, client, db_session, admin_user, test_user):
-        rule = _rule(db_session)
-        _hit(db_session, rule, "testuser", client_version="2.1.280")
+    def test_admin_page_lists_every_check_with_its_id(self, client, db_session, admin_user, test_user):
+        _violation(db_session, AUTO, "testuser", client_version="2.1.280")
         db_session.add(ClientVersion(username="testuser", client="claude-code", version="2.1.280", first_seen_at=_now(), last_seen_at=_now()))
         db_session.commit()
         body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
-        assert 'id="client-rules"' in body and f'id="client-rule-{rule.id}"' in body
+        assert 'id="client-rules"' in body
+        for check in client_checks.ACTIVE:
+            assert f'id="client-rule-{check.id}"' in body and check.name in body
         assert 'id="client-versions"' in body and "2.1.280" in body
-        assert 'id="clientRuleAttention"' in body and "Auto mode · 1 account" in body
+        assert 'id="clientRuleAttention"' in body and "1 account" in body
         assert "?q=testuser#users" in body
+        assert 'name="param"' in body and "Minimum version" in body       # CC003 declares a parameter
 
     def test_admin_can_preview_each_audiences_script(self, client, db_session, admin_user):
-        rule = _rule(db_session, patch="", patch_aws='{"MODEL": "claude-m"}')
+        _configure(db_session, AUTO, patch="", patch_aws='{"MODEL": "claude-m"}')
         headers = web_auth_header(sub=admin_user.username, scopes=["admin"])
-        url = f"/admin/client-rules/{rule.id}/patch.bat"
+        url = f"/admin/client-rules/{AUTO}/patch.bat"
         assert client.get(url, params={"audience": "aws"}, headers=headers).status_code == 200
         assert client.get(url, params={"audience": "local"}, headers=headers).status_code == 404   # nothing for them
         assert client.get(url, params={"audience": "everyone"}, headers=headers).status_code == 400
 
     def test_variants_are_saved_and_shown_back_as_lines(self, client, db_session, admin_user):
         form = {**_FORM, "patch": "SERVER=0\n-OLD", "patch_azure": '{"MODEL": "azure-m"}', "patch_aws": "MODEL=claude-m"}
-        rule_id = client.post("/admin/client-rules", data=form, headers=_admin(admin_user)).json()["id"]
-        rule = db_session.get(ClientRule, rule_id)
-        assert json.loads(rule.patch) == {"SERVER": "0", "OLD": None}
-        assert json.loads(rule.patch_azure) == {"MODEL": "azure-m"} and json.loads(rule.patch_aws) == {"MODEL": "claude-m"}
+        assert client.post(f"/admin/client-rules/{AUTO}", data=form, headers=_admin(admin_user)).status_code == 200
+        row = db_session.get(ClientRuleSetting, AUTO)
+        assert json.loads(row.patch) == {"SERVER": "0", "OLD": None}
+        assert json.loads(row.patch_azure) == {"MODEL": "azure-m"} and json.loads(row.patch_aws) == {"MODEL": "claude-m"}
         body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
         assert "SERVER=0\n-OLD</textarea>" in body and "MODEL=azure-m</textarea>" in body
 
@@ -509,119 +633,130 @@ class TestMailer:
 
 
 class TestMail:
+    _TEST = f"/admin/client-rules/{AUTO}/mail-test"
+    _SEND = f"/admin/client-rules/{AUTO}/mail"
+
     def test_test_mail_goes_to_the_admin_by_default(self, client, admin_user, mail_on):
-        resp = client.post("/admin/client-rules/mail-test", data={**_FORM, "body_field": ""}, headers=_admin(admin_user))
+        resp = client.post(self._TEST, data=_FORM, headers=_admin(admin_user))
         assert resp.status_code == 200 and resp.json() == {"ok": True, "to": "admin@example.test", "detail": ""}
         [(to, subject, body)] = mail_on
         assert to == "admin@example.test" and subject.startswith("[TEST] ") and "Fix auto mode" in body
         assert "https://gw.example.test/dashboard" in body and "CLAUDE_CODE_AUTO_MODE_SERVER" in body
+        assert "Reference: CC001" in body
+
+    def test_test_mail_uses_the_form_as_it_stands_not_what_is_saved(self, client, db_session, admin_user, mail_on):
+        client.post(self._TEST, data={**_FORM, "title": "Unsaved wording"}, headers=_admin(admin_user))
+        assert "Unsaved wording" in mail_on[-1][2]
+        assert db_session.exec(select(ClientRuleSetting)).all() == []
 
     def test_test_mail_address_and_audience_can_be_chosen(self, client, admin_user, mail_on):
         form = {**_FORM, "patch": "MODEL=local-m", "patch_aws": "MODEL=claude-m", "to": "someone@example.test"}
         for audience, model in (("local", "local-m"), ("azure", "local-m"), ("aws", "claude-m")):
-            resp = client.post("/admin/client-rules/mail-test", data={**form, "audience": audience}, headers=_admin(admin_user))
+            resp = client.post(self._TEST, data={**form, "audience": audience}, headers=_admin(admin_user))
             assert resp.json()["ok"] and resp.json()["to"] == "someone@example.test"
             assert mail_on[-1][0] == "someone@example.test" and model in mail_on[-1][2]
 
     def test_test_mail_stays_inside_the_company_domain(self, client, admin_user, mail_on):
-        resp = client.post("/admin/client-rules/mail-test", data={**_FORM, "to": "x@elsewhere.test"}, headers=_admin(admin_user))
+        resp = client.post(self._TEST, data={**_FORM, "to": "x@elsewhere.test"}, headers=_admin(admin_user))
         assert resp.status_code == 400 and mail_on == []
 
     def test_test_mail_reports_a_failure(self, client, admin_user, mail_on):
         with patch.object(mailer, "_send_sync", side_effect=TimeoutError("timed out")):
-            resp = client.post("/admin/client-rules/mail-test", data=_FORM, headers=_admin(admin_user))
+            resp = client.post(self._TEST, data=_FORM, headers=_admin(admin_user))
         assert resp.json()["ok"] is False and resp.json()["detail"] == "TimeoutError: timed out"
 
     def test_mail_is_refused_while_unconfigured(self, client, db_session, admin_user):
-        rule = _rule(db_session)
-        assert client.post("/admin/client-rules/mail-test", data=_FORM, headers=_admin(admin_user)).status_code == 400
-        assert client.post(f"/admin/client-rules/{rule.id}/mail", headers=_admin(admin_user)).status_code == 400
+        assert client.post(self._TEST, data=_FORM, headers=_admin(admin_user)).status_code == 400
+        assert client.post(self._SEND, headers=_admin(admin_user)).status_code == 400
 
-    def test_manual_send_reaches_matching_accounts_once(self, client, db_session, admin_user, test_user, mail_on):
+    def test_manual_send_reaches_violating_accounts_once(self, client, db_session, admin_user, test_user, mail_on):
         db_session.add(User(username="app_batch", password_hash="x", api_key="sk-appkey", daily_limit_usd=1.0))
         db_session.commit()
-        rule = _rule(db_session)
         for name in ("testuser", "admin", "app_batch", "deleted-account"):
-            _hit(db_session, rule, name)
-        url = f"/admin/client-rules/{rule.id}/mail"
-        resp = client.post(url, data={"only_unmailed": "on"}, headers=_admin(admin_user))
+            _violation(db_session, AUTO, name)
+        _violation(db_session, HTTP, "testuser")               # another check's violation is not this mail's business
+        resp = client.post(self._SEND, data={"only_unmailed": "on"}, headers=_admin(admin_user))
         assert resp.json() == {"ok": True, "queued": 2}       # no app accounts, no accounts that are gone
         assert sorted(to for to, _, _ in mail_on) == ["admin@example.test", "testuser@example.test"]
-        assert all(h.mailed_at for h in _hits(db_session, rule) if h.username in ("testuser", "admin"))
+        assert all(v.mailed_at for v in _violations(db_session, AUTO) if v.username in ("testuser", "admin"))
+        assert _violations(db_session, HTTP)[0].mailed_at is None
 
-        assert client.post(url, data={"only_unmailed": "on"}, headers=_admin(admin_user)).json()["queued"] == 0
+        assert client.post(self._SEND, data={"only_unmailed": "on"}, headers=_admin(admin_user)).json()["queued"] == 0
         assert len(mail_on) == 2
-        assert client.post(url, data={"only_unmailed": "off"}, headers=_admin(admin_user)).json()["queued"] == 2
+        assert client.post(self._SEND, data={"only_unmailed": "off"}, headers=_admin(admin_user)).json()["queued"] == 2
         assert len(mail_on) == 4
 
     def test_each_recipient_gets_the_patch_for_their_access(self, db_session, test_user, admin_user, mail_on):
         test_user.can_use_azure = test_user.can_use_bedrock = False
         db_session.add(test_user)
         db_session.commit()
-        rule = _rule(db_session, patch='{"MODEL": "local-m"}', patch_aws='{"MODEL": "claude-m"}')
-        _hit(db_session, rule, "testuser")     # local-only
-        _hit(db_session, rule, "admin")        # admins have every backend
-        assert client_rules.send_rule_mail(rule.id) == {"sent": 2, "failed": 0}
+        _configure(db_session, AUTO, patch='{"MODEL": "local-m"}', patch_aws='{"MODEL": "claude-m"}')
+        _violation(db_session, AUTO, "testuser")     # local-only
+        _violation(db_session, AUTO, "admin")        # admins have every backend
+        assert client_rules.send_rule_mail(AUTO) == {"sent": 2, "failed": 0}
         bodies = {to: body for to, _, body in mail_on}
         assert "local-m" in bodies["testuser@example.test"] and "claude-m" not in bodies["testuser@example.test"]
         assert "claude-m" in bodies["admin@example.test"]
 
     def test_a_failed_send_is_recorded_on_the_account(self, db_session, test_user, mail_on):
-        rule = _rule(db_session)
-        _hit(db_session, rule, "testuser")
+        _violation(db_session, AUTO, "testuser")
         with patch.object(mailer, "_send_sync", side_effect=TimeoutError("timed out")):
-            assert client_rules.send_rule_mail(rule.id) == {"sent": 0, "failed": 1}
-        [hit] = _hits(db_session, rule)
-        assert hit.mailed_at is None and hit.mail_error == "TimeoutError: timed out" and hit.mail_attempted_at
+            assert client_rules.send_rule_mail(AUTO) == {"sent": 0, "failed": 1}
+        [row] = _violations(db_session, AUTO)
+        assert row.mailed_at is None and row.mail_error == "TimeoutError: timed out" and row.mail_attempted_at
 
     def test_mail_escapes_what_the_admin_wrote(self, mail_on):
-        draft = SimpleNamespace(name="n", title="<b>t</b>", message="a\n<i>b</i>", email_subject="")
+        draft = SimpleNamespace(id="CC001", title="<b>t</b>", message="a\n<i>b</i>", email_subject="")
         subject, body = client_rules.render_mail(draft, "u<1>", {"A": "<x>"})
         assert "<b>t</b>" not in body and "<i>b</i>" not in body and "<x>" not in body and "u<1>" not in body
         assert "a<br>" in body and subject.endswith("<b>t</b>")
 
 
 class TestAutoMail:
-    def test_only_rules_that_ask_for_it(self, db_session, test_user, mail_on):
-        quiet = _rule(db_session, name="quiet")
-        loud = _rule(db_session, name="loud", auto_email=True)
-        _hit(db_session, quiet, "testuser")
-        _hit(db_session, loud, "testuser")
+    def test_only_checks_that_ask_for_it(self, db_session, test_user, mail_on):
+        _configure(db_session, HTTP, title="quiet one")
+        _configure(db_session, AUTO, title="loud one", auto_email=True)
+        _violation(db_session, HTTP, "testuser")
+        _violation(db_session, AUTO, "testuser")
         assert "sent=1" in client_rules.run_auto_mail(db_session)
-        assert len(mail_on) == 1 and "loud" in mail_on[0][2]
+        assert len(mail_on) == 1 and "loud one" in mail_on[0][2]
+
+    def test_a_check_that_is_off_mails_nobody(self, db_session, test_user, mail_on):
+        _configure(db_session, AUTO, auto_email=True, enabled=False)
+        _violation(db_session, AUTO, "testuser")
+        client_rules.run_auto_mail(db_session)
+        assert mail_on == []
 
     def test_once_unless_a_repeat_is_set(self, db_session, test_user, mail_on):
-        rule = _rule(db_session, auto_email=True)
-        _hit(db_session, rule, "testuser")
+        _configure(db_session, AUTO, auto_email=True)
+        _violation(db_session, AUTO, "testuser")
         now = _now()
         client_rules.run_auto_mail(db_session, now)
         client_rules.run_auto_mail(db_session, now + timedelta(days=30))
         assert len(mail_on) == 1
 
-        rule.email_repeat_days = 7
-        db_session.add(rule)
-        db_session.commit()
+        _configure(db_session, AUTO, auto_email=True, email_repeat_days=7)
         client_rules.run_auto_mail(db_session, now + timedelta(days=6))
         assert len(mail_on) == 1
-        for hit in _hits(db_session, rule):          # still matching a week later
-            hit.last_seen_at = now + timedelta(days=8)
-            db_session.add(hit)
+        for row in _violations(db_session, AUTO):          # still violating a week later
+            row.last_seen_at = now + timedelta(days=8)
+            db_session.add(row)
         db_session.commit()
         client_rules.run_auto_mail(db_session, now + timedelta(days=8))
         assert len(mail_on) == 2
 
     def test_accounts_outside_the_window_are_left_alone(self, db_session, test_user, mail_on):
-        rule = _rule(db_session, auto_email=True)
-        hit = _hit(db_session, rule, "testuser")
-        hit.last_seen_at = _now() - timedelta(days=client_rules.WINDOW_DAYS + 1)
-        db_session.add(hit)
+        _configure(db_session, AUTO, auto_email=True)
+        row = _violation(db_session, AUTO, "testuser")
+        row.last_seen_at = _now() - timedelta(days=client_rules.WINDOW_DAYS + 1)
+        db_session.add(row)
         db_session.commit()
         client_rules.run_auto_mail(db_session)
         assert mail_on == []
 
     def test_a_failure_is_retried_later_not_every_run(self, db_session, test_user, mail_on):
-        rule = _rule(db_session, auto_email=True)
-        _hit(db_session, rule, "testuser")
+        _configure(db_session, AUTO, auto_email=True)
+        _violation(db_session, AUTO, "testuser")
         now = _now()
         with patch.object(mailer, "_send_sync", side_effect=TimeoutError("x")) as failing:
             client_rules.run_auto_mail(db_session, now)
@@ -629,13 +764,13 @@ class TestAutoMail:
             assert failing.call_count == 1
         client_rules.run_auto_mail(db_session, now + timedelta(seconds=client_rules.MAIL_RETRY_S + 60))
         assert len(mail_on) == 1
-        assert _hits(db_session, rule)[0].mail_error == ""
+        assert _violations(db_session, AUTO)[0].mail_error == ""
 
     def test_job_is_idle_while_mail_is_unconfigured(self, db_session, test_user):
-        rule = _rule(db_session, auto_email=True)
-        _hit(db_session, rule, "testuser")
+        _configure(db_session, AUTO, auto_email=True)
+        _violation(db_session, AUTO, "testuser")
         assert client_rules.run_auto_mail(db_session) == "mail not configured"
-        assert _hits(db_session, rule)[0].mail_attempted_at is None
+        assert _violations(db_session, AUTO)[0].mail_attempted_at is None
 
     def test_it_is_a_scheduled_job(self):
         from app.services import scheduler

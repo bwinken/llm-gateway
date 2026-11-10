@@ -1,31 +1,33 @@
-"""Admin-written rules about client requests, and the Claude Code versions in use.
+"""Client rules: who trips which client check, and how they are told.
 
 The gateway cannot change a user's Claude Code settings. What it can do is
 notice which accounts send requests of a certain kind and reach those people:
 
-- **Rule** (``client_rules``): conditions on a Messages request (a body
-  field is present, Claude Code is older than a version, the model alias,
-  the request came over plain ``http://``)
-  for everyone or for listed accounts / org codes.
-- **Hit** (``client_rule_hits``): an account matched a rule. For
-  ``WINDOW_DAYS`` after its last match the account sees the rule's message
-  on its dashboard, with the rule's patch (environment variables for the
-  ``env`` block of ``~/.claude/settings.json``, nothing else; a different
-  set for local-only, Azure and AWS accounts) as text and as a Windows
-  ``.bat`` download.
-- **Reminder** (``action = "remind"``): the first matching request of each
+- **Checks** are code (``client_checks.CHECKS``), each with a violation id
+  (``CC001``, ...). An admin does not write conditions; per check they set
+  on / off, the action, the wording, the settings patch, mail and the
+  check's one parameter (``client_rule_settings``; no row = the defaults
+  in code).
+- **Violation** (``client_violations``): an account tripped an enabled
+  check. For ``WINDOW_DAYS`` after its last one the account sees the notice
+  on its dashboard, with the patch (environment variables for the ``env``
+  block of ``~/.claude/settings.json``, nothing else; a different set for
+  local-only, Azure and AWS accounts) as text and as a Windows ``.bat``
+  download.
+- **Reminder** (``action = "remind"``): the first violating request of each
   local day is answered with the message as an error, so it shows in the
   terminal; the retry goes through. App accounts are never reminded.
 - **Mail**: to ``<username>@<COMPANY_EMAIL_DOMAIN>`` (``mailer``), sent by
-  an admin's click or by the ``client_rule_mail`` job for rules with
+  an admin's click or by the ``client_rule_mail`` job for checks with
   ``auto_email``.
 - **Versions** (``client_versions``): the Claude Code version in each
   Messages request's User-Agent, per account.
 
-Everything on the request path reads a per-worker snapshot of the rules,
-writes at most hourly per account, and never fails a request: a broken rule
-store means no notice, not an error. The one deliberate exception is the
-reminder, which is an admin's explicit choice per rule.
+Everything on the request path reads a per-worker snapshot of the enabled
+checks, writes at most hourly per account, and never fails a request: a
+broken store or a check that raises means no notice, not an error. The one
+deliberate exception is the reminder, which is an admin's explicit choice
+per check.
 """
 
 from __future__ import annotations
@@ -39,7 +41,6 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 from typing import Any
 
 from fastapi.responses import JSONResponse
@@ -51,17 +52,18 @@ from app.core.config import APP_TITLE
 from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_today
-from app.models.schema import ClientRule, ClientRuleHit, ClientVersion, User, is_app_account
-from app.services import ip_allowlist, mailer
+from app.models.schema import ClientRuleSetting, ClientVersion, ClientViolation, User, is_app_account
+from app.services import client_checks, mailer
+from app.services.client_checks import Check, Facts, version_key
 from app.services.scheduler import Job, env_seconds
 
-# How long after an account's last match its notice (and its place in the
-# admin lists and mail runs) stays. A fixed client stops matching, so a
-# notice clears by itself.
+# How long after an account's last violation its notice (and its place in
+# the admin lists and mail runs) stays. A fixed client stops tripping the
+# check, so a notice clears by itself.
 WINDOW_DAYS = 7
-# One write per account per worker per hour, per rule and per version.
+# One write per account per worker per hour, per check and per version.
 RESOLUTION_S = 3600
-# Other workers pick up a rule change within this long.
+# Other workers pick up a settings change within this long.
 REFRESH_S = 15.0
 # The version overview counts accounts seen in this many days.
 VERSION_WINDOW_DAYS = 30
@@ -75,14 +77,12 @@ MAIL_RETRY_S = 6 * 3600
 MAIL_BATCH = 200
 
 _UA_VERSION = re.compile(r"claude-cli/(\d+(?:\.\d+){1,3})", re.IGNORECASE)
-_VERSION = re.compile(r"^\d+(?:\.\d+){0,3}$")
-_FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 
 # The settings patch only ever touches the ``env`` block of settings.json.
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ENV_MAX_VARS = 50
 _ENV_MAX_VALUE = 2000
-# Who gets which variant of a rule's patch: every account gets the base
+# Who gets which variant of a check's patch: every account gets the base
 # (``patch``); an account with Azure access also gets ``patch_azure`` on top,
 # one with AWS access ``patch_aws`` on top of that (AWS wins where both set
 # the same variable). A local-only account gets the base alone.
@@ -93,241 +93,11 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-# ── Versions ──
-
 def parse_version(user_agent: str | None) -> str:
     """Claude Code's version from a User-Agent (``claude-cli/2.1.302 (...)``),
     or "" for any other client."""
     match = _UA_VERSION.search(user_agent or "")
     return match.group(1) if match else ""
-
-
-def version_key(version: str) -> tuple[int, ...]:
-    """``"2.1.302"`` → ``(2, 1, 302)``, for ordering."""
-    try:
-        return tuple(int(part) for part in version.split("."))
-    except ValueError:
-        return ()
-
-
-# ── Snapshot of the enabled rules (per worker) ──
-
-@dataclass(frozen=True)
-class _Rule:
-    id: int
-    body_field: str
-    version_below: tuple[int, ...]
-    plain_http: bool
-    models: frozenset[str]
-    usernames: frozenset[str]
-    org_codes: frozenset[str]  # casefolded
-    action: str
-    title: str
-    message: str
-
-    def matches(self, body: dict, version: str, scheme: str, username: str, org_code: str) -> bool:
-        if not (self.body_field or self.version_below or self.models or self.plain_http):
-            return False
-        if self.plain_http and scheme != "http":
-            return False
-        if self.usernames or self.org_codes:
-            if username not in self.usernames and not (org_code and org_code.casefold() in self.org_codes):
-                return False
-        if self.body_field and self.body_field not in body:
-            return False
-        if self.version_below:
-            key = version_key(version) if version else ()
-            if not key or key >= self.version_below:
-                return False
-        if self.models:
-            model = body.get("model")
-            if not isinstance(model, str) or model not in self.models:
-                return False
-        return True
-
-
-_snapshot: tuple[_Rule, ...] = ()
-_lock = threading.Lock()
-_last: dict[tuple, float] = {}
-_reminded: dict[tuple[int, str], str] = {}
-
-
-def _load(session: Session) -> tuple[_Rule, ...]:
-    rows = session.exec(select(ClientRule).where(ClientRule.enabled == True)).all()  # noqa: E712
-    return tuple(
-        _Rule(
-            id=row.id, body_field=row.body_field or "", version_below=version_key(row.version_below or ""),
-            plain_http=bool(row.plain_http),
-            models=frozenset(str(m) for m in (row.models or [])),
-            usernames=frozenset(str(u) for u in (row.usernames or [])),
-            org_codes=frozenset(str(c).casefold() for c in (row.org_codes or [])),
-            action=row.action, title=row.title, message=row.message,
-        )
-        for row in rows
-    )
-
-
-def refresh(bind=None) -> bool:
-    """Reload this worker's snapshot. Blocking; never raises. On failure the
-    previous snapshot stays in force."""
-    global _snapshot
-    try:
-        with Session(bind or engine) as session:
-            _snapshot = _load(session)
-        return True
-    except Exception as exc:
-        logger.warning("Client rules refresh failed | error={}: {}", type(exc).__name__, exc)
-        return False
-
-
-def reset() -> None:
-    """Forget the snapshot and the write throttles (tests)."""
-    global _snapshot
-    _snapshot = ()
-    with _lock:
-        _last.clear()
-        _reminded.clear()
-
-
-async def refresh_loop(interval: float = REFRESH_S) -> None:
-    """Background task, one per worker (started from the lifespan)."""
-    while True:
-        await asyncio.sleep(interval)
-        await asyncio.to_thread(refresh)
-
-
-def _due(key: tuple, now: float | None = None) -> bool:
-    now = time.monotonic() if now is None else now
-    with _lock:
-        last = _last.get(key)
-        if last is not None and now - last < RESOLUTION_S:
-            return False
-        if len(_last) > 50_000:  # a bound, not a cache policy
-            _last.clear()
-        _last[key] = now
-        return True
-
-
-# ── Request path ──
-
-def _touch_version(session: Session, username: str, version: str, now: datetime) -> None:
-    where = (ClientVersion.username == username, ClientVersion.client == CLIENT, ClientVersion.version == version)
-    if session.execute(update(ClientVersion).where(*where).values(last_seen_at=now)).rowcount:
-        session.commit()
-        return
-    session.add(ClientVersion(username=username, client=CLIENT, version=version, first_seen_at=now, last_seen_at=now))
-    try:
-        session.commit()
-    except IntegrityError:  # another worker added it first
-        session.rollback()
-
-
-def _touch_hit(session: Session, rule_id: int, username: str, version: str, now: datetime) -> None:
-    where = (ClientRuleHit.rule_id == rule_id, ClientRuleHit.username == username)
-    values: dict[str, Any] = {"last_seen_at": now}
-    if version:
-        values["client_version"] = version
-    if session.execute(update(ClientRuleHit).where(*where).values(**values)).rowcount:
-        session.commit()
-        return
-    session.add(ClientRuleHit(
-        rule_id=rule_id, username=username, client_version=version, first_seen_at=now, last_seen_at=now,
-    ))
-    try:
-        session.commit()
-    except IntegrityError:  # another worker added it first, or the rule was just deleted
-        session.rollback()
-
-
-def _record(username: str, version: str, record_version: bool, rule_ids: list[int]) -> None:
-    now = utcnow()
-    with Session(engine) as session:
-        if record_version and version:
-            _touch_version(session, username, version, now)
-        for rule_id in rule_ids:
-            _touch_hit(session, rule_id, username, version, now)
-
-
-def _claim_reminder(rule_id: int, username: str, version: str, today: str) -> bool:
-    """True for exactly one request per rule, account and local day, across
-    workers: the conditional UPDATE is the claim."""
-    with Session(engine) as session:
-        _touch_hit(session, rule_id, username, version, utcnow())
-        claimed = session.execute(
-            update(ClientRuleHit)
-            .where(ClientRuleHit.rule_id == rule_id, ClientRuleHit.username == username,
-                   ClientRuleHit.reminded_on != today)
-            .values(reminded_on=today)
-        ).rowcount == 1
-        session.commit()
-        return claimed
-
-
-def _reminder_response(rule: _Rule) -> JSONResponse:
-    public_url = mailer.settings()["public_url"]
-    where = f" Details and the fix: {public_url}/dashboard ." if public_url else " Details and the fix are on your gateway dashboard."
-    text = (
-        f"{APP_TITLE} notice: {rule.title}. {rule.message}".rstrip()
-        + where
-        + " This notice appears once a day: send your message again to continue."
-    )
-    return JSONResponse(
-        status_code=400,
-        content={"type": "error", "error": {"type": "invalid_request_error", "message": text}},
-        headers={"X-Gateway-Reminder": str(rule.id)},
-    )
-
-
-async def _observe(request: Any, user: User) -> JSONResponse | None:
-    try:
-        body = await request.json()
-    except Exception:
-        body = None
-    if not isinstance(body, dict):
-        body = {}
-    username = user.username
-    version = parse_version(request.headers.get("user-agent"))
-    # The scheme the client used: uvicorn's proxy-headers handling sets it
-    # from nginx's X-Forwarded-Proto (trusted peers only), like the client
-    # address. Never read the header here: the client can send its own.
-    scheme = request.url.scheme
-    matched = [r for r in _snapshot if r.matches(body, version, scheme, username, user.org_code or "")]
-
-    record_version = bool(version) and _due(("v", username, version))
-    hit_ids = [r.id for r in matched if _due(("h", r.id, username))]
-    if record_version or hit_ids:
-        await run_in_threadpool(_record, username, version, record_version, hit_ids)
-
-    if is_app_account(username):
-        return None
-    today = local_today().isoformat()
-    for rule in matched:
-        if rule.action != "remind":
-            continue
-        key = (rule.id, username)
-        with _lock:
-            if _reminded.get(key) == today:
-                continue
-            if len(_reminded) > 50_000:
-                _reminded.clear()
-            _reminded[key] = today
-        if await run_in_threadpool(_claim_reminder, rule.id, username, version, today):
-            logger.info("Client rule reminder | rule={} user={}", rule.id, username)
-            return _reminder_response(rule)
-    return None
-
-
-async def observe_request(request: Any, user: User) -> JSONResponse | None:
-    """Called at the top of every Messages route. Records the client version
-    and rule matches; returns a response only for a due reminder. Never raises."""
-    try:
-        return await _observe(request, user)
-    except Exception as exc:
-        logger.warning(
-            "Client rules check failed | user={} error={}: {}",
-            getattr(user, "username", "-"), type(exc).__name__, exc,
-        )
-        return None
 
 
 # ── Settings patch (environment variables only) ──
@@ -421,7 +191,8 @@ def audience_of(user: User) -> tuple[bool, bool]:
 
 def effective_env(rule: Any, azure: bool, aws: bool) -> dict[str, str | None]:
     """The patch one account gets: the base, then the Azure variant if it
-    has Azure access, then the AWS variant if it has AWS access."""
+    has Azure access, then the AWS variant if it has AWS access. ``rule``
+    is anything with ``patch`` / ``patch_azure`` / ``patch_aws`` in stored form."""
     env = dict(load_env(rule.patch))
     if azure:
         env.update(load_env(rule.patch_azure))
@@ -581,26 +352,265 @@ def render_patch_bat(name: str, env: dict[str, str | None]) -> str:
     return script.replace("\r\n", "\n").replace("\n", "\r\n")
 
 
-# ── Admin: rules ──
+# ── The checks as configured ──
 
-def clean_fields(session: Session, form: dict[str, Any]) -> dict[str, Any]:
-    """Validate an admin's rule form. Returns column values; raises ValueError."""
-    name = str(form.get("name") or "").strip()
-    if not name or len(name) > 100:
-        raise ValueError("Give the rule a name (100 characters at most).")
-    body_field = str(form.get("body_field") or "").strip()
-    if body_field and not _FIELD.match(body_field):
-        raise ValueError("Request field must be one field name, e.g. safeguards.")
-    version_below = str(form.get("version_below") or "").strip().lstrip("vV")
-    if version_below and not _VERSION.match(version_below):
-        raise ValueError("Version must look like 2.1.302.")
-    models = ip_allowlist.split_names(str(form.get("models") or ""))
-    plain_http = bool(form.get("plain_http"))
-    if not (body_field or version_below or models or plain_http):
-        raise ValueError("Set at least one condition: a request field, a version, a model or plain http.")
-    usernames = ip_allowlist.split_names(str(form.get("usernames") or ""))
-    org_codes = ip_allowlist.split_names(str(form.get("org_codes") or ""))
-    usernames, org_codes = ip_allowlist.validate_who(session, usernames, org_codes)
+@dataclass(frozen=True)
+class Rule:
+    """A check with its settings: the admin's row when there is one, the
+    check's defaults otherwise."""
+    check: Check
+    enabled: bool
+    action: str
+    param: str
+    title: str
+    message: str
+    patch: str          # stored form (JSON), like the columns
+    patch_azure: str
+    patch_aws: str
+    email_subject: str
+    auto_email: bool
+    email_repeat_days: int
+    customized: bool    # an admin has saved this check's form
+    updated_by: str
+
+    @property
+    def id(self) -> str:
+        return self.check.id
+
+    @property
+    def name(self) -> str:
+        return self.check.name
+
+
+def _default_patch(lines: str) -> str:
+    return dump_env(parse_env(lines))
+
+
+def _rule(check: Check, row: ClientRuleSetting | None) -> Rule:
+    if row is None:
+        return Rule(
+            check=check, enabled=check.enabled, action="notice", param=check.param_default,
+            title=check.title, message=check.message, patch=_default_patch(check.env),
+            patch_azure=_default_patch(check.env_azure), patch_aws=_default_patch(check.env_aws),
+            email_subject="", auto_email=False, email_repeat_days=0, customized=False, updated_by="",
+        )
+    return Rule(
+        check=check, enabled=bool(row.enabled), action=row.action if row.action in ACTIONS else "notice",
+        param=row.param or "", title=row.title or check.title, message=row.message or "",
+        patch=row.patch or "", patch_azure=row.patch_azure or "", patch_aws=row.patch_aws or "",
+        email_subject=row.email_subject or "", auto_email=bool(row.auto_email),
+        email_repeat_days=int(row.email_repeat_days or 0), customized=True, updated_by=row.updated_by or "",
+    )
+
+
+def rules(session: Session) -> list[Rule]:
+    """Every check that is not retired, in the order of the code, as configured."""
+    rows = {row.rule_id: row for row in session.exec(select(ClientRuleSetting)).all()}
+    return [_rule(check, rows.get(check.id)) for check in client_checks.ACTIVE]
+
+
+def get_rule(session: Session, rule_id: str) -> Rule | None:
+    check = client_checks.BY_ID.get(rule_id)
+    if check is None or check.retired:
+        return None
+    return _rule(check, session.get(ClientRuleSetting, rule_id))
+
+
+# ── Snapshot of the enabled checks (per worker) ──
+
+_snapshot: tuple[Rule, ...] = tuple(_rule(check, None) for check in client_checks.ACTIVE if check.enabled)
+_lock = threading.Lock()
+_last: dict[tuple, float] = {}
+_reminded: dict[tuple[str, str], str] = {}
+
+
+def refresh(bind=None) -> bool:
+    """Reload this worker's snapshot. Blocking; never raises. On failure the
+    previous snapshot stays in force."""
+    global _snapshot
+    try:
+        with Session(bind or engine) as session:
+            _snapshot = tuple(rule for rule in rules(session) if rule.enabled)
+        return True
+    except Exception as exc:
+        logger.warning("Client rules refresh failed | error={}: {}", type(exc).__name__, exc)
+        return False
+
+
+def reset() -> None:
+    """Forget the snapshot and the write throttles (tests)."""
+    global _snapshot
+    _snapshot = ()
+    with _lock:
+        _last.clear()
+        _reminded.clear()
+
+
+async def refresh_loop(interval: float = REFRESH_S) -> None:
+    """Background task, one per worker (started from the lifespan)."""
+    while True:
+        await asyncio.sleep(interval)
+        await asyncio.to_thread(refresh)
+
+
+def _due(key: tuple, now: float | None = None) -> bool:
+    now = time.monotonic() if now is None else now
+    with _lock:
+        last = _last.get(key)
+        if last is not None and now - last < RESOLUTION_S:
+            return False
+        if len(_last) > 50_000:  # a bound, not a cache policy
+            _last.clear()
+        _last[key] = now
+        return True
+
+
+# ── Request path ──
+
+def _touch_version(session: Session, username: str, version: str, now: datetime) -> None:
+    where = (ClientVersion.username == username, ClientVersion.client == CLIENT, ClientVersion.version == version)
+    if session.execute(update(ClientVersion).where(*where).values(last_seen_at=now)).rowcount:
+        session.commit()
+        return
+    session.add(ClientVersion(username=username, client=CLIENT, version=version, first_seen_at=now, last_seen_at=now))
+    try:
+        session.commit()
+    except IntegrityError:  # another worker added it first
+        session.rollback()
+
+
+def _touch_violation(session: Session, rule_id: str, username: str, version: str, now: datetime) -> None:
+    where = (ClientViolation.rule_id == rule_id, ClientViolation.username == username)
+    values: dict[str, Any] = {"last_seen_at": now}
+    if version:
+        values["client_version"] = version
+    if session.execute(update(ClientViolation).where(*where).values(**values)).rowcount:
+        session.commit()
+        return
+    session.add(ClientViolation(
+        rule_id=rule_id, username=username, client_version=version, first_seen_at=now, last_seen_at=now,
+    ))
+    try:
+        session.commit()
+    except IntegrityError:  # another worker added it first
+        session.rollback()
+
+
+def _record(username: str, version: str, record_version: bool, rule_ids: list[str]) -> None:
+    now = utcnow()
+    with Session(engine) as session:
+        if record_version and version:
+            _touch_version(session, username, version, now)
+        for rule_id in rule_ids:
+            _touch_violation(session, rule_id, username, version, now)
+
+
+def _claim_reminder(rule_id: str, username: str, version: str, today: str) -> bool:
+    """True for exactly one request per check, account and local day, across
+    workers: the conditional UPDATE is the claim."""
+    with Session(engine) as session:
+        _touch_violation(session, rule_id, username, version, utcnow())
+        claimed = session.execute(
+            update(ClientViolation)
+            .where(ClientViolation.rule_id == rule_id, ClientViolation.username == username,
+                   ClientViolation.reminded_on != today)
+            .values(reminded_on=today)
+        ).rowcount == 1
+        session.commit()
+        return claimed
+
+
+def _reminder_response(rule: Rule) -> JSONResponse:
+    public_url = mailer.settings()["public_url"]
+    where = f" Details and the fix: {public_url}/dashboard ." if public_url else " Details and the fix are on your gateway dashboard."
+    text = (
+        f"{APP_TITLE} notice [{rule.id}]: {rule.title}. {rule.message}".rstrip()
+        + where
+        + " This notice appears once a day: send your message again to continue."
+    )
+    return JSONResponse(
+        status_code=400,
+        content={"type": "error", "error": {"type": "invalid_request_error", "message": text}},
+        headers={"X-Gateway-Reminder": rule.id},
+    )
+
+
+def _violated(rule: Rule, facts: dict[str, Any]) -> bool:
+    try:
+        return bool(rule.check.detect(Facts(param=rule.param, **facts)))
+    except Exception as exc:  # a broken check finds nothing; it never breaks a request
+        if _due(("err", rule.id)):
+            logger.warning("Client check {} failed | error={}: {}", rule.id, type(exc).__name__, exc)
+        return False
+
+
+async def _observe(request: Any, user: User) -> JSONResponse | None:
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        body = {}
+    username = user.username
+    version = parse_version(request.headers.get("user-agent"))
+    model = body.get("model")
+    azure, aws = audience_of(user)
+    facts = {
+        "body": body, "model": model if isinstance(model, str) else "", "version": version,
+        # The scheme the client used: uvicorn's proxy-headers handling sets
+        # it from nginx's X-Forwarded-Proto (trusted peers only), like the
+        # client address. Never read the header here: the client can send
+        # its own.
+        "scheme": request.url.scheme, "azure_access": azure, "aws_access": aws,
+    }
+    violated = [rule for rule in _snapshot if _violated(rule, facts)]
+
+    record_version = bool(version) and _due(("v", username, version))
+    rule_ids = [rule.id for rule in violated if _due(("h", rule.id, username))]
+    if record_version or rule_ids:
+        await run_in_threadpool(_record, username, version, record_version, rule_ids)
+
+    if is_app_account(username):
+        return None
+    today = local_today().isoformat()
+    for rule in violated:
+        if rule.action != "remind":
+            continue
+        key = (rule.id, username)
+        with _lock:
+            if _reminded.get(key) == today:
+                continue
+            if len(_reminded) > 50_000:
+                _reminded.clear()
+            _reminded[key] = today
+        if await run_in_threadpool(_claim_reminder, rule.id, username, version, today):
+            logger.info("Client rule reminder | rule={} user={}", rule.id, username)
+            return _reminder_response(rule)
+    return None
+
+
+async def observe_request(request: Any, user: User) -> JSONResponse | None:
+    """Called at the top of every Messages route. Records the client version
+    and violations; returns a response only for a due reminder. Never raises."""
+    try:
+        return await _observe(request, user)
+    except Exception as exc:
+        logger.warning(
+            "Client rules check failed | user={} error={}: {}",
+            getattr(user, "username", "-"), type(exc).__name__, exc,
+        )
+        return None
+
+
+# ── Admin: settings of a check ──
+
+def clean_fields(check: Check, form: dict[str, Any]) -> dict[str, Any]:
+    """Validate an admin's form for ``check``. Returns column values; raises ValueError."""
+    param = str(form.get("param") or "").strip()
+    if not check.param_label:
+        param = ""
+    elif len(param) > 500 or (param and check.param_pattern and not re.match(check.param_pattern, param)):
+        raise ValueError(f"{check.param_label}: {check.param_help or 'not a valid value.'}")
     title = str(form.get("title") or "").strip()
     if not title or len(title) > 200:
         raise ValueError("Give the notice a title (200 characters at most).")
@@ -617,93 +627,80 @@ def clean_fields(session: Session, form: dict[str, Any]) -> dict[str, Any]:
     if not 0 <= repeat <= 365:
         raise ValueError("Repeat days must be between 0 and 365.")
     return {
-        "name": name, "body_field": body_field, "version_below": version_below, "models": models,
-        "plain_http": plain_http,
-        "usernames": usernames, "org_codes": org_codes, "title": title, "message": message,
+        "enabled": bool(form.get("enabled")), "action": action, "param": param, "title": title, "message": message,
         "patch": dump_env(parse_env(str(form.get("patch") or ""))),
         "patch_azure": dump_env(parse_env(str(form.get("patch_azure") or ""))),
         "patch_aws": dump_env(parse_env(str(form.get("patch_aws") or ""))),
-        "action": action,
         "email_subject": str(form.get("email_subject") or "").strip()[:200],
         "auto_email": bool(form.get("auto_email")), "email_repeat_days": repeat,
-        "enabled": bool(form.get("enabled")),
     }
 
 
-def save_rule(session: Session, values: dict[str, Any], rule: ClientRule | None = None, created_by: str = "") -> ClientRule:
-    now = utcnow()
-    if rule is None:
-        rule = ClientRule(created_by=created_by, created_at=now, updated_at=now, **values)
-    else:
-        for key, value in values.items():
-            setattr(rule, key, value)
-        rule.updated_at = now
-    session.add(rule)
+def save_settings(session: Session, check: Check, values: dict[str, Any], updated_by: str = "") -> Rule:
+    row = session.get(ClientRuleSetting, check.id)
+    if row is None:
+        row = ClientRuleSetting(rule_id=check.id, updated_at=utcnow())
+    for key, value in values.items():
+        setattr(row, key, value)
+    row.updated_by = updated_by
+    row.updated_at = utcnow()
+    session.add(row)
     session.commit()
-    session.refresh(rule)
-    return rule
+    session.refresh(row)
+    return _rule(check, row)
 
 
-def delete_rule(session: Session, rule: ClientRule) -> None:
-    for hit in session.exec(select(ClientRuleHit).where(ClientRuleHit.rule_id == rule.id)).all():
-        session.delete(hit)
-    session.flush()
-    session.delete(rule)
-    session.commit()
+def reset_settings(session: Session, rule_id: str) -> None:
+    """Back to the check's defaults in code. Its violations are kept."""
+    row = session.get(ClientRuleSetting, rule_id)
+    if row is not None:
+        session.delete(row)
+        session.commit()
 
 
-def condition_text(rule: ClientRule) -> str:
-    parts = []
-    if rule.body_field:
-        parts.append(f"request has `{rule.body_field}`")
-    if rule.version_below:
-        parts.append(f"Claude Code < {rule.version_below}")
-    if rule.models:
-        parts.append("model " + " / ".join(rule.models))
-    if rule.plain_http:
-        parts.append("sent over http://")
-    return " and ".join(parts) or "no condition"
-
+# ── Violations ──
 
 def _active_since(now: datetime | None = None) -> datetime:
     return (now or utcnow()) - timedelta(days=WINDOW_DAYS)
 
 
-def hits(session: Session, rule_id: int, now: datetime | None = None) -> list[ClientRuleHit]:
-    """A rule's accounts inside the window, newest first."""
+def violations(session: Session, rule_id: str, now: datetime | None = None) -> list[ClientViolation]:
+    """A check's accounts inside the window, newest first."""
     return list(session.exec(
-        select(ClientRuleHit)
-        .where(ClientRuleHit.rule_id == rule_id, ClientRuleHit.last_seen_at >= _active_since(now))
-        .order_by(ClientRuleHit.last_seen_at.desc())  # type: ignore[attr-defined]
+        select(ClientViolation)
+        .where(ClientViolation.rule_id == rule_id, ClientViolation.last_seen_at >= _active_since(now))
+        .order_by(ClientViolation.last_seen_at.desc())  # type: ignore[attr-defined]
     ).all())
 
 
 def notices_for(session: Session, user: User, now: datetime | None = None) -> list[dict[str, Any]]:
-    """What ``user``'s dashboard shows: the enabled rules it matched inside
+    """What ``user``'s dashboard shows: the enabled checks it tripped inside
     the window, each with the patch meant for this account."""
-    rows = session.exec(
-        select(ClientRule, ClientRuleHit)
-        .where(ClientRuleHit.rule_id == ClientRule.id, ClientRuleHit.username == user.username,
-               ClientRuleHit.last_seen_at >= _active_since(now), ClientRule.enabled == True)  # noqa: E712
-        .order_by(ClientRule.id)
-    ).all()
+    rows = {
+        row.rule_id: row for row in session.exec(
+            select(ClientViolation)
+            .where(ClientViolation.username == user.username, ClientViolation.last_seen_at >= _active_since(now))
+        ).all()
+    }
+    if not rows:
+        return []
     azure, aws = audience_of(user)
     return [
         {"rule_id": rule.id, "title": rule.title, "message": rule.message,
          "patch": env_snippet(effective_env(rule, azure, aws)),
-         "seen_at": hit.last_seen_at, "client_version": hit.client_version}
-        for rule, hit in rows
+         "seen_at": rows[rule.id].last_seen_at, "client_version": rows[rule.id].client_version}
+        for rule in rules(session) if rule.enabled and rule.id in rows
     ]
 
 
-def patch_for(session: Session, rule_id: int, user: User) -> tuple[ClientRule, dict[str, str | None]] | None:
-    """The rule and the patch meant for ``user``, if it matched the rule and
-    there is something to apply. None otherwise."""
-    rule = session.get(ClientRule, rule_id)
+def patch_for(session: Session, rule_id: str, user: User) -> tuple[Rule, dict[str, str | None]] | None:
+    """The check and the patch meant for ``user``, if it tripped the check
+    and there is something to apply. None otherwise."""
+    rule = get_rule(session, rule_id)
     if rule is None:
         return None
     hit = session.exec(
-        select(ClientRuleHit).where(ClientRuleHit.rule_id == rule_id, ClientRuleHit.username == user.username)
+        select(ClientViolation).where(ClientViolation.rule_id == rule_id, ClientViolation.username == user.username)
     ).first()
     if hit is None:
         return None
@@ -745,10 +742,10 @@ def version_overview(session: Session, now: datetime | None = None) -> dict[str,
 # ── Mail ──
 
 def render_mail(rule: Any, username: str, env: dict[str, str | None]) -> tuple[str, str]:
-    """``(subject, html)`` of a rule's mail to one account. ``rule`` needs
-    ``name``, ``title``, ``message`` and ``email_subject`` (a ClientRule or a
-    form being tested); ``env`` is the patch meant for that account.
-    Everything an admin wrote is escaped."""
+    """``(subject, html)`` of a check's mail to one account. ``rule`` needs
+    ``id``, ``title``, ``message`` and ``email_subject`` (a Rule, or a form
+    being tested); ``env`` is the patch meant for that account. Everything
+    an admin wrote is escaped."""
     public_url = mailer.settings()["public_url"]
     subject = (rule.email_subject or f"[{APP_TITLE}] {rule.title}").strip()
     parts = [
@@ -769,45 +766,40 @@ def render_mail(rule: Any, username: str, env: dict[str, str | None]) -> tuple[s
         what = "see this notice and download a script that applies the settings for you (Windows)" if env else "see this notice"
         parts.append(f'<p><a href="{link}">Open your dashboard</a> to {what}.</p>')
     parts.append(
-        f'<p style="color:#888;font-size:12px">Sent by {html.escape(APP_TITLE)} because requests from your account '
-        f"matched the rule &ldquo;{html.escape(rule.name)}&rdquo;.</p></div>"
+        f'<p style="color:#888;font-size:12px">Sent by {html.escape(APP_TITLE)} because of requests from your account. '
+        f"Reference: {html.escape(rule.id)}.</p></div>"
     )
     return subject, "".join(parts)
 
 
-def mailable(session: Session, rows: list[ClientRuleHit]) -> list[ClientRuleHit]:
-    """Hits whose account still exists and has a mailbox (not an app account)."""
-    names = [h.username for h in rows if not is_app_account(h.username)]
+def mailable(session: Session, rows: list[ClientViolation]) -> list[ClientViolation]:
+    """Violations whose account still exists and has a mailbox (not an app account)."""
+    names = [v.username for v in rows if not is_app_account(v.username)]
     if not names:
         return []
     known = set(session.exec(select(User.username).where(User.username.in_(names))).all())  # type: ignore[attr-defined]
-    return [h for h in rows if h.username in known]
+    return [v for v in rows if v.username in known]
 
 
-def mail_targets(session: Session, rule_id: int, only_unmailed: bool, now: datetime | None = None) -> list[ClientRuleHit]:
-    """Who a manual send reaches: the rule's accounts inside the window."""
-    rows = mailable(session, hits(session, rule_id, now))
-    return [h for h in rows if h.mailed_at is None] if only_unmailed else rows
+def mail_targets(session: Session, rule_id: str, only_unmailed: bool, now: datetime | None = None) -> list[ClientViolation]:
+    """Who a manual send reaches: the check's accounts inside the window."""
+    rows = mailable(session, violations(session, rule_id, now))
+    return [v for v in rows if v.mailed_at is None] if only_unmailed else rows
 
 
-def _send_to(session: Session, rule: ClientRule, targets: list[ClientRuleHit]) -> tuple[int, int]:
-    """Mail each target and stamp the outcome on its hit. Returns (sent, failed)."""
-    # A plain copy: the session is committed between sends.
-    rule_view = SimpleNamespace(
-        name=rule.name, title=rule.title, message=rule.message, email_subject=rule.email_subject,
-        patch=rule.patch, patch_azure=rule.patch_azure, patch_aws=rule.patch_aws,
-    )
-    names = [h.username for h in targets]
+def _send_to(session: Session, rule: Rule, targets: list[ClientViolation]) -> tuple[int, int]:
+    """Mail each target and stamp the outcome on its violation. Returns (sent, failed)."""
+    names = [v.username for v in targets]
     access = {
         u.username: audience_of(u)
         for u in (session.exec(select(User).where(User.username.in_(names))).all() if names else [])  # type: ignore[attr-defined]
     }
-    jobs = [(h.id, h.username) for h in targets]
+    jobs = [(v.id, v.username) for v in targets]
     session.commit()                # nothing is held open while mail is being sent
     sent = failed = 0
-    for hit_id, username in jobs:
+    for violation_id, username in jobs:
         azure, aws = access.get(username, (False, False))
-        subject, body = render_mail(rule_view, username, effective_env(rule_view, azure, aws))
+        subject, body = render_mail(rule, username, effective_env(rule, azure, aws))
         ok, error = mailer.send(mailer.address_for(username), subject, body)
         now = utcnow()
         values: dict[str, Any] = {"mail_attempted_at": now, "mail_error": "" if ok else error}
@@ -816,16 +808,16 @@ def _send_to(session: Session, rule: ClientRule, targets: list[ClientRuleHit]) -
             sent += 1
         else:
             failed += 1
-        session.execute(update(ClientRuleHit).where(ClientRuleHit.id == hit_id).values(**values))
+        session.execute(update(ClientViolation).where(ClientViolation.id == violation_id).values(**values))
         session.commit()
     return sent, failed
 
 
-def send_rule_mail(rule_id: int, only_unmailed: bool = True, bind=None) -> dict[str, int]:
+def send_rule_mail(rule_id: str, only_unmailed: bool = True, bind=None) -> dict[str, int]:
     """A manual send, run after the admin's click returned. Blocking; own session."""
     try:
         with Session(bind or engine) as session:
-            rule = session.get(ClientRule, rule_id)
+            rule = get_rule(session, rule_id)
             if rule is None or not mailer.is_enabled():
                 return {"sent": 0, "failed": 0}
             sent, failed = _send_to(session, rule, mail_targets(session, rule_id, only_unmailed))
@@ -836,36 +828,36 @@ def send_rule_mail(rule_id: int, only_unmailed: bool = True, bind=None) -> dict[
         return {"sent": 0, "failed": 0}
 
 
-def _auto_due(hit: ClientRuleHit, repeat_days: int, now: datetime) -> bool:
-    if hit.mail_attempted_at is None:
+def _auto_due(violation: ClientViolation, repeat_days: int, now: datetime) -> bool:
+    if violation.mail_attempted_at is None:
         return True
-    if hit.mail_attempted_at > now - timedelta(seconds=MAIL_RETRY_S):
+    if violation.mail_attempted_at > now - timedelta(seconds=MAIL_RETRY_S):
         return False
-    if hit.mail_error or hit.mailed_at is None:
+    if violation.mail_error or violation.mailed_at is None:
         return True  # the last attempt failed
-    return repeat_days > 0 and hit.mailed_at <= now - timedelta(days=repeat_days)
+    return repeat_days > 0 and violation.mailed_at <= now - timedelta(days=repeat_days)
 
 
 def run_auto_mail(session: Session, now: datetime | None = None) -> str:
-    """The ``client_rule_mail`` job: mail the accounts of every enabled rule
+    """The ``client_rule_mail`` job: mail the accounts of every enabled check
     with ``auto_email`` that have not been mailed (or are due again)."""
     if not mailer.is_enabled():
         return "mail not configured"
     now = now or utcnow()
-    rules = session.exec(
-        select(ClientRule).where(ClientRule.enabled == True, ClientRule.auto_email == True)  # noqa: E712
-    ).all()
+    auto = [rule for rule in rules(session) if rule.enabled and rule.auto_email]
     sent = failed = 0
     budget = MAIL_BATCH
-    for rule in rules:
+    for rule in auto:
         if budget <= 0:
             break
-        due = [h for h in mailable(session, hits(session, rule.id, now)) if _auto_due(h, rule.email_repeat_days, now)]
-        due = due[:budget]
+        due = [
+            v for v in mailable(session, violations(session, rule.id, now))
+            if _auto_due(v, rule.email_repeat_days, now)
+        ][:budget]
         budget -= len(due)
         s, f = _send_to(session, rule, due)
         sent, failed = sent + s, failed + f
-    return f"rules={len(rules)} sent={sent} failed={failed}"
+    return f"rules={len(auto)} sent={sent} failed={failed}"
 
 
 MAIL_JOB = Job(

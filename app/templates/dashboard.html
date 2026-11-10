@@ -64,7 +64,7 @@
         <span class="text-t4 text-xs">Run it once: it sets only the variables above, leaves the rest of the file alone and saves a backup as settings.json.bak.</span>
     </div>
     {% endif %}
-    <div class="text-t4 text-xs mt-2">Last seen {{ n.seen_local }}{% if n.client_version %} · Claude Code {{ n.client_version }}{% endif %}. This notice clears {{ client_notice_days }} days after your last matching request.</div>
+    <div class="text-t4 text-xs mt-2"><span class="font-mono">{{ n.rule_id }}</span> · last seen {{ n.seen_local }}{% if n.client_version %} · Claude Code {{ n.client_version }}{% endif %}. This notice clears {{ client_notice_days }} days after your last such request.</div>
 </div>
 {% endfor %}
 

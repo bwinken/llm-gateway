@@ -320,76 +320,54 @@ class IpAllowRule(SQLModel, table=True):
     created_at: NaiveDatetime = Field()
 
 
-class ClientRule(SQLModel, table=True):
-    """An admin-written rule about client requests (app/services/client_rules.py).
+class ClientRuleSetting(SQLModel, table=True):
+    """An admin's settings for one client check (app/services/client_checks.py).
 
-    A Messages request matches when every condition that is set holds:
-    ``body_field`` (the request body has that top-level key),
-    ``version_below`` (Claude Code, from the User-Agent, is older than this),
-    ``models`` (the requested alias is one of them) and ``plain_http`` (the
-    request reached the gateway over ``http://``); and the account is
-    in scope (``usernames`` / ``org_codes``, both empty = everyone). A rule
-    with no condition matches nothing.
-
-    A match is recorded in ``client_rule_hits``. The account then sees
-    ``title`` / ``message`` on its dashboard with the patch (environment
-    variables for the ``env`` block of ``~/.claude/settings.json``, per
-    audience) as a download; ``action`` =
-    ``remind`` also answers the first matching request of each local day
-    with the message as an error. Mail goes out when an admin sends it, or
-    by itself with ``auto_email`` (again every ``email_repeat_days``, 0 =
-    once).
-
-    ``created_by`` and the scope are usernames, not foreign keys, like
-    ``ip_allow_rules``. Timestamps are naive UTC.
+    The checks themselves are code: what each one detects, its violation id
+    (``rule_id``, e.g. ``CC001``) and its default wording and patch. A row
+    here exists only once an admin has saved that check's form, and then
+    holds everything the form has: on / off, the action (``notice`` or
+    ``remind``), the check's parameter, the notice text, the settings patch
+    (environment variables for the ``env`` block of settings.json, as JSON:
+    the base for every account and what Azure / AWS accounts get on top) and
+    mail (``auto_email``, again every ``email_repeat_days``, 0 = once).
+    No row means the check's defaults. A row whose check was retired or
+    removed from the code is ignored.
     """
-    __tablename__ = "client_rules"
+    __tablename__ = "client_rule_settings"
 
-    id: int | None = Field(default=None, primary_key=True)
-    name: str = Field()
-    enabled: bool = Field(default=True, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.true()))
-    body_field: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
-    version_below: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
-    plain_http: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
-    models: list[str] = Field(
-        default_factory=list, sa_column=sa.Column(sa.JSON, nullable=False, server_default=sa.text("'[]'")),
-    )
-    usernames: list[str] = Field(
-        default_factory=list, sa_column=sa.Column(sa.JSON, nullable=False, server_default=sa.text("'[]'")),
-    )
-    org_codes: list[str] = Field(
-        default_factory=list, sa_column=sa.Column(sa.JSON, nullable=False, server_default=sa.text("'[]'")),
-    )
+    rule_id: str = Field(primary_key=True)
+    enabled: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
+    action: str = Field(default="notice", sa_column=sa.Column(sa.String, nullable=False, server_default="notice"))
+    param: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     title: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     message: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
-    # Environment variables for the env block of settings.json, as JSON
-    # ({NAME: value, NAME: null to remove}): the base for every account, and
-    # what Azure / AWS accounts get on top (client_rules.effective_env).
     patch: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
     patch_azure: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
     patch_aws: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
-    action: str = Field(default="notice", sa_column=sa.Column(sa.String, nullable=False, server_default="notice"))
     email_subject: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     auto_email: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
     email_repeat_days: int = Field(default=0, sa_column=sa.Column(sa.Integer, nullable=False, server_default="0"))
-    created_by: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
-    created_at: NaiveDatetime = Field()
+    updated_by: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     updated_at: NaiveDatetime = Field()
 
 
-class ClientRuleHit(SQLModel, table=True):
-    """One account matching one client rule: when it first and last did
+class ClientViolation(SQLModel, table=True):
+    """One account tripping one client check: the check's violation id
+    (``rule_id``, e.g. ``CC001``), when the account first and last did
     (written at most hourly per worker), the Claude Code version it had,
     the local day it last got the in-terminal reminder, and its mail state.
 
-    ``username`` is not a foreign key: deleting an account leaves the row,
-    and readers skip names without an account.
+    ``rule_id`` is the id in code, not a foreign key: retiring a check
+    leaves its history here. ``username`` is not a foreign key either:
+    deleting an account leaves the row, and readers skip names without an
+    account. Timestamps are naive UTC.
     """
-    __tablename__ = "client_rule_hits"
-    __table_args__ = (sa.UniqueConstraint("rule_id", "username", name="uq_client_rule_hits_rule_user"),)
+    __tablename__ = "client_violations"
+    __table_args__ = (sa.UniqueConstraint("rule_id", "username", name="uq_client_violations_rule_user"),)
 
     id: int | None = Field(default=None, primary_key=True)
-    rule_id: int = Field(foreign_key="client_rules.id", index=True)
+    rule_id: str = Field(index=True)
     username: str = Field()
     client_version: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     first_seen_at: NaiveDatetime = Field()

@@ -661,14 +661,16 @@ set, and the admin panel shows the current values.
 Renders the Claude Code section with no CA-certificate tab, requires login, and
 the old `/setup/files/...` route is gone (404).
 
-### `test_client_rules.py` — client rules, settings patch, mail, Claude Code versions
-- Matching: body field, Claude Code version (other clients never match), model, plain `http://` (a client-sent `X-Forwarded-Proto` changes nothing), scope, disabled rules; hourly write throttle; a broken store never fails a request; the cloud Messages routes are watched too.
+### `test_client_rules.py` — client checks, violations, settings patch, mail, Claude Code versions
+- Registry: violation ids are unique and never renumbered; every check has wording; only `CC001` is on before an admin decides; a retired check is no longer evaluated or shown.
+- Checks: one test per check (`CC001`–`CC006`), what trips it and what does not.
+- Request path: a violation is recorded under its id and the request is still served; checks that are off record nothing; the admin's parameter and the account's access reach the check; plain `http://` is the connection's scheme (a client-sent `X-Forwarded-Proto` changes nothing); hourly write throttle; a broken store or a check that raises never fails a request; the cloud Messages routes are watched too.
 - Versions: recorded per account from the User-Agent; the overview counts each account under its newest version.
-- Reminder (`action = remind`): first matching request of the day is a 400 with the message, the retry passes, once a day across workers, never for app accounts.
+- Reminder (`action = remind`): first violating request of the day is a 400 with the id and message, the retry passes, once a day across workers, never for app accounts.
 - Patch: only environment variables can be written (`NAME=value` lines or a JSON object); `apply_env` changes the `env` block and nothing else; each audience (local-only, Azure, AWS) gets its own set, on the dashboard, in the download and in mail; admin text never reaches cmd.exe; the generated script's Node part is run for real against several settings files (skipped without `node`) and must equal `apply_env`; an unreadable settings file is left alone. The PowerShell part is not run.
-- Dashboard: notice, patch text and download for a matching account only; clears after the window or when the rule is off; escaped.
-- Admin: add / edit / delete, input validation, admin-only, the card with rules, versions and the "Needs attention" entry, patch preview.
-- Mail: off until every setting is present; company-domain addresses only; failures become a summary; test mail; manual send (unmailed only / all, no app accounts, no deleted accounts); automatic job (opt-in per rule, once or every N days, window, retry after a failure, idle when unconfigured). `mailer._send_sync` is patched: no test talks to Exchange.
+- Dashboard: notice, patch text and download for a violating account only; the admin's wording replaces the default; clears after the window or when the check is off; escaped.
+- Admin: defaults come from code until an admin saves; save, reset to defaults (violations kept); detection is not editable and checks cannot be added or deleted from the UI; input validation; admin-only; the card lists every check with its id.
+- Mail: off until every setting is present; company-domain addresses only; failures become a summary; test mail (form as it stands, address and audience selectable); manual send (unmailed only / all, no app accounts, no deleted accounts, one check's violations only); automatic job (opt-in per check, never for a check that is off, once or every N days, window, retry after a failure, idle when unconfigured). `mailer._send_sync` is patched: no test talks to Exchange.
 
 ---
 
