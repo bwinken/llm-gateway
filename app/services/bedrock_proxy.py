@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from typing import Any, Iterator
 from urllib.parse import quote
 
@@ -264,6 +265,97 @@ def _build_headers(entry: dict[str, Any], url: str, payload: bytes) -> dict[str,
     return headers
 
 
+# --- Converse fields a model does not take ----------------------------------
+#
+# Converse does not ignore an `inferenceConfig` field a model lacks: it
+# answers 400 "This model doesn't support the temperature field. Remove
+# temperature and try again." Which models do this is not documented and
+# moves with every family AWS adds (the OpenAI GPT models reject temperature,
+# topP and stopSequences; gpt-oss, Kimi, GLM and others only some of them),
+# so there is no table here. Bedrock names the field, the gateway drops that
+# one field and retries, and remembers it for the model ID (per worker, until
+# restart) so later requests go out right the first time.
+#
+# Only these optional sampling knobs are ever dropped. Anything else Bedrock
+# rejects (tools, images, a document block) changes what the request means
+# and stays an error for the client.
+_DROPPABLE_INFERENCE_FIELDS: dict[str, str] = {
+    "temperature": "temperature",
+    "topp": "topP",
+    "top_p": "topP",
+    "stopsequences": "stopSequences",
+    "stop_sequences": "stopSequences",
+}
+_UNSUPPORTED_FIELD_RE = re.compile(r"doesn['\u2019]t support the ([A-Za-z_]+) field")
+_unsupported_fields: dict[str, set[str]] = {}
+
+
+def _rejected_inference_field(status: int, text: str) -> str | None:
+    """The droppable ``inferenceConfig`` field a Bedrock 400 says the model
+    does not support, else None."""
+    if status != 400:
+        return None
+    m = _UNSUPPORTED_FIELD_RE.search(text or "")
+    return _DROPPABLE_INFERENCE_FIELDS.get(m.group(1).lower()) if m else None
+
+
+def _drop_inference_fields(body: dict[str, Any], fields: set[str]) -> bool:
+    """Remove ``fields`` from the Converse body in place; True if any was there."""
+    inference = body.get("inferenceConfig")
+    if not isinstance(inference, dict):
+        return False
+    dropped = [f for f in fields if inference.pop(f, None) is not None]
+    if not inference:
+        body.pop("inferenceConfig", None)
+    return bool(dropped)
+
+
+async def _send_converse(client, url: str, body: dict, route: dict, *, stream: bool):
+    """Send a Converse request; returns ``(response, error_text)``.
+
+    ``error_text`` is None on a 200. For a stream the 200 response is still
+    open (headers only) and an error response has been read and closed, so
+    the caller's pre-flight check stays as it was. ``body`` is edited in
+    place when a field is dropped, so the caller logs what was really sent.
+    A retry happens only on a 400, before the client has received a byte.
+    """
+    model_id = route.get("model_id", "")
+    known = _unsupported_fields.get(model_id)
+    if known:
+        _drop_inference_fields(body, known)
+    # One retry per droppable field at most: Bedrock names one field per 400.
+    for _ in range(len(set(_DROPPABLE_INFERENCE_FIELDS.values())) + 1):
+        payload = _encode_body(body)
+        # Signed per attempt: the signature covers these exact bytes.
+        headers = _build_headers(route, url, payload)
+        if stream:
+            req = client.build_request("POST", url, content=payload, headers=headers,
+                                       timeout=_STREAM_TIMEOUT)
+            resp = await client.send(req, stream=True)
+            if resp.status_code == 200:
+                return resp, None
+            err_bytes = await resp.aread()
+            await resp.aclose()
+            err_text = err_bytes.decode("utf-8", "replace")
+        else:
+            resp = await client.post(url, content=payload, headers=headers,
+                                     timeout=_NON_STREAM_TIMEOUT)
+            if resp.status_code == 200:
+                return resp, None
+            err_text = resp.text
+        field = _rejected_inference_field(resp.status_code, err_text)
+        if not field or not _drop_inference_fields(body, {field}):
+            return resp, err_text
+        if field not in _unsupported_fields.setdefault(model_id, set()):
+            _unsupported_fields[model_id].add(field)
+            logger.warning(
+                "Bedrock model_id={} does not take {}: dropped, request retried; "
+                "omitted for this model from now on",
+                model_id, field,
+            )
+    return resp, err_text
+
+
 def _log_bedrock_error(
     incoming_body: dict[str, Any],
     sent_body: dict[str, Any],
@@ -420,9 +512,7 @@ async def _non_stream_chat(
     rate_limit_retry: bool = False,
 ) -> JSONResponse:
     try:
-        payload = _encode_body(body)
-        resp = await client.post(url, content=payload, headers=_build_headers(route, url, payload),
-                                 timeout=_NON_STREAM_TIMEOUT)
+        resp, err_text = await _send_converse(client, url, body, route, stream=False)
     except Exception as exc:
         logger.error("Bedrock downstream error | user={} model={} endpoint=/aws/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
@@ -461,11 +551,8 @@ async def _stream_chat(
     # Pre-flight: open the stream and check status BEFORE handing it to the
     # event pump — a Bedrock 4xx arrives as a plain JSON body, not an
     # event-stream frame, and would otherwise be dropped silently.
-    payload = _encode_body(body)
-    req = client.build_request("POST", url, content=payload, headers=_build_headers(route, url, payload),
-                               timeout=_STREAM_TIMEOUT)
     try:
-        resp = await client.send(req, stream=True)
+        resp, err_text = await _send_converse(client, url, body, route, stream=True)
     except Exception as exc:
         logger.error("Bedrock stream connect error | user={} model={} endpoint=/aws/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
@@ -474,9 +561,6 @@ async def _stream_chat(
     _warn_if_slow_headers(user, alias, "/aws/v1/chat/completions", "bedrock")
 
     if resp.status_code != 200:
-        err_bytes = await resp.aread()
-        await resp.aclose()
-        err_text = err_bytes.decode("utf-8", "replace")
         if not (rate_limit_retry and resp.status_code == 429):
             _log_bedrock_error(incoming_body, body, err_text, resp.status_code,
                                alias, "/aws/v1/chat/completions")
@@ -638,9 +722,7 @@ async def _non_stream_messages(
     rate_limit_retry: bool = False,
 ) -> JSONResponse:
     try:
-        payload = _encode_body(body)
-        resp = await client.post(url, content=payload, headers=_build_headers(route, url, payload),
-                                 timeout=_NON_STREAM_TIMEOUT)
+        resp, err_text = await _send_converse(client, url, body, route, stream=False)
     except Exception as exc:
         logger.error("Bedrock messages downstream error | user={} model={} endpoint=/aws/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
@@ -681,11 +763,8 @@ async def _stream_messages(
 ) -> StreamingResponse | JSONResponse:
     # Pre-flight to surface 4xx before opening the stream — same rationale
     # as _stream_chat.
-    payload = _encode_body(body)
-    req = client.build_request("POST", url, content=payload, headers=_build_headers(route, url, payload),
-                               timeout=_STREAM_TIMEOUT)
     try:
-        resp = await client.send(req, stream=True)
+        resp, err_text = await _send_converse(client, url, body, route, stream=True)
     except Exception as exc:
         logger.error("Bedrock messages stream connect error | user={} model={} endpoint=/aws/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
         _log_error(user, monitor_body, str(exc), 502, alias,
@@ -694,9 +773,6 @@ async def _stream_messages(
     _warn_if_slow_headers(user, alias, "/aws/v1/messages", "bedrock")
 
     if resp.status_code != 200:
-        err_bytes = await resp.aread()
-        await resp.aclose()
-        err_text = err_bytes.decode("utf-8", "replace")
         if not (rate_limit_retry and resp.status_code == 429):
             _log_bedrock_error(incoming_body, body, err_text, resp.status_code,
                                alias, "/aws/v1/messages")

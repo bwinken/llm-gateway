@@ -245,12 +245,13 @@ def openai_chat_to_converse_request(
     """Translate an OpenAI chat completions body to a Converse request body.
 
     The Bedrock model ID lives in the URL, not the body — ``model_id`` is
-    only consulted for family-specific reasoning knobs (Claude thinking vs.
-    gpt-oss reasoning_effort).
+    only consulted for family-specific reasoning knobs (Claude thinking,
+    gpt-oss ``reasoning_effort``, GPT ``reasoning.effort``).
 
     Unlike the Azure path, sampling knobs (`temperature`, `top_p`, `stop`)
-    ARE forwarded: Converse normalizes them across model families in
-    ``inferenceConfig`` and ignores what a family doesn't support. They are
+    ARE forwarded in ``inferenceConfig``. Converse does not ignore one a
+    model lacks, it answers 400: ``bedrock_proxy._send_converse`` drops
+    exactly the field Bedrock names and retries. They are
     dropped when Claude extended thinking is enabled (Anthropic rejects
     sampling overrides alongside thinking), and always on Claude 4.7+,
     which rejects any non-default temperature / top_p.
@@ -333,10 +334,16 @@ def openai_chat_to_converse_request(
                 inference.pop("temperature", None)
                 inference.pop("topP", None)
         elif "openai" in mid:
-            # Verbatim pass-through — the model is the authority on which
-            # effort levels it supports (gpt-oss knows low/medium/high;
-            # newer OpenAI-family models add minimal/none/xhigh/max).
-            out["additionalModelRequestFields"] = {"reasoning_effort": effort}
+            # The level goes through verbatim: the model is the authority on
+            # which ones it supports (`reasoning_efforts` in config narrows
+            # it). Only the field's shape differs: gpt-oss reads the flat
+            # Chat Completions key and silently ignores the nested one; the
+            # GPT models (gpt-5.x, gpt-6) read the Responses-style nested
+            # one and 400 the flat key as an unknown parameter.
+            if "gpt-oss" in mid:
+                out["additionalModelRequestFields"] = {"reasoning_effort": effort}
+            else:
+                out["additionalModelRequestFields"] = {"reasoning": {"effort": effort}}
         # Other families: no portable reasoning knob — rely on model defaults.
 
     if inference:
