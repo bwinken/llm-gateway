@@ -99,7 +99,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | **Cloud Budget Fallback** | Settings | 勾選框 → `POST /admin/cloud-budget-fallback`。開啟時，超過雲端上限的 `/v1/*` 雲端請求改由地端模型服務，而非回 429（整體每日上限仍然有效；`/azure/v1/*` 與 `/aws/v1/*` 永不 fallback） |
 | **Create App Account** | Users | Username（自動加 `app_` 前綴）、Daily Limit、Owner → `POST /admin/users/create`。App 帳號建立時即免除並行上限 |
 | **Site Links** | Settings | Support Bot URL（每頁右下角的浮動按鈕）與 Install Guide URL（`/setup` 上的卡片）→ `POST /admin/site-links`。只接受 `http(s)://` 或站內相對路徑；留空則隱藏 |
-| **Client rules** | Clients | 內建檢查（`client_checks.py`，CC001…）的設定與違規名單、Claude Code 版本分布、淘汰中／已退役規則；見 `docs/architecture.md` 的 Client rules。 |
+| **Client rules** | Clients | 內建檢查（`client_checks.py`，CC001…）的設定與違規名單、Claude Code 版本分布、寄信紀錄（每一封嘗試寄出的信：收件地址、規則、原因、成功或失敗；可篩選、搜尋、分頁）、淘汰中／已退役規則；見 `docs/architecture.md` 的 Client rules。 |
 | **IP Allowlist** | Security | API IP 白名單的模式與規則；見 `docs/architecture.md`。 |
 | **Guardrail** | Security | Qwen3Guard-Gen 提示詞檢查的設定與測試連線；見 `docs/architecture.md`。 |
 | **Audit Log** | Security | `audit_log` 最新 20 筆（Asia/Taipei 時間、誰從哪個位址、method + route、狀態碼、對象與送出欄位的一行摘要），以及 **Download CSV (last 365 days)**（`GET /admin/api/export/audit-log.csv`）。`/admin`、`/dashboard` 的每一個寫入、每次顯示完整 key、每次匯出都會記錄；密鑰一律遮蔽 |

@@ -1190,6 +1190,22 @@ def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
     }
 
 
+def _mail_log_view(log: dict) -> dict:
+    """A page of the mail log as the admin page and its JSON API show it
+    (times in Asia/Taipei)."""
+    return {
+        **log,
+        "rows": [
+            {
+                "at": _local_label(row.created_at), "username": row.username, "address": row.address,
+                "rules": [rule_id for rule_id in row.rule_ids.split(",") if rule_id],
+                "kind": row.kind, "ok": row.ok, "error": row.error, "subject": row.subject, "actor": row.actor,
+            }
+            for row in log["rows"]
+        ],
+    }
+
+
 def _client_rules_view(session: Session, admin_user: User) -> dict:
     seen = client_rules.history(session)
     all_rules = client_rules.rules(session)
@@ -1221,6 +1237,7 @@ def _client_rules_view(session: Session, admin_user: User) -> dict:
         "mail_pace": {**client_rules.mail_pace(), "waiting": len(client_rules.due_accounts(session))},
         "monthly": {**client_rules.monthly_mail(), "enabled": get_client_monthly_mail()},
         "my_address": mailer.address_for(admin_user.username),
+        "mail_log": _mail_log_view(client_rules.mail_log(session)),
         "actions": client_rules.ACTIONS,
         "window_days": client_rules.WINDOW_DAYS,
     }
@@ -1271,6 +1288,21 @@ def set_client_rules_monthly_mail(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.get("/client-rules/mail-log")
+def client_rules_mail_log(
+    status: str = "",
+    q: str = "",
+    page: int = 1,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """One page of the mail log, newest first: every client-rule mail the
+    gateway tried to send (test mail included), with the address and how it
+    ended. ``status`` = ``sent`` / ``failed`` / ``test``; ``q`` matches the
+    account or the address."""
+    return JSONResponse(_mail_log_view(client_rules.mail_log(session, status.strip().lower(), q, page)))
+
+
 @router.post("/client-rules/{rule_id}/mail-test")
 def test_client_rule_mail(
     rule_id: str,
@@ -1298,7 +1330,12 @@ def test_client_rule_mail(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     subject, body = client_rules.render_mail(draft, to.partition("@")[0], env)
-    ok, error = mailer.send(to, "[TEST] " + subject, body)
+    subject = "[TEST] " + subject
+    ok, error = mailer.send(to, subject, body)
+    client_rules.record_mail(
+        session, address=to, subject=subject, rule_ids=[rule.id], kind="test", ok=ok, error=error,
+        actor=admin_user.username,
+    )
     audit.note(mail_test_to=to, mail_test_ok=ok)
     return JSONResponse({"ok": ok, "to": to, "detail": error})
 

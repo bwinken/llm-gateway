@@ -57,7 +57,7 @@ from app.core.config import APP_TITLE
 from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import LOCAL_TZ, local_today
-from app.models.schema import ClientRuleSetting, ClientVersion, ClientViolation, User, is_app_account
+from app.models.schema import ClientMailLog, ClientRuleSetting, ClientVersion, ClientViolation, User, is_app_account
 from app.services import client_checks, mailer
 from app.services.client_checks import Check, Facts, version_key
 from app.services.scheduler import Job, env_seconds
@@ -87,6 +87,10 @@ CLIENT = "claude-code"
 
 # A failed send is retried after this long.
 MAIL_RETRY_S = 6 * 3600
+# The mail log (client_mail_log): why a mail went out, rows per page in the
+# admin's list, and the days its "sent / failed" counts cover.
+MAIL_LOG_PAGE = 15
+MAIL_LOG_DAYS = 30
 
 
 def mail_pace() -> dict[str, Any]:
@@ -1121,10 +1125,76 @@ def mail_targets(session: Session, rule_id: str, only_unmailed: bool, now: datet
     return [v for v in rows if v.mailed_at is None] if only_unmailed else rows
 
 
-def _send_digests(session: Session, usernames: list[str], now: datetime | None = None, pause_s: float = 0.0) -> tuple[int, int]:
+def record_mail(
+    session: Session, *, address: str, subject: str, ok: bool, error: str = "", username: str = "",
+    rule_ids: list[str] | None = None, kind: str = "requested", actor: str = "", now: datetime | None = None,
+) -> None:
+    """Write one mail attempt to the mail log. Never raises: a mail that
+    went out is not undone by its record failing, so a failed write is
+    logged whole instead."""
+    try:
+        session.add(ClientMailLog(
+            created_at=now or utcnow(), username=username, address=address, subject=subject[:300],
+            rule_ids=",".join(rule_ids or []), kind=kind, ok=ok, error=(error or "")[:300], actor=actor,
+        ))
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.error(
+            "Mail log write failed | username={} address={} rules={} kind={} ok={} mail_error={!r} error={}: {}",
+            username, address, ",".join(rule_ids or []), kind, ok, error, type(exc).__name__, exc,
+        )
+
+
+def mail_log(
+    session: Session, status: str = "", q: str = "", page: int = 1, per_page: int = MAIL_LOG_PAGE,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """The mail log, newest first, one page of it. ``status`` narrows it to
+    ``sent``, ``failed`` or ``test`` mails (anything else: all of them);
+    ``q`` to accounts or addresses containing it. ``sent`` / ``failed`` are
+    the counts of the last ``MAIL_LOG_DAYS`` days, whatever the filter."""
+    now = now or utcnow()
+    clauses = []
+    if status == "sent":
+        clauses.append(ClientMailLog.ok.is_(True))  # type: ignore[attr-defined]
+    elif status == "failed":
+        clauses.append(ClientMailLog.ok.is_(False))  # type: ignore[attr-defined]
+    elif status == "test":
+        clauses.append(ClientMailLog.kind == "test")
+    needle = (q or "").strip().lower()
+    if needle:
+        clauses.append(
+            func.lower(ClientMailLog.username).contains(needle, autoescape=True)
+            | func.lower(ClientMailLog.address).contains(needle, autoescape=True)
+        )
+    total = session.exec(select(func.count()).select_from(ClientMailLog).where(*clauses)).one()
+    pages = max(1, -(-total // per_page))
+    page = min(max(1, page), pages)
+    rows = session.exec(
+        select(ClientMailLog).where(*clauses)
+        .order_by(ClientMailLog.created_at.desc(), ClientMailLog.id.desc())  # type: ignore[attr-defined,union-attr]
+        .offset((page - 1) * per_page).limit(per_page)
+    ).all()
+    recent = dict(session.exec(
+        select(ClientMailLog.ok, func.count()).where(ClientMailLog.created_at >= now - timedelta(days=MAIL_LOG_DAYS))
+        .group_by(ClientMailLog.ok)
+    ).all())
+    return {
+        "rows": list(rows), "total": total, "page": page, "pages": pages, "per_page": per_page,
+        "sent": recent.get(True, 0), "failed": recent.get(False, 0), "days": MAIL_LOG_DAYS,
+    }
+
+
+def _send_digests(
+    session: Session, usernames: list[str], now: datetime | None = None, pause_s: float = 0.0,
+    kinds: dict[str, str] | None = None,
+) -> tuple[int, int]:
     """Mail each account once about everything it has open (deprecated
-    checks left out), ``pause_s`` apart, and stamp the outcome on every
-    violation the mail covered. Returns (sent, failed) in accounts."""
+    checks left out), ``pause_s`` apart, stamp the outcome on every
+    violation the mail covered and write it to the mail log (``kinds``:
+    why each account is being mailed, ``requested`` when not given).
+    Returns (sent, failed) in accounts."""
     usernames = [name for name in dict.fromkeys(usernames) if not is_app_account(name)]
     if not usernames:
         return 0, 0
@@ -1140,10 +1210,13 @@ def _send_digests(session: Session, usernames: list[str], now: datetime | None =
             continue
         rule_list = [rule for rule, _ in items]
         subject, body = render_digest(username, rule_list, combined_env(rule_list, *audience_of(user)))
-        jobs.append((username, [row.id for _, row in items], items[0][1].mail_attempted_at, subject, body))
+        jobs.append((
+            username, [row.id for _, row in items], items[0][1].mail_attempted_at, subject, body,
+            [rule.id for rule in rule_list],
+        ))
     session.commit()                # nothing is held open while mail is being sent
     sent = failed = 0
-    for position, (username, violation_ids, attempted_before, subject, body) in enumerate(jobs):
+    for position, (username, violation_ids, attempted_before, subject, body, rule_ids) in enumerate(jobs):
         # The caller's clock when it gave one (a run "as of" a time), else the real one.
         stamp = now if now is not None else utcnow()
         # Claim the account before sending: a compare-and-set on its first
@@ -1162,7 +1235,8 @@ def _send_digests(session: Session, usernames: list[str], now: datetime | None =
             continue
         if position and pause_s > 0:
             time.sleep(pause_s)
-        ok, error = mailer.send(mailer.address_for(username), subject, body)
+        address = mailer.address_for(username)
+        ok, error = mailer.send(address, subject, body)
         stamp = now if now is not None else utcnow()
         values: dict[str, Any] = {"mail_attempted_at": stamp, "mail_error": "" if ok else error}
         if ok:
@@ -1172,6 +1246,10 @@ def _send_digests(session: Session, usernames: list[str], now: datetime | None =
             failed += 1
         session.execute(update(ClientViolation).where(ClientViolation.id.in_(violation_ids)).values(**values))  # type: ignore[union-attr]
         session.commit()
+        record_mail(
+            session, username=username, address=address, subject=subject, rule_ids=rule_ids,
+            kind=(kinds or {}).get(username, "requested"), ok=ok, error=error, now=stamp,
+        )
     return sent, failed
 
 
@@ -1267,10 +1345,12 @@ def queue_monthly(session: Session, now: datetime | None = None) -> int:
     return queued
 
 
-def due_accounts(session: Session, now: datetime | None = None) -> list[str]:
-    """Accounts waiting for a mail, in the order they will get it: first
-    those an admin asked for (oldest request first), then those due by a
-    check's automatic mail. Deprecated checks never make an account due."""
+def due_list(session: Session, now: datetime | None = None) -> list[tuple[str, str]]:
+    """Accounts waiting for a mail, in the order they will get it, each with
+    why (the mail log's ``kind``): first those an admin or the monthly
+    reminder asked for (``requested``, oldest request first), then those
+    due by a check's automatic mail (``automatic``). Deprecated checks never
+    make an account due."""
     now = now or utcnow()
     requested: list[tuple[datetime, str]] = []
     automatic: list[str] = []
@@ -1283,20 +1363,27 @@ def due_accounts(session: Session, now: datetime | None = None) -> list[str]:
             requested.append((min(asked), username))
         elif any(rule.auto_email and _auto_due(row, rule.email_repeat_days, now) for rule, row in live):
             automatic.append(username)
-    ordered = [username for _, username in sorted(requested)] + sorted(automatic)
+    ordered = [(username, "requested") for _, username in sorted(requested)]
+    ordered += [(username, "automatic") for username in sorted(automatic)]
     if not ordered:
         return []
-    known = set(session.exec(select(User.username).where(User.username.in_(ordered))).all())  # type: ignore[attr-defined]
-    return [username for username in ordered if username in known]
+    names = [username for username, _ in ordered]
+    known = set(session.exec(select(User.username).where(User.username.in_(names))).all())  # type: ignore[attr-defined]
+    return [(username, why) for username, why in ordered if username in known]
+
+
+def due_accounts(session: Session, now: datetime | None = None) -> list[str]:
+    """The accounts of ``due_list``, in its order."""
+    return [username for username, _ in due_list(session, now)]
 
 
 def send_due(session: Session, now: datetime | None = None) -> dict[str, int]:
     """Send one batch: the first ``mail_pace()["batch"]`` accounts that are
     waiting, a pause apart. ``waiting`` is what is left for the next run."""
     pace = mail_pace()
-    due = due_accounts(session, now)
+    due = due_list(session, now)
     batch = due[:pace["batch"]]
-    sent, failed = _send_digests(session, batch, now, pace["pause_s"])
+    sent, failed = _send_digests(session, [username for username, _ in batch], now, pace["pause_s"], dict(batch))
     return {"sent": sent, "failed": failed, "waiting": len(due) - len(batch)}
 
 

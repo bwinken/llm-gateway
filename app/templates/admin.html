@@ -810,6 +810,56 @@ function submitExportCsv() {
     </details>
     {% endfor %}
 
+    {# Mail log: every mail the gateway tried to send (client_mail_log); the first page is rendered here,
+       filter / search / paging fetch GET /admin/client-rules/mail-log #}
+    {% set ml = cr.mail_log %}
+    <div id="client-mail-log" class="mt-5 pt-4" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mb-2">
+            <div class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide"
+                 data-tip="Every client-rule mail the gateway tried to send, test mail included: the account, the address it went to, the rules it covered, why it went out (requested = an admin's click or the monthly reminder, automatic = a rule's own mail, test = Send test mail) and whether Exchange accepted it. A failed mail is retried later and gets a new line. Times in Asia/Taipei.">Mail log
+                <span class="ml-1 normal-case tracking-normal font-normal text-t4">last {{ ml.days }} days:
+                    <span class="{{ 'text-ag' if ml.sent else '' }}">{{ ml.sent }} sent</span> ·
+                    <span class="{{ 'text-ar' if ml.failed else '' }}">{{ ml.failed }} failed</span></span>
+            </div>
+            <div class="ml-auto flex flex-wrap items-center gap-2">
+                <input type="search" id="mail-log-q" placeholder="Account or address…" aria-label="Search the mail log"
+                       class="gw-input text-xs py-1.5 px-2" style="width:13rem">
+                <select id="mail-log-status" aria-label="Filter the mail log" class="gw-input text-xs py-1.5 px-2">
+                    <option value="">All mail</option>
+                    <option value="sent">Sent</option>
+                    <option value="failed">Failed</option>
+                    <option value="test">Test mail</option>
+                </select>
+            </div>
+        </div>
+        <div class="overflow-x-auto">
+        <table class="gw-table">
+            <thead><tr><th>Time</th><th>Account</th><th>Sent to</th><th>Rules</th><th>Why</th><th>Status</th></tr></thead>
+            <tbody id="mail-log-rows">
+                {% for m in ml.rows %}
+                <tr>
+                    <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ m.at }}</td>
+                    <td class="text-sm">{% if m.username %}<a href="?q={{ m.username | urlencode }}#users" class="font-mono text-t1 hover:underline">{{ m.username }}</a>{% else %}<span class="text-t4">—</span>{% endif %}</td>
+                    <td class="font-mono text-xs text-t2">{{ m.address }}</td>
+                    <td class="font-mono text-xs text-t3">{{ m.rules | join(', ') or '—' }}</td>
+                    <td class="text-xs text-t3 whitespace-nowrap">{{ m.kind }}{% if m.actor %} <span class="text-t4">by {{ m.actor }}</span>{% endif %}</td>
+                    <td class="text-xs" title="{{ m.subject }}">{% if m.ok %}<span class="text-ag">sent</span>{% else %}<span class="text-ar">failed</span>{% if m.error %} <span class="text-t3">· {{ m.error }}</span>{% endif %}{% endif %}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6" class="text-xs text-t4">No mail has been sent yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-t4">
+            <span id="mail-log-count">{{ ml.total }} mail{{ '' if ml.total == 1 else 's' }}{% if ml.pages > 1 %} · page {{ ml.page }} of {{ ml.pages }}{% endif %}</span>
+            <span class="ml-auto flex gap-2">
+                <button type="button" id="mail-log-prev" class="gw-btn gw-btn-ghost text-xs px-2 py-1" disabled>&larr; Newer</button>
+                <button type="button" id="mail-log-next" class="gw-btn gw-btn-ghost text-xs px-2 py-1" {{ 'disabled' if ml.pages <= 1 }}>Older &rarr;</button>
+            </span>
+        </div>
+    </div>
+
     {# Retired checks: no longer evaluated; kept so an id seen in old mail or the database can be looked up #}
     {% if cr.retired %}
     <details id="client-rules-retired" class="mt-4 pt-3" style="border-top:1px solid rgba(255,255,255,0.05)">
@@ -1848,6 +1898,87 @@ function submitExportCsv() {
                 })
                 .then(function() { btn.disabled = false; });
         });
+    })();
+
+    /* ── Client rules: the mail log. The first page is rendered by the
+       server; filter, search and paging fetch the JSON and rebuild the rows
+       with textContent (addresses and error text are never parsed as HTML). ── */
+    (function() {
+        var box = document.getElementById('client-mail-log');
+        if (!box) return;
+        var rows = document.getElementById('mail-log-rows'), count = document.getElementById('mail-log-count');
+        var q = document.getElementById('mail-log-q'), status = document.getElementById('mail-log-status');
+        var prev = document.getElementById('mail-log-prev'), next = document.getElementById('mail-log-next');
+        var page = 1, pages = {{ (client_rules.mail_log.pages if client_rules else 1) | tojson }}, seq = 0;
+        function cell(cls, text) {
+            var td = document.createElement('td');
+            td.className = cls;
+            if (text != null) td.textContent = text;
+            return td;
+        }
+        function span(cls, text) {
+            var el = document.createElement('span');
+            el.className = cls;
+            el.textContent = text;
+            return el;
+        }
+        function paint(data) {
+            page = data.page; pages = data.pages;
+            rows.textContent = '';
+            data.rows.forEach(function(m) {
+                var tr = document.createElement('tr');
+                tr.appendChild(cell('font-mono text-xs text-t3 whitespace-nowrap', m.at));
+                var who = cell('text-sm');
+                if (m.username) {
+                    var a = document.createElement('a');
+                    a.href = '?q=' + encodeURIComponent(m.username) + '#users';
+                    a.className = 'font-mono text-t1 hover:underline';
+                    a.textContent = m.username;
+                    who.appendChild(a);
+                } else who.appendChild(span('text-t4', '—'));
+                tr.appendChild(who);
+                tr.appendChild(cell('font-mono text-xs text-t2', m.address));
+                tr.appendChild(cell('font-mono text-xs text-t3', m.rules.join(', ') || '—'));
+                var why = cell('text-xs text-t3 whitespace-nowrap', m.kind);
+                if (m.actor) { why.appendChild(document.createTextNode(' ')); why.appendChild(span('text-t4', 'by ' + m.actor)); }
+                tr.appendChild(why);
+                var st = cell('text-xs');
+                st.title = m.subject;
+                st.appendChild(span(m.ok ? 'text-ag' : 'text-ar', m.ok ? 'sent' : 'failed'));
+                if (!m.ok && m.error) { st.appendChild(document.createTextNode(' ')); st.appendChild(span('text-t3', '· ' + m.error)); }
+                tr.appendChild(st);
+                rows.appendChild(tr);
+            });
+            if (!data.rows.length) {
+                var empty = document.createElement('tr'), td = cell('text-xs text-t4', 'No mail matches.');
+                td.colSpan = 6;
+                empty.appendChild(td);
+                rows.appendChild(empty);
+            }
+            count.textContent = data.total + (data.total === 1 ? ' mail' : ' mails') + (pages > 1 ? ' · page ' + page + ' of ' + pages : '');
+            prev.disabled = page <= 1;
+            next.disabled = page >= pages;
+        }
+        function load(toPage) {
+            var mine = ++seq;
+            var url = '/admin/client-rules/mail-log?page=' + toPage + '&status=' + encodeURIComponent(status.value)
+                + '&q=' + encodeURIComponent(q.value.trim());
+            fetch(url, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+                .then(function(resp) {
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    return resp.json();
+                })
+                .then(function(data) { if (mine === seq) paint(data); })   // a slower, older answer never overwrites a newer one
+                .catch(function(err) { gwToast('Mail log — ' + err.message, 'error'); });
+        }
+        var typing = null;
+        q.addEventListener('input', function() {
+            clearTimeout(typing);
+            typing = setTimeout(function() { load(1); }, 250);
+        });
+        status.addEventListener('change', function() { load(1); });
+        prev.addEventListener('click', function() { if (page > 1) load(page - 1); });
+        next.addEventListener('click', function() { if (page < pages) load(page + 1); });
     })();
 
     /* ── Guardrail: Test connection (judges a sample with the form's values) ── */

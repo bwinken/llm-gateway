@@ -1,4 +1,4 @@
-"""Add client_rule_settings, client_violations, client_versions
+"""Add client_rule_settings, client_violations, client_versions, client_mail_log
 
 Revision ID: c1a7e4b9d2f6
 Revises: 07899844c700
@@ -15,9 +15,11 @@ database keeps:
   reminder day, mail state (sent, attempted, requested by an admin) and
   when the account reported the fix.
 - ``client_versions``: the Claude Code versions each account has used.
+- ``client_mail_log``: every mail the gateway tried to send (account,
+  address, checks covered, why, sent or failed with the error).
 
 They hold usernames and check ids, not foreign keys, so deleting an
-account or retiring a check never has to touch them. Three CREATE TABLEs:
+account or retiring a check never has to touch them. Four CREATE TABLEs:
 instant and safe under live traffic.
 """
 
@@ -81,9 +83,28 @@ def upgrade() -> None:
         sa.UniqueConstraint("username", "client", "version", name="uq_client_versions_user_client_version"),
     )
     op.create_index(op.f("ix_client_versions_username"), "client_versions", ["username"], unique=False)
+    op.create_table(
+        "client_mail_log",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("created_at", sa.DateTime(), nullable=False),
+        sa.Column("username", sa.String(), server_default="", nullable=False),
+        sa.Column("address", sa.String(), server_default="", nullable=False),
+        sa.Column("subject", sa.String(), server_default="", nullable=False),
+        sa.Column("rule_ids", sa.String(), server_default="", nullable=False),
+        sa.Column("kind", sa.String(), server_default="", nullable=False),
+        sa.Column("ok", sa.Boolean(), server_default=sa.false(), nullable=False),
+        sa.Column("error", sa.String(), server_default="", nullable=False),
+        sa.Column("actor", sa.String(), server_default="", nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index("ix_client_mail_log_created_at", "client_mail_log", ["created_at"], unique=False)
+    op.create_index("ix_client_mail_log_username", "client_mail_log", ["username"], unique=False)
 
 
 def downgrade() -> None:
+    op.drop_index("ix_client_mail_log_username", table_name="client_mail_log")
+    op.drop_index("ix_client_mail_log_created_at", table_name="client_mail_log")
+    op.drop_table("client_mail_log")
     op.drop_index(op.f("ix_client_versions_username"), table_name="client_versions")
     op.drop_table("client_versions")
     op.drop_index(op.f("ix_client_violations_rule_id"), table_name="client_violations")

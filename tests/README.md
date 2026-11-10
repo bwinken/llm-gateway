@@ -683,6 +683,7 @@ the old `/setup/files/...` route is gone (404).
 - Admin: defaults come from code until an admin saves; save, reset to defaults (violations kept); detection is not editable and checks cannot be added or deleted from the UI; input validation; admin-only; the card lists every check with its id.
 - Mail footer: every mail (automatic, manual, test) says it is automated and not to reply, and links the support page when the admin set one (absolute, or site-relative under `PUBLIC_BASE_URL`; nothing else).
 - Mail: off until every setting is present; company-domain addresses only; failures become a summary; test mail (form as it stands, address and audience selectable); manual send (unmailed only / all, no app accounts, no deleted accounts, one check's violations only); automatic job (opt-in per check, never for a check that is off, once or every N days, window, retry after a failure, idle when unconfigured). `mailer._send_sync` is patched: no test talks to Exchange.
+- Mail log: a sent mail is recorded with its address and rules; a failure with the error, each retry a new line; why it went out (requested / automatic / test, the admin behind a test); nothing recorded for a mail never tried; a broken log never stops a mail or its stamp; read newest first by page, narrowed to failed / sent / test or one account or address (wildcards matched as text); 30-day counts; admins only; shown escaped on the admin page; kept when the account is deleted.
 
 ---
 

@@ -402,6 +402,38 @@ class ClientVersion(SQLModel, table=True):
     last_seen_at: NaiveDatetime = Field()
 
 
+class ClientMailLog(SQLModel, table=True):
+    """Every client-rule mail the gateway tried to send, one row per mail:
+    who it was for, the address it went to, the checks it covered
+    (``rule_ids``, comma-separated ids), why it went out (``kind``:
+    ``requested`` by an admin's click or the monthly reminder, ``automatic``
+    for a check's own mail, ``test`` for an admin's test mail) and how it
+    ended (``ok``, and the error summary when it failed). The admin's
+    *Mail log* reads it; nothing updates a row.
+
+    ``username`` is the account the mail was about ("" for a test mail,
+    whose ``actor`` is the admin who sent it). Neither is a foreign key, so
+    deleting an account leaves its rows. The mail's body is not kept.
+    Timestamps are naive UTC.
+    """
+    __tablename__ = "client_mail_log"
+    __table_args__ = (
+        Index("ix_client_mail_log_created_at", "created_at"),
+        Index("ix_client_mail_log_username", "username"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    created_at: NaiveDatetime = Field(default_factory=_naive_utcnow)
+    username: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    address: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    subject: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    rule_ids: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    kind: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    ok: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
+    error: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    actor: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+
+
 class AuditLog(SQLModel, table=True):
     """Who changed what through the Web UI / admin, and who read credentials
     or exported data (app/services/audit.py). Append-only: the app never

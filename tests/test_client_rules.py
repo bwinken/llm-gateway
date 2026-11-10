@@ -24,7 +24,7 @@ from unittest.mock import patch
 import pytest
 from sqlmodel import select
 
-from app.models.schema import ClientRuleSetting, ClientVersion, ClientViolation, User
+from app.models.schema import ClientMailLog, ClientRuleSetting, ClientVersion, ClientViolation, User
 from app.services import client_checks, client_rules, mailer
 from tests.conftest import auth_header, make_httpx_response, web_auth_header
 
@@ -1656,6 +1656,147 @@ class TestAutoMail:
 
         assert client_rules.MAIL_JOB.name == "client_rule_mail" and client_rules.MAIL_JOB.interval() > 0
         assert scheduler.run_if_due(client_rules.MAIL_JOB) == "ok"
+
+
+class TestMailLog:
+    """Every mail the gateway tried to send is written down with the address
+    and how it ended, and the admin can review it."""
+
+    _LOG = "/admin/client-rules/mail-log"
+
+    def _log(self, db_session) -> list[ClientMailLog]:
+        db_session.expire_all()
+        return list(db_session.exec(select(ClientMailLog).order_by(ClientMailLog.id)).all())
+
+    def _person(self, db_session, name: str, rule_id: str = AUTO) -> None:
+        db_session.add(User(username=name, password_hash="x", api_key=f"sk-{name}", daily_limit_usd=1.0))
+        db_session.commit()
+        _violation(db_session, rule_id, name)
+
+    def test_a_sent_mail_is_recorded_with_its_address_and_rules(self, db_session, test_user, mail_on):
+        _configure(db_session, HTTP, patch="ANTHROPIC_BASE_URL=https://gw.example.test")
+        _violation(db_session, AUTO, "testuser")
+        _violation(db_session, HTTP, "testuser")
+        client_rules.request_mail(db_session, AUTO)
+        client_rules.run_auto_mail(db_session)
+        [row] = self._log(db_session)
+        assert (row.username, row.address, row.ok, row.error) == ("testuser", "testuser@example.test", True, "")
+        assert row.rule_ids == f"{AUTO},{HTTP}" and row.kind == "requested" and row.actor == ""
+        assert row.subject == mail_on[0][1]
+
+    def test_a_failed_mail_is_recorded_with_the_error_and_each_retry_adds_a_line(self, db_session, test_user, mail_on):
+        _violation(db_session, AUTO, "testuser")
+        client_rules.request_mail(db_session, AUTO)
+        with patch.object(mailer, "_send_sync", side_effect=TimeoutError("timed out")):
+            client_rules.run_auto_mail(db_session)
+        [failed] = self._log(db_session)
+        assert not failed.ok and failed.error == "TimeoutError: timed out" and failed.address == "testuser@example.test"
+        later = _now() + timedelta(seconds=client_rules.MAIL_RETRY_S + 60)
+        client_rules.run_auto_mail(db_session, now=later)
+        assert [(row.ok, row.error) for row in self._log(db_session)] == [(False, "TimeoutError: timed out"), (True, "")]
+
+    def test_the_log_says_why_each_mail_went_out(self, db_session, mail_on):
+        self._person(db_session, "asked", HTTP)
+        self._person(db_session, "auto", AUTO)
+        _configure(db_session, HTTP, patch="ANTHROPIC_BASE_URL=https://gw.example.test")
+        _configure(db_session, AUTO, auto_email=True)
+        client_rules.request_mail(db_session, HTTP)
+        client_rules.run_auto_mail(db_session)
+        assert {row.username: row.kind for row in self._log(db_session)} == {"asked": "requested", "auto": "automatic"}
+
+    def test_test_mail_is_recorded_under_the_admin_who_sent_it(self, client, db_session, admin_user, mail_on):
+        url = f"/admin/client-rules/{AUTO}/mail-test"
+        client.post(url, data={**_FORM, "to": "someone@example.test"}, headers=_admin(admin_user))
+        with patch.object(mailer, "_send_sync", side_effect=ConnectionError("refused")):
+            client.post(url, data=_FORM, headers=_admin(admin_user))
+        sent, failed = self._log(db_session)
+        assert (sent.kind, sent.address, sent.ok, sent.actor, sent.username) == ("test", "someone@example.test", True, "admin", "")
+        assert sent.subject.startswith("[TEST] ") and sent.rule_ids == AUTO
+        assert (failed.address, failed.ok, failed.error) == ("admin@example.test", False, "ConnectionError: refused")
+
+    def test_a_mail_that_was_never_tried_is_not_in_the_log(self, client, db_session, admin_user, test_user):
+        """Mail not configured, or an address outside the company: nothing was sent, nothing is recorded."""
+        client.post(f"/admin/client-rules/{AUTO}/mail-test", data=_FORM, headers=_admin(admin_user))
+        _violation(db_session, AUTO, "testuser")
+        client_rules.request_mail(db_session, AUTO)
+        client_rules.run_auto_mail(db_session)
+        assert self._log(db_session) == []
+
+    def test_a_broken_log_never_stops_the_mail_or_its_stamp(self, db_session, test_user, mail_on):
+        _violation(db_session, AUTO, "testuser")
+        client_rules.request_mail(db_session, AUTO)
+        with patch.object(client_rules, "ClientMailLog", side_effect=RuntimeError("no table")):
+            assert client_rules.run_auto_mail(db_session) == "sent=1 failed=0 waiting=0"
+        assert len(mail_on) == 1 and _violations(db_session, AUTO)[0].mailed_at is not None
+
+    def _history(self, db_session) -> None:
+        now = _now()
+        for i in range(30):
+            db_session.add(ClientMailLog(
+                created_at=now - timedelta(minutes=i), username=f"user{i:02d}", address=f"user{i:02d}@example.test",
+                subject="s", rule_ids=AUTO, kind="automatic", ok=i % 10 != 0, error="" if i % 10 else "TimeoutError: timed out",
+            ))
+        db_session.add(ClientMailLog(
+            created_at=now - timedelta(days=40), address="admin@example.test", subject="[TEST] s", rule_ids=AUTO,
+            kind="test", ok=True, actor="admin",
+        ))
+        db_session.commit()
+
+    def test_the_log_is_read_newest_first_a_page_at_a_time(self, client, db_session, admin_user):
+        self._history(db_session)
+        first = client.get(self._LOG, headers=_admin(admin_user)).json()
+        size = client_rules.MAIL_LOG_PAGE
+        pages = -(-31 // size)
+        assert (first["total"], first["page"], first["pages"], len(first["rows"])) == (31, 1, pages, size)
+        assert first["rows"][0]["username"] == "user00" and first["rows"][0]["rules"] == [AUTO]
+        second = client.get(self._LOG, params={"page": 2}, headers=_admin(admin_user)).json()
+        assert second["rows"][0]["username"] == f"user{size:02d}"
+        last = client.get(self._LOG, params={"page": 99}, headers=_admin(admin_user)).json()    # past the end: the last page
+        assert last["page"] == pages and len(last["rows"]) == 31 - size * (pages - 1) and last["rows"][-1]["kind"] == "test"
+
+    def test_the_log_can_be_narrowed_to_failures_tests_and_one_account(self, client, db_session, admin_user):
+        self._history(db_session)
+
+        def rows(**params):
+            return client.get(self._LOG, params=params, headers=_admin(admin_user)).json()
+
+        failed = rows(status="failed")
+        assert failed["total"] == 3 and all(not r["ok"] and r["error"] for r in failed["rows"])
+        assert rows(status="sent")["total"] == 28
+        assert [r["address"] for r in rows(status="test")["rows"]] == ["admin@example.test"]
+        assert [r["username"] for r in rows(q="USER07")["rows"]] == ["user07"]
+        assert rows(q="admin@")["total"] == 1                  # the address is searched too
+        assert rows(q="%")["total"] == 0                       # a wildcard is matched as text
+
+    def test_the_counts_cover_the_last_thirty_days_whatever_the_filter(self, client, db_session, admin_user):
+        self._history(db_session)
+        log = client.get(self._LOG, params={"status": "test"}, headers=_admin(admin_user)).json()
+        assert (log["sent"], log["failed"], log["days"]) == (27, 3, client_rules.MAIL_LOG_DAYS)   # the 40-day-old test mail is not counted
+
+    def test_only_admins_read_the_log(self, client, db_session, test_user):
+        resp = client.get(self._LOG, headers=web_auth_header(sub="testuser", scopes=[]))
+        assert resp.status_code in (401, 403)
+
+    def test_the_admin_page_shows_the_log(self, client, db_session, admin_user, mail_on):
+        db_session.add(ClientMailLog(
+            username="ghost", address="ghost@example.test", subject="<b>s</b>", rule_ids=f"{AUTO},{HTTP}",
+            kind="requested", ok=False, error="ErrorNonExistentMailbox: <no such mailbox>",
+        ))
+        db_session.commit()
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        section = body[body.index('id="client-mail-log"'):body.index('id="mail-log-prev"')]
+        assert "ghost@example.test" in section and f"{AUTO}, {HTTP}" in section
+        assert "0 sent" in section and "1 failed" in section
+        assert "ErrorNonExistentMailbox: &lt;no such mailbox&gt;" in section and "<no such mailbox>" not in section
+
+    def test_deleting_an_account_keeps_its_mail_history(self, client, db_session, admin_user, mail_on):
+        self._person(db_session, "leaver")
+        client_rules.request_mail(db_session, AUTO)
+        client_rules.run_auto_mail(db_session)
+        leaver = db_session.exec(select(User).where(User.username == "leaver")).one()
+        resp = client.post(f"/admin/users/{leaver.id}/delete", headers=_admin(admin_user))
+        assert resp.status_code < 400
+        assert [row.username for row in self._log(db_session)] == ["leaver"]
 
 
 class TestInstaller:
