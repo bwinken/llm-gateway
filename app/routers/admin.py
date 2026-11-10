@@ -1155,6 +1155,7 @@ def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
     return {
         "id": rule.id, "name": rule.name, "description": check.description, "enabled": rule.enabled,
         "deprecated": rule.deprecated,
+        "needs_patch": check.needs_patch, "missing_patch": rule.missing_patch,
         # Over all time, for judging when the check can go: see client_rules.history.
         "last_seen": _local_label(seen["last_seen_at"]) if seen else "",
         "quiet_days": seen["quiet_days"] if seen else None,
@@ -1296,7 +1297,7 @@ def save_client_rule(
     rule = _client_rule_or_404(session, rule_id)
     try:
         rule = client_rules.save_settings(
-            session, rule.check, client_rules.clean_fields(form), updated_by=admin_user.username,
+            session, rule.check, client_rules.clean_fields(form, rule.check), updated_by=admin_user.username,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

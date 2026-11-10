@@ -874,11 +874,47 @@ class TestAdminSettings:
         (AUTO, {"action": "block"}, "Action"),
         (AUTO, {"title": ""}, "title"),
         (AUTO, {"email_repeat_days": "999"}, "between 0 and 365"),
+        (AUTO, {"patch": ""}, "needs a settings patch"),
+        (AUTO, {"patch": "", "patch_aws": "MODEL=claude-m"}, "Everyone box"),        # local-only accounts would get nothing
+        (HTTP, {"patch": "   "}, "needs a settings patch"),
+        (UNKNOWN_MODEL, {"patch": "# nothing yet"}, "needs a settings patch"),
     ])
     def test_bad_input_is_refused(self, client, db_session, admin_user, rule_id, change, message):
         resp = client.post(f"/admin/client-rules/{rule_id}", data={**_FORM, **change}, headers=_admin(admin_user))
         assert resp.status_code == 400 and message in resp.json()["detail"]
         assert db_session.exec(select(ClientRuleSetting)).all() == []
+
+    def test_a_check_cannot_be_turned_on_without_its_patch(self, client, db_session, admin_user, test_user):
+        """CC001, CC002 and CC004 are fixed by a setting: no patch, nothing to tell people."""
+        assert [c.id for c in client_checks.CHECKS if c.needs_patch] == [AUTO, HTTP, UNKNOWN_MODEL]
+        url, headers = f"/admin/client-rules/{HTTP}", _admin(admin_user)
+        empty = {"enabled": "on", "action": "notice", "title": "Use https", "patch": ""}
+        resp = client.post(url, data=empty, headers=headers)
+        assert resp.status_code == 400 and "CC002" in resp.json()["detail"]
+        client_rules.refresh()
+        _messages(client, url="http://testserver/v1/messages")
+        assert _violators(db_session, HTTP) == []                               # still off
+        # Saving it switched off, to fill the patch in later, is fine ...
+        assert client.post(url, data={**empty, "enabled": "off"}, headers=headers).status_code == 200
+        # ... and so is turning it on once the patch is there.
+        assert client.post(url, data={**empty, "patch": "ANTHROPIC_BASE_URL=https://gw.example.test"}, headers=headers).status_code == 200
+
+    def test_checks_without_a_setting_to_change_need_no_patch(self, client, admin_user):
+        for rule_id in (OUTDATED, NO_CLOUD_ACCESS):
+            form = {"enabled": "on", "action": "notice", "title": "t", "patch": ""}
+            assert client.post(f"/admin/client-rules/{rule_id}", data=form, headers=_admin(admin_user)).status_code == 200, rule_id
+
+    def test_a_test_mail_of_an_unfinished_form_is_still_possible(self, client, admin_user, mail_on):
+        form = {"enabled": "on", "action": "notice", "title": "Use https", "patch": ""}
+        assert client.post(f"/admin/client-rules/{HTTP}/mail-test", data=form, headers=_admin(admin_user)).json()["ok"]
+
+    def test_an_older_row_without_a_patch_is_flagged(self, client, db_session, admin_user):
+        _configure(db_session, HTTP, patch="")                                  # as an older row could be
+        assert client_rules.get_rule(db_session, HTTP).missing_patch
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        card = body.split('id="client-rule-CC002"', 1)[1].split('id="client-rule-CC003"', 1)[0]
+        assert ">no patch<" in card and "data-needs-patch" in card and "required to turn this rule on" in card
+        assert "data-needs-patch" not in body.split('id="client-rule-CC003"', 1)[1].split('id="client-rule-CC004"', 1)[0]
 
     def test_unknown_ids_are_404(self, client, admin_user):
         for url in ("/admin/client-rules/CC999", "/admin/client-rules/CC999/mail", "/admin/client-rules/CC999/reset"):

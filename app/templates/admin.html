@@ -656,6 +656,7 @@ function submitExportCsv() {
             {% if r.deprecated %}<span class="gw-badge" style="background:rgba(167,139,250,0.14);color:#a78bfa">deprecated</span>{% endif %}
             {% if r.enabled %}<span class="text-xs text-t4">{% if r.deprecated %}notice only{% else %}{{ r.action }}{% if r.auto_email %} · auto mail{% endif %}{% endif %}{% if r.has_patch %} · patch{% endif %}</span>
             {% else %}<span class="gw-badge gw-badge-muted">off</span>{% endif %}
+            {% if r.missing_patch %}<span class="gw-badge" style="background:rgba(255,92,92,0.14);color:#ff8a8a">no patch</span>{% endif %}
             {% if r.stale %}<span class="text-xs" style="color:#3dd68c">quiet for {{ r.quiet_days }} days</span>{% endif %}
             <span class="ml-auto text-xs font-mono" style="color:{{ '#f5a623' if r.open else '' }}">{{ r.open }} account{{ '' if r.open == 1 else 's' }}{% if r.hits|length - r.open %} <span class="text-t4">· {{ r.hits|length - r.open }} say fixed</span>{% endif %}</span>
         </summary>
@@ -671,7 +672,7 @@ function submitExportCsv() {
                 {% else %}No violation has ever been recorded.{% endif %}
                 {% if r.stale %}<span style="color:#3dd68c">Nobody has tripped it for {{ cr.stale_days }} days or more: it can be {{ 'retired' if r.deprecated else 'deprecated, then retired,' }} in <span class="font-mono">client_checks.py</span>.</span>{% endif %}
             </p>
-            <form action="/admin/client-rules/{{ r.id }}" method="POST" data-cr-form="save" data-rule="{{ r.id }}">
+            <form action="/admin/client-rules/{{ r.id }}" method="POST" data-cr-form="save" data-rule="{{ r.id }}"{{ ' data-needs-patch' if r.needs_patch }}>
                 <div class="flex flex-wrap items-end gap-4">
                     <label class="flex items-center gap-2 text-sm text-t2 py-1.5"><input type="checkbox" name="enabled" {{ 'checked' if r.enabled }}> On</label>
                     <div>
@@ -693,7 +694,7 @@ function submitExportCsv() {
                      data-tip="Optional. Environment variables for the env block of the user's ~/.claude/settings.json: one NAME=value per line, -NAME to remove one. The script the user downloads sets exactly these and touches nothing else in the file. Every account gets the first box. An account with Azure access also gets the second on top, one with AWS access the third on top of that (AWS wins where both set the same variable).">Settings patch <span class="normal-case tracking-normal font-normal text-t4">environment variables only · NAME=value per line · -NAME removes</span></div>
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-x-4 gap-y-3">
                     <div>
-                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Everyone <span class="normal-case tracking-normal font-normal">(local-only accounts get just this)</span></label>
+                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Everyone <span class="normal-case tracking-normal font-normal">(local-only accounts get just this){% if r.needs_patch %} · <span style="color:#f5a623">required to turn this rule on</span>{% endif %}</span></label>
                         <textarea name="patch" rows="4" spellcheck="false" placeholder="NAME=value" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ r.patch }}</textarea>
                     </div>
                     <div>
@@ -1773,6 +1774,17 @@ function submitExportCsv() {
             var form = e.target, kind = form.dataset.crForm, rule = form.dataset.rule;
             if (!kind) return;
             e.preventDefault();
+            // A rule whose fix is a setting is not turned on without one (the server refuses it too).
+            if (kind === 'save' && form.hasAttribute('data-needs-patch') && form.querySelector('input[name="enabled"]').checked) {
+                var box = form.querySelector('textarea[name="patch"]');
+                if (!box.value.trim()) {
+                    gwToast(rule + ' tells people to change a setting: fill in the Everyone box of its settings patch before turning it on.', 'error');
+                    box.classList.add('um-flash-err');
+                    setTimeout(function() { box.classList.remove('um-flash-err'); }, 1800);
+                    box.focus();
+                    return;
+                }
+            }
             var ask = null;
             if (kind === 'reset') {
                 ask = { text: 'Reset ' + rule + ' to its built-in defaults? Your wording, patch and mail settings for it are dropped; its list of accounts is kept.', okLabel: 'Reset', danger: true };

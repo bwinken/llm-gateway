@@ -512,6 +512,13 @@ class Rule:
         return self.check.name
 
     @property
+    def missing_patch(self) -> bool:
+        """On, its fix is a setting, and there is no patch for everyone:
+        its accounts are told to change something without being told what.
+        A save refuses this; it can only come from an older row."""
+        return self.enabled and self.check.needs_patch and not load_env(self.patch)
+
+    @property
     def deprecated(self) -> str:
         """Why the check is on its way out ("" while it is not). A deprecated
         check still records and shows its notice, but never reminds or mails."""
@@ -740,8 +747,11 @@ async def observe_request(request: Any, user: User) -> JSONResponse | None:
 
 # ── Admin: settings of a check ──
 
-def clean_fields(form: dict[str, Any]) -> dict[str, Any]:
-    """Validate an admin's form for a check. Returns column values; raises ValueError."""
+def clean_fields(form: dict[str, Any], check: Check | None = None) -> dict[str, Any]:
+    """Validate an admin's form for a check. Returns column values; raises
+    ValueError. With ``check`` (a save, as opposed to a test mail of the
+    form as it stands), a check whose fix is a setting cannot be turned on
+    while its patch for everyone is empty."""
     title = str(form.get("title") or "").strip()
     if not title or len(title) > 200:
         raise ValueError("Give the notice a title (200 characters at most).")
@@ -757,9 +767,15 @@ def clean_fields(form: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Repeat days must be a whole number.")
     if not 0 <= repeat <= 365:
         raise ValueError("Repeat days must be between 0 and 365.")
+    patch = dump_env(parse_env(str(form.get("patch") or "")))
+    if check is not None and check.needs_patch and form.get("enabled") and not patch:
+        raise ValueError(
+            f"{check.id} tells people to change a setting, so it needs a settings patch: "
+            "fill in the Everyone box (NAME=value) before turning it on."
+        )
     return {
         "enabled": bool(form.get("enabled")), "action": action, "title": title, "message": message,
-        "patch": dump_env(parse_env(str(form.get("patch") or ""))),
+        "patch": patch,
         "patch_azure": dump_env(parse_env(str(form.get("patch_azure") or ""))),
         "patch_aws": dump_env(parse_env(str(form.get("patch_aws") or ""))),
         "email_subject": str(form.get("email_subject") or "").strip()[:200],

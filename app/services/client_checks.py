@@ -73,6 +73,9 @@ class Check:
     env_azure: str = ""
     env_aws: str = ""
     enabled: bool = False                # on before an admin has touched it?
+    # The fix is a setting, so telling people without a patch helps nobody:
+    # the check cannot be turned on while its patch for everyone is empty.
+    needs_patch: bool = False
     deprecated: str = ""                 # non-empty: why it is on its way out (no reminder, no mail)
     retired: str = ""                    # non-empty: why it was retired (not evaluated at all)
 
@@ -165,6 +168,7 @@ CHECKS: tuple[Check, ...] = (
         ),
         env="CLAUDE_CODE_AUTO_MODE_SERVER=0",
         enabled=True,
+        needs_patch=True,
     ),
     Check(
         id="CC002",
@@ -179,6 +183,7 @@ CHECKS: tuple[Check, ...] = (
             "Your client still talks to the gateway over http://, which will be turned off. "
             "Apply the setting below (or change the base URL yourself) and restart Claude Code."
         ),
+        needs_patch=True,
     ),
     Check(
         id="CC003",
@@ -208,6 +213,7 @@ CHECKS: tuple[Check, ...] = (
             "Some of your requests name a model that is not available here, so another model answers them "
             "without telling you. Apply the settings below so those requests name a model the gateway has."
         ),
+        needs_patch=True,
     ),
     Check(
         id="CC005",
