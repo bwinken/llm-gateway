@@ -128,7 +128,7 @@ Open `https://your-gateway` and sign in through SSO. Accounts with the `admin` s
 - choose whether a spent cloud cap falls back to on-prem models instead of returning 429;
 - edit models, pricing, and fallbacks under **Model Config**;
 - export monthly cost reports (xlsx, or CSV split by backend) and review usage anomalies;
-- review the **audit log** (Settings tab, CSV download) and, for access reviews, list API keys unused for 90+ days or still in the older format (Users tab filters).
+- review the **audit log** (Security tab, CSV download) and, for access reviews, list API keys unused for 90+ days or still in the older format (Users tab filters).
 
 ## Deployment
 

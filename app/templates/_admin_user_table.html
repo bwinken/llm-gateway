@@ -10,7 +10,7 @@
 {% macro toggle_form(u, action, path, granted, label, title_on, title_off) %}
 <form action="/admin/users/{{ u.id }}/{{ path }}" method="POST" data-action="{{ action }}"
       data-granted="{{ 'true' if granted else 'false' }}">
-    <button type="submit" class="gw-btn gw-btn-ghost gw-grant gw-grant-{{ action }} text-xs px-3 py-1 {{ 'is-on' if granted }}"
+    <button type="submit" class="gw-btn gw-btn-ghost gw-grant gw-grant-{{ action }} text-xs px-2.5 py-1 {{ 'is-on' if granted }}"
             aria-pressed="{{ 'true' if granted else 'false' }}"
             title="{{ title_on if granted else title_off }}">{{ label }}</button>
 </form>
@@ -93,8 +93,9 @@
             <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
         </form>
     </td>
-    <td class="whitespace-nowrap text-right">
-        <div class="flex items-center justify-end gap-2">
+    {# Wraps onto a second line rather than being cut off at the card's edge. #}
+    <td class="text-right">
+        <div class="flex flex-wrap items-center justify-end gap-1.5">
             {{ toggle_form(u, 'azure', 'toggle-azure', u.can_use_azure, 'Azure', 'Azure granted', 'No Azure access') }}
             {{ toggle_form(u, 'bedrock', 'toggle-bedrock', u.can_use_bedrock, 'AWS', 'AWS Bedrock granted', 'No AWS Bedrock access') }}
             {% if not u.is_admin %}
@@ -104,13 +105,13 @@
             {% if not u.is_admin and not u.is_self %}
             <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-action="disable"
                   data-granted="{{ 'true' if u.is_disabled else 'false' }}">
-                <button type="submit" class="gw-btn text-xs px-3 py-1 {{ 'gw-btn-warn' if u.is_disabled else 'gw-btn-ghost' }}"
+                <button type="submit" class="gw-btn text-xs px-2.5 py-1 {{ 'gw-btn-warn' if u.is_disabled else 'gw-btn-ghost' }}"
                         title="{{ 'Disabled — click to enable' if u.is_disabled else 'Active — click to disable' }}">
                     {{ 'Enable' if u.is_disabled else 'Disable' }}
                 </button>
             </form>
             <form action="/admin/users/{{ u.id }}/delete" method="POST" data-action="delete">
-                <button type="submit" class="gw-btn gw-btn-danger text-xs px-3 py-1">Delete</button>
+                <button type="submit" class="gw-btn gw-btn-danger text-xs px-2.5 py-1">Delete</button>
             </form>
             {% endif %}
         </div>

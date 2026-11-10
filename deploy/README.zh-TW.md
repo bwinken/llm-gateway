@@ -180,7 +180,7 @@ scrape_configs:
 
 ## 安全相關設定
 
-- **稽核紀錄。** 每個 admin / dashboard 的變更、每次顯示完整 API key、每次匯出，都會在 `audit_log` 留一列（admin *Settings* → *Audit Log*，可下載 CSV）。只能新增：PostgreSQL 的 trigger 會拒絕 UPDATE、DELETE 和 TRUNCATE，要刪資料必須由 DBA 刻意拿掉 trigger。每一筆也會寫成 `Audit | {...}` log（含使用者名稱、位址、送出的欄位；密鑰已遮蔽）。
+- **稽核紀錄。** 每個 admin / dashboard 的變更、每次顯示完整 API key、每次匯出，都會在 `audit_log` 留一列（admin *Security* → *Audit Log*，可下載 CSV）。只能新增：PostgreSQL 的 trigger 會拒絕 UPDATE、DELETE 和 TRUNCATE，要刪資料必須由 DBA 刻意拿掉 trigger。每一筆也會寫成 `Audit | {...}` log（含使用者名稱、位址、送出的欄位；密鑰已遮蔽）。
 - **驗證失敗節流。** `AUTH_FAIL_DISTINCT_KEYS` / `AUTH_FAIL_WINDOW_S` / `AUTH_LOCKOUT_S`（預設 600 秒內 10 把不同的錯誤 key → 封鎖 900 秒，回 429）。依來源位址判斷，所以 uvicorn 必須信任 nginx 轉送的 header；loopback 永不封鎖，若沒設定好，所有請求都會變成 loopback，節流也就形同關閉。
 - **套件與密鑰掃描** 在 GitHub Actions 執行（`.github/workflows/security.yml`）。要讓 Dependabot 自動開安全修補 PR，需到 repo 的 Settings → Code security 打開 *Dependabot security updates*。
 

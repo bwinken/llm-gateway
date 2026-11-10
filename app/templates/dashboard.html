@@ -50,23 +50,43 @@
 </div>
 {% endif %}
 
-{# ── Client rules this account's requests matched (admin-written; app/services/client_rules.py) ── #}
-{% for n in client_notices %}
-<div id="clientNotice-{{ n.rule_id }}" class="gw-card p-4 mb-6 gw-anim gw-d1 text-sm" data-client-notice
-     style="background:rgba(245,166,35,0.06);border-color:rgba(245,166,35,0.3)">
-    <div class="text-t1 font-semibold mb-0.5">{{ n.title }}</div>
-    {% if n.message %}<div class="text-t3 whitespace-pre-line">{{ n.message }}</div>{% endif %}
-    {% if n.patch %}
-    <div class="text-t3 mt-2">Put these in the <code class="font-mono">env</code> block of <code class="font-mono">~/.claude/settings.json</code>, then restart Claude Code:</div>
-    <pre class="mt-2 p-3 rounded text-xs font-mono text-t2 overflow-x-auto" style="background:rgba(0,0,0,0.25)">{{ n.patch }}</pre>
-    <div class="mt-2 flex flex-wrap items-center gap-3">
-        <a href="/dashboard/client-rules/{{ n.rule_id }}/patch.bat" class="gw-btn gw-btn-primary text-sm px-4 py-2">Download patch (Windows)</a>
-        <span class="text-t4 text-xs">Run it once: it sets only the variables above, leaves the rest of the file alone and saves a backup as settings.json.bak.</span>
+{# ── Client-rule notices for this account (app/services/client_rules.py), as one compact
+      panel: a row per notice that opens to the fix, so several notices do not push the
+      budget below the fold. A single notice starts open. ── #}
+{% if client_notices %}
+<div id="clientNotices" class="gw-card mb-6 gw-anim gw-d1 overflow-hidden"
+     style="background:rgba(245,166,35,0.05);border-color:rgba(245,166,35,0.3)">
+    <div class="px-4 py-2.5 flex flex-wrap items-baseline gap-x-2">
+        <span class="text-sm font-bold" style="color:#f5a623">Action needed</span>
+        <span class="text-xs text-t3">{{ client_notices|length }} thing{{ '' if client_notices|length == 1 else 's' }} to change in your Claude Code setup</span>
     </div>
-    {% endif %}
-    <div class="text-t4 text-xs mt-2"><span class="font-mono">{{ n.rule_id }}</span> · last seen {{ n.seen_local }}{% if n.client_version %} · Claude Code {{ n.client_version }}{% endif %}. This notice clears {{ client_notice_days }} days after your last such request.</div>
+    {% for n in client_notices %}
+    <details id="clientNotice-{{ n.rule_id }}" data-client-notice class="group text-sm" {{ 'open' if client_notices|length == 1 }}
+             style="border-top:1px solid rgba(245,166,35,0.15)">
+        <summary class="px-4 py-3 flex items-center gap-3 cursor-pointer select-none list-none hover:bg-[rgba(255,255,255,0.02)]">
+            <span class="font-mono text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style="background:rgba(245,166,35,0.12);color:#f5a623">{{ n.rule_id }}</span>
+            <span class="text-t1 font-semibold">{{ n.title }}</span>
+            <span class="ml-auto flex items-center gap-1.5 text-xs text-t3 flex-shrink-0">
+                <span class="group-open:hidden">{{ 'Show the fix' if n.patch else 'Details' }}</span><span class="hidden group-open:inline">Hide</span>
+                <svg class="w-4 h-4 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </span>
+        </summary>
+        <div class="px-4 pb-4">
+            {% if n.message %}<div class="text-t3 whitespace-pre-line">{{ n.message }}</div>{% endif %}
+            {% if n.patch %}
+            <div class="text-t3 mt-2">Put these in the <code class="font-mono">env</code> block of <code class="font-mono">~/.claude/settings.json</code>, then restart Claude Code:</div>
+            <pre class="mt-2 p-3 rounded text-xs font-mono text-t2 overflow-x-auto" style="background:rgba(0,0,0,0.25)">{{ n.patch }}</pre>
+            <div class="mt-2 flex flex-wrap items-center gap-3">
+                <a href="/dashboard/client-rules/{{ n.rule_id }}/patch.bat" class="gw-btn gw-btn-primary text-sm px-4 py-2">Download patch (Windows)</a>
+                <span class="text-t4 text-xs">Run it once: it sets only the variables above, leaves the rest of the file alone and saves a backup as settings.json.bak.</span>
+            </div>
+            {% endif %}
+            <div class="text-t4 text-xs mt-2">Last seen {{ n.seen_local }}{% if n.client_version %} · Claude Code {{ n.client_version }}{% endif %}. This notice clears {{ client_notice_days }} days after your last such request.</div>
+        </div>
+    </details>
+    {% endfor %}
 </div>
-{% endfor %}
+{% endif %}
 
 {# ── First-time setup: only until the account has made its first request ── #}
 {% if total_reqs == 0 and today_reqs == 0 %}
