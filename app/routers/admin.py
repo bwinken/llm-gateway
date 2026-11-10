@@ -1157,7 +1157,11 @@ def _client_rule_view(session: Session, rule: ClientRule) -> dict:
         "body_field": rule.body_field, "version_below": rule.version_below, "plain_http": rule.plain_http,
         "models": list(rule.models or []), "usernames": list(rule.usernames or []),
         "org_codes": list(rule.org_codes or []), "title": rule.title, "message": rule.message,
-        "patch": rule.patch, "action": rule.action, "email_subject": rule.email_subject,
+        "patch": client_rules.env_lines(client_rules.load_env(rule.patch)),
+        "patch_azure": client_rules.env_lines(client_rules.load_env(rule.patch_azure)),
+        "patch_aws": client_rules.env_lines(client_rules.load_env(rule.patch_aws)),
+        "has_patch": bool(rule.patch or rule.patch_azure or rule.patch_aws),
+        "action": rule.action, "email_subject": rule.email_subject,
         "auto_email": rule.auto_email, "email_repeat_days": rule.email_repeat_days,
         "created_by": rule.created_by, "condition": client_rules.condition_text(rule),
         "everyone": not rule.usernames and not rule.org_codes,
@@ -1199,6 +1203,8 @@ def _client_rule_form(
     title: str = Form(""),
     message: str = Form(""),
     patch: str = Form(""),
+    patch_azure: str = Form(""),
+    patch_aws: str = Form(""),
     action: str = Form("notice"),
     email_subject: str = Form(""),
     auto_email: str = Form(""),
@@ -1208,7 +1214,8 @@ def _client_rule_form(
         "name": name, "enabled": enabled == "on", "body_field": body_field, "version_below": version_below,
         "plain_http": plain_http == "on",
         "models": models, "usernames": usernames, "org_codes": org_codes, "title": title, "message": message,
-        "patch": patch, "action": action, "email_subject": email_subject, "auto_email": auto_email == "on",
+        "patch": patch, "patch_azure": patch_azure, "patch_aws": patch_aws,
+        "action": action, "email_subject": email_subject, "auto_email": auto_email == "on",
         "email_repeat_days": email_repeat_days,
     }
 
@@ -1247,12 +1254,14 @@ def add_client_rule(
 def test_client_rule_mail(
     form: dict = Depends(_client_rule_form),
     to: str = Form(""),
+    audience: str = Form("local"),
     admin_user: User = Security(get_web_user, scopes=["admin"]),
 ):
     """Send the mail of the rule as it stands in the form (saved or not) to
-    one address, the admin's own by default, so the Exchange settings and
-    the wording can be checked before anyone else gets it. Only addresses
-    of the company domain are accepted."""
+    one address, so the Exchange settings and the wording can be checked
+    before anyone else gets it. ``to`` defaults to the admin's own mailbox
+    and must be in the company domain; ``audience`` picks whose patch the
+    mail shows (a local-only, an Azure or an AWS account)."""
     if not mailer.is_enabled():
         raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
     to = to.strip() or mailer.address_for(admin_user.username)
@@ -1262,14 +1271,17 @@ def test_client_rule_mail(
     if not title:
         raise HTTPException(status_code=400, detail="Give the notice a title first.")
     try:
-        patch = client_rules.format_patch(client_rules.parse_patch(form["patch"]))
+        draft = SimpleNamespace(
+            name=str(form["name"]).strip() or "test", title=title, message=str(form["message"]).strip(),
+            email_subject=str(form["email_subject"]).strip(),
+            patch=client_rules.dump_env(client_rules.parse_env(form["patch"])),
+            patch_azure=client_rules.dump_env(client_rules.parse_env(form["patch_azure"])),
+            patch_aws=client_rules.dump_env(client_rules.parse_env(form["patch_aws"])),
+        )
+        env = client_rules.effective_env(draft, *client_rules.audience_flags(audience.strip().lower() or "local"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    draft = SimpleNamespace(
-        name=str(form["name"]).strip() or "test", title=title, message=str(form["message"]).strip(),
-        patch=patch, email_subject=str(form["email_subject"]).strip(),
-    )
-    subject, body = client_rules.render_mail(draft, admin_user.username)
+    subject, body = client_rules.render_mail(draft, to.partition("@")[0], env)
     ok, error = mailer.send(to, "[TEST] " + subject, body)
     audit.note(mail_test_to=to, mail_test_ok=ok)
     return JSONResponse({"ok": ok, "to": to, "detail": error})
@@ -1349,16 +1361,24 @@ def send_client_rule_mail(
 
 
 @router.get("/client-rules/{rule_id}/patch.bat")
-def preview_client_rule_patch(rule_id: int, session: Session = Depends(get_session)):
-    """The patch script a matching account downloads, for the admin to check."""
-    found = client_rules.patch_for(session, rule_id, None)
-    if found is None:
-        raise HTTPException(status_code=404, detail="This rule has no settings patch.")
-    rule, patch = found
+def preview_client_rule_patch(
+    rule_id: int,
+    audience: str = Query("local"),
+    session: Session = Depends(get_session),
+):
+    """The patch script one kind of account downloads (``audience``:
+    ``local``, ``azure`` or ``aws``), for the admin to check."""
+    rule = _client_rule_or_404(session, rule_id)
+    try:
+        env = client_rules.effective_env(rule, *client_rules.audience_flags(audience))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not env:
+        raise HTTPException(status_code=404, detail="This rule has no settings patch for that audience.")
     return Response(
-        content=client_rules.render_patch_bat(rule.name, patch).encode("utf-8"),
+        content=client_rules.render_patch_bat(rule.name, env).encode("utf-8"),
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="claude-code-patch-{rule.id}.bat"'},
+        headers={"Content-Disposition": f'attachment; filename="claude-code-patch-{rule.id}-{audience}.bat"'},
     )
 
 

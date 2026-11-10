@@ -33,7 +33,7 @@ _DOWNSTREAM = {
     "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
 }
 _UA = "claude-cli/2.1.280 (external, cli)"
-_PATCH = {"env": {"CLAUDE_CODE_AUTO_MODE_SERVER": "0"}}
+_ENV = {"CLAUDE_CODE_AUTO_MODE_SERVER": "0"}
 
 
 def _now() -> datetime:
@@ -43,7 +43,7 @@ def _now() -> datetime:
 def _rule(db_session, **kw) -> ClientRule:
     values = dict(
         name="Auto mode", body_field="safeguards", title="Auto mode needs a setting", message="Apply the patch.",
-        patch=json.dumps(_PATCH, indent=2), created_at=_now(), updated_at=_now(),
+        patch=json.dumps(_ENV), created_at=_now(), updated_at=_now(),
     )
     values.update(kw)
     rule = ClientRule(**values)
@@ -86,7 +86,7 @@ def _admin(admin: User) -> dict:
 
 _FORM = {
     "name": "Auto mode", "enabled": "on", "body_field": "safeguards", "title": "Fix auto mode",
-    "message": "Apply the patch.", "patch": json.dumps(_PATCH), "action": "notice",
+    "message": "Apply the patch.", "patch": "CLAUDE_CODE_AUTO_MODE_SERVER=0", "action": "notice",
 }
 
 
@@ -260,20 +260,37 @@ class TestReminder:
 
 
 class TestPatch:
-    def test_only_a_json_object_is_a_patch(self):
-        assert client_rules.parse_patch("") is None
-        assert client_rules.parse_patch(' {"env": {"A": "1"}} ') == {"env": {"A": "1"}}
-        for bad in ("[1]", '"x"', "{}", "{not json", '{"__proto__": {"a": 1}}'):
+    def test_lines_or_json_only_ever_name_environment_variables(self):
+        assert client_rules.parse_env("") == {}
+        assert client_rules.parse_env("# why\nA=1\n B = two words \n-OLD\n") == {"A": "1", "B": "two words", "OLD": None}
+        assert client_rules.parse_env('{"A": "1", "N": 3, "T": true, "OLD": null}') == {"A": "1", "N": "3", "T": "true", "OLD": None}
+        assert client_rules.parse_env("URL=https://gw.example.test/v1?a=b") == {"URL": "https://gw.example.test/v1?a=b"}
+        for bad in ("A", "1A=x", "A B=x", "{broken", '{"A": {"nested": 1}}', '{"A": [1]}', "[1]", "permissions.allow=x"):
             with pytest.raises(ValueError):
-                client_rules.parse_patch(bad)
+                client_rules.parse_env(bad)
 
-    def test_merge_keeps_everything_else(self):
+    def test_stored_patch_round_trips_to_the_admins_lines(self):
+        env = client_rules.parse_env("A=1\n-OLD")
+        assert client_rules.env_lines(client_rules.load_env(client_rules.dump_env(env))) == "A=1\n-OLD"
+        assert client_rules.dump_env({}) == "" and client_rules.load_env("{broken") == {}
+
+    def test_only_the_env_block_changes(self):
         settings = {"env": {"KEEP": "1", "OLD": "x"}, "model": "a", "permissions": {"allow": ["x"]}}
-        client_rules.merge_patch(settings, {"env": {"NEW": "2", "OLD": None}, "model": "b"})
-        assert settings == {"env": {"KEEP": "1", "NEW": "2"}, "model": "b", "permissions": {"allow": ["x"]}}
+        client_rules.apply_env(settings, {"NEW": "2", "OLD": None})
+        assert settings == {"env": {"KEEP": "1", "NEW": "2"}, "model": "a", "permissions": {"allow": ["x"]}}
+
+    def test_each_audience_gets_its_own_variables(self):
+        rule = SimpleNamespace(
+            patch='{"SERVER": "0", "MODEL": "local-m", "LOCAL_ONLY": "1"}',
+            patch_azure='{"MODEL": "azure-m"}', patch_aws='{"MODEL": "claude-m", "LOCAL_ONLY": null}',
+        )
+        assert client_rules.effective_env(rule, False, False) == {"SERVER": "0", "MODEL": "local-m", "LOCAL_ONLY": "1"}
+        assert client_rules.effective_env(rule, True, False)["MODEL"] == "azure-m"
+        assert client_rules.effective_env(rule, False, True) == {"SERVER": "0", "MODEL": "claude-m", "LOCAL_ONLY": None}
+        assert client_rules.effective_env(rule, True, True)["MODEL"] == "claude-m"     # AWS wins over Azure
 
     def test_admin_text_never_reaches_cmd(self):
-        bat = client_rules.render_patch_bat('100% "fix" & <del> | %PATH%', {"env": {"A": '%PATH% & "q" 中文'}})
+        bat = client_rules.render_patch_bat('100% "fix" & <del> | %PATH%', {"A": '%PATH% & "q" 中文'})
         head = bat.split("//GW-NODE-BEGIN")[0]
         assert "%PATH%" not in head and "中文" not in bat and "<del>" not in bat
         assert "\n" not in bat.replace("\r\n", "")      # CRLF throughout, as cmd.exe needs
@@ -282,32 +299,31 @@ class TestPatch:
     @pytest.mark.parametrize("before", [
         None,
         "",
-        "﻿" + json.dumps({"env": {"KEEP": "1", "OLD": "x"}, "gone": 1}),
+        "\ufeff" + json.dumps({"env": {"KEEP": "1", "OLD": "x"}, "gone": 1}),
+        json.dumps({"model": "m", "env": None}),
         json.dumps({
-            "env": {"KEEP": "1", "OLD": "x", "A": "é中文"}, "model": "old", "gone": {"x": 1},
+            "env": {"KEEP": "1", "OLD": "x", "A": "é中文"}, "model": "old",
             "permissions": {"allow": ["Bash(ls:*)"], "deny": [], "one": ["only"], "nested": [[1, 2], [], {"k": None}]},
             "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": 'echo "hi"'}]}]},
-            "num": 1.5, "t": True, "nul": None, "emptyobj": {}, "date": "2026-11-10T08:00:00Z", "model_was_object": {"a": 1},
+            "num": 1.5, "t": True, "nul": None, "emptyobj": {}, "date": "2026-11-10T08:00:00Z",
         }, indent=2),
     ])
-    def test_the_script_merges_like_merge_patch(self, tmp_path, before):
-        change = {
-            "env": {"CLAUDE_CODE_AUTO_MODE_SERVER": "0", "M": "模型 x", "OLD": None, "Q": 'it\'s "q" %PATH% & <b>'},
-            "model": "new", "permissions": {"deny": ["a"]}, "gone": None, "n": 3, "model_was_object": "now a string",
-        }
+    def test_the_script_changes_what_apply_env_changes(self, tmp_path, before):
+        change = {"CLAUDE_CODE_AUTO_MODE_SERVER": "0", "M": "模型 x", "OLD": None, "Q": 'it\'s "q" %PATH% & <b>'}
         result = self._run(tmp_path, change, before)
         assert result.returncode == 0, result.stdout + result.stderr
-        settings = tmp_path / ".claude" / "settings.json"
-        raw = settings.read_bytes()
+        raw = (tmp_path / ".claude" / "settings.json").read_bytes()
         assert not raw.startswith(b"\xef\xbb\xbf")
-        want = client_rules.merge_patch(json.loads(before.lstrip("﻿")) if before else {}, copy.deepcopy(change))
-        assert json.loads(raw.decode("utf-8")) == want
+        was = json.loads(before.lstrip("\ufeff")) if before else {}
+        got = json.loads(raw.decode("utf-8"))
+        assert got == client_rules.apply_env(copy.deepcopy(was), change)
+        assert {k: v for k, v in got.items() if k != "env"} == {k: v for k, v in was.items() if k != "env"}
         assert (tmp_path / ".claude" / "settings.json.bak").exists() == (before is not None)
 
     @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
-    @pytest.mark.parametrize("before", ["{not json", "[1, 2]"])
+    @pytest.mark.parametrize("before", ["{not json", "[1, 2]", '{"env": "a string"}'])
     def test_the_script_leaves_a_file_it_cannot_read_alone(self, tmp_path, before):
-        result = self._run(tmp_path, _PATCH, before)
+        result = self._run(tmp_path, _ENV, before)
         assert result.returncode != 0
         assert (tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8") == before
 
@@ -337,6 +353,26 @@ class TestDashboard:
         assert f'id="clientNotice-{rule.id}"' in body and "Auto mode needs a setting" in body
         assert "CLAUDE_CODE_AUTO_MODE_SERVER" in body
         assert f"/dashboard/client-rules/{rule.id}/patch.bat" in body
+
+    def test_the_patch_follows_the_accounts_access(self, client, db_session, test_user):
+        rule = _rule(db_session, patch='{"MODEL": "local-m"}', patch_azure='{"MODEL": "azure-m"}', patch_aws='{"MODEL": "claude-m"}')
+        _hit(db_session, rule, "testuser")
+        headers = web_auth_header(sub=test_user.username)
+        url = f"/dashboard/client-rules/{rule.id}/patch.bat"
+
+        def script_env() -> dict:
+            import base64
+            import re
+            text = client.get(url, headers=headers).text
+            return json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))
+
+        for azure, aws, model in ((False, False, "local-m"), (True, False, "azure-m"), (False, True, "claude-m"), (True, True, "claude-m")):
+            test_user.can_use_azure, test_user.can_use_bedrock = azure, aws
+            db_session.add(test_user)
+            db_session.commit()
+            body = self._page(client, test_user)
+            assert f"&#34;MODEL&#34;: &#34;{model}&#34;" in body, (azure, aws)
+            assert script_env() == {"MODEL": model}
 
     def test_others_see_nothing(self, client, db_session, test_user):
         rule = _rule(db_session)
@@ -385,7 +421,7 @@ class TestAdminRules:
         assert resp.status_code == 200, resp.text
         rule_id = resp.json()["id"]
         rule = db_session.get(ClientRule, rule_id)
-        assert rule.created_by == "admin" and json.loads(rule.patch) == _PATCH and rule.enabled
+        assert rule.created_by == "admin" and json.loads(rule.patch) == _ENV and rule.enabled
 
         _messages(client, safeguards={})          # the new rule is live in this worker at once
         assert len(_hits(db_session, rule)) == 1
@@ -404,7 +440,8 @@ class TestAdminRules:
     @pytest.mark.parametrize("change, message", [
         ({"body_field": ""}, "at least one condition"),
         ({"patch": "{broken"}, "not valid JSON"),
-        ({"patch": "[1]"}, "JSON object"),
+        ({"patch": "permissions.allow=x"}, "not an environment variable"),
+        ({"patch_aws": "just words"}, "NAME=value"),
         ({"usernames": "nobody-here"}, "Unknown account"),
         ({"version_below": "latest"}, "Version"),
         ({"action": "block"}, "Action"),
@@ -431,10 +468,22 @@ class TestAdminRules:
         assert 'id="clientRuleAttention"' in body and "Auto mode · 1 account" in body
         assert "?q=testuser#users" in body
 
-    def test_admin_can_preview_the_patch_script(self, client, db_session, admin_user):
-        rule = _rule(db_session)
-        resp = client.get(f"/admin/client-rules/{rule.id}/patch.bat", headers=web_auth_header(sub=admin_user.username, scopes=["admin"]))
-        assert resp.status_code == 200 and b"GW-PATCH-BEGIN" in resp.content
+    def test_admin_can_preview_each_audiences_script(self, client, db_session, admin_user):
+        rule = _rule(db_session, patch="", patch_aws='{"MODEL": "claude-m"}')
+        headers = web_auth_header(sub=admin_user.username, scopes=["admin"])
+        url = f"/admin/client-rules/{rule.id}/patch.bat"
+        assert client.get(url, params={"audience": "aws"}, headers=headers).status_code == 200
+        assert client.get(url, params={"audience": "local"}, headers=headers).status_code == 404   # nothing for them
+        assert client.get(url, params={"audience": "everyone"}, headers=headers).status_code == 400
+
+    def test_variants_are_saved_and_shown_back_as_lines(self, client, db_session, admin_user):
+        form = {**_FORM, "patch": "SERVER=0\n-OLD", "patch_azure": '{"MODEL": "azure-m"}', "patch_aws": "MODEL=claude-m"}
+        rule_id = client.post("/admin/client-rules", data=form, headers=_admin(admin_user)).json()["id"]
+        rule = db_session.get(ClientRule, rule_id)
+        assert json.loads(rule.patch) == {"SERVER": "0", "OLD": None}
+        assert json.loads(rule.patch_azure) == {"MODEL": "azure-m"} and json.loads(rule.patch_aws) == {"MODEL": "claude-m"}
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        assert "SERVER=0\n-OLD</textarea>" in body and "MODEL=azure-m</textarea>" in body
 
 
 class TestMailer:
@@ -467,6 +516,13 @@ class TestMail:
         assert to == "admin@example.test" and subject.startswith("[TEST] ") and "Fix auto mode" in body
         assert "https://gw.example.test/dashboard" in body and "CLAUDE_CODE_AUTO_MODE_SERVER" in body
 
+    def test_test_mail_address_and_audience_can_be_chosen(self, client, admin_user, mail_on):
+        form = {**_FORM, "patch": "MODEL=local-m", "patch_aws": "MODEL=claude-m", "to": "someone@example.test"}
+        for audience, model in (("local", "local-m"), ("azure", "local-m"), ("aws", "claude-m")):
+            resp = client.post("/admin/client-rules/mail-test", data={**form, "audience": audience}, headers=_admin(admin_user))
+            assert resp.json()["ok"] and resp.json()["to"] == "someone@example.test"
+            assert mail_on[-1][0] == "someone@example.test" and model in mail_on[-1][2]
+
     def test_test_mail_stays_inside_the_company_domain(self, client, admin_user, mail_on):
         resp = client.post("/admin/client-rules/mail-test", data={**_FORM, "to": "x@elsewhere.test"}, headers=_admin(admin_user))
         assert resp.status_code == 400 and mail_on == []
@@ -498,6 +554,18 @@ class TestMail:
         assert client.post(url, data={"only_unmailed": "off"}, headers=_admin(admin_user)).json()["queued"] == 2
         assert len(mail_on) == 4
 
+    def test_each_recipient_gets_the_patch_for_their_access(self, db_session, test_user, admin_user, mail_on):
+        test_user.can_use_azure = test_user.can_use_bedrock = False
+        db_session.add(test_user)
+        db_session.commit()
+        rule = _rule(db_session, patch='{"MODEL": "local-m"}', patch_aws='{"MODEL": "claude-m"}')
+        _hit(db_session, rule, "testuser")     # local-only
+        _hit(db_session, rule, "admin")        # admins have every backend
+        assert client_rules.send_rule_mail(rule.id) == {"sent": 2, "failed": 0}
+        bodies = {to: body for to, _, body in mail_on}
+        assert "local-m" in bodies["testuser@example.test"] and "claude-m" not in bodies["testuser@example.test"]
+        assert "claude-m" in bodies["admin@example.test"]
+
     def test_a_failed_send_is_recorded_on_the_account(self, db_session, test_user, mail_on):
         rule = _rule(db_session)
         _hit(db_session, rule, "testuser")
@@ -507,8 +575,8 @@ class TestMail:
         assert hit.mailed_at is None and hit.mail_error == "TimeoutError: timed out" and hit.mail_attempted_at
 
     def test_mail_escapes_what_the_admin_wrote(self, mail_on):
-        draft = SimpleNamespace(name="n", title="<b>t</b>", message="a\n<i>b</i>", patch='{"a": "<x>"}', email_subject="")
-        subject, body = client_rules.render_mail(draft, "u<1>")
+        draft = SimpleNamespace(name="n", title="<b>t</b>", message="a\n<i>b</i>", email_subject="")
+        subject, body = client_rules.render_mail(draft, "u<1>", {"A": "<x>"})
         assert "<b>t</b>" not in body and "<i>b</i>" not in body and "<x>" not in body and "u<1>" not in body
         assert "a<br>" in body and subject.endswith("<b>t</b>")
 

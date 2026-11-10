@@ -332,8 +332,9 @@ class ClientRule(SQLModel, table=True):
     with no condition matches nothing.
 
     A match is recorded in ``client_rule_hits``. The account then sees
-    ``title`` / ``message`` on its dashboard with ``patch`` (a JSON object
-    merged into ``~/.claude/settings.json``) as a download; ``action`` =
+    ``title`` / ``message`` on its dashboard with the patch (environment
+    variables for the ``env`` block of ``~/.claude/settings.json``, per
+    audience) as a download; ``action`` =
     ``remind`` also answers the first matching request of each local day
     with the message as an error. Mail goes out when an admin sends it, or
     by itself with ``auto_email`` (again every ``email_repeat_days``, 0 =
@@ -361,7 +362,12 @@ class ClientRule(SQLModel, table=True):
     )
     title: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     message: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
+    # Environment variables for the env block of settings.json, as JSON
+    # ({NAME: value, NAME: null to remove}): the base for every account, and
+    # what Azure / AWS accounts get on top (client_rules.effective_env).
     patch: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
+    patch_azure: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
+    patch_aws: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
     action: str = Field(default="notice", sa_column=sa.Column(sa.String, nullable=False, server_default="notice"))
     email_subject: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     auto_email: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))

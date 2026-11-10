@@ -978,17 +978,28 @@ function submitExportCsv() {
         </div>
     </div>
     <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-4 mb-2">Tell the account</div>
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-3">
+    <div class="max-w-3xl">
         <div>
             <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Title</label>
             <input type="text" name="title" required maxlength="200" value="{{ r.title }}" class="gw-input w-full text-sm py-1.5 px-2">
             <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mt-3 mb-1.5">Message</label>
             <textarea name="message" rows="5" maxlength="4000" class="gw-input w-full text-sm py-1.5 px-2">{{ r.message }}</textarea>
         </div>
+    </div>
+    <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-4 mb-2 gw-tip gw-tip-wide"
+         data-tip="Optional. Environment variables for the env block of the user's ~/.claude/settings.json: one NAME=value per line, -NAME to remove one. The script the user downloads sets exactly these and touches nothing else in the file. Every account gets the first box. An account with Azure access also gets the second on top, one with AWS access the third on top of that (AWS wins where both set the same variable).">Settings patch <span class="normal-case tracking-normal font-normal text-t4">environment variables only · NAME=value per line · -NAME removes</span></div>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-x-4 gap-y-3">
         <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                   data-tip='Optional. A JSON object merged into the user&apos;s ~/.claude/settings.json by the script they download: objects merge key by key, null removes a key, anything else replaces. Example: {"env": {"NAME": "value"}}. Everything else in their file is kept.'>Settings patch (JSON)</label>
-            <textarea name="patch" rows="8" spellcheck="false" placeholder='{"env": {"CLAUDE_CODE_AUTO_MODE_SERVER": "0"}}' class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ r.patch }}</textarea>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Everyone <span class="normal-case tracking-normal font-normal">(local-only accounts get just this)</span></label>
+            <textarea name="patch" rows="5" spellcheck="false" placeholder="CLAUDE_CODE_AUTO_MODE_SERVER=0&#10;CLAUDE_CODE_AUTO_MODE_MODEL=local-model" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ r.patch }}</textarea>
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Azure accounts <span class="normal-case tracking-normal font-normal">(on top)</span></label>
+            <textarea name="patch_azure" rows="5" spellcheck="false" placeholder="CLAUDE_CODE_AUTO_MODE_MODEL=azure-model" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ r.patch_azure }}</textarea>
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">AWS accounts <span class="normal-case tracking-normal font-normal">(on top, wins over Azure)</span></label>
+            <textarea name="patch_aws" rows="5" spellcheck="false" placeholder="CLAUDE_CODE_AUTO_MODE_MODEL=bedrock-claude" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ r.patch_aws }}</textarea>
         </div>
     </div>
     <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-4 mb-2">Mail</div>
@@ -1005,12 +1016,25 @@ function submitExportCsv() {
         </div>
     </div>
 {% endmacro %}
+{% macro client_rule_test_mail(cr) %}
+    <span class="ml-auto flex flex-wrap items-center gap-2 gw-tip gw-tip-wide"
+          data-tip="Mails this rule as the form stands now, saved or not, to the address in the box: yours by default, any address of the company domain. 'As' picks whose patch the mail shows.">
+        <label class="text-xs text-t4">Test mail to</label>
+        <input type="text" name="to" value="{{ cr.my_address }}" aria-label="Test mail address" class="gw-input w-56 text-xs font-mono py-1.5 px-2" {{ 'disabled' if not cr.mail.enabled }}>
+        <label class="text-xs text-t4">as</label>
+        <select name="audience" aria-label="Test mail audience" class="gw-input text-xs py-1.5 px-2" {{ 'disabled' if not cr.mail.enabled }}>
+            <option value="local">local-only account</option><option value="azure">Azure account</option><option value="aws">AWS account</option>
+        </select>
+        <button type="button" data-cr-test class="gw-btn gw-btn-ghost text-sm px-3 py-2" {{ 'disabled' if not cr.mail.enabled }}>Send test mail</button>
+        <span data-cr-test-result class="text-xs font-mono text-t4"></span>
+    </span>
+{% endmacro %}
 <div id="client-rules" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #f5a623">
     <div class="mb-4 max-w-3xl">
         <h2 class="text-sm font-bold text-t2 mb-1">Client rules</h2>
         <p class="text-xs text-t4">
             Reach the people whose Claude Code needs a change the gateway cannot make for them. A rule picks requests by a field, a Claude Code version or a model;
-            the accounts sending them see your message on their dashboard, can download a script that patches their settings.json, and can be mailed.
+            the accounts sending them see your message on their dashboard, can download a script that sets environment variables in their settings.json (a different set for local-only, Azure and AWS accounts), and can be mailed.
         </p>
     </div>
     {% if client_rules is none %}
@@ -1050,7 +1074,7 @@ function submitExportCsv() {
             <span class="text-sm font-semibold {{ 'text-t1' if r.enabled else 'text-t4' }}">{{ r.name }}</span>
             {% if not r.enabled %}<span class="gw-badge gw-badge-muted">off</span>{% endif %}
             <span class="text-xs text-t3">{{ r.condition }}{% if not r.everyone %} · {{ (r.usernames + r.org_codes) | join(', ') }}{% endif %}</span>
-            <span class="text-xs text-t4">{{ r.action }}{% if r.auto_email %} · auto mail{% endif %}{% if r.patch %} · patch{% endif %}</span>
+            <span class="text-xs text-t4">{{ r.action }}{% if r.auto_email %} · auto mail{% endif %}{% if r.has_patch %} · patch{% endif %}</span>
             <span class="ml-auto text-xs font-mono" style="color:{{ '#f5a623' if r.hits else '' }}">{{ r.hits | length }} account{{ '' if r.hits | length == 1 else 's' }}</span>
         </summary>
         <div class="px-3 pb-3 pt-1">
@@ -1058,10 +1082,9 @@ function submitExportCsv() {
                 {{ client_rule_fields(r, cr.actions) }}
                 <div class="mt-4 flex flex-wrap items-center gap-2">
                     <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
-                    {% if r.patch %}<a href="/admin/client-rules/{{ r.id }}/patch.bat" class="gw-btn gw-btn-ghost text-sm px-3 py-2">Download the patch script</a>{% endif %}
-                    <input type="text" name="to" value="{{ cr.my_address }}" aria-label="Test mail address" class="gw-input w-56 text-xs font-mono py-1.5 px-2 ml-auto" {{ 'disabled' if not cr.mail.enabled }}>
-                    <button type="button" data-cr-test class="gw-btn gw-btn-ghost text-sm px-3 py-2" {{ 'disabled' if not cr.mail.enabled }}>Send test mail</button>
-                    <span data-cr-test-result class="text-xs font-mono text-t4"></span>
+                    {% if r.has_patch %}<span class="text-xs text-t4">Patch script as saved:
+                        {% for a in ('local', 'azure', 'aws') %}<a href="/admin/client-rules/{{ r.id }}/patch.bat?audience={{ a }}" class="text-ab hover:underline">{{ {'local': 'local-only', 'azure': 'Azure', 'aws': 'AWS'}[a] }}</a>{{ ' · ' if not loop.last }}{% endfor %}</span>{% endif %}
+                    {{ client_rule_test_mail(cr) }}
                 </div>
             </form>
 
@@ -1114,12 +1137,10 @@ function submitExportCsv() {
     <details class="mt-4 pt-4" style="border-top:1px solid rgba(255,255,255,0.05)">
         <summary class="cursor-pointer select-none text-sm text-ab">Add a rule</summary>
         <form action="/admin/client-rules" method="POST" data-cr-form="add" class="mt-3">
-            {{ client_rule_fields({'name': '', 'enabled': true, 'action': 'notice', 'body_field': '', 'version_below': '', 'plain_http': false, 'models': [], 'usernames': [], 'org_codes': [], 'title': '', 'message': '', 'patch': '', 'email_subject': '', 'auto_email': false, 'email_repeat_days': 0}, cr.actions) }}
+            {{ client_rule_fields({'name': '', 'enabled': true, 'action': 'notice', 'body_field': '', 'version_below': '', 'plain_http': false, 'models': [], 'usernames': [], 'org_codes': [], 'title': '', 'message': '', 'patch': '', 'patch_azure': '', 'patch_aws': '', 'email_subject': '', 'auto_email': false, 'email_repeat_days': 0}, cr.actions) }}
             <div class="mt-4 flex flex-wrap items-center gap-2">
                 <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Add rule</button>
-                <input type="text" name="to" value="{{ cr.my_address }}" aria-label="Test mail address" class="gw-input w-56 text-xs font-mono py-1.5 px-2 ml-auto" {{ 'disabled' if not cr.mail.enabled }}>
-                <button type="button" data-cr-test class="gw-btn gw-btn-ghost text-sm px-3 py-2" {{ 'disabled' if not cr.mail.enabled }}>Send test mail</button>
-                <span data-cr-test-result class="text-xs font-mono text-t4"></span>
+                {{ client_rule_test_mail(cr) }}
             </div>
         </form>
     </details>

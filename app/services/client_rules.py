@@ -9,8 +9,10 @@ notice which accounts send requests of a certain kind and reach those people:
   for everyone or for listed accounts / org codes.
 - **Hit** (``client_rule_hits``): an account matched a rule. For
   ``WINDOW_DAYS`` after its last match the account sees the rule's message
-  on its dashboard, with the rule's ``patch`` (a JSON Merge Patch for
-  ``~/.claude/settings.json``) as text and as a Windows ``.bat`` download.
+  on its dashboard, with the rule's patch (environment variables for the
+  ``env`` block of ``~/.claude/settings.json``, nothing else; a different
+  set for local-only, Azure and AWS accounts) as text and as a Windows
+  ``.bat`` download.
 - **Reminder** (``action = "remind"``): the first matching request of each
   local day is answered with the message as an error, so it shows in the
   terminal; the retry goes through. App accounts are never reminded.
@@ -76,8 +78,15 @@ _UA_VERSION = re.compile(r"claude-cli/(\d+(?:\.\d+){1,3})", re.IGNORECASE)
 _VERSION = re.compile(r"^\d+(?:\.\d+){0,3}$")
 _FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 
-_PATCH_MAX_BYTES = 16 * 1024
-_PATCH_MAX_DEPTH = 8
+# The settings patch only ever touches the ``env`` block of settings.json.
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ENV_MAX_VARS = 50
+_ENV_MAX_VALUE = 2000
+# Who gets which variant of a rule's patch: every account gets the base
+# (``patch``); an account with Azure access also gets ``patch_azure`` on top,
+# one with AWS access ``patch_aws`` on top of that (AWS wins where both set
+# the same variable). A local-only account gets the base alone.
+AUDIENCES = ("local", "azure", "aws")
 
 
 def utcnow() -> datetime:
@@ -321,57 +330,120 @@ async def observe_request(request: Any, user: User) -> JSONResponse | None:
         return None
 
 
-# ── Settings patch ──
+# ── Settings patch (environment variables only) ──
 
-def _check_patch_value(value: Any, depth: int) -> None:
-    if depth > _PATCH_MAX_DEPTH:
-        raise ValueError("Settings patch is nested too deeply.")
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if not key or len(key) > 200 or key in ("__proto__", "constructor", "prototype"):
-                raise ValueError(f"Settings patch has an unusable key: {key[:40]!r}.")
-            _check_patch_value(item, depth + 1)
-    elif isinstance(value, list):
-        for item in value:
-            _check_patch_value(item, depth + 1)
-
-
-def parse_patch(text: str | None) -> dict | None:
-    """The settings patch as a dict (None when empty). Raises ValueError for
-    anything that is not a non-empty JSON object of reasonable size."""
+def parse_env(text: str | None) -> dict[str, str | None]:
+    """An admin's patch text as ``{NAME: value}``; ``None`` means "remove
+    this variable". One ``NAME=value`` per line, ``-NAME`` to remove, ``#``
+    comments; or a JSON object of the same (``null`` to remove). Raises
+    ValueError. Only environment variables can be expressed: the patch
+    never reaches any other setting."""
     text = (text or "").strip()
+    env: dict[str, str | None] = {}
     if not text:
-        return None
-    if len(text.encode("utf-8")) > _PATCH_MAX_BYTES:
-        raise ValueError("Settings patch is too large (16 KB at most).")
+        return env
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except ValueError as exc:
+            raise ValueError(f"Settings patch is not valid JSON: {exc}.")
+        if not isinstance(data, dict):
+            raise ValueError("Settings patch must be NAME=value lines or a JSON object of them.")
+        for name, value in data.items():
+            if isinstance(value, bool):
+                value = "true" if value else "false"
+            elif isinstance(value, (int, float)):
+                value = str(value)
+            elif value is not None and not isinstance(value, str):
+                raise ValueError(f"{name}: an environment variable is text, not a list or an object.")
+            env[str(name)] = value
+    else:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("-"):
+                env[line[1:].strip()] = None
+                continue
+            name, sep, value = line.partition("=")
+            if not sep:
+                raise ValueError(f"Settings patch: write NAME=value (or -NAME to remove), not {line[:40]!r}.")
+            env[name.strip()] = value.strip()
+    if len(env) > _ENV_MAX_VARS:
+        raise ValueError(f"Settings patch has too many variables ({_ENV_MAX_VARS} at most).")
+    for name, value in env.items():
+        if not _ENV_NAME.match(name):
+            raise ValueError(f"Settings patch: {name[:40]!r} is not an environment variable name.")
+        if value is not None and (len(value) > _ENV_MAX_VALUE or "\n" in value or "\r" in value):
+            raise ValueError(f"Settings patch: the value of {name} is too long or spans lines.")
+    return env
+
+
+def dump_env(env: dict[str, str | None]) -> str:
+    """How a patch is stored: JSON, "" when empty."""
+    return json.dumps(env, ensure_ascii=False) if env else ""
+
+
+def load_env(stored: str | None) -> dict[str, str | None]:
+    """A stored patch back as a dict ({} for anything unreadable)."""
     try:
-        patch = json.loads(text)
-    except ValueError as exc:
-        raise ValueError(f"Settings patch is not valid JSON: {exc}.")
-    if not isinstance(patch, dict) or not patch:
-        raise ValueError('Settings patch must be a JSON object, e.g. {"env": {"NAME": "value"}}.')
-    _check_patch_value(patch, 1)
-    return patch
+        data = json.loads(stored) if stored else {}
+    except ValueError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): (None if v is None else str(v)) for k, v in data.items() if _ENV_NAME.match(str(k))}
 
 
-def format_patch(patch: dict | None) -> str:
-    return json.dumps(patch, indent=2, ensure_ascii=False) if patch else ""
+def env_lines(env: dict[str, str | None]) -> str:
+    """A patch as the admin edits it: ``NAME=value`` / ``-NAME`` lines."""
+    return "\n".join(f"-{name}" if value is None else f"{name}={value}" for name, value in env.items())
 
 
-def merge_patch(target: dict, patch: dict) -> dict:
-    """JSON Merge Patch (RFC 7396), in place: objects merge key by key,
-    ``null`` removes a key, anything else replaces. The downloaded script
-    does the same on the user's machine."""
-    for key, value in patch.items():
+def env_snippet(env: dict[str, str | None]) -> str:
+    """A patch as the user reads it: the ``env`` block to have in
+    settings.json, then the variables to take out of it."""
+    sets = {name: value for name, value in env.items() if value is not None}
+    removes = [name for name, value in env.items() if value is None]
+    parts = []
+    if sets:
+        parts.append('"env": ' + json.dumps(sets, indent=2, ensure_ascii=False))
+    if removes:
+        parts.append("Remove from \"env\": " + ", ".join(removes))
+    return "\n".join(parts)
+
+
+def audience_of(user: User) -> tuple[bool, bool]:
+    """``(azure, aws)``: which cloud backends the account may use. Admins
+    bypass the flags, as on the dashboard."""
+    return bool(user.can_use_azure or user.is_admin), bool(user.can_use_bedrock or user.is_admin)
+
+
+def effective_env(rule: Any, azure: bool, aws: bool) -> dict[str, str | None]:
+    """The patch one account gets: the base, then the Azure variant if it
+    has Azure access, then the AWS variant if it has AWS access."""
+    env = dict(load_env(rule.patch))
+    if azure:
+        env.update(load_env(rule.patch_azure))
+    if aws:
+        env.update(load_env(rule.patch_aws))
+    return env
+
+
+def apply_env(settings: dict, env: dict[str, str | None]) -> dict:
+    """What the downloaded script does to settings.json, in place: set or
+    remove variables in its ``env`` block and leave everything else alone."""
+    block = settings.get("env")
+    if block is None:
+        block = settings["env"] = {}
+    if not isinstance(block, dict):
+        raise ValueError('"env" in settings.json is not an object')
+    for name, value in env.items():
         if value is None:
-            target.pop(key, None)
-        elif isinstance(value, dict):
-            if not isinstance(target.get(key), dict):
-                target[key] = {}
-            merge_patch(target[key], value)
+            block.pop(name, None)
         else:
-            target[key] = value
-    return target
+            block[name] = value
+    return settings
 
 
 # One file that cmd.exe, Node and PowerShell each read their own part of.
@@ -384,10 +456,10 @@ REM ============================================================
 REM  __TITLE__
 REM  Settings patch for Claude Code: __NAME__
 REM
-REM  Merges a few settings into %USERPROFILE%\.claude\settings.json.
-REM  Everything else in the file is kept, and the previous file is
-REM  saved next to it as settings.json.bak. The settings are listed
-REM  on your gateway dashboard.
+REM  Sets a few environment variables in the "env" block of
+REM  %USERPROFILE%\.claude\settings.json. Nothing else in the file is
+REM  changed, and the previous file is saved next to it as
+REM  settings.json.bak. The variables are listed on your gateway dashboard.
 REM ============================================================
 set "GW_PATCH_SELF=%~f0"
 echo.
@@ -427,15 +499,12 @@ exit /b %RC%
   } else {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const merge = (t, p) => {
-    for (const k of Object.keys(p)) {
-      const v = p[k];
-      if (v === null) delete t[k];
-      else if (isObj(v)) { if (!isObj(t[k])) t[k] = {}; merge(t[k], v); }
-      else t[k] = v;
-    }
-  };
-  merge(settings, patch);
+  if (settings.env === undefined || settings.env === null) settings.env = {};
+  if (!isObj(settings.env)) throw new Error('"env" in settings.json is not an object');
+  for (const k of Object.keys(patch)) {
+    if (patch[k] === null) delete settings.env[k];
+    else settings.env[k] = String(patch[k]);
+  }
   fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n', 'utf8');
   console.log('   [OK] Updated ' + file);
 })();
@@ -457,19 +526,6 @@ try {
         }
         return $o
     }
-    function GwMerge($t, $p) {
-        foreach ($k in @($p.Keys)) {
-            $v = $p[$k]
-            if ($null -eq $v) {
-                if ($t.Contains($k)) { $t.Remove($k) }
-            } elseif ($v -is [System.Collections.IDictionary]) {
-                if (-not ($t.Contains($k) -and ($t[$k] -is [System.Collections.IDictionary]))) { $t[$k] = [ordered]@{} }
-                GwMerge $t[$k] $v
-            } else {
-                $t[$k] = $v
-            }
-        }
-    }
     $patchText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PATCH_B64__'))
     $patch = GwToHash ($patchText | ConvertFrom-Json)
     $dir = Join-Path $env:USERPROFILE '.claude'
@@ -486,7 +542,16 @@ try {
     } elseif (-not (Test-Path -LiteralPath $dir)) {
         New-Item -ItemType Directory -Path $dir | Out-Null
     }
-    GwMerge $settings $patch
+    if ((-not $settings.Contains('env')) -or ($null -eq $settings['env'])) { $settings['env'] = [ordered]@{} }
+    if (-not ($settings['env'] -is [System.Collections.IDictionary])) { throw '"env" in settings.json is not an object' }
+    foreach ($k in @($patch.Keys)) {
+        $v = $patch[$k]
+        if ($null -eq $v) {
+            if ($settings['env'].Contains($k)) { $settings['env'].Remove($k) }
+        } else {
+            $settings['env'][$k] = [string]$v
+        }
+    }
     $json = ConvertTo-Json -InputObject $settings -Depth 100
     [IO.File]::WriteAllText($file, $json + "`r`n", (New-Object System.Text.UTF8Encoding $false))
     Write-Host ('   [OK] Updated ' + $file)
@@ -503,9 +568,10 @@ def _bat_text(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()[:80] or "settings"
 
 
-def render_patch_bat(name: str, patch: dict) -> str:
-    """The Windows script that applies ``patch`` to the user's settings.json."""
-    payload = base64.b64encode(json.dumps(patch, ensure_ascii=False).encode("utf-8")).decode("ascii")
+def render_patch_bat(name: str, env: dict[str, str | None]) -> str:
+    """The Windows script that applies ``env`` to the ``env`` block of the
+    user's settings.json (``apply_env``)."""
+    payload = base64.b64encode(json.dumps(env, ensure_ascii=False).encode("utf-8")).decode("ascii")
     script = (
         _PATCH_BAT.replace("__PATCH_B64__", payload)
         .replace("__TITLE__", _bat_text(APP_TITLE))
@@ -554,7 +620,10 @@ def clean_fields(session: Session, form: dict[str, Any]) -> dict[str, Any]:
         "name": name, "body_field": body_field, "version_below": version_below, "models": models,
         "plain_http": plain_http,
         "usernames": usernames, "org_codes": org_codes, "title": title, "message": message,
-        "patch": format_patch(parse_patch(str(form.get("patch") or ""))), "action": action,
+        "patch": dump_env(parse_env(str(form.get("patch") or ""))),
+        "patch_azure": dump_env(parse_env(str(form.get("patch_azure") or ""))),
+        "patch_aws": dump_env(parse_env(str(form.get("patch_aws") or ""))),
+        "action": action,
         "email_subject": str(form.get("email_subject") or "").strip()[:200],
         "auto_email": bool(form.get("auto_email")), "email_repeat_days": repeat,
         "enabled": bool(form.get("enabled")),
@@ -609,40 +678,45 @@ def hits(session: Session, rule_id: int, now: datetime | None = None) -> list[Cl
     ).all())
 
 
-def notices_for(session: Session, username: str, now: datetime | None = None) -> list[dict[str, Any]]:
-    """What ``username``'s dashboard shows: the enabled rules it matched
-    inside the window."""
+def notices_for(session: Session, user: User, now: datetime | None = None) -> list[dict[str, Any]]:
+    """What ``user``'s dashboard shows: the enabled rules it matched inside
+    the window, each with the patch meant for this account."""
     rows = session.exec(
         select(ClientRule, ClientRuleHit)
-        .where(ClientRuleHit.rule_id == ClientRule.id, ClientRuleHit.username == username,
+        .where(ClientRuleHit.rule_id == ClientRule.id, ClientRuleHit.username == user.username,
                ClientRuleHit.last_seen_at >= _active_since(now), ClientRule.enabled == True)  # noqa: E712
         .order_by(ClientRule.id)
     ).all()
+    azure, aws = audience_of(user)
     return [
-        {"rule_id": rule.id, "title": rule.title, "message": rule.message, "patch": rule.patch,
+        {"rule_id": rule.id, "title": rule.title, "message": rule.message,
+         "patch": env_snippet(effective_env(rule, azure, aws)),
          "seen_at": hit.last_seen_at, "client_version": hit.client_version}
         for rule, hit in rows
     ]
 
 
-def patch_for(session: Session, rule_id: int, username: str | None) -> tuple[ClientRule, dict] | None:
-    """The rule and its patch, for an account that matched it (``username``
-    None: no such check, for an admin's preview). None when there is nothing
-    to download."""
+def patch_for(session: Session, rule_id: int, user: User) -> tuple[ClientRule, dict[str, str | None]] | None:
+    """The rule and the patch meant for ``user``, if it matched the rule and
+    there is something to apply. None otherwise."""
     rule = session.get(ClientRule, rule_id)
-    if rule is None or not rule.patch:
+    if rule is None:
         return None
-    if username is not None:
-        hit = session.exec(
-            select(ClientRuleHit).where(ClientRuleHit.rule_id == rule_id, ClientRuleHit.username == username)
-        ).first()
-        if hit is None:
-            return None
-    try:
-        patch = parse_patch(rule.patch)
-    except ValueError:
+    hit = session.exec(
+        select(ClientRuleHit).where(ClientRuleHit.rule_id == rule_id, ClientRuleHit.username == user.username)
+    ).first()
+    if hit is None:
         return None
-    return (rule, patch) if patch else None
+    env = effective_env(rule, *audience_of(user))
+    return (rule, env) if env else None
+
+
+def audience_flags(audience: str) -> tuple[bool, bool]:
+    """``(azure, aws)`` for an admin's preview of one audience: ``local``,
+    ``azure`` (Azure only) or ``aws`` (AWS only)."""
+    if audience not in AUDIENCES:
+        raise ValueError(f"Audience must be one of: {', '.join(AUDIENCES)}.")
+    return audience == "azure", audience == "aws"
 
 
 def version_overview(session: Session, now: datetime | None = None) -> dict[str, Any]:
@@ -670,10 +744,11 @@ def version_overview(session: Session, now: datetime | None = None) -> dict[str,
 
 # ── Mail ──
 
-def render_mail(rule: Any, username: str) -> tuple[str, str]:
-    """``(subject, html)`` of a rule's mail. ``rule`` needs ``name``,
-    ``title``, ``message``, ``patch`` and ``email_subject`` (a ClientRule or
-    a form being tested). Everything an admin wrote is escaped."""
+def render_mail(rule: Any, username: str, env: dict[str, str | None]) -> tuple[str, str]:
+    """``(subject, html)`` of a rule's mail to one account. ``rule`` needs
+    ``name``, ``title``, ``message`` and ``email_subject`` (a ClientRule or a
+    form being tested); ``env`` is the patch meant for that account.
+    Everything an admin wrote is escaped."""
     public_url = mailer.settings()["public_url"]
     subject = (rule.email_subject or f"[{APP_TITLE}] {rule.title}").strip()
     parts = [
@@ -683,15 +758,15 @@ def render_mail(rule: Any, username: str) -> tuple[str, str]:
     ]
     if rule.message:
         parts.append("<p>" + html.escape(rule.message).replace("\n", "<br>") + "</p>")
-    if rule.patch:
+    if env:
         parts.append(
-            "<p>Settings to merge into <code>~/.claude/settings.json</code>:</p>"
+            "<p>Environment settings for <code>~/.claude/settings.json</code>:</p>"
             '<pre style="background:#f4f4f4;padding:10px;border-radius:4px;font-size:13px">'
-            + html.escape(rule.patch) + "</pre>"
+            + html.escape(env_snippet(env)) + "</pre>"
         )
     if public_url:
         link = html.escape(f"{public_url}/dashboard", quote=True)
-        what = "see this notice and download a script that applies the settings for you (Windows)" if rule.patch else "see this notice"
+        what = "see this notice and download a script that applies the settings for you (Windows)" if env else "see this notice"
         parts.append(f'<p><a href="{link}">Open your dashboard</a> to {what}.</p>')
     parts.append(
         f'<p style="color:#888;font-size:12px">Sent by {html.escape(APP_TITLE)} because requests from your account '
@@ -719,13 +794,20 @@ def _send_to(session: Session, rule: ClientRule, targets: list[ClientRuleHit]) -
     """Mail each target and stamp the outcome on its hit. Returns (sent, failed)."""
     # A plain copy: the session is committed between sends.
     rule_view = SimpleNamespace(
-        name=rule.name, title=rule.title, message=rule.message, patch=rule.patch, email_subject=rule.email_subject,
+        name=rule.name, title=rule.title, message=rule.message, email_subject=rule.email_subject,
+        patch=rule.patch, patch_azure=rule.patch_azure, patch_aws=rule.patch_aws,
     )
+    names = [h.username for h in targets]
+    access = {
+        u.username: audience_of(u)
+        for u in (session.exec(select(User).where(User.username.in_(names))).all() if names else [])  # type: ignore[attr-defined]
+    }
     jobs = [(h.id, h.username) for h in targets]
     session.commit()                # nothing is held open while mail is being sent
     sent = failed = 0
     for hit_id, username in jobs:
-        subject, body = render_mail(rule_view, username)
+        azure, aws = access.get(username, (False, False))
+        subject, body = render_mail(rule_view, username, effective_env(rule_view, azure, aws))
         ok, error = mailer.send(mailer.address_for(username), subject, body)
         now = utcnow()
         values: dict[str, Any] = {"mail_attempted_at": now, "mail_error": "" if ok else error}

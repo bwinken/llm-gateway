@@ -430,7 +430,7 @@ def dashboard(
             owned_apps=owned_apps,
             legacy_key=is_legacy_api_key(user.api_key),
             legacy_app_keys=sum(1 for a in owned_apps if a.get("legacy_key")),
-            client_notices=_client_notices(session, user.username),
+            client_notices=_client_notices(session, user),
             client_notice_days=client_rules.WINDOW_DAYS,
             server_groups=server_groups,
             claude_code_available=claude_code_available,
@@ -505,13 +505,13 @@ def refresh_owned_app_key(
     return JSONResponse({"ok": True, "api_key": target.api_key})
 
 
-def _client_notices(session: Session, username: str) -> list[dict]:
+def _client_notices(session: Session, user: User) -> list[dict]:
     """The client-rule notices for this account (never takes the page down)."""
     try:
-        notices = client_rules.notices_for(session, username)
+        notices = client_rules.notices_for(session, user)
     except Exception as exc:  # e.g. before `alembic upgrade`
         session.rollback()
-        logger.warning("Client notices failed | user={} error={}: {}", username, type(exc).__name__, exc)
+        logger.warning("Client notices failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
         return []
     for n in notices:
         n["seen_local"] = n["seen_at"].replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
@@ -524,15 +524,16 @@ def client_rule_patch(
     user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
 ):
-    """The Windows script that merges a rule's settings patch into the
-    user's ``~/.claude/settings.json``. Only for an account that matched
-    the rule."""
-    found = client_rules.patch_for(session, rule_id, user.username)
+    """The Windows script that sets a rule's environment variables in the
+    ``env`` block of the user's ``~/.claude/settings.json`` (the variant for
+    this account: local-only, Azure or AWS). Only for an account that
+    matched the rule."""
+    found = client_rules.patch_for(session, rule_id, user)
     if found is None:
         raise HTTPException(status_code=404, detail="No settings patch for this account.")
-    rule, patch = found
+    rule, env = found
     return Response(
-        content=client_rules.render_patch_bat(rule.name, patch).encode("utf-8"),
+        content=client_rules.render_patch_bat(rule.name, env).encode("utf-8"),
         media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="claude-code-patch-{rule.id}.bat"'},
     )
