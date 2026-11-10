@@ -1212,6 +1212,8 @@ def _client_rules_view(session: Session, admin_user: User) -> dict:
         ],
         "stale_days": client_rules.STALE_DAYS,
         "versions": client_rules.version_overview(session),
+        # What every non-empty patch also sets (a constant in client_checks.py).
+        "baseline": client_rules.env_lines(client_rules.baseline_env()),
         "mail": mailer.status(),
         "mail_pace": {**client_rules.mail_pace(), "waiting": len(client_rules.due_accounts(session))},
         "my_address": mailer.address_for(admin_user.username),

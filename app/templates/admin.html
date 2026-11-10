@@ -606,6 +606,12 @@ function submitExportCsv() {
         {% endif %}
     </p>
 
+    {% if cr.baseline %}
+    <p class="text-xs text-t4 mb-4 gw-tip gw-tip-wide" id="client-rules-baseline"
+       data-tip="Settings every Claude Code user here should have. No rule checks for them: they ride along in every patch that has something to apply, on the dashboard, in the download and in mail. A rule's own value wins where it sets the same variable. Change the list in client_checks.py (BASELINE_ENV).">
+        Every patch also sets: {% for line in cr.baseline.split('\n') %}<span class="font-mono text-t2">{{ line }}</span>{{ ', ' if not loop.last }}{% endfor %}
+    </p>
+    {% endif %}
     {% if cr.conflicts %}
     <div id="client-rules-conflicts" class="mb-4 p-3 rounded text-xs" style="background:rgba(245,166,35,0.06);border:1px solid rgba(245,166,35,0.25)">
         <div class="font-semibold mb-1" style="color:#f5a623">Two rules set the same variable differently</div>

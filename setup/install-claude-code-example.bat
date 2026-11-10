@@ -81,13 +81,11 @@ set "CUSTOM_MODEL_CAPABILITIES=tools"
 
 REM  Set to 1 to let Claude Code populate its /model picker from the
 REM  gateway's GET /v1/models at startup (CLAUDE_CODE_ENABLE_GATEWAY_
-REM  MODEL_DISCOVERY). Discovery counts as "nonessential traffic", so it
-REM  never runs while CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set
-REM  (set to ANY value, even "0" — Claude Code only checks presence).
-REM  When enabled, the master flag is therefore REMOVED and replaced with
-REM  its granular equivalents (DISABLE_ERROR_REPORTING here, plus the
-REM  DISABLE_TELEMETRY knob above), keeping phone-home blocked while
-REM  discovery — which only talks to this gateway — still works.
+REM  MODEL_DISCOVERY). Discovery only talks to this gateway and has its
+REM  own switch: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC does not turn it
+REM  off (Claude Code 2.1.257 and later), so that flag is always written
+REM  and telemetry, error reporting and the auto-updater stay blocked
+REM  whether discovery is on or not.
 REM  Claude Code only keeps model IDs containing "claude" or "anthropic";
 REM  name gateway aliases accordingly if they should show in the picker.
 set "ENABLE_MODEL_DISCOVERY=1"
@@ -344,7 +342,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$e['ANTHROPIC_BASE_URL']='%GATEWAY_URL%';" ^
   "$e['ANTHROPIC_API_KEY']='%API_KEY%';" ^
   "$e['ANTHROPIC_AUTH_TOKEN']='%API_KEY%';" ^
-  "if('%ENABLE_MODEL_DISCOVERY%' -eq '1'){$e['CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY']='1';$e['DISABLE_ERROR_REPORTING']='1';$e.Remove('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC')}else{$e['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1';$e.Remove('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY')};" ^
+  "$e['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1';" ^
+  "if('%ENABLE_MODEL_DISCOVERY%' -eq '1'){$e['CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY']='1'}else{$e.Remove('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY')};" ^
   "if('%DISABLE_TELEMETRY%' -eq '1'){$e['DISABLE_TELEMETRY']='1'};" ^
   "if('%DISABLE_INTERLEAVED_THINKING%' -eq '1'){$e['DISABLE_INTERLEAVED_THINKING']='1'};" ^
   "if('%DISABLE_1M_CONTEXT%' -eq '1'){$e['CLAUDE_CODE_DISABLE_1M_CONTEXT']='1'};" ^
@@ -384,10 +383,11 @@ echo    Settings written to %USERPROFILE%\.claude\settings.json
 echo      ANTHROPIC_BASE_URL        = %GATEWAY_URL%
 echo      ANTHROPIC_API_KEY         = %API_KEY_MASKED%
 if "%ENABLE_MODEL_DISCOVERY%"=="1" (
-    echo      GATEWAY_MODEL_DISCOVERY   = enabled ^(nonessential traffic left on^)
+    echo      GATEWAY_MODEL_DISCOVERY   = enabled
 ) else (
-    echo      GATEWAY_MODEL_DISCOVERY   = disabled ^(nonessential traffic blocked^)
+    echo      GATEWAY_MODEL_DISCOVERY   = disabled
 )
+echo      NONESSENTIAL_TRAFFIC      = blocked
 if not "%DEFAULT_MODEL%"=="" echo      model                     = %DEFAULT_MODEL%
 if not "%SMALL_FAST_MODEL%"=="" echo      ANTHROPIC_SMALL_FAST_MODEL = %SMALL_FAST_MODEL%
 if "%AUTO_MODE_CLIENT_CHECK%"=="1" echo      CLAUDE_CODE_AUTO_MODE_SERVER = 0

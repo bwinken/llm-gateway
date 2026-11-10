@@ -102,6 +102,13 @@ _FORM = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _no_baseline(monkeypatch):
+    """Most tests are about one check's own patch: the settings every patch
+    carries are switched off here and covered by ``TestBaseline``."""
+    monkeypatch.setattr(client_checks, "BASELINE_ENV", "")
+
+
 @pytest.fixture
 def mail_on(monkeypatch):
     for name, value in (
@@ -592,6 +599,66 @@ class TestPatch:
         import os
         env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "GW_PATCH_SELF": str(script)}
         return subprocess.run(["node", "-e", line[len('node -e "'):-1]], env=env, capture_output=True, text=True, timeout=60)
+
+
+class TestBaseline:
+    """Settings every user should have ride along in every patch that has
+    something to apply; there is no check for them."""
+
+    DISCOVERY = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
+
+    @pytest.fixture(autouse=True)
+    def _baseline(self, monkeypatch):
+        monkeypatch.setattr(client_checks, "BASELINE_ENV", f"{self.DISCOVERY}=1")
+
+    def test_the_shipped_baseline_turns_model_discovery_on(self, monkeypatch):
+        monkeypatch.undo()
+        assert client_rules.baseline_env() == {self.DISCOVERY: "1"}
+
+    def test_a_patch_carries_it(self):
+        rule = SimpleNamespace(patch='{"SERVER": "0"}', patch_azure="", patch_aws='{"MODEL": "claude-m"}')
+        assert client_rules.effective_env(rule, False, False) == {"SERVER": "0", self.DISCOVERY: "1"}
+        assert client_rules.effective_env(rule, False, True) == {"SERVER": "0", "MODEL": "claude-m", self.DISCOVERY: "1"}
+
+    def test_nothing_to_apply_stays_nothing(self):
+        rule = SimpleNamespace(patch="", patch_azure='{"MODEL": "azure-m"}', patch_aws="")
+        assert client_rules.effective_env(rule, False, False) == {}          # no patch just for the baseline
+        assert client_rules.effective_env(rule, True, False) == {"MODEL": "azure-m", self.DISCOVERY: "1"}
+
+    def test_the_checks_own_value_wins(self):
+        rule = SimpleNamespace(patch=f'{{"{self.DISCOVERY}": "0"}}', patch_azure="", patch_aws="")
+        assert client_rules.effective_env(rule, False, False) == {self.DISCOVERY: "0"}
+        removing = SimpleNamespace(patch=f'{{"X": "1", "{self.DISCOVERY}": null}}', patch_azure="", patch_aws="")
+        assert client_rules.effective_env(removing, False, False) == {"X": "1", self.DISCOVERY: None}
+
+    def test_the_user_gets_it_on_the_dashboard_in_the_download_and_in_mail(self, client, db_session, test_user, mail_on):
+        _configure(db_session, AUTO, auto_email=True)                       # CC001's default patch
+        _configure(db_session, OUTDATED)                                    # no patch of its own
+        _violation(db_session, AUTO, "testuser")
+        _violation(db_session, OUTDATED, "testuser")
+        headers = web_auth_header(sub=test_user.username)
+        body = client.get("/dashboard", headers=headers).text
+        assert self.DISCOVERY in body
+        for url in ("/dashboard/client-rules/CC001/patch.bat", "/dashboard/client-rules/CC001/patch.sh",
+                    "/dashboard/client-rules/all/patch.sh"):
+            import base64
+            import re
+            text = client.get(url, headers=headers).text
+            env = json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))
+            assert env == {"CLAUDE_CODE_AUTO_MODE_SERVER": "0", self.DISCOVERY: "1"}, url
+        assert client.get("/dashboard/client-rules/CC003/patch.bat", headers=headers).status_code == 404
+        client_rules.run_auto_mail(db_session)
+        assert self.DISCOVERY in mail_on[0][2]
+
+    def test_it_is_not_a_conflict_between_checks(self, db_session):
+        _configure(db_session, AUTO, patch='{"A": "1"}')
+        _configure(db_session, HTTP, patch='{"B": "2"}')
+        assert client_rules.env_conflicts(client_rules.rules(db_session)) == []
+
+    def test_the_admin_sees_what_every_patch_carries(self, client, admin_user):
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        line = body.split('id="client-rules-baseline"', 1)[1][:1200]
+        assert f"{self.DISCOVERY}=1" in line
 
 
 class TestDashboard:
@@ -1345,3 +1412,11 @@ class TestInstaller:
         assert "$e['CLAUDE_CODE_AUTO_MODE_SERVER']='0'" in text
         assert "$e['CLAUDE_CODE_AUTO_MODE_MODEL']='%AUTO_MODE_MODEL%'" in text
         assert 'set "AUTO_MODE_CLIENT_CHECK=1"' in text
+
+    def test_example_installer_blocks_nonessential_traffic_with_or_without_discovery(self):
+        """Model discovery has its own switch; the master flag no longer has
+        to be removed for it, so telemetry and the auto-updater stay blocked."""
+        text = (Path(__file__).resolve().parent.parent / "setup" / "install-claude-code-example.bat").read_text(encoding="utf-8")
+        assert "\"$e['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1';\" ^" in text
+        assert "$e.Remove('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC')" not in text
+        assert "{$e['CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY']='1'}else{$e.Remove('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY')}" in text

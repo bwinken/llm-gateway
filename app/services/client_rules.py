@@ -205,15 +205,25 @@ def audience_of(user: User) -> tuple[bool, bool]:
     return bool(user.can_use_azure or user.is_admin), bool(user.can_use_bedrock or user.is_admin)
 
 
+def baseline_env() -> dict[str, str | None]:
+    """``client_checks.BASELINE_ENV``: what every patch also sets."""
+    return parse_env(client_checks.BASELINE_ENV)
+
+
 def effective_env(rule: Any, azure: bool, aws: bool) -> dict[str, str | None]:
     """The patch one account gets: the base, then the Azure variant if it
-    has Azure access, then the AWS variant if it has AWS access. ``rule``
-    is anything with ``patch`` / ``patch_azure`` / ``patch_aws`` in stored form."""
+    has Azure access, then the AWS variant if it has AWS access, and, when
+    that leaves anything to apply, the settings every patch carries
+    (``baseline_env``; the check's own value wins). ``rule`` is anything
+    with ``patch`` / ``patch_azure`` / ``patch_aws`` in stored form."""
     env = dict(load_env(rule.patch))
     if azure:
         env.update(load_env(rule.patch_azure))
     if aws:
         env.update(load_env(rule.patch_aws))
+    if env:
+        for name, value in baseline_env().items():
+            env.setdefault(name, value)
     return env
 
 

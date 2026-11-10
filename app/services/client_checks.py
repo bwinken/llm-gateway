@@ -92,6 +92,20 @@ def version_key(version: str) -> tuple[int, ...]:
 MIN_CLAUDE_CODE_VERSION = "2.1.302"
 
 
+# ── Settings every patch carries ──
+
+# Environment variables every Claude Code user of this gateway should have,
+# as NAME=value lines. There is no check for them (the gateway cannot see
+# them in a request); instead every non-empty patch sets them too, so
+# anyone who applies any patch ends up with them. A check's own patch wins
+# where it names the same variable. An account with no patch to apply is
+# not given one just for these.
+#
+# CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: fill Claude Code's /model
+# picker from this gateway's GET /v1/models at startup.
+BASELINE_ENV = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1"
+
+
 # ── Detection ──
 
 def _auto_mode_server_review(f: Facts) -> bool:
