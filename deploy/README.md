@@ -111,6 +111,7 @@ The gateway runs its periodic jobs itself; there are no systemd timers or cron e
 |---|---|---|---|---|
 | Usage rollup | every 10 min | Sums closed Asia/Taipei days of `usage_logs` into `usage_daily`, which the admin page, dashboard and exports read. Backfills on first start after the migration. | on | `USAGE_ROLLUP_INTERVAL_S` (`0` = off) |
 | Anomaly scan | hourly | Flags unusual usage into `anomaly_events` for the admin panel. Detection only, never blocks anyone. | on | `ANOMALY_SCAN_INTERVAL_S` (`0` = off) |
+| Client-rule mail | every 10 min | Sends client-rule mail in batches (20 a run, 2 s apart by default): accounts an admin queued, then those due by a rule's automatic mail and its weekly / monthly reminder. Does nothing while mail is not configured. | on | `CLIENT_RULE_MAIL_INTERVAL_S` (`0` = off), `CLIENT_RULE_MAIL_BATCH`, `CLIENT_RULE_MAIL_PAUSE_S` |
 | Usage-log retention | daily | **Deletes** `usage_logs` rows older than N days, whole days only, and never a day not yet in `usage_daily` (reports keep it) | **off** | `USAGE_LOG_RETENTION_DAYS` (unset = keep forever) |
 
 `usage_logs` is the billing and audit record, and PostgreSQL holds years of it comfortably, so retention ships off on purpose: deleting it is a governance decision. Deleting a user keeps their usage rows too. `scheduled_jobs` shows each job's last start, finish and outcome. The scripts run the same code by hand and are dry runs without `--execute`:
@@ -180,7 +181,7 @@ With both off, a failed request logs the **shape** of the body — fields presen
 
 ## Security Settings
 
-- **Audit log.** Every admin / dashboard change, every full API key shown and every export is a row in `audit_log` (admin *Settings* → *Audit Log*, CSV download). It is append-only: PostgreSQL triggers refuse UPDATE, DELETE and TRUNCATE, so removing entries means a DBA dropping the trigger on purpose. Each entry is also logged as `Audit | {...}` (usernames, addresses, submitted fields; secrets redacted).
+- **Audit log.** Every admin / dashboard change, every full API key shown and every export is a row in `audit_log` (admin *Security* → *Audit Log*, CSV download). It is append-only: PostgreSQL triggers refuse UPDATE, DELETE and TRUNCATE, so removing entries means a DBA dropping the trigger on purpose. Each entry is also logged as `Audit | {...}` (usernames, addresses, submitted fields; secrets redacted).
 - **Failed-auth throttle.** `AUTH_FAIL_DISTINCT_KEYS` / `AUTH_FAIL_WINDOW_S` / `AUTH_LOCKOUT_S` (default 10 distinct invalid keys in 600 s → 429 for 900 s). It keys on the client address, so uvicorn must trust nginx's forwarded headers; loopback is never locked, which is what you would see if it didn't.
 - **Dependency and secret scanning** run in GitHub Actions (`.github/workflows/security.yml`). For Dependabot to open security-fix PRs, turn on *Dependabot security updates* in the repository's Settings → Code security.
 

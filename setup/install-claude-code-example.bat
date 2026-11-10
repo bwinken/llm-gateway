@@ -60,19 +60,32 @@ REM  so background tasks silently fail. Set this to one of your gateway
 REM  aliases — a small/cheap LLM is ideal.
 set "SMALL_FAST_MODEL="
 
+REM  Auto mode. Behind a gateway, Claude Code asks the upstream to run
+REM  auto mode's safety check and waits for its verdict. This gateway's
+REM  backends do not give one, so auto mode refuses every action ("Auto
+REM  mode is unavailable: its safety check does not run for this session").
+REM  1 = write CLAUDE_CODE_AUTO_MODE_SERVER=0, so Claude Code runs the check
+REM  itself, as ordinary requests through the gateway (billed like any
+REM  other). 0 = leave the setting alone.
+set "AUTO_MODE_CLIENT_CHECK=1"
+
+REM  The model those checks run on (CLAUDE_CODE_AUTO_MODE_MODEL, Claude
+REM  Code 2.1.302+). Set it to a capable gateway alias: this model decides
+REM  which commands may run unattended. Empty = Claude Code asks for its
+REM  default Claude model, which the gateway answers with a fallback model.
+set "AUTO_MODE_MODEL="
+
 set "CUSTOM_MODEL_ALIAS="
 set "CUSTOM_MODEL_DESCRIPTION="
 set "CUSTOM_MODEL_CAPABILITIES=tools"
 
 REM  Set to 1 to let Claude Code populate its /model picker from the
 REM  gateway's GET /v1/models at startup (CLAUDE_CODE_ENABLE_GATEWAY_
-REM  MODEL_DISCOVERY). Discovery counts as "nonessential traffic", so it
-REM  never runs while CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set
-REM  (set to ANY value, even "0" — Claude Code only checks presence).
-REM  When enabled, the master flag is therefore REMOVED and replaced with
-REM  its granular equivalents (DISABLE_ERROR_REPORTING here, plus the
-REM  DISABLE_TELEMETRY knob above), keeping phone-home blocked while
-REM  discovery — which only talks to this gateway — still works.
+REM  MODEL_DISCOVERY). Discovery only talks to this gateway and has its
+REM  own switch: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC does not turn it
+REM  off (Claude Code 2.1.257 and later), so that flag is always written
+REM  and telemetry, error reporting and the auto-updater stay blocked
+REM  whether discovery is on or not.
 REM  Claude Code only keeps model IDs containing "claude" or "anthropic";
 REM  name gateway aliases accordingly if they should show in the picker.
 set "ENABLE_MODEL_DISCOVERY=1"
@@ -329,7 +342,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$e['ANTHROPIC_BASE_URL']='%GATEWAY_URL%';" ^
   "$e['ANTHROPIC_API_KEY']='%API_KEY%';" ^
   "$e['ANTHROPIC_AUTH_TOKEN']='%API_KEY%';" ^
-  "if('%ENABLE_MODEL_DISCOVERY%' -eq '1'){$e['CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY']='1';$e['DISABLE_ERROR_REPORTING']='1';$e.Remove('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC')}else{$e['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1';$e.Remove('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY')};" ^
+  "$e['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1';" ^
+  "if('%ENABLE_MODEL_DISCOVERY%' -eq '1'){$e['CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY']='1'}else{$e.Remove('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY')};" ^
   "if('%DISABLE_TELEMETRY%' -eq '1'){$e['DISABLE_TELEMETRY']='1'};" ^
   "if('%DISABLE_INTERLEAVED_THINKING%' -eq '1'){$e['DISABLE_INTERLEAVED_THINKING']='1'};" ^
   "if('%DISABLE_1M_CONTEXT%' -eq '1'){$e['CLAUDE_CODE_DISABLE_1M_CONTEXT']='1'};" ^
@@ -347,6 +361,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "if('%PROXY_URL%'){$e['HTTP_PROXY']='%PROXY_URL%';$e['HTTPS_PROXY']='%PROXY_URL%';$e['NO_PROXY']='%NO_PROXY%'};" ^
   "if('%DEFAULT_MODEL%'){$s['model']='%DEFAULT_MODEL%';$e['ANTHROPIC_MODEL']='%DEFAULT_MODEL%'};" ^
   "if('%SMALL_FAST_MODEL%'){$e['ANTHROPIC_SMALL_FAST_MODEL']='%SMALL_FAST_MODEL%'};" ^
+  "if('%AUTO_MODE_CLIENT_CHECK%' -eq '1'){$e['CLAUDE_CODE_AUTO_MODE_SERVER']='0'};" ^
+  "if('%AUTO_MODE_MODEL%'){$e['CLAUDE_CODE_AUTO_MODE_MODEL']='%AUTO_MODE_MODEL%'};" ^
   "$s|ConvertTo-Json -Depth 10|Set-Content -Path $f -Encoding UTF8;" ^
   "Write-Host '   [OK] Wrote' $f"
 
@@ -367,12 +383,15 @@ echo    Settings written to %USERPROFILE%\.claude\settings.json
 echo      ANTHROPIC_BASE_URL        = %GATEWAY_URL%
 echo      ANTHROPIC_API_KEY         = %API_KEY_MASKED%
 if "%ENABLE_MODEL_DISCOVERY%"=="1" (
-    echo      GATEWAY_MODEL_DISCOVERY   = enabled ^(nonessential traffic left on^)
+    echo      GATEWAY_MODEL_DISCOVERY   = enabled
 ) else (
-    echo      GATEWAY_MODEL_DISCOVERY   = disabled ^(nonessential traffic blocked^)
+    echo      GATEWAY_MODEL_DISCOVERY   = disabled
 )
+echo      NONESSENTIAL_TRAFFIC      = blocked
 if not "%DEFAULT_MODEL%"=="" echo      model                     = %DEFAULT_MODEL%
 if not "%SMALL_FAST_MODEL%"=="" echo      ANTHROPIC_SMALL_FAST_MODEL = %SMALL_FAST_MODEL%
+if "%AUTO_MODE_CLIENT_CHECK%"=="1" echo      CLAUDE_CODE_AUTO_MODE_SERVER = 0
+if not "%AUTO_MODE_MODEL%"=="" echo      CLAUDE_CODE_AUTO_MODE_MODEL = %AUTO_MODE_MODEL%
 if defined GIT_BASH_PATH (
     echo      CLAUDE_CODE_GIT_BASH_PATH = %GIT_BASH_PATH%
 ) else (

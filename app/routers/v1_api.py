@@ -59,7 +59,7 @@ from app.services.azure_proxy import (
     azure_forward_messages,
     azure_forward_responses,
 )
-from app.services import guardrail
+from app.services import client_rules, guardrail
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
     bedrock_forward_count_tokens,
@@ -774,6 +774,9 @@ async def messages(request: Request, user: User = Depends(limited_current_user))
     Azure-configured and the user has permission; see ``_route_to_azure``.
     """
     alias = await _peek_model_alias(request)
+    reminder = await client_rules.observe_request(request, user)
+    if reminder is not None:
+        return reminder
     budget_fallback: str | None = None
     if alias and _route_to_azure(alias, user):
         # Same cloud-cap gate as /v1/chat/completions.

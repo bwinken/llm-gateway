@@ -161,9 +161,17 @@ class TestPages:
         assert body.index("Needs attention") < body.index("Spend today") < body.index("User Management") < body.index("Concurrency Limit")
 
 
+def _attention_strip(body: str) -> str:
+    """The admin page from the attention strip's own tag up to the tab bar."""
+    at = body.index('id="adminAttention"')
+    return body[body.rindex("<", 0, at):body.index('id="adminTabs"')]
+
+
 class TestTabs:
-    """Both pages split their lower half into tabs; the budget / attention
-    blocks above the tab bar stay visible on every tab."""
+    """Both pages split their lower half into tabs. On /dashboard the budget
+    stays above the tab bar; on /admin the attention strip does (folded to
+    one line outside Overview), so the tab bar is on screen when the page
+    opens."""
 
     def test_admin_tabs_and_badges(self, client, db_session, admin_user, test_user):
         test_user.daily_limit_usd = 10
@@ -176,16 +184,50 @@ class TestTabs:
             patch("app.routers.admin.get_concurrency_settings", return_value=("monitor", 8)),
         ):
             body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
-        for name in ("overview", "users", "settings"):
+        for name in ("overview", "users", "clients", "security", "settings"):
             assert f'data-tab="{name}"' in body
-            assert f'data-panel="{name}"' in body
+            assert body.count(f'data-panel="{name}"') == 1
         assert "1 blocked" in body
         assert "limit: monitor" in body
         assert "gwTabs('adminTabs', 'adminTab')" in body
-        # Attention panel and key numbers sit above the tab bar.
-        assert body.index("Needs attention") < body.index("Spend today") < body.index('id="adminTabs"')
+        # The attention strip sits above the tab bar on every tab; the key
+        # numbers are Overview's first block.
+        assert body.index("Needs attention") < body.index('id="adminTabs"') < body.index("Spend today")
+        assert body.index('data-panel="overview"') < body.index("Spend today") < body.index('data-panel="users"')
+        # It is one line that opens, with what is wrong counted in that line.
+        strip = _attention_strip(body)
+        assert strip.startswith("<details") and "data-attention-chips" in strip
+        assert "1 at daily limit" in strip
         # Near-limit entries deep-link into the Users tab, filtered.
         assert "?q=testuser#users" in body
+
+    def test_each_admin_card_is_on_the_tab_it_belongs_to(self, client, admin_user):
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        starts = {name: body.index(f'data-panel="{name}"') for name in ("overview", "users", "clients", "security", "settings")}
+        order = sorted(starts, key=starts.get)
+        end = body.index("gwTabs('adminTabs'")
+
+        def panel_of(marker: str) -> str:
+            at = body.index(marker)
+            assert at < end, marker
+            return [name for name in order if starts[name] < at][-1]
+
+        assert panel_of("User Management") == "users" and panel_of('id="create-app"') == "users"
+        assert panel_of('id="client-rules"') == "clients"
+        for card in ('id="ip-allowlist"', ">Guardrail</h2>", ">Audit Log</h2>"):
+            assert panel_of(card) == "security", card
+        for card in (">Concurrency Limit</h2>", ">Default Daily Limit</h2>", ">Cloud Daily Limit</h2>", ">Cloud Budget Fallback</h2>", ">Site Links</h2>"):
+            assert panel_of(card) == "settings", card
+
+    def test_all_clear_strip_has_nothing_to_open(self, client, admin_user):
+        with (
+            patch("app.routers.admin.is_alive", return_value=True),
+            patch("app.routers.admin.get_metrics", return_value=None),
+        ):
+            body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        strip = _attention_strip(body)
+        assert strip.startswith("<div") and "All clear" in strip
+        assert "<details" not in strip and "<summary" not in strip
 
     def test_dashboard_tabs(self, client, test_user):
         with patch("app.routers.web_ui.is_alive", side_effect=lambda url: url != "http://mock-vlm:8001/v1"):
@@ -245,7 +287,7 @@ class TestModelsTab:
         bar_start = body.index('id="adminTabs"')
         bar = body[bar_start:]
         bar = bar[:bar.index("</div>")]
-        for name in ("overview", "users", "settings"):
+        for name in ("overview", "users", "clients", "security", "settings"):
             assert f'href="/admin#{name}"' in bar
         assert 'class="gw-tab gw-tab-on" href="/admin/models"' in bar
         # Not sticky here: the page has its own sticky sidebar at top: 80px.

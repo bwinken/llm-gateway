@@ -20,6 +20,8 @@ os.environ["DATABASE_URL"] = "sqlite://"
 # load_dotenv() never overrides a variable that exists, so a local .env
 # can't switch them back on.
 os.environ["METRICS_ENABLED"] = ""
+# Client-rule mail goes out a pause apart; tests do not wait for it.
+os.environ["CLIENT_RULE_MAIL_PAUSE_S"] = "0"
 
 import httpx
 import jwt as pyjwt
@@ -426,6 +428,7 @@ _ALL_PATCHES = [
     # patch in their own settings (tests/test_guardrail.py).
     lambda: patch("app.services.guardrail.get_guardrail_settings", return_value=dict(GUARDRAIL_OFF)),
     lambda: patch("app.services.ip_allowlist.engine", _test_engine),
+    lambda: patch("app.services.client_rules.engine", _test_engine),
     lambda: patch("app.services.ip_allowlist.get_ip_allowlist_settings", return_value=dict(IP_ALLOWLIST_OFF)),
 ]
 
@@ -438,11 +441,13 @@ def _patch_all():
     import app.services.usage_rollup  # noqa: F401 — same, for the rollup engine patch
     import app.services.scheduler  # noqa: F401 — same, for the job-claim engine patch
     import app.services.guardrail  # noqa: F401 — same, for the settings patch
+    import app.services.client_rules as client_rules  # same, for the engine patch
     import app.services.ip_allowlist as ip_allowlist  # same, for the engine / settings patches
     from contextlib import ExitStack
 
     import app.services.auth_throttle as auth_throttle
     ip_allowlist.reset()  # the per-worker snapshot is module state
+    client_rules.reset()  # so are the client rules and their write throttles
     auth_throttle.reset()  # so are failed-auth counts and locks
     from app.core.deps import reset_key_use_cache
     reset_key_use_cache()  # and which users' key use was stamped recently

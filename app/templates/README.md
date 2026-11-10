@@ -79,14 +79,14 @@ The budget hero stays at the top; the lower half is split into two tabs (**Model
 **File**: `admin.html` ← `admin.py`
 **Permission**: JWT scope includes `admin`
 
-Above the tab bar: the **Needs attention** panel and the key-number cards. Below it, the shared `_admin_tabs.html` bar with **Overview / Users / Settings** (in-page tabs via `gwTabs('adminTabs', 'adminTab')`) and **Models**, a link to the separate `/admin/models` page. Tab badges: Users shows "N blocked" / "N near limit" (else the account count); Settings shows "limit: monitor|enforce" while the concurrency limit is on.
+Above the tab bar: only the **Needs attention** strip, a `<details>` that is one line of counts when folded (open on Overview, folded on the other tabs; it follows the `gw:tab` event), so the tab bar is on screen when the page opens. Below it, the shared `_admin_tabs.html` bar with **Overview / Users / Clients / Security / Settings** (in-page tabs via `gwTabs('adminTabs', 'adminTab')`) and **Models**, a link to the separate `/admin/models` page. Tab badges: Users shows "N blocked" / "N near limit" (else the account count); Settings shows "limit: monitor|enforce" while the concurrency limit is on.
 
 ### Page Sections
 
 | Section | Tab | Description |
 |---|---|---|
-| **Needs attention** | — | Three columns: open usage anomalies from the gateway's hourly scan (`app/services/anomaly_scan.py`) (severity, user/model, rule, summary; Ack / Resolve buttons), on-prem models down or queueing, and accounts at ≥ 90 % of today's daily limit (each links to `?q=<username>#users`). Collapses to "All clear" when empty |
-| **Key numbers** | — | Spend today, Requests today, Active users today, In flight now (concurrency leases; "tracking off" when the limit is `off`), this month's cost / requests / tokens |
+| **Needs attention** | — | Folded: counts per kind (models down, anomalies, at / near daily limit, client rules violated). Open: Three columns: open usage anomalies from the gateway's hourly scan (`app/services/anomaly_scan.py`) (severity, user/model, rule, summary; Ack / Resolve buttons), on-prem models down or queueing, and accounts at ≥ 90 % of today's daily limit (each links to `?q=<username>#users`). Collapses to "All clear" when empty |
+| **Key numbers** | Overview | Spend today, Requests today, Active users today, In flight now (concurrency leases; "tracking off" when the limit is `off`), this month's cost / requests / tokens |
 | **DAU Trend** | Overview | Chart.js bar chart, 30-day Daily Active Users, today's DAU in top-right |
 | **App Leaderboard** | Overview | App account ranking (`app_*`), top-10 by monthly cost descending |
 | **User Leaderboard** | Overview | User ranking, top-10 by monthly cost descending, shows display_name and org_code badge |
@@ -97,9 +97,12 @@ Above the tab bar: the **Needs attention** panel and the key-number cards. Below
 | **Default Daily Limit** | Settings | `POST /admin/default-limit` — sets `[app].default_daily_limit_usd` and bulk-bumps any user with `0 < daily_limit_usd < new_floor` up to the floor (users at `daily_limit_usd = 0`, a deliberate $0 budget, are never modified) |
 | **Cloud Daily Limit** | Settings | `POST /admin/cloud-limit` — default cap on each user's combined Azure + AWS spend per day (`[app].cloud_daily_limit_usd`) for users with cloud access and no *Cloud $* of their own. Blank = no default cap; 0 = cloud refused |
 | **Cloud Budget Fallback** | Settings | Checkbox → `POST /admin/cloud-budget-fallback`. When on, a `/v1/*` cloud request over the cloud cap is served on-prem instead of a 429 (the overall daily limit still applies; `/azure/v1/*` and `/aws/v1/*` never fall back) |
-| **Create App Account** | Settings | Username (auto-prefixed with `app_`), Daily Limit, Owner → `POST /admin/users/create`. App accounts are created concurrency-waived |
+| **Create App Account** | Users | Username (auto-prefixed with `app_`), Daily Limit, Owner → `POST /admin/users/create`. App accounts are created concurrency-waived |
 | **Site Links** | Settings | Support Bot URL (floating button on every page) and Install Guide URL (card on `/setup`) → `POST /admin/site-links`. Only `http(s)://` or site-relative URLs; empty hides the element |
-| **Audit Log** | Settings | The newest 20 entries of `audit_log` (time in Asia/Taipei, who and from which address, method + route, status, a one-line summary of target and submitted fields) and **Download CSV (last 365 days)** (`GET /admin/api/export/audit-log.csv`). Every write under `/admin` and `/dashboard`, every full key shown and every export is recorded; secrets are redacted |
+| **Client rules** | Clients | Settings and violators of the built-in checks (`client_checks.py`, CC001…), Claude Code versions in use, the mail log (every mail tried: address, rules, why, sent or failed; filter, search, paging), deprecated / retired checks; see Client rules in `docs/architecture.md`. |
+| **IP Allowlist** | Security | Mode and rules of the API IP allowlist; see `docs/architecture.md`. |
+| **Guardrail** | Security | Qwen3Guard-Gen prompt screening: policy and test connection; see `docs/architecture.md`. |
+| **Audit Log** | Security | The newest 20 entries of `audit_log` (time in Asia/Taipei, who and from which address, method + route, status, a one-line summary of target and submitted fields) and **Download CSV (last 365 days)** (`GET /admin/api/export/audit-log.csv`). Every write under `/admin` and `/dashboard`, every full key shown and every export is recorded; secrets are redacted |
 
 ### Actions column
 
@@ -137,7 +140,7 @@ The same router also serves JSON endpoints that the page does not use: `GET` / `
 **File**: `admin_models.html` ← `admin.py`
 **Permission**: JWT scope includes `admin`
 
-Master–detail editor over `GET` / `PUT /admin/api/config`, rendered under the same `_admin_tabs.html` bar (Overview / Users / Settings link back to `/admin#<tab>`; Models is active). It is a separate page on purpose: its URL hash is the selection, and its unsaved-changes guard must fire on navigation.
+Master–detail editor over `GET` / `PUT /admin/api/config`, rendered under the same `_admin_tabs.html` bar (Overview / Users / Clients / Security / Settings link back to `/admin#<tab>`; Models is active). It is a separate page on purpose: its URL hash is the selection, and its unsaved-changes guard must fire on navigation.
 
 ### Page Sections
 
@@ -208,7 +211,7 @@ Shared framework for all pages:
 
 ### `_admin_tabs.html` — Admin Tab Bar
 
-Included by `admin.html` (`on_admin_page = true`: Overview / Users / Settings are `data-tab` buttons) and `admin_models.html` (`on_admin_page = false`: they are links to `/admin#<tab>`). The fourth tab, **Models**, is always a link to `/admin/models`.
+Included by `admin.html` (`on_admin_page = true`: Overview / Users / Clients / Security / Settings are `data-tab` buttons) and `admin_models.html` (`on_admin_page = false`: they are links to `/admin#<tab>`). The last tab, **Models**, is always a link to `/admin/models`.
 
 ### Auth Flow
 

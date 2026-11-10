@@ -320,6 +320,120 @@ class IpAllowRule(SQLModel, table=True):
     created_at: NaiveDatetime = Field()
 
 
+class ClientRuleSetting(SQLModel, table=True):
+    """An admin's settings for one client check (app/services/client_checks.py).
+
+    The checks themselves are code: what each one detects, its violation id
+    (``rule_id``, e.g. ``CC001``) and its default wording and patch. A row
+    here exists only once an admin has saved that check's form, and then
+    holds everything the form has: on / off, the action (``notice`` or
+    ``remind``), the notice text, the settings patch
+    (environment variables for the ``env`` block of settings.json, as JSON:
+    the base for every account and what Azure / AWS accounts get on top) and
+    mail (``auto_email``, again every ``email_repeat_days``, 0 = once).
+    No row means the check's defaults. A row whose check was retired or
+    removed from the code is ignored. Nothing here is part of a check's
+    judgment: thresholds are constants in the code too.
+    """
+    __tablename__ = "client_rule_settings"
+
+    rule_id: str = Field(primary_key=True)
+    enabled: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
+    action: str = Field(default="notice", sa_column=sa.Column(sa.String, nullable=False, server_default="notice"))
+    title: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    message: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
+    patch: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
+    patch_azure: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
+    patch_aws: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
+    email_subject: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    auto_email: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
+    email_repeat_days: int = Field(default=0, sa_column=sa.Column(sa.Integer, nullable=False, server_default="0"))
+    updated_by: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    updated_at: NaiveDatetime = Field()
+
+
+class ClientViolation(SQLModel, table=True):
+    """One account tripping one client check: the check's violation id
+    (``rule_id``, e.g. ``CC001``), when the account first and last did
+    (written at most hourly per worker), the Claude Code version it had,
+    the local day it last got the in-terminal reminder, and its mail state.
+
+    ``rule_id`` is the id in code, not a foreign key: retiring a check
+    leaves its history here. ``username`` is not a foreign key either:
+    deleting an account leaves the row, and readers skip names without an
+    account. Timestamps are naive UTC.
+    """
+    __tablename__ = "client_violations"
+    __table_args__ = (sa.UniqueConstraint("rule_id", "username", name="uq_client_violations_rule_user"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    rule_id: str = Field(index=True)
+    username: str = Field()
+    client_version: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    first_seen_at: NaiveDatetime = Field()
+    last_seen_at: NaiveDatetime = Field()
+    reminded_on: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    mailed_at: NaiveDatetime | None = Field(default=None)
+    mail_attempted_at: NaiveDatetime | None = Field(default=None)
+    mail_error: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    # When an admin asked for this account to be mailed (a click on the
+    # check's mail buttons). The mail job sends it in its next batches; it
+    # is done once mailed_at is not older than this.
+    mail_requested_at: NaiveDatetime | None = Field(default=None)
+    # When the account said "I've applied the fix" on its dashboard. The
+    # violation counts as resolved (no notice, no mail) while this is not
+    # older than last_seen_at: a later violation reopens it by itself.
+    resolved_at: NaiveDatetime | None = Field(default=None)
+
+
+class ClientVersion(SQLModel, table=True):
+    """Which client versions an account has used (Claude Code, read from
+    the User-Agent of its Messages requests): one row per account and
+    version, stamped at most hourly per worker. ``username`` is not a
+    foreign key."""
+    __tablename__ = "client_versions"
+    __table_args__ = (sa.UniqueConstraint("username", "client", "version", name="uq_client_versions_user_client_version"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    username: str = Field(index=True)
+    client: str = Field()
+    version: str = Field()
+    first_seen_at: NaiveDatetime = Field()
+    last_seen_at: NaiveDatetime = Field()
+
+
+class ClientMailLog(SQLModel, table=True):
+    """Every client-rule mail the gateway tried to send, one row per mail:
+    who it was for, the address it went to, the checks it covered
+    (``rule_ids``, comma-separated ids), why it went out (``kind``:
+    ``requested`` by an admin's click or the monthly reminder, ``automatic``
+    for a check's own mail, ``test`` for an admin's test mail) and how it
+    ended (``ok``, and the error summary when it failed). The admin's
+    *Mail log* reads it; nothing updates a row.
+
+    ``username`` is the account the mail was about ("" for a test mail,
+    whose ``actor`` is the admin who sent it). Neither is a foreign key, so
+    deleting an account leaves its rows. The mail's body is not kept.
+    Timestamps are naive UTC.
+    """
+    __tablename__ = "client_mail_log"
+    __table_args__ = (
+        Index("ix_client_mail_log_created_at", "created_at"),
+        Index("ix_client_mail_log_username", "username"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    created_at: NaiveDatetime = Field(default_factory=_naive_utcnow)
+    username: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    address: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    subject: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    rule_ids: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    kind: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    ok: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
+    error: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    actor: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+
+
 class AuditLog(SQLModel, table=True):
     """Who changed what through the Web UI / admin, and who read credentials
     or exported data (app/services/audit.py). Append-only: the app never

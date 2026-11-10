@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Request
 from app.core.config import _MODEL_METADATA_KEYS, get_bedrock_models_snapshot
 from app.core.deps import limited_bedrock_access, require_bedrock_access
 from app.models.schema import User
+from app.services import client_rules
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
     bedrock_forward_count_tokens,
@@ -92,6 +93,9 @@ async def bedrock_messages(
     Anthropic SDK / Claude Code clients work regardless of whether their
     ``ANTHROPIC_BASE_URL`` already includes the ``/v1`` prefix.
     """
+    reminder = await client_rules.observe_request(request, user)
+    if reminder is not None:
+        return reminder
     return await bedrock_forward_messages(request, user)
 
 

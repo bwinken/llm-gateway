@@ -54,6 +54,8 @@
                 history.replaceState(null, '', location.pathname + location.search + '#' + name);
             }
             window.dispatchEvent(new Event('resize'));
+            // For blocks outside the panels that follow the active tab.
+            window.dispatchEvent(new CustomEvent('gw:tab', { detail: { bar: barId, tab: name } }));
         }
         tabs.forEach(function (t) {
             t.addEventListener('click', function () { show(t.dataset.tab, true); });
@@ -375,6 +377,8 @@
         /* Model Config keeps its own sticky sidebar at top: 80px; a sticky
            tab bar would cover it, so there the bar scrolls with the page. */
         .gw-tabs-static { position: static; }
+        /* <summary class="list-none"> rows draw their own chevron; Safari needs this to drop its marker. */
+        summary.list-none::-webkit-details-marker { display: none; }
         .gw-tab {
             position: relative; flex-shrink: 0;
             display: inline-flex; align-items: center; gap: 8px;

@@ -24,6 +24,10 @@
     [data-um-panel].is-loading { opacity: 0.55; pointer-events: none; transition: opacity 0.15s; }
     .um-flash-ok  { box-shadow: 0 0 0 2px rgba(52,211,153,0.85) !important; }
     .um-flash-err { box-shadow: 0 0 0 2px rgba(248,113,113,0.9) !important; }
+    /* Attention strip: compact count chips in its header line. */
+    .gw-att-chip { font-size: .6875rem; font-weight: 600; padding: .125rem .5rem; border-radius: 999px; white-space: nowrap; }
+    .gw-att-crit { background: rgba(255,92,92,0.14); color: #ff8a8a; }
+    .gw-att-warn { background: rgba(245,166,35,0.12); color: #f5a623; }
 </style>
 {% endblock %}
 
@@ -33,7 +37,7 @@
 <div class="mb-8 flex justify-between items-center gw-anim">
     <div>
         <h1 class="text-2xl font-bold text-t1">Admin Panel</h1>
-        <p class="mt-1 text-sm text-t3">Manage users, view total usage, and adjust billing limits.</p>
+        <p class="mt-1 text-sm text-t3">Usage, accounts, client rules, security and gateway-wide limits.</p>
     </div>
     <div class="flex items-center gap-3">
         <a href="/dashboard" class="gw-btn gw-btn-ghost text-sm px-4 py-2">&larr; Dashboard</a>
@@ -42,19 +46,39 @@
 
 {# ── Needs attention: anomalies, servers, budgets — what to act on first ── #}
 {% set n_crit = anomalies|selectattr('severity', 'equalto', 'critical')|list|length + system_status.down|length + budget_pressure|selectattr('percent', 'ge', 100)|list|length %}
-{% set n_attention = anomalies|length + system_status.down|length + system_status.queueing|length + budget_pressure|length %}
-<div class="gw-card mb-6 gw-anim gw-d1 overflow-hidden"
+{% set n_attention = anomalies|length + system_status.down|length + system_status.queueing|length + budget_pressure|length + client_rule_attention|length %}
+{# A one-line strip on every tab; it opens to the details. Open by default
+   on Overview, folded on the other tabs (see the script below), so the tab
+   bar and the tab's own content are on screen when the page opens. #}
+{% set n_blocked_today = budget_pressure|selectattr('percent', 'ge', 100)|list|length %}
+{% set att_tone = 'crit' if n_crit else 'warn' if n_attention else 'ok' %}
+<{{ 'details' if n_attention else 'div' }} id="adminAttention" class="gw-card gw-attention mb-5 gw-anim gw-d1 overflow-hidden group"{{ ' open' if n_attention }}
      style="border-color:{{ 'rgba(255,92,92,0.35)' if n_crit else 'rgba(245,166,35,0.3)' if n_attention else 'rgba(61,214,140,0.25)' }}">
-    <div class="px-5 py-3 flex items-center gap-3" style="border-bottom:1px solid rgba(255,255,255,0.04);background:{{ 'rgba(255,92,92,0.06)' if n_crit else 'rgba(245,166,35,0.05)' if n_attention else 'rgba(61,214,140,0.05)' }}">
+    <{{ 'summary' if n_attention else 'div' }} class="px-5 py-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 list-none {{ 'cursor-pointer select-none' if n_attention }}"
+         style="background:{{ 'rgba(255,92,92,0.06)' if n_crit else 'rgba(245,166,35,0.05)' if n_attention else 'rgba(61,214,140,0.05)' }}">
         <h2 class="text-sm font-bold" style="color:{{ '#ff8a8a' if n_crit else '#f5a623' if n_attention else '#3dd68c' }}">
             {{ 'Needs attention' if n_attention else 'All clear' }}</h2>
         <span class="text-xs text-t3">
             {% if n_attention %}{{ n_attention }} item{{ '' if n_attention == 1 else 's' }}{% if n_crit %} · <span style="color:#ff8a8a">{{ n_crit }} urgent</span>{% endif %}
             {% else %}No open anomalies, every model is online and nobody is near their daily limit.{% endif %}
         </span>
-    </div>
+        {% if n_attention %}
+        <span class="flex flex-wrap items-center gap-1.5" data-attention-chips>
+            {% if system_status.down %}<span class="gw-att-chip gw-att-crit">{{ system_status.down|length }} model{{ '' if system_status.down|length == 1 else 's' }} down</span>{% endif %}
+            {% if system_status.queueing %}<span class="gw-att-chip gw-att-warn">{{ system_status.queueing|length }} queueing</span>{% endif %}
+            {% if anomalies %}<span class="gw-att-chip gw-att-warn">{{ anomalies|length }} anomal{{ 'y' if anomalies|length == 1 else 'ies' }}</span>{% endif %}
+            {% if n_blocked_today %}<span class="gw-att-chip gw-att-crit">{{ n_blocked_today }} at daily limit</span>{% endif %}
+            {% if budget_pressure|length - n_blocked_today %}<span class="gw-att-chip gw-att-warn">{{ budget_pressure|length - n_blocked_today }} near daily limit</span>{% endif %}
+            {% if client_rule_attention %}<span class="gw-att-chip gw-att-warn">{{ client_rule_attention|length }} client rule{{ '' if client_rule_attention|length == 1 else 's' }} violated</span>{% endif %}
+        </span>
+        <span class="ml-auto flex items-center gap-1.5 text-xs text-t4">
+            <span class="group-open:hidden">Show</span><span class="hidden group-open:inline">Hide</span>
+            <svg class="w-4 h-4 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        </span>
+        {% endif %}
+    </{{ 'summary' if n_attention else 'div' }}>
     {% if n_attention %}
-    <div class="grid grid-cols-1 lg:grid-cols-3 divide-y lg:divide-y-0 lg:divide-x" style="--tw-divide-opacity:1;border-color:rgba(255,255,255,0.04)">
+    <div class="grid grid-cols-1 lg:grid-cols-3 divide-y lg:divide-y-0 lg:divide-x" style="--tw-divide-opacity:1;border-color:rgba(255,255,255,0.04);border-top:1px solid rgba(255,255,255,0.04)">
         {# Anomalies #}
         <div class="p-4" style="border-color:rgba(255,255,255,0.05)">
             <div class="text-[11px] font-bold uppercase tracking-wider text-t3 mb-2 gw-tip gw-tip-wide"
@@ -119,9 +143,38 @@
             {% endfor %}
         </div>
     </div>
+    {# Client rules with accounts currently matching #}
+    {% if client_rule_attention %}
+    <div id="clientRuleAttention" class="p-4" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <div class="text-[11px] font-bold uppercase tracking-wider text-t3 mb-2 gw-tip gw-tip-wide"
+             data-tip="Accounts with a client-rule violation in the last {{ client_rule_days }} days. Each of them sees the rule's notice on their dashboard. Rules, patches and mail are on the Clients tab.">Client rule violations</div>
+        <div class="flex flex-wrap gap-1.5">
+            {% for r in client_rule_attention %}
+            <a href="#clients" onclick="setTimeout(function(){var c=document.getElementById('client-rule-{{ r.id }}');if(c){c.open=true;c.scrollIntoView({block:'center'});}},50)"
+               class="text-xs px-2 py-1 rounded hover:bg-[rgba(255,255,255,0.06)]" style="background:rgba(245,166,35,0.08);color:#f5a623"><span class="font-mono">{{ r.id }}</span> {{ r.name }} · {{ r.count }} account{{ '' if r.count == 1 else 's' }}</a>
+            {% endfor %}
+        </div>
+    </div>
     {% endif %}
-</div>
+    {% endif %}
+</{{ 'details' if n_attention else 'div' }}>
 <script>
+/* The attention strip follows the tab: open on Overview, folded elsewhere.
+   Once the admin opens or folds it by hand, that choice holds for the session. */
+(function() {
+    var box = document.getElementById('adminAttention');
+    if (!box || box.tagName !== 'DETAILS') return;
+    var KEY = 'adminAttention';
+    function choice() { try { return sessionStorage.getItem(KEY); } catch (e) { return null; } }
+    box.querySelector('summary').addEventListener('click', function() {
+        setTimeout(function() { try { sessionStorage.setItem(KEY, box.open ? 'open' : 'closed'); } catch (e) {} }, 0);
+    });
+    window.addEventListener('gw:tab', function(e) {
+        if (e.detail.bar !== 'adminTabs') return;
+        var c = choice();
+        box.open = c ? c === 'open' : e.detail.tab === 'overview';
+    });
+})();
 function anomalyAction(id, action) {
     fetch('/admin/api/anomalies/' + id + '/' + action, { method: 'POST' })
         .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
@@ -135,6 +188,11 @@ function anomalyAction(id, action) {
 }
 </script>
 
+{# ── Tabs: right under the attention strip, so they are on screen when the page opens ── #}
+{% set on_admin_page = true %}
+{% include '_admin_tabs.html' %}
+
+<div data-panel="overview">
 {# ── Key numbers: today first, then the month ── #}
 <div class="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8 gw-anim gw-d2">
     <div class="gw-card gw-stat relative p-5" style="--accent:linear-gradient(90deg,#3dd68c,#4dd9e8)">
@@ -166,11 +224,6 @@ function anomalyAction(id, action) {
     </div>
 </div>
 
-{# ── Tabs: everything below the attention panel and key numbers ── #}
-{% set on_admin_page = true %}
-{% include '_admin_tabs.html' %}
-
-<div data-panel="overview">
 {# ── DAU Trend ── #}
 <div class="mb-8 gw-anim gw-d2">
     <div class="gw-card overflow-hidden">
@@ -455,6 +508,8 @@ function submitExportCsv() {
                 <button type="button" id="umTabApps" data-um-tab="apps" role="tab" class="text-xs font-medium px-3 py-1.5 transition-colors">
                     Apps <span class="text-t4 font-mono" data-um-count="apps">{{ apps_table.total }}</span></button>
             </div>
+            <button type="button" class="text-xs text-ab hover:underline"
+                    onclick="var c=document.getElementById('create-app');c.scrollIntoView({behavior:'smooth',block:'center'});c.querySelector('input[name=username]').focus({preventScroll:true})">+ New app account</button>
         </div>
         <div class="flex flex-wrap items-center gap-2">
             <a href="/admin/api/export/users.csv" download
@@ -490,127 +545,10 @@ function submitExportCsv() {
     {% with table = apps_table %}{% include "_admin_user_table.html" %}{% endwith %}
 </div>
 
-</div>
-
-<div data-panel="settings">
-{# ── Settings ── #}
-<div class="grid grid-cols-1 xl:grid-cols-2 gap-x-6 gw-anim gw-d5">
-{# ── Concurrency Limit ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #34d399">
-    <div class="flex flex-wrap items-center justify-between gap-4">
-        <div class="max-w-xl">
-            <h2 class="text-sm font-bold text-t2 mb-1">Concurrency Limit</h2>
-            <p class="text-xs text-t4 gw-tip gw-tip-wide"
-               data-tip="Counts chat / responses / messages requests (streams included) across all gateway workers, from admission until the response is fully sent. Monitor: everything is served, over-limit requests are logged as 'Concurrency limit exceeded (monitor)'. Enforce: over-limit requests get 429 with Retry-After: 5 (Claude Code retries automatically). Admins and accounts marked Waive are never limited; app accounts start out waived (un-waive one to limit it). count_tokens, tokenize, models, embeddings and rerank are not counted.">
-                Maximum in-flight inference requests per account. Admins and waived accounts (all app accounts, by default) are exempt.
-            </p>
-            <p class="text-xs text-t4 mt-1.5">
-                {% if concurrency_in_flight is none %}
-                In flight now: <span class="text-t3">unavailable</span>
-                {% else %}
-                In flight now:
-                <span class="font-mono text-t2">{{ concurrency_in_flight.total }}</span> request{{ '' if concurrency_in_flight.total == 1 else 's' }}
-                across <span class="font-mono text-t2">{{ concurrency_in_flight.users }}</span> account{{ '' if concurrency_in_flight.users == 1 else 's' }}
-                · busiest account <span class="font-mono text-t2">{{ concurrency_in_flight.peak_user }}</span>
-                {% if concurrency_mode == 'off' %}<span class="text-t4">(not tracked while Off)</span>{% endif %}
-                {% endif %}
-            </p>
-        </div>
-        <form action="/admin/concurrency-limit" method="POST" class="flex items-end gap-3" data-confirm="concurrency">
-            <div>
-                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Mode</label>
-                <select name="mode" class="gw-input text-sm py-1.5 px-2">
-                    {% for m in concurrency_modes %}
-                    <option value="{{ m }}" {{ 'selected' if m == concurrency_mode else '' }}>{{ {'off': 'Off — no limit', 'monitor': 'Monitor — log only', 'enforce': 'Enforce — 429'}[m] }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div>
-                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Per account</label>
-                <input type="number" step="1" min="1" required name="limit" value="{{ concurrency_limit }}"
-                       class="gw-input w-20 text-sm font-mono py-1.5 px-2">
-            </div>
-            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
-        </form>
-    </div>
-</div>
-
-{# ── Default Daily Limit ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #6398ff">
-    <div class="flex flex-wrap items-center justify-between gap-4">
-        <div>
-            <h2 class="text-sm font-bold text-t2 mb-1">Default Daily Limit</h2>
-            <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="New users get this value. Existing users below it get bumped up to it, except accounts set to $0 (blocked on purpose). Users at or above this stay unchanged. Every account has a limit: 0 means $0, not unlimited.">
-                Floor for daily spend (USD). Applies to new users; existing users below the floor are auto-raised.
-            </p>
-        </div>
-        <form action="/admin/default-limit" method="POST" data-confirm="default-limit" class="flex items-end gap-3">
-            <div>
-                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Default Limit (USD)</label>
-                <div class="flex items-center gap-1">
-                    <span class="text-sm text-t4">$</span>
-                    <input type="number" step="0.1" min="0" name="new_default" value="{{ default_daily_limit }}"
-                           class="gw-input w-28 text-sm font-mono py-1.5 px-2">
-                </div>
-            </div>
-            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
-        </form>
-    </div>
-</div>
-
-{# ── Cloud Daily Limit (Azure + Bedrock combined) ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #a78bfa">
-    <div class="flex flex-wrap items-center justify-between gap-4">
-        <div>
-            <h2 class="text-sm font-bold text-t2 mb-1">Cloud Daily Limit</h2>
-            <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="Each user's Azure + AWS spend per day, combined: users split it between the two however they like. Applies to every user with Azure or AWS access who has no Cloud $ of their own in the users table; a user's own value wins. It sits inside each user's overall daily limit (cloud spend counts toward both). Blank = no default cap; 0 = $0, cloud refused.">
-                Default cap on Azure + AWS spend per day (USD) for users with cloud access. A user's own Cloud $ overrides it. Blank = no default cap.
-            </p>
-        </div>
-        <form action="/admin/cloud-limit" method="POST" class="flex items-end gap-3">
-            <div>
-                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Cloud Limit (USD)</label>
-                <div class="flex items-center gap-1">
-                    <span class="text-sm text-t4">$</span>
-                    <input type="number" step="0.1" min="0" name="new_cloud_limit" placeholder="no cap"
-                           value="{{ cloud_daily_limit if cloud_daily_limit is not none else '' }}"
-                           class="gw-input w-28 text-sm font-mono py-1.5 px-2">
-                </div>
-            </div>
-            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
-        </form>
-    </div>
-</div>
-
-{# ── Cloud Budget Fallback ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #a78bfa">
-    <div class="flex flex-wrap items-center justify-between gap-4">
-        <div>
-            <h2 class="text-sm font-bold text-t2 mb-1">Cloud Budget Fallback</h2>
-            <p class="text-xs text-t4 gw-tip gw-tip-wide"
-               data-tip="Applies to the unified /v1/* surface only. A user whose cloud daily limit is spent gets the on-prem default model (response carries X-Budget-Fallback) instead of a 429. The overall daily limit still applies — once that is gone too, requests are refused. /azure/v1/* and /aws/v1/* never fall back.">
-                When a user's cloud daily limit is exhausted, serve their request with the on-prem model instead of refusing it.
-                Requests are still refused once the overall daily limit is exhausted.
-            </p>
-        </div>
-        <form id="cloud-budget-fallback-form" action="/admin/cloud-budget-fallback" method="POST"
-              class="flex items-center gap-3">
-            <label class="flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" name="enabled" value="on" {{ 'checked' if cloud_budget_fallback else '' }}
-                       class="w-4 h-4" style="accent-color:#a78bfa">
-                <span id="cloud-budget-fallback-state" class="text-sm font-semibold text-t4"
-                      style="{{ 'color:#cab9ff' if cloud_budget_fallback else '' }}">
-                    {{ 'Enabled — falls back to on-prem' if cloud_budget_fallback else 'Disabled — 429 when cloud budget is spent' }}
-                </span>
-            </label>
-            <noscript><button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button></noscript>
-        </form>
-    </div>
-</div>
-
 {# ── Create App Account ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d5">
-    <h2 class="text-sm font-bold text-t2 mb-4">Create App Account</h2>
+<div id="create-app" class="gw-card p-5 mt-6 mb-6 gw-anim gw-d5">
+    <h2 class="text-sm font-bold text-t2 mb-1">Create App Account</h2>
+    <p class="text-xs text-t4 mb-4">A service account for programmatic access: its own key and daily limit, no concurrency limit by default.</p>
     <form action="/admin/users/create" method="POST" class="flex items-end gap-4 flex-wrap">
         <div>
             <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Prefix app_ is added automatically. Use for programmatic API access.">Username</label>
@@ -641,7 +579,451 @@ function submitExportCsv() {
     </form>
 </div>
 
+
 </div>
+
+<div data-panel="clients">
+{# ── Client rules: the checks are code (app/services/client_checks.py); this card sets how each is used ── #}
+<div id="client-rules" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #f5a623">
+    <div class="mb-4 max-w-3xl">
+        <h2 class="text-sm font-bold text-t2 mb-1">Client rules</h2>
+        <p class="text-xs text-t4">
+            Reach the people whose Claude Code needs a change the gateway cannot make for them. The gateway checks every Messages request against the rules below;
+            an account that trips one sees your message on its dashboard, can download a script that sets environment variables in its settings.json
+            (a different set for local-only, Azure and AWS accounts), and can be mailed. What each rule detects is built in; here you turn it on and set what its accounts are told.
+        </p>
+    </div>
+    {% if client_rules is none %}
+    <p class="text-xs text-ar">Client rules could not be loaded (has <span class="font-mono">alembic upgrade head</span> been run?).</p>
+    {% else %}
+    {% set cr = client_rules %}
+    <p class="text-xs text-t4 mb-4" id="client-rules-mail-status">
+        Mail:
+        {% if cr.mail.enabled %}<span class="text-ag">on</span> — from <span class="font-mono text-t2">{{ cr.mail.sender }}</span> via <span class="font-mono text-t2">{{ cr.mail.server }}</span>, to <span class="font-mono text-t2">&lt;account&gt;@{{ cr.mail.domain }}</span>{% if not cr.mail.public_url %} · <span class="text-t3">set <span class="font-mono">PUBLIC_BASE_URL</span> to put a dashboard link in mail</span>{% endif %}
+        {% else %}<span class="text-ar">off</span> — set {{ cr.mail.missing | join(', ') }} in <span class="font-mono">.env</span> and restart{% endif %}
+        {% if cr.mail.enabled %}
+        <br><span class="gw-tip gw-tip-wide" data-tip="Mail is never sent as one burst. A click on a mail button queues the accounts; the first batch goes out at once and the rest follow, one batch per run. Automatic mail is paced the same way. Set CLIENT_RULE_MAIL_BATCH, CLIENT_RULE_MAIL_PAUSE_S and CLIENT_RULE_MAIL_INTERVAL_S in .env to change it.">Sent in batches: at most {{ cr.mail_pace.batch }} mails every {{ '%g' | format(cr.mail_pace.interval_s / 60) }} min, {{ '%g' | format(cr.mail_pace.pause_s) }} s apart</span>{% if cr.mail_pace.waiting %} · <span style="color:#f5a623">{{ cr.mail_pace.waiting }} waiting</span>{% endif %}
+        {% endif %}
+    </p>
+    {% if cr.mail.enabled %}
+    <form action="/admin/client-rules/monthly-mail" method="POST" data-cr-form="monthly" data-on="{{ 'on' if cr.monthly.enabled else 'off' }}"
+          id="client-rules-monthly" class="flex flex-wrap items-center gap-3 mb-4 p-3 rounded" style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06)">
+        <input type="hidden" name="enabled" value="{{ 'off' if cr.monthly.enabled else 'on' }}">
+        <span class="text-sm font-semibold text-t2">Monthly reminder</span>
+        {% if cr.monthly.enabled %}
+        <span class="text-xs text-ag">on</span>
+        <span class="text-xs text-t3">Every month on day {{ cr.monthly.day }} from {{ '%02d' | format(cr.monthly.hour) }}:00, everyone who still has something open is mailed, in the usual batches. Next: <span class="font-mono text-t2">{{ cr.monthly.next }}</span></span>
+        <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5 ml-auto">Turn off</button>
+        {% else %}
+        <span class="text-xs text-t4">off</span>
+        <span class="text-xs text-t3">Turn it on to mail everyone who still has something open on day {{ cr.monthly.day }} of every month, from {{ '%02d' | format(cr.monthly.hour) }}:00.</span>
+        <button type="submit" class="gw-btn gw-btn-primary text-sm px-3 py-1.5 ml-auto">Turn on</button>
+        {% endif %}
+    </form>
+    {% endif %}
+
+    {% if cr.baseline %}
+    <p class="text-xs text-t4 mb-4 gw-tip gw-tip-wide" id="client-rules-baseline"
+       data-tip="Settings every Claude Code user here should have. No rule checks for them: they ride along in every patch that has something to apply, on the dashboard, in the download and in mail. A rule's own value wins where it sets the same variable. Change the list in client_checks.py (BASELINE_ENV).">
+        Every patch also sets: {% for line in cr.baseline.split('\n') %}<span class="font-mono text-t2">{{ line }}</span>{{ ', ' if not loop.last }}{% endfor %}
+    </p>
+    {% endif %}
+    {% if cr.conflicts %}
+    <div id="client-rules-conflicts" class="mb-4 p-3 rounded text-xs" style="background:rgba(245,166,35,0.06);border:1px solid rgba(245,166,35,0.25)">
+        <div class="font-semibold mb-1" style="color:#f5a623">Two rules set the same variable differently</div>
+        <div class="text-t3 mb-1.5">An account with several open rules gets one patch and one mail for all of them. Where rules disagree, the one listed later wins; change one of them if that is not what you want.</div>
+        {% for c in cr.conflicts %}
+        <div class="text-t2 py-0.5">
+            <code class="font-mono text-t1">{{ c.name }}</code>
+            <span class="text-t4">({{ c.audiences | join(', ') }} accounts)</span>:
+            {% for r in c.rules %}<span class="font-mono {{ 'text-t1' if r.id == c.winner else 'text-t4' }}">{{ r.id }}={{ r.value }}</span>{{ ' · ' if not loop.last }}{% endfor %}
+            <span class="text-t3">→ {{ c.winner }} wins</span>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {# Claude Code versions in use #}
+    <div class="mb-5">
+        <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2 gw-tip gw-tip-wide"
+             data-tip="Each account's newest Claude Code version, read from the User-Agent of its Messages requests in the last {{ cr.versions.days }} days.">Claude Code versions
+            <span class="ml-1 normal-case tracking-normal font-normal text-t4">{{ cr.versions.accounts }} account{{ '' if cr.versions.accounts == 1 else 's' }} in {{ cr.versions.days }} days</span></div>
+        {% if cr.versions.versions %}
+        <div class="flex flex-wrap gap-1.5" id="client-versions">
+            {% for v in cr.versions.versions %}
+            <details class="text-xs">
+                <summary class="cursor-pointer select-none px-2 py-1 rounded" style="background:rgba(255,255,255,0.04)"><span class="font-mono text-t1">{{ v.version }}</span> <span class="text-t4">· {{ v.count }}</span></summary>
+                <div class="mt-1 px-2 py-1 text-t3 font-mono max-w-md">{{ v.usernames | join(', ') }}</div>
+            </details>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-xs text-t4">No Claude Code request seen yet.</p>
+        {% endif %}
+    </div>
+
+    {# Rules #}
+    <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">Rules <span class="text-t4 font-mono">{{ cr.rules | selectattr('enabled') | list | length }} of {{ cr.rules | length }} on</span></div>
+    {% for r in cr.rules %}
+    <details id="client-rule-{{ r.id }}" class="mb-2 rounded" style="border:1px solid rgba(255,255,255,0.06)">
+        <summary class="cursor-pointer select-none px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span class="font-mono text-xs px-1.5 py-0.5 rounded" style="background:rgba(255,255,255,0.05);color:{{ '#f5a623' if r.enabled else '' }}">{{ r.id }}</span>
+            <span class="text-sm font-semibold {{ 'text-t1' if r.enabled else 'text-t4' }}">{{ r.name }}</span>
+            {% if r.deprecated %}<span class="gw-badge" style="background:rgba(167,139,250,0.14);color:#a78bfa">deprecated</span>{% endif %}
+            {% if r.enabled %}<span class="text-xs text-t4">{% if r.deprecated %}notice only{% else %}{{ r.action }}{% if r.auto_email %} · auto mail{% endif %}{% endif %}{% if r.has_patch %} · patch{% endif %}</span>
+            {% else %}<span class="gw-badge gw-badge-muted">off</span>{% endif %}
+            {% if r.missing_patch %}<span class="gw-badge" style="background:rgba(255,92,92,0.14);color:#ff8a8a">no patch</span>{% endif %}
+            {% if r.stale %}<span class="text-xs" style="color:#3dd68c">quiet for {{ r.quiet_days }} days</span>{% endif %}
+            <span class="ml-auto text-xs font-mono" style="color:{{ '#f5a623' if r.open else '' }}">{{ r.open }} account{{ '' if r.open == 1 else 's' }}{% if r.hits|length - r.open %} <span class="text-t4">· {{ r.hits|length - r.open }} say fixed</span>{% endif %}</span>
+        </summary>
+        <div class="px-3 pb-3 pt-1">
+            <p class="text-xs text-t3 max-w-3xl mb-2">{{ r.description }}</p>
+            {% if r.deprecated %}
+            <p class="text-xs max-w-3xl mb-2" style="color:#a78bfa" data-cr-deprecated>
+                Deprecated: {{ r.deprecated }} It is still detected and its accounts still see the notice, but nobody is reminded in the terminal or mailed any more.
+            </p>
+            {% endif %}
+            <p class="text-xs text-t4 max-w-3xl mb-3" data-cr-history>
+                {% if r.last_seen %}Last violation {{ r.last_seen }}{% if r.quiet_days %} ({{ r.quiet_days }} day{{ '' if r.quiet_days == 1 else 's' }} ago){% endif %} · {{ r.ever_accounts }} account{{ '' if r.ever_accounts == 1 else 's' }} ever.
+                {% else %}No violation has ever been recorded.{% endif %}
+                {% if r.stale %}<span style="color:#3dd68c">Nobody has tripped it for {{ cr.stale_days }} days or more: it can be {{ 'retired' if r.deprecated else 'deprecated, then retired,' }} in <span class="font-mono">client_checks.py</span>.</span>{% endif %}
+            </p>
+            <form action="/admin/client-rules/{{ r.id }}" method="POST" data-cr-form="save" data-rule="{{ r.id }}"{{ ' data-needs-patch' if r.needs_patch }}>
+                <div class="flex flex-wrap items-end gap-4">
+                    <label class="flex items-center gap-2 text-sm text-t2 py-1.5"><input type="checkbox" name="enabled" {{ 'checked' if r.enabled }}> On</label>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                               data-tip="Notice: the account sees the message on its dashboard. Remind: also answers the first violating request of each day with the message as an error, so it appears in the terminal; sending again works. App accounts are never reminded.">Action</label>
+                        <select name="action" class="gw-input text-sm py-1.5 px-2">
+                            {% for a in cr.actions %}<option value="{{ a }}" {{ 'selected' if a == r.action }}>{{ {'notice': 'Notice — dashboard only', 'remind': 'Remind — once a day in the terminal'}[a] }}</option>{% endfor %}
+                        </select>
+                    </div>
+                </div>
+                <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-4 mb-2">Tell the account</div>
+                <div class="max-w-3xl">
+                    <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Title</label>
+                    <input type="text" name="title" required maxlength="200" value="{{ r.title }}" class="gw-input w-full text-sm py-1.5 px-2">
+                    <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mt-3 mb-1.5">Message</label>
+                    <textarea name="message" rows="4" maxlength="4000" class="gw-input w-full text-sm py-1.5 px-2">{{ r.message }}</textarea>
+                </div>
+                <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-4 mb-2 gw-tip gw-tip-wide"
+                     data-tip="Optional. Environment variables for the env block of the user's ~/.claude/settings.json: one NAME=value per line, -NAME to remove one. The script the user downloads sets exactly these and touches nothing else in the file. Every account gets the first box. An account with Azure access also gets the second on top, one with AWS access the third on top of that (AWS wins where both set the same variable).">Settings patch <span class="normal-case tracking-normal font-normal text-t4">environment variables only · NAME=value per line · -NAME removes</span></div>
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-x-4 gap-y-3">
+                    <div>
+                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Everyone <span class="normal-case tracking-normal font-normal">(local-only accounts get just this){% if r.needs_patch %} · <span style="color:#f5a623">required to turn this rule on</span>{% endif %}</span></label>
+                        <textarea name="patch" rows="4" spellcheck="false" placeholder="NAME=value" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ r.patch }}</textarea>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Azure accounts <span class="normal-case tracking-normal font-normal">(on top)</span></label>
+                        <textarea name="patch_azure" rows="4" spellcheck="false" placeholder="NAME=value" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ r.patch_azure }}</textarea>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">AWS accounts <span class="normal-case tracking-normal font-normal">(on top, wins over Azure)</span></label>
+                        <textarea name="patch_aws" rows="4" spellcheck="false" placeholder="NAME=value" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ r.patch_aws }}</textarea>
+                    </div>
+                </div>
+                <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-4 mb-2">Mail</div>
+                <div class="flex flex-wrap items-end gap-4">
+                    <div>
+                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="Empty: the gateway's name and the title.">Subject</label>
+                        <input type="text" name="email_subject" maxlength="200" value="{{ r.email_subject }}" placeholder="default" class="gw-input w-72 text-sm py-1.5 px-2">
+                    </div>
+                    <label class="flex items-center gap-2 text-sm text-t2 py-1.5 gw-tip gw-tip-wide"
+                           data-tip="The gateway mails each violating account by itself, within about ten minutes of its first violation. An account with several rules open gets one mail covering all of them, with one patch."><input type="checkbox" name="auto_email" {{ 'checked' if r.auto_email }}> Mail these accounts automatically</label>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="With automatic mail: how often an account that keeps violating is mailed again. The period is counted from its last mail; an account that stops violating is not reminded.">Remind again</label>
+                        {% set repeats = [(0, 'Once — no reminder'), (7, 'Every week'), (14, 'Every 2 weeks'), (30, 'Every month')] %}
+                        <select name="email_repeat_days" class="gw-input text-sm py-1.5 px-2">
+                            {% for days, label in repeats %}<option value="{{ days }}"{{ ' selected' if days == r.email_repeat_days }}>{{ label }}</option>{% endfor %}
+                            {% if r.email_repeat_days not in [0, 7, 14, 30] %}<option value="{{ r.email_repeat_days }}" selected>Every {{ r.email_repeat_days }} days</option>{% endif %}
+                        </select>
+                    </div>
+                </div>
+                <div class="mt-4 flex flex-wrap items-center gap-2">
+                    <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
+                    {% if r.has_patch %}<span class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="What each kind of account downloads, as saved: .bat for Windows, .sh for Linux. A link is a 404 when that audience gets no variables.">Patch scripts:
+                        {% for a in ('local', 'azure', 'aws') %}{{ {'local': 'local-only', 'azure': 'Azure', 'aws': 'AWS'}[a] }}
+                        <a href="/admin/client-rules/{{ r.id }}/patch.bat?audience={{ a }}" class="text-ab hover:underline">.bat</a>
+                        <a href="/admin/client-rules/{{ r.id }}/patch.sh?audience={{ a }}" class="text-ab hover:underline">.sh</a>{{ ' · ' if not loop.last }}{% endfor %}</span>{% endif %}
+                    <span class="ml-auto flex flex-wrap items-center gap-2 gw-tip gw-tip-wide"
+                          data-tip="Mails this rule as the form stands now, saved or not, to the address in the box: yours by default, any address of the company domain. 'As' picks whose patch the mail shows.">
+                        <label class="text-xs text-t4">Test mail to</label>
+                        <input type="text" name="to" value="{{ cr.my_address }}" aria-label="Test mail address" class="gw-input w-56 text-xs font-mono py-1.5 px-2" {{ 'disabled' if not cr.mail.enabled }}>
+                        <label class="text-xs text-t4">as</label>
+                        <select name="audience" aria-label="Test mail audience" class="gw-input text-xs py-1.5 px-2" {{ 'disabled' if not cr.mail.enabled }}>
+                            <option value="local">local-only account</option><option value="azure">Azure account</option><option value="aws">AWS account</option>
+                        </select>
+                        <button type="button" data-cr-test class="gw-btn gw-btn-ghost text-sm px-3 py-2" {{ 'disabled' if not cr.mail.enabled }}>Send test mail</button>
+                        <span data-cr-test-result class="text-xs font-mono text-t4"></span>
+                    </span>
+                </div>
+            </form>
+
+            <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-5 mb-2">Accounts <span class="normal-case tracking-normal font-normal text-t4">with a {{ r.id }} violation in the last {{ cr.window_days }} days</span></div>
+            {% if r.hits %}
+            <div class="overflow-x-auto">
+            <table class="gw-table">
+                <thead><tr><th>Account</th><th class="gw-tip gw-tip-wide" data-tip="Open: still counted. Says fixed: the account pressed 'I've applied it' on its dashboard and has not violated since; it is not mailed, and goes back to Open by itself on its next violation.">Status</th><th>Claude Code</th><th>First seen</th><th>Last seen</th><th>Mailed</th></tr></thead>
+                <tbody>
+                    {% for h in r.hits %}
+                    <tr class="{{ 'opacity-60' if h.resolved }}">
+                        <td class="text-sm"><a href="?q={{ h.username | urlencode }}#users" class="font-mono text-t1 hover:underline">{{ h.username }}</a></td>
+                        <td class="text-xs whitespace-nowrap">{% if h.resolved %}<span class="text-ag">says fixed</span> <span class="text-t4 font-mono">{{ h.resolved }}</span>{% else %}<span style="color:#f5a623">open</span>{% endif %}</td>
+                        <td class="font-mono text-xs text-t3">{{ h.version or '—' }}</td>
+                        <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ h.first_seen }}</td>
+                        <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ h.last_seen }}</td>
+                        <td class="text-xs">
+                            {% if h.resolved %}<span class="text-t4">{{ h.mailed or '—' }}</span>
+                            {% elif not h.mailable %}<span class="text-t4">no mailbox</span>
+                            {% elif h.queued %}<span style="color:#f5a623">queued</span>{% if h.mail_error %} <span class="text-ar">· last try: {{ h.mail_error }}</span>{% elif h.mailed %} <span class="text-t4 font-mono">· last {{ h.mailed }}</span>{% endif %}
+                            {% elif h.mail_error %}<span class="text-ar">{{ h.mail_error }}</span>
+                            {% elif h.mailed %}<span class="font-mono text-t3">{{ h.mailed }}</span>
+                            {% else %}<span class="text-t4">not yet</span>{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            </div>
+            {% else %}
+            <p class="text-xs text-t4">{{ 'None.' if r.enabled else 'Nothing is recorded while the rule is off.' }}</p>
+            {% endif %}
+
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+                {% if not r.deprecated %}
+                <form action="/admin/client-rules/{{ r.id }}/mail" method="POST" data-cr-form="mail" data-count="{{ r.unmailed }}" data-rule="{{ r.id }}" class="inline">
+                    <input type="hidden" name="only_unmailed" value="on">
+                    <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-2" {{ 'disabled' if not cr.mail.enabled or not r.unmailed }}>Mail the {{ r.unmailed }} not mailed yet</button>
+                </form>
+                <form action="/admin/client-rules/{{ r.id }}/mail" method="POST" data-cr-form="mail" data-count="{{ r.mailable }}" data-rule="{{ r.id }}" class="inline">
+                    <input type="hidden" name="only_unmailed" value="off">
+                    <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-2" {{ 'disabled' if not cr.mail.enabled or not r.mailable }}>Mail all {{ r.mailable }}</button>
+                </form>
+                {% endif %}
+                {% if r.customized %}
+                <form action="/admin/client-rules/{{ r.id }}/reset" method="POST" data-cr-form="reset" data-rule="{{ r.id }}" class="inline ml-auto">
+                    <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-2 gw-tip" data-tip="Last saved by {{ r.updated_by or 'an admin' }}.">Reset to defaults</button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+    </details>
+    {% endfor %}
+
+    {# Mail log: every mail the gateway tried to send (client_mail_log); the first page is rendered here,
+       filter / search / paging fetch GET /admin/client-rules/mail-log #}
+    {% set ml = cr.mail_log %}
+    <div id="client-mail-log" class="mt-5 pt-4" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mb-2">
+            <div class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide"
+                 data-tip="Every client-rule mail the gateway tried to send, test mail included: the account, the address it went to, the rules it covered, why it went out (requested = an admin's click or the monthly reminder, automatic = a rule's own mail, test = Send test mail) and whether Exchange accepted it. A failed mail is retried later and gets a new line. Times in Asia/Taipei.">Mail log
+                <span class="ml-1 normal-case tracking-normal font-normal text-t4">last {{ ml.days }} days:
+                    <span class="{{ 'text-ag' if ml.sent else '' }}">{{ ml.sent }} sent</span> ·
+                    <span class="{{ 'text-ar' if ml.failed else '' }}">{{ ml.failed }} failed</span></span>
+            </div>
+            <div class="ml-auto flex flex-wrap items-center gap-2">
+                <input type="search" id="mail-log-q" placeholder="Account or address…" aria-label="Search the mail log"
+                       class="gw-input text-xs py-1.5 px-2" style="width:13rem">
+                <select id="mail-log-status" aria-label="Filter the mail log" class="gw-input text-xs py-1.5 px-2">
+                    <option value="">All mail</option>
+                    <option value="sent">Sent</option>
+                    <option value="failed">Failed</option>
+                    <option value="test">Test mail</option>
+                </select>
+            </div>
+        </div>
+        <div class="overflow-x-auto">
+        <table class="gw-table">
+            <thead><tr><th>Time</th><th>Account</th><th>Sent to</th><th>Rules</th><th>Why</th><th>Status</th></tr></thead>
+            <tbody id="mail-log-rows">
+                {% for m in ml.rows %}
+                <tr>
+                    <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ m.at }}</td>
+                    <td class="text-sm">{% if m.username %}<a href="?q={{ m.username | urlencode }}#users" class="font-mono text-t1 hover:underline">{{ m.username }}</a>{% else %}<span class="text-t4">—</span>{% endif %}</td>
+                    <td class="font-mono text-xs text-t2">{{ m.address }}</td>
+                    <td class="font-mono text-xs text-t3">{{ m.rules | join(', ') or '—' }}</td>
+                    <td class="text-xs text-t3 whitespace-nowrap">{{ m.kind }}{% if m.actor %} <span class="text-t4">by {{ m.actor }}</span>{% endif %}</td>
+                    <td class="text-xs" title="{{ m.subject }}">{% if m.ok %}<span class="text-ag">sent</span>{% else %}<span class="text-ar">failed</span>{% if m.error %} <span class="text-t3">· {{ m.error }}</span>{% endif %}{% endif %}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6" class="text-xs text-t4">No mail has been sent yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-t4">
+            <span id="mail-log-count">{{ ml.total }} mail{{ '' if ml.total == 1 else 's' }}{% if ml.pages > 1 %} · page {{ ml.page }} of {{ ml.pages }}{% endif %}</span>
+            <span class="ml-auto flex gap-2">
+                <button type="button" id="mail-log-prev" class="gw-btn gw-btn-ghost text-xs px-2 py-1" disabled>&larr; Newer</button>
+                <button type="button" id="mail-log-next" class="gw-btn gw-btn-ghost text-xs px-2 py-1" {{ 'disabled' if ml.pages <= 1 }}>Older &rarr;</button>
+            </span>
+        </div>
+    </div>
+
+    {# Retired checks: no longer evaluated; kept so an id seen in old mail or the database can be looked up #}
+    {% if cr.retired %}
+    <details id="client-rules-retired" class="mt-4 pt-3" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <summary class="cursor-pointer select-none text-xs text-t3">Retired <span class="text-t4 font-mono">{{ cr.retired | length }}</span></summary>
+        <div class="overflow-x-auto mt-2">
+        <table class="gw-table">
+            <thead><tr><th>Id</th><th>Rule</th><th>Why it was retired</th><th>Accounts ever</th><th>Last violation</th></tr></thead>
+            <tbody>
+                {% for c in cr.retired %}
+                <tr>
+                    <td class="font-mono text-xs text-t3">{{ c.id }}</td>
+                    <td class="text-sm text-t3">{{ c.name }}</td>
+                    <td class="text-xs text-t3">{{ c.reason }}</td>
+                    <td class="font-mono text-xs text-t3">{{ c.ever_accounts }}</td>
+                    <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ c.last_seen or '—' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </details>
+    {% endif %}
+    {% endif %}
+</div>
+
+</div>
+
+<div data-panel="security">
+{# ── IP Allowlist (API surfaces only; rules in ip_allow_rules) ── #}
+<div id="ip-allowlist" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #ff7a45">
+    <div class="mb-4 max-w-3xl">
+        <h2 class="text-sm font-bold text-t2 mb-1">IP Allowlist</h2>
+        <p class="text-xs text-t4 gw-tip gw-tip-wide"
+           data-tip="Checked on every /v1, /azure and /aws request right after its API key: it is admitted when an active rule covers both its address and its account. A rule with no accounts and no org codes is for everyone. The web UI, sign-in and health checks are never checked, so this page always stays reachable. Only admins add, edit or end rules. Monitor: requests no rule admits are served and logged as 'IP allowlist would refuse (monitor)' with the account, address and reason. Enforce: they get 403. A change reaches every worker within 15 seconds; a preset end time is exact. Only the start of a request is checked: a stream already running is not cut off.">
+            Which accounts may call the API from which addresses. Each rule is an address range for everyone, or for listed accounts and org codes; permanent, or for one window.
+        </p>
+        {% if ip_allowlist is not none %}
+        <p class="text-xs text-t4 mt-1.5">
+            Your address on this page: <span class="font-mono text-t2">{{ ip_allowlist.your_ip or 'unknown' }}</span>
+            — {% if ip_allowlist.your_verdict == 'allowed' %}<span class="text-ag">your API key is allowed from here</span>
+            {% elif ip_allowlist.your_verdict == 'not_for_this_account' %}<span class="text-ar">rules cover this address, but none is for your account</span>
+            {% else %}<span class="text-ar">no rule covers this address</span>{% endif %}
+        </p>
+        {% endif %}
+    </div>
+    {% if ip_allowlist is none %}
+    <p class="text-xs text-ar">The allowlist could not be loaded (has <span class="font-mono">alembic upgrade head</span> been run?).</p>
+    {% else %}
+    {% set ipa = ip_allowlist %}
+    <form action="/admin/ip-allowlist" method="POST" data-ip-form="settings" class="flex flex-wrap items-end gap-3 mb-5">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Mode</label>
+            <select name="mode" class="gw-input text-sm py-1.5 px-2">
+                {% for m in ipa.modes %}
+                <option value="{{ m }}" {{ 'selected' if m == ipa.mode else '' }}>{{ {'off': 'Off — no check', 'monitor': 'Monitor — log only', 'enforce': 'Enforce — 403'}[m] }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
+    </form>
+
+    {% set sections = [('active', 'Active'), ('upcoming', 'Scheduled'), ('expired', 'Ended in the last 7 days')] %}
+    {% for key, heading in sections %}
+    {% set rows = ipa.rules[key] %}
+    {% if rows or key == 'active' %}
+    <div class="mb-4">
+        <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">{{ heading }} <span class="text-t4 font-mono">{{ rows | length }}</span></div>
+        {% if rows %}
+        <div class="overflow-x-auto">
+        <table class="gw-table">
+            <thead><tr>
+                <th>Address</th><th>Label</th><th>For</th><th>From</th><th>Until</th><th>Added by</th><th></th>
+            </tr></thead>
+            <tbody>
+                {% for r in rows %}
+                <tr>
+                    <td class="font-mono text-sm text-t1 whitespace-nowrap">{{ r.cidr }}</td>
+                    <td class="text-sm text-t3">{{ r.label }}</td>
+                    <td class="text-xs">
+                        {% if r.everyone %}<span class="gw-badge gw-badge-muted">Everyone</span>
+                        {% else %}
+                        {% for u in r.usernames %}<span class="font-mono text-t2">{{ u }}</span>{{ ',' if not loop.last or r.org_codes }} {% endfor %}
+                        {% for c in r.org_codes %}<span class="gw-badge">org {{ c }}</span> {% endfor %}
+                        {% endif %}
+                        {% if key != 'expired' %}
+                        <details class="mt-1">
+                            <summary class="text-ab cursor-pointer select-none">Edit</summary>
+                            <form action="/admin/ip-allowlist/rules/{{ r.id }}/who" method="POST" data-ip-form="who" class="mt-2 flex flex-col gap-1.5">
+                                <input type="text" name="usernames" value="{{ r.usernames | join(', ') }}" placeholder="Accounts: alice, bob"
+                                       aria-label="Accounts for {{ r.cidr }}" class="gw-input w-56 text-xs font-mono py-1 px-2">
+                                <input type="text" name="org_codes" value="{{ r.org_codes | join(', ') }}" placeholder="Org codes: RD-7"
+                                       aria-label="Org codes for {{ r.cidr }}" class="gw-input w-56 text-xs font-mono py-1 px-2">
+                                <div class="flex items-center gap-2">
+                                    <button type="submit" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Save</button>
+                                    <span class="text-t4">both empty = everyone</span>
+                                </div>
+                            </form>
+                        </details>
+                        {% endif %}
+                    </td>
+                    <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ r.starts or '—' }}</td>
+                    <td class="font-mono text-xs whitespace-nowrap">
+                        {% if not r.expires %}<span class="text-t2">permanent</span>
+                        {% else %}<span class="text-t3">{{ r.expires }}</span>{% if r.remaining and key == 'active' %} <span class="text-t4">· {{ r.remaining }}</span>{% endif %}{% endif %}
+                    </td>
+                    <td class="text-xs text-t3 whitespace-nowrap">{{ r.created_by }}</td>
+                    <td class="text-right">
+                        {% if key != 'expired' %}
+                        <form action="/admin/ip-allowlist/rules/{{ r.id }}/end" method="POST" data-ip-form="end" data-cidr="{{ r.cidr }}" class="inline">
+                            <button type="submit" class="gw-btn gw-btn-ghost text-xs px-2 py-1">{{ 'Remove' if key == 'upcoming' else 'End now' }}</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <p class="text-xs text-t4">No active rules{% if ipa.mode == 'enforce' %}: every API request is refused{% endif %}.</p>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% endfor %}
+
+    <form action="/admin/ip-allowlist/rules" method="POST" data-ip-form="add" class="flex flex-wrap items-end gap-3 pt-4" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="One address (203.0.113.5) or a CIDR range (10.0.0.0/8, 2001:db8::/32).">Address or range</label>
+            <input type="text" name="cidr" required placeholder="203.0.113.5 or 10.0.0.0/8"
+                   class="gw-input w-56 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Label</label>
+            <input type="text" name="label" maxlength="200" placeholder="Partner office"
+                   class="gw-input w-48 text-sm py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Usernames, comma-separated. Leave this and Org codes empty for everyone.">Accounts</label>
+            <input type="text" name="usernames" placeholder="empty = everyone"
+                   class="gw-input w-48 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Org codes (departments), comma-separated: every account with one of them. Combined with Accounts: either one admits.">Org codes</label>
+            <input type="text" name="org_codes" placeholder="RD-7, QA-2"
+                   class="gw-input w-36 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Asia/Taipei time. Empty: from now.">From (optional)</label>
+            <input type="datetime-local" name="starts_at" class="gw-input text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Asia/Taipei time. Empty: permanent.">Until (empty = permanent)</label>
+            <input type="datetime-local" name="expires_at" class="gw-input text-sm font-mono py-1.5 px-2">
+        </div>
+        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Add rule</button>
+    </form>
+    {% endif %}
+</div>
+
 {# ── Guardrail (Qwen3Guard-Gen prompt screening, local vLLM traffic only) ── #}
 {% set g = guardrail %}
 <div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #f5a623">
@@ -784,173 +1166,6 @@ function submitExportCsv() {
     </form>
 </div>
 
-{# ── IP Allowlist (API surfaces only; rules in ip_allow_rules) ── #}
-<div id="ip-allowlist" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #ff7a45">
-    <div class="mb-4 max-w-3xl">
-        <h2 class="text-sm font-bold text-t2 mb-1">IP Allowlist</h2>
-        <p class="text-xs text-t4 gw-tip gw-tip-wide"
-           data-tip="Checked on every /v1, /azure and /aws request right after its API key: it is admitted when an active rule covers both its address and its account. A rule with no accounts and no org codes is for everyone. The web UI, sign-in and health checks are never checked, so this page always stays reachable. Only admins add, edit or end rules. Monitor: requests no rule admits are served and logged as 'IP allowlist would refuse (monitor)' with the account, address and reason. Enforce: they get 403. A change reaches every worker within 15 seconds; a preset end time is exact. Only the start of a request is checked: a stream already running is not cut off.">
-            Which accounts may call the API from which addresses. Each rule is an address range for everyone, or for listed accounts and org codes; permanent, or for one window.
-        </p>
-        {% if ip_allowlist is not none %}
-        <p class="text-xs text-t4 mt-1.5">
-            Your address on this page: <span class="font-mono text-t2">{{ ip_allowlist.your_ip or 'unknown' }}</span>
-            — {% if ip_allowlist.your_verdict == 'allowed' %}<span class="text-ag">your API key is allowed from here</span>
-            {% elif ip_allowlist.your_verdict == 'not_for_this_account' %}<span class="text-ar">rules cover this address, but none is for your account</span>
-            {% else %}<span class="text-ar">no rule covers this address</span>{% endif %}
-        </p>
-        {% endif %}
-    </div>
-    {% if ip_allowlist is none %}
-    <p class="text-xs text-ar">The allowlist could not be loaded (has <span class="font-mono">alembic upgrade head</span> been run?).</p>
-    {% else %}
-    {% set ipa = ip_allowlist %}
-    <form action="/admin/ip-allowlist" method="POST" data-ip-form="settings" class="flex flex-wrap items-end gap-3 mb-5">
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Mode</label>
-            <select name="mode" class="gw-input text-sm py-1.5 px-2">
-                {% for m in ipa.modes %}
-                <option value="{{ m }}" {{ 'selected' if m == ipa.mode else '' }}>{{ {'off': 'Off — no check', 'monitor': 'Monitor — log only', 'enforce': 'Enforce — 403'}[m] }}</option>
-                {% endfor %}
-            </select>
-        </div>
-        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
-    </form>
-
-    {% set sections = [('active', 'Active'), ('upcoming', 'Scheduled'), ('expired', 'Ended in the last 7 days')] %}
-    {% for key, heading in sections %}
-    {% set rows = ipa.rules[key] %}
-    {% if rows or key == 'active' %}
-    <div class="mb-4">
-        <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">{{ heading }} <span class="text-t4 font-mono">{{ rows | length }}</span></div>
-        {% if rows %}
-        <div class="overflow-x-auto">
-        <table class="gw-table">
-            <thead><tr>
-                <th>Address</th><th>Label</th><th>For</th><th>From</th><th>Until</th><th>Added by</th><th></th>
-            </tr></thead>
-            <tbody>
-                {% for r in rows %}
-                <tr>
-                    <td class="font-mono text-sm text-t1 whitespace-nowrap">{{ r.cidr }}</td>
-                    <td class="text-sm text-t3">{{ r.label }}</td>
-                    <td class="text-xs">
-                        {% if r.everyone %}<span class="gw-badge gw-badge-muted">Everyone</span>
-                        {% else %}
-                        {% for u in r.usernames %}<span class="font-mono text-t2">{{ u }}</span>{{ ',' if not loop.last or r.org_codes }} {% endfor %}
-                        {% for c in r.org_codes %}<span class="gw-badge">org {{ c }}</span> {% endfor %}
-                        {% endif %}
-                        {% if key != 'expired' %}
-                        <details class="mt-1">
-                            <summary class="text-ab cursor-pointer select-none">Edit</summary>
-                            <form action="/admin/ip-allowlist/rules/{{ r.id }}/who" method="POST" data-ip-form="who" class="mt-2 flex flex-col gap-1.5">
-                                <input type="text" name="usernames" value="{{ r.usernames | join(', ') }}" placeholder="Accounts: alice, bob"
-                                       aria-label="Accounts for {{ r.cidr }}" class="gw-input w-56 text-xs font-mono py-1 px-2">
-                                <input type="text" name="org_codes" value="{{ r.org_codes | join(', ') }}" placeholder="Org codes: RD-7"
-                                       aria-label="Org codes for {{ r.cidr }}" class="gw-input w-56 text-xs font-mono py-1 px-2">
-                                <div class="flex items-center gap-2">
-                                    <button type="submit" class="gw-btn gw-btn-ghost text-xs px-2 py-1">Save</button>
-                                    <span class="text-t4">both empty = everyone</span>
-                                </div>
-                            </form>
-                        </details>
-                        {% endif %}
-                    </td>
-                    <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ r.starts or '—' }}</td>
-                    <td class="font-mono text-xs whitespace-nowrap">
-                        {% if not r.expires %}<span class="text-t2">permanent</span>
-                        {% else %}<span class="text-t3">{{ r.expires }}</span>{% if r.remaining and key == 'active' %} <span class="text-t4">· {{ r.remaining }}</span>{% endif %}{% endif %}
-                    </td>
-                    <td class="text-xs text-t3 whitespace-nowrap">{{ r.created_by }}</td>
-                    <td class="text-right">
-                        {% if key != 'expired' %}
-                        <form action="/admin/ip-allowlist/rules/{{ r.id }}/end" method="POST" data-ip-form="end" data-cidr="{{ r.cidr }}" class="inline">
-                            <button type="submit" class="gw-btn gw-btn-ghost text-xs px-2 py-1">{{ 'Remove' if key == 'upcoming' else 'End now' }}</button>
-                        </form>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        </div>
-        {% else %}
-        <p class="text-xs text-t4">No active rules{% if ipa.mode == 'enforce' %}: every API request is refused{% endif %}.</p>
-        {% endif %}
-    </div>
-    {% endif %}
-    {% endfor %}
-
-    <form action="/admin/ip-allowlist/rules" method="POST" data-ip-form="add" class="flex flex-wrap items-end gap-3 pt-4" style="border-top:1px solid rgba(255,255,255,0.05)">
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                   data-tip="One address (203.0.113.5) or a CIDR range (10.0.0.0/8, 2001:db8::/32).">Address or range</label>
-            <input type="text" name="cidr" required placeholder="203.0.113.5 or 10.0.0.0/8"
-                   class="gw-input w-56 text-sm font-mono py-1.5 px-2">
-        </div>
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Label</label>
-            <input type="text" name="label" maxlength="200" placeholder="Partner office"
-                   class="gw-input w-48 text-sm py-1.5 px-2">
-        </div>
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                   data-tip="Usernames, comma-separated. Leave this and Org codes empty for everyone.">Accounts</label>
-            <input type="text" name="usernames" placeholder="empty = everyone"
-                   class="gw-input w-48 text-sm font-mono py-1.5 px-2">
-        </div>
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                   data-tip="Org codes (departments), comma-separated: every account with one of them. Combined with Accounts: either one admits.">Org codes</label>
-            <input type="text" name="org_codes" placeholder="RD-7, QA-2"
-                   class="gw-input w-36 text-sm font-mono py-1.5 px-2">
-        </div>
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                   data-tip="Asia/Taipei time. Empty: from now.">From (optional)</label>
-            <input type="datetime-local" name="starts_at" class="gw-input text-sm font-mono py-1.5 px-2">
-        </div>
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                   data-tip="Asia/Taipei time. Empty: permanent.">Until (empty = permanent)</label>
-            <input type="datetime-local" name="expires_at" class="gw-input text-sm font-mono py-1.5 px-2">
-        </div>
-        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Add rule</button>
-    </form>
-    {% endif %}
-</div>
-
-{# ── Site Links (support bot + install guide) ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #4dd9e8">
-    <div class="mb-4">
-        <h2 class="text-sm font-bold text-t2 mb-1">Site Links</h2>
-        <p class="text-xs text-t4">
-            Links shown to every user in the web UI. Leave a field empty to hide that element.
-        </p>
-    </div>
-    <form action="/admin/site-links" method="POST" class="flex items-end gap-4 flex-wrap">
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                   data-tip="Floating bot button at the bottom-right of every page. Clicking opens this URL in a new tab. Empty = button hidden.">
-                Support Bot URL
-            </label>
-            <input type="text" name="support_bot_url" value="{{ site_links.support_bot_url }}"
-                   placeholder="https://chat.example.com/support-bot"
-                   class="gw-input w-80 text-sm font-mono py-1.5 px-2">
-        </div>
-        <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                   data-tip="Step-by-step Claude Code tools installation guide. Shown as a highlighted card at the top of the Setup page, opens in a new tab. Empty = card hidden.">
-                Install Guide URL
-            </label>
-            <input type="text" name="install_guide_url" value="{{ site_links.install_guide_url }}"
-                   placeholder="https://wiki.example.com/claude-code-guide"
-                   class="gw-input w-80 text-sm font-mono py-1.5 px-2">
-        </div>
-        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
-    </form>
-</div>
-
 {# ── Audit log (app/services/audit.py): newest entries, full trail as CSV ── #}
 <div id="auditLogCard" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #94a3b8">
     <div class="flex flex-wrap items-start justify-between gap-4 mb-3">
@@ -983,6 +1198,156 @@ function submitExportCsv() {
     {% else %}
     <p class="text-xs text-t4">No entries yet.</p>
     {% endif %}
+</div>
+
+</div>
+
+<div data-panel="settings">
+{# ── Settings: gateway-wide limits and links ── #}
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-x-6 gw-anim gw-d5">
+{# ── Concurrency Limit ── #}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #34d399">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+        <div class="max-w-xl">
+            <h2 class="text-sm font-bold text-t2 mb-1">Concurrency Limit</h2>
+            <p class="text-xs text-t4 gw-tip gw-tip-wide"
+               data-tip="Counts chat / responses / messages requests (streams included) across all gateway workers, from admission until the response is fully sent. Monitor: everything is served, over-limit requests are logged as 'Concurrency limit exceeded (monitor)'. Enforce: over-limit requests get 429 with Retry-After: 5 (Claude Code retries automatically). Admins and accounts marked Waive are never limited; app accounts start out waived (un-waive one to limit it). count_tokens, tokenize, models, embeddings and rerank are not counted.">
+                Maximum in-flight inference requests per account. Admins and waived accounts (all app accounts, by default) are exempt.
+            </p>
+            <p class="text-xs text-t4 mt-1.5">
+                {% if concurrency_in_flight is none %}
+                In flight now: <span class="text-t3">unavailable</span>
+                {% else %}
+                In flight now:
+                <span class="font-mono text-t2">{{ concurrency_in_flight.total }}</span> request{{ '' if concurrency_in_flight.total == 1 else 's' }}
+                across <span class="font-mono text-t2">{{ concurrency_in_flight.users }}</span> account{{ '' if concurrency_in_flight.users == 1 else 's' }}
+                · busiest account <span class="font-mono text-t2">{{ concurrency_in_flight.peak_user }}</span>
+                {% if concurrency_mode == 'off' %}<span class="text-t4">(not tracked while Off)</span>{% endif %}
+                {% endif %}
+            </p>
+        </div>
+        <form action="/admin/concurrency-limit" method="POST" class="flex items-end gap-3" data-confirm="concurrency">
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Mode</label>
+                <select name="mode" class="gw-input text-sm py-1.5 px-2">
+                    {% for m in concurrency_modes %}
+                    <option value="{{ m }}" {{ 'selected' if m == concurrency_mode else '' }}>{{ {'off': 'Off — no limit', 'monitor': 'Monitor — log only', 'enforce': 'Enforce — 429'}[m] }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Per account</label>
+                <input type="number" step="1" min="1" required name="limit" value="{{ concurrency_limit }}"
+                       class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+            </div>
+            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
+        </form>
+    </div>
+</div>
+
+{# ── Default Daily Limit ── #}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #6398ff">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+            <h2 class="text-sm font-bold text-t2 mb-1">Default Daily Limit</h2>
+            <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="New users get this value. Existing users below it get bumped up to it, except accounts set to $0 (blocked on purpose). Users at or above this stay unchanged. Every account has a limit: 0 means $0, not unlimited.">
+                Floor for daily spend (USD). Applies to new users; existing users below the floor are auto-raised.
+            </p>
+        </div>
+        <form action="/admin/default-limit" method="POST" data-confirm="default-limit" class="flex items-end gap-3">
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Default Limit (USD)</label>
+                <div class="flex items-center gap-1">
+                    <span class="text-sm text-t4">$</span>
+                    <input type="number" step="0.1" min="0" name="new_default" value="{{ default_daily_limit }}"
+                           class="gw-input w-28 text-sm font-mono py-1.5 px-2">
+                </div>
+            </div>
+            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
+        </form>
+    </div>
+</div>
+
+{# ── Cloud Daily Limit (Azure + Bedrock combined) ── #}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #a78bfa">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+            <h2 class="text-sm font-bold text-t2 mb-1">Cloud Daily Limit</h2>
+            <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="Each user's Azure + AWS spend per day, combined: users split it between the two however they like. Applies to every user with Azure or AWS access who has no Cloud $ of their own in the users table; a user's own value wins. It sits inside each user's overall daily limit (cloud spend counts toward both). Blank = no default cap; 0 = $0, cloud refused.">
+                Default cap on Azure + AWS spend per day (USD) for users with cloud access. A user's own Cloud $ overrides it. Blank = no default cap.
+            </p>
+        </div>
+        <form action="/admin/cloud-limit" method="POST" class="flex items-end gap-3">
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Cloud Limit (USD)</label>
+                <div class="flex items-center gap-1">
+                    <span class="text-sm text-t4">$</span>
+                    <input type="number" step="0.1" min="0" name="new_cloud_limit" placeholder="no cap"
+                           value="{{ cloud_daily_limit if cloud_daily_limit is not none else '' }}"
+                           class="gw-input w-28 text-sm font-mono py-1.5 px-2">
+                </div>
+            </div>
+            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
+        </form>
+    </div>
+</div>
+
+{# ── Cloud Budget Fallback ── #}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #a78bfa">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+            <h2 class="text-sm font-bold text-t2 mb-1">Cloud Budget Fallback</h2>
+            <p class="text-xs text-t4 gw-tip gw-tip-wide"
+               data-tip="Applies to the unified /v1/* surface only. A user whose cloud daily limit is spent gets the on-prem default model (response carries X-Budget-Fallback) instead of a 429. The overall daily limit still applies — once that is gone too, requests are refused. /azure/v1/* and /aws/v1/* never fall back.">
+                When a user's cloud daily limit is exhausted, serve their request with the on-prem model instead of refusing it.
+                Requests are still refused once the overall daily limit is exhausted.
+            </p>
+        </div>
+        <form id="cloud-budget-fallback-form" action="/admin/cloud-budget-fallback" method="POST"
+              class="flex items-center gap-3">
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" name="enabled" value="on" {{ 'checked' if cloud_budget_fallback else '' }}
+                       class="w-4 h-4" style="accent-color:#a78bfa">
+                <span id="cloud-budget-fallback-state" class="text-sm font-semibold text-t4"
+                      style="{{ 'color:#cab9ff' if cloud_budget_fallback else '' }}">
+                    {{ 'Enabled — falls back to on-prem' if cloud_budget_fallback else 'Disabled — 429 when cloud budget is spent' }}
+                </span>
+            </label>
+            <noscript><button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button></noscript>
+        </form>
+    </div>
+</div>
+
+</div>
+{# ── Site Links (support bot + install guide) ── #}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #4dd9e8">
+    <div class="mb-4">
+        <h2 class="text-sm font-bold text-t2 mb-1">Site Links</h2>
+        <p class="text-xs text-t4">
+            Links shown to every user in the web UI. Leave a field empty to hide that element.
+        </p>
+    </div>
+    <form action="/admin/site-links" method="POST" class="flex items-end gap-4 flex-wrap">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Floating bot button at the bottom-right of every page. Clicking opens this URL in a new tab. Empty = button hidden.">
+                Support Bot URL
+            </label>
+            <input type="text" name="support_bot_url" value="{{ site_links.support_bot_url }}"
+                   placeholder="https://chat.example.com/support-bot"
+                   class="gw-input w-80 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip="Step-by-step Claude Code tools installation guide. Shown as a highlighted card at the top of the Setup page, opens in a new tab. Empty = card hidden.">
+                Install Guide URL
+            </label>
+            <input type="text" name="install_guide_url" value="{{ site_links.install_guide_url }}"
+                   placeholder="https://wiki.example.com/claude-code-guide"
+                   class="gw-input w-80 text-sm font-mono py-1.5 px-2">
+        </div>
+        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
+    </form>
 </div>
 
 </div>
@@ -1455,6 +1820,165 @@ function submitExportCsv() {
                     });
             });
         });
+    })();
+
+    /* ── Client rules: forms post as JSON, then the page reloads; the test
+       mail button posts the form as it stands (saved or not). ── */
+    (function() {
+        var card = document.getElementById('client-rules');
+        if (!card) return;
+        // Checkboxes travel as explicit on|off: an unchecked box is absent from FormData.
+        function formData(form) {
+            var data = new FormData(form);
+            ['enabled', 'auto_email'].forEach(function(name) {
+                var box = form.querySelector('input[type="checkbox"][name="' + name + '"]');
+                if (box) data.set(name, box.checked ? 'on' : 'off');
+            });
+            return data;
+        }
+        card.addEventListener('submit', function(e) {
+            var form = e.target, kind = form.dataset.crForm, rule = form.dataset.rule;
+            if (!kind) return;
+            e.preventDefault();
+            // A rule whose fix is a setting is not turned on without one (the server refuses it too).
+            if (kind === 'save' && form.hasAttribute('data-needs-patch') && form.querySelector('input[name="enabled"]').checked) {
+                var box = form.querySelector('textarea[name="patch"]');
+                if (!box.value.trim()) {
+                    gwToast(rule + ' tells people to change a setting: fill in the Everyone box of its settings patch before turning it on.', 'error');
+                    box.classList.add('um-flash-err');
+                    setTimeout(function() { box.classList.remove('um-flash-err'); }, 1800);
+                    box.focus();
+                    return;
+                }
+            }
+            var ask = null;
+            if (kind === 'monthly' && form.dataset.on === 'off') {
+                ask = { text: 'Turn the monthly reminder on? From now on, on the 1st of every month, everyone who still has something open gets one mail about all of it. Nothing is sent today unless today is the 1st.', okLabel: 'Turn on' };
+            } else if (kind === 'reset') {
+                ask = { text: 'Reset ' + rule + ' to its built-in defaults? Your wording, patch and mail settings for it are dropped; its list of accounts is kept.', okLabel: 'Reset', danger: true };
+            } else if (kind === 'mail') {
+                ask = { text: 'Mail ' + form.dataset.count + ' account(s) with a ' + rule + ' violation? Each gets one mail covering everything it has open, not only ' + rule + '.', okLabel: 'Send' };
+            } else if (kind === 'save' && form.querySelector('select[name="action"]').value === 'remind'
+                       && form.querySelector('input[name="enabled"]').checked) {
+                ask = { text: 'Remind in the terminal? The first violating request of each account each day will fail once with this message.', okLabel: 'Save' };
+            }
+            (ask ? gwConfirm(ask.text, ask) : Promise.resolve(true)).then(function(ok) {
+                if (!ok) return;
+                var btn = form.querySelector('button[type="submit"]');
+                if (btn) btn.disabled = true;
+                gwPost(form.getAttribute('action'), formData(form))
+                    .then(function(r) {
+                        if (kind === 'mail') gwToast(r.queued > r.batch
+                            ? 'Queued ' + r.queued + ' accounts. ' + r.batch + ' go out now, the rest ' + r.batch + ' every ' + r.interval_minutes + ' min.'
+                            : 'Sending to ' + r.queued + ' account(s) now.', 'ok');
+                        saveAdminScroll();
+                        setTimeout(function() { window.location.reload(); }, kind === 'mail' ? 1500 : 0);
+                    })
+                    .catch(function(err) {
+                        gwToast('Client rules — ' + err.message, 'error');
+                        if (btn) btn.disabled = false;
+                    });
+            });
+        });
+        card.addEventListener('click', function(e) {
+            var btn = e.target.closest('[data-cr-test]');
+            if (!btn) return;
+            var form = btn.closest('form'), out = form.querySelector('[data-cr-test-result]');
+            btn.disabled = true;
+            out.className = 'text-xs font-mono text-t4';
+            out.textContent = 'Sending…';
+            gwPost(form.getAttribute('action') + '/mail-test', formData(form))
+                .then(function(r) {
+                    out.className = 'text-xs font-mono ' + (r.ok ? 'text-ag' : 'text-ar');
+                    out.textContent = r.ok ? 'Sent to ' + r.to : 'Failed — ' + r.detail;
+                })
+                .catch(function(err) {
+                    out.className = 'text-xs font-mono text-ar';
+                    out.textContent = 'Failed — ' + err.message;
+                })
+                .then(function() { btn.disabled = false; });
+        });
+    })();
+
+    /* ── Client rules: the mail log. The first page is rendered by the
+       server; filter, search and paging fetch the JSON and rebuild the rows
+       with textContent (addresses and error text are never parsed as HTML). ── */
+    (function() {
+        var box = document.getElementById('client-mail-log');
+        if (!box) return;
+        var rows = document.getElementById('mail-log-rows'), count = document.getElementById('mail-log-count');
+        var q = document.getElementById('mail-log-q'), status = document.getElementById('mail-log-status');
+        var prev = document.getElementById('mail-log-prev'), next = document.getElementById('mail-log-next');
+        var page = 1, pages = {{ (client_rules.mail_log.pages if client_rules else 1) | tojson }}, seq = 0;
+        function cell(cls, text) {
+            var td = document.createElement('td');
+            td.className = cls;
+            if (text != null) td.textContent = text;
+            return td;
+        }
+        function span(cls, text) {
+            var el = document.createElement('span');
+            el.className = cls;
+            el.textContent = text;
+            return el;
+        }
+        function paint(data) {
+            page = data.page; pages = data.pages;
+            rows.textContent = '';
+            data.rows.forEach(function(m) {
+                var tr = document.createElement('tr');
+                tr.appendChild(cell('font-mono text-xs text-t3 whitespace-nowrap', m.at));
+                var who = cell('text-sm');
+                if (m.username) {
+                    var a = document.createElement('a');
+                    a.href = '?q=' + encodeURIComponent(m.username) + '#users';
+                    a.className = 'font-mono text-t1 hover:underline';
+                    a.textContent = m.username;
+                    who.appendChild(a);
+                } else who.appendChild(span('text-t4', '—'));
+                tr.appendChild(who);
+                tr.appendChild(cell('font-mono text-xs text-t2', m.address));
+                tr.appendChild(cell('font-mono text-xs text-t3', m.rules.join(', ') || '—'));
+                var why = cell('text-xs text-t3 whitespace-nowrap', m.kind);
+                if (m.actor) { why.appendChild(document.createTextNode(' ')); why.appendChild(span('text-t4', 'by ' + m.actor)); }
+                tr.appendChild(why);
+                var st = cell('text-xs');
+                st.title = m.subject;
+                st.appendChild(span(m.ok ? 'text-ag' : 'text-ar', m.ok ? 'sent' : 'failed'));
+                if (!m.ok && m.error) { st.appendChild(document.createTextNode(' ')); st.appendChild(span('text-t3', '· ' + m.error)); }
+                tr.appendChild(st);
+                rows.appendChild(tr);
+            });
+            if (!data.rows.length) {
+                var empty = document.createElement('tr'), td = cell('text-xs text-t4', 'No mail matches.');
+                td.colSpan = 6;
+                empty.appendChild(td);
+                rows.appendChild(empty);
+            }
+            count.textContent = data.total + (data.total === 1 ? ' mail' : ' mails') + (pages > 1 ? ' · page ' + page + ' of ' + pages : '');
+            prev.disabled = page <= 1;
+            next.disabled = page >= pages;
+        }
+        function load(toPage) {
+            var mine = ++seq;
+            var url = '/admin/client-rules/mail-log?page=' + toPage + '&status=' + encodeURIComponent(status.value)
+                + '&q=' + encodeURIComponent(q.value.trim());
+            fetch(url, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+                .then(function(resp) {
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    return resp.json();
+                })
+                .then(function(data) { if (mine === seq) paint(data); })   // a slower, older answer never overwrites a newer one
+                .catch(function(err) { gwToast('Mail log — ' + err.message, 'error'); });
+        }
+        var typing = null;
+        q.addEventListener('input', function() {
+            clearTimeout(typing);
+            typing = setTimeout(function() { load(1); }, 250);
+        });
+        status.addEventListener('change', function() { load(1); });
+        prev.addEventListener('click', function() { if (page > 1) load(page - 1); });
+        next.addEventListener('click', function() { if (page < pages) load(page + 1); });
     })();
 
     /* ── Guardrail: Test connection (judges a sample with the form's values) ── */

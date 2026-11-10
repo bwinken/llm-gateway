@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Security
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
@@ -26,8 +26,10 @@ from app.core.config import (
     get_site_links,
 )
 from app.core.database import get_session
+from app.core.logger import logger
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ, seconds_until_local_midnight
+from app.services import client_rules
 from app.services.model_order import (
     catalog_key,
     positions,
@@ -428,6 +430,9 @@ def dashboard(
             owned_apps=owned_apps,
             legacy_key=is_legacy_api_key(user.api_key),
             legacy_app_keys=sum(1 for a in owned_apps if a.get("legacy_key")),
+            client_notices=_client_notices(session, user),
+            client_combined=_client_combined(session, user),
+            client_notice_days=client_rules.WINDOW_DAYS,
             server_groups=server_groups,
             claude_code_available=claude_code_available,
             azure_access=user.can_use_azure or user.is_admin,
@@ -499,6 +504,113 @@ def refresh_owned_app_key(
     session.commit()
     session.refresh(target)
     return JSONResponse({"ok": True, "api_key": target.api_key})
+
+
+def _client_notices(session: Session, user: User) -> list[dict]:
+    """The client-rule notices for this account (never takes the page down)."""
+    try:
+        notices = client_rules.notices_for(session, user)
+    except Exception as exc:  # e.g. before `alembic upgrade`
+        session.rollback()
+        logger.warning("Client notices failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
+        return []
+    for n in notices:
+        n["seen_local"] = n["seen_at"].replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+    return notices
+
+
+# "all" routes first: FastAPI matches in order, and no check id is "all".
+def _client_combined(session: Session, user: User) -> dict | None:
+    """The "everything at once" block of the notices panel (never takes the page down)."""
+    try:
+        return client_rules.combined_for(session, user)
+    except Exception as exc:
+        session.rollback()
+        logger.warning("Client combined patch failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
+        return None
+
+
+@router.get("/dashboard/client-rules/all/patch.{fmt}")
+def client_rules_patch_all(
+    fmt: str,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """One script for everything the account has open: the patches of all
+    its open checks merged (``client_rules.combined_env``), as ``patch.bat``
+    or ``patch.sh``."""
+    if fmt not in client_rules.PATCH_FORMATS:
+        raise HTTPException(status_code=404, detail="No such patch format.")
+    combined = client_rules.combined_for(session, user)
+    if combined is None or not combined["env"]:
+        raise HTTPException(status_code=404, detail="No combined settings patch for this account.")
+    filename = f"claude-code-patch-all.{fmt}"
+    name = f"{combined['count']} settings changes"
+    return Response(
+        content=client_rules.render_patch(fmt, name, combined["env"], filename).encode("utf-8"),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/dashboard/client-rules/all/resolved")
+def client_rules_resolved_all(
+    request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """"I've applied everything": every open notice of the account goes
+    away; each returns by itself if the gateway sees its problem again."""
+    count = client_rules.resolve_all(session, user.username)
+    logger.info("Client rules all marked as fixed by the account | user={} count={}", user.username, count)
+    if "application/json" in (request.headers.get("accept") or "").lower():
+        return JSONResponse({"ok": True, "resolved": count})
+    return RedirectResponse(url="/dashboard", status_code=303)
+
+
+@router.get("/dashboard/client-rules/{rule_id}/patch.{fmt}")
+def client_rule_patch(
+    rule_id: str,
+    fmt: str,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """The script that sets a rule's environment variables in the ``env``
+    block of the user's ``~/.claude/settings.json`` (the variant for this
+    account: local-only, Azure or AWS), as ``patch.bat`` (Windows) or
+    ``patch.sh`` (Linux / macOS). Only for an account with a recorded
+    violation of that check."""
+    if fmt not in client_rules.PATCH_FORMATS:
+        raise HTTPException(status_code=404, detail="No such patch format.")
+    found = client_rules.patch_for(session, rule_id, user)
+    if found is None:
+        raise HTTPException(status_code=404, detail="No settings patch for this account.")
+    rule, env = found
+    filename = f"claude-code-patch-{rule.id}.{fmt}"
+    return Response(
+        content=client_rules.render_patch(fmt, f"{rule.id} {rule.name}", env, filename).encode("utf-8"),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/dashboard/client-rules/{rule_id}/resolved")
+def client_rule_resolved(
+    rule_id: str,
+    request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """The user says they applied the fix: their notice for this check goes
+    away and they are no longer mailed about it. The gateway cannot see a
+    settings file, so it takes their word; the next violating request
+    reopens the notice by itself."""
+    if not client_rules.resolve(session, rule_id, user.username):
+        raise HTTPException(status_code=404, detail="Nothing to mark as done for this account.")
+    logger.info("Client rule marked as fixed by the account | rule={} user={}", rule_id, user.username)
+    if "application/json" in (request.headers.get("accept") or "").lower():
+        return JSONResponse({"ok": True, "rule_id": rule_id})
+    return RedirectResponse(url="/dashboard", status_code=303)
 
 
 @router.get("/dashboard/install-claude-code.bat")
