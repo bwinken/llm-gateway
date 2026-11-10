@@ -376,6 +376,10 @@ class ClientViolation(SQLModel, table=True):
     mailed_at: NaiveDatetime | None = Field(default=None)
     mail_attempted_at: NaiveDatetime | None = Field(default=None)
     mail_error: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    # When the account said "I've applied the fix" on its dashboard. The
+    # violation counts as resolved (no notice, no mail) while this is not
+    # older than last_seen_at: a later violation reopens it by itself.
+    resolved_at: NaiveDatetime | None = Field(default=None)
 
 
 class ClientVersion(SQLModel, table=True):

@@ -14,6 +14,9 @@ notice which accounts send requests of a certain kind and reach those people:
   block of ``~/.claude/settings.json``, nothing else; a different set for
   local-only, Azure and AWS accounts) as text and as a Windows ``.bat``
   download.
+- **Resolved**: the account can say "I've applied it" on its notice. The
+  notice goes away at once and it is no longer mailed; the next violating
+  request reopens it (the gateway cannot see a settings file, only requests).
 - **Reminder** (``action = "remind"``): the first violating request of each
   local day is answered with the message as an error, so it shows in the
   terminal; the retry goes through. App accounts are never reminded.
@@ -219,6 +222,109 @@ def apply_env(settings: dict, env: dict[str, str | None]) -> dict:
     return settings
 
 
+# What the downloaded scripts do, once per runtime. Each must do exactly
+# ``apply_env``: read settings.json (a missing or empty file is {}), refuse
+# one that is not a JSON object or whose "env" is not an object, save a
+# .bak, set or remove the variables in "env" and write the file back.
+_NODE_APPLY = r"""(function () {
+  const fs = require('fs'), path = require('path'), os = require('os');
+  const patch = JSON.parse(Buffer.from('__PATCH_B64__', 'base64').toString('utf8'));
+  const dir = path.join(os.homedir(), '.claude');
+  const file = path.join(dir, 'settings.json');
+  const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  let settings = {};
+  if (fs.existsSync(file)) {
+    const text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+    if (text.trim()) {
+      settings = JSON.parse(text);
+      if (!isObj(settings)) throw new Error('settings.json is not a JSON object');
+    }
+    fs.copyFileSync(file, file + '.bak');
+  } else {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  if (settings.env === undefined || settings.env === null) settings.env = {};
+  if (!isObj(settings.env)) throw new Error('"env" in settings.json is not an object');
+  for (const k of Object.keys(patch)) {
+    if (patch[k] === null) delete settings.env[k];
+    else settings.env[k] = String(patch[k]);
+  }
+  fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+  console.log('   [OK] Updated ' + file);
+})();"""
+
+_PYTHON_APPLY = r"""import base64, json, os, shutil, sys
+patch = json.loads(base64.b64decode('__PATCH_B64__').decode('utf-8'))
+folder = os.path.join(os.path.expanduser('~'), '.claude')
+path = os.path.join(folder, 'settings.json')
+settings = {}
+if os.path.exists(path):
+    with open(path, encoding='utf-8-sig') as f:
+        text = f.read()
+    if text.strip():
+        settings = json.loads(text)
+        if not isinstance(settings, dict):
+            sys.exit('   [ERR] settings.json is not a JSON object')
+    shutil.copyfile(path, path + '.bak')
+else:
+    os.makedirs(folder, exist_ok=True)
+if settings.get('env') is None:
+    settings['env'] = {}
+if not isinstance(settings['env'], dict):
+    sys.exit('   [ERR] "env" in settings.json is not an object')
+for name, value in patch.items():
+    if value is None:
+        settings['env'].pop(name, None)
+    else:
+        settings['env'][name] = str(value)
+with open(path, 'w', encoding='utf-8') as f:
+    f.write(json.dumps(settings, indent=2, ensure_ascii=False) + '\n')
+print('   [OK] Updated ' + path)"""
+
+# The Linux / macOS script: plain sh, with Node or Python 3 doing the JSON
+# (whichever is there; Claude Code installs usually have Node). The patch
+# travels as base64 here too, so nothing an admin typed is parsed by the shell.
+_PATCH_SH = r"""#!/bin/sh
+# ============================================================
+#  __TITLE__
+#  Settings patch for Claude Code: __NAME__
+#
+#  Sets a few environment variables in the "env" block of
+#  ~/.claude/settings.json. Nothing else in the file is changed, and
+#  the previous file is saved next to it as settings.json.bak. The
+#  variables are listed on your gateway dashboard.
+#
+#  Run it with:  sh __FILE__
+# ============================================================
+echo
+echo " __TITLE__ - Claude Code settings patch"
+echo " __NAME__"
+echo
+if command -v node >/dev/null 2>&1; then
+node - <<'GW_PATCH_NODE'
+try {
+__NODE_APPLY__
+} catch (e) { console.error('   [ERR] ' + e.message); process.exit(1); }
+GW_PATCH_NODE
+RC=$?
+elif command -v python3 >/dev/null 2>&1; then
+python3 - <<'GW_PATCH_PYTHON'
+__PYTHON_APPLY__
+GW_PATCH_PYTHON
+RC=$?
+else
+    echo "   [ERR] This script needs Node.js or Python 3, and found neither." >&2
+    RC=1
+fi
+echo
+if [ "$RC" -eq 0 ]; then
+    echo "   Done. Restart Claude Code to apply the new settings."
+else
+    echo "   The patch was not applied. Your settings were not changed."
+fi
+exit $RC
+"""
+
 # One file that cmd.exe, Node and PowerShell each read their own part of.
 # The patch travels as base64, so nothing an admin types is ever parsed by
 # cmd.exe. Node is preferred (an exact JSON round trip); Windows PowerShell
@@ -255,32 +361,7 @@ pause
 exit /b %RC%
 
 //GW-NODE-BEGIN
-(function () {
-  const fs = require('fs'), path = require('path'), os = require('os');
-  const patch = JSON.parse(Buffer.from('__PATCH_B64__', 'base64').toString('utf8'));
-  const dir = path.join(os.homedir(), '.claude');
-  const file = path.join(dir, 'settings.json');
-  const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
-  let settings = {};
-  if (fs.existsSync(file)) {
-    const text = fs.readFileSync(file, 'utf8').replace(/^﻿/, '');
-    if (text.trim()) {
-      settings = JSON.parse(text);
-      if (!isObj(settings)) throw new Error('settings.json is not a JSON object');
-    }
-    fs.copyFileSync(file, file + '.bak');
-  } else {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  if (settings.env === undefined || settings.env === null) settings.env = {};
-  if (!isObj(settings.env)) throw new Error('"env" in settings.json is not an object');
-  for (const k of Object.keys(patch)) {
-    if (patch[k] === null) delete settings.env[k];
-    else settings.env[k] = String(patch[k]);
-  }
-  fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-  console.log('   [OK] Updated ' + file);
-})();
+__NODE_APPLY__
 //GW-NODE-END
 
 #GW-PATCH-BEGIN#
@@ -346,12 +427,39 @@ def render_patch_bat(name: str, env: dict[str, str | None]) -> str:
     user's settings.json (``apply_env``)."""
     payload = base64.b64encode(json.dumps(env, ensure_ascii=False).encode("utf-8")).decode("ascii")
     script = (
-        _PATCH_BAT.replace("__PATCH_B64__", payload)
+        _PATCH_BAT.replace("__NODE_APPLY__", _NODE_APPLY).replace("__PATCH_B64__", payload)
         .replace("__TITLE__", _bat_text(APP_TITLE))
         .replace("__NAME__", _bat_text(name))
     )
     # cmd.exe misreads LF-only files; see web_ui.personalized_claude_installer.
     return script.replace("\r\n", "\n").replace("\n", "\r\n")
+
+
+def render_patch_sh(name: str, env: dict[str, str | None], filename: str = "claude-code-patch.sh") -> str:
+    """The Linux / macOS script that applies ``env`` to the ``env`` block of
+    the user's settings.json (``apply_env``)."""
+    payload = base64.b64encode(json.dumps(env, ensure_ascii=False).encode("utf-8")).decode("ascii")
+    script = (
+        _PATCH_SH.replace("__NODE_APPLY__", _NODE_APPLY).replace("__PYTHON_APPLY__", _PYTHON_APPLY)
+        .replace("__PATCH_B64__", payload)
+        .replace("__TITLE__", _bat_text(APP_TITLE))
+        .replace("__NAME__", _bat_text(name))
+        .replace("__FILE__", _bat_text(filename))
+    )
+    return script.replace("\r\n", "\n")
+
+
+# The downloads a notice offers: extension -> (label, renderer).
+PATCH_FORMATS = ("bat", "sh")
+
+
+def render_patch(fmt: str, name: str, env: dict[str, str | None], filename: str) -> str:
+    """The patch script in one of ``PATCH_FORMATS``. Raises ValueError for any other."""
+    if fmt == "bat":
+        return render_patch_bat(name, env)
+    if fmt == "sh":
+        return render_patch_sh(name, env, filename)
+    raise ValueError(f"Patch format must be one of: {', '.join(PATCH_FORMATS)}.")
 
 
 # ── The checks as configured ──
@@ -696,14 +804,37 @@ def is_stale(rule: Rule, seen: dict[str, Any] | None) -> bool:
     return bool(rule.enabled and seen and seen["quiet_days"] >= STALE_DAYS)
 
 
+def is_resolved(violation: ClientViolation) -> bool:
+    """The account reported the fix and has not violated since."""
+    return violation.resolved_at is not None and violation.resolved_at >= violation.last_seen_at
+
+
+def resolve(session: Session, rule_id: str, username: str, now: datetime | None = None) -> bool:
+    """Record that ``username`` says it applied the fix for ``rule_id``.
+    False when it has no such violation. The next violating request reopens
+    it (within the hour: ``last_seen_at`` is written at most hourly per worker)."""
+    row = session.exec(
+        select(ClientViolation).where(ClientViolation.rule_id == rule_id, ClientViolation.username == username)
+    ).first()
+    if row is None:
+        return False
+    # Never earlier than the last violation, so one recorded a moment ago
+    # by another worker does not reopen it straight away.
+    row.resolved_at = max(now or utcnow(), row.last_seen_at)
+    session.add(row)
+    session.commit()
+    return True
+
+
 def notices_for(session: Session, user: User, now: datetime | None = None) -> list[dict[str, Any]]:
     """What ``user``'s dashboard shows: the enabled checks it tripped inside
-    the window, each with the patch meant for this account."""
+    the window and has not reported as fixed, each with the patch meant for
+    this account."""
     rows = {
         row.rule_id: row for row in session.exec(
             select(ClientViolation)
             .where(ClientViolation.username == user.username, ClientViolation.last_seen_at >= _active_since(now))
-        ).all()
+        ).all() if not is_resolved(row)
     }
     if not rows:
         return []
@@ -786,7 +917,8 @@ def render_mail(rule: Any, username: str, env: dict[str, str | None]) -> tuple[s
         )
     if public_url:
         link = html.escape(f"{public_url}/dashboard", quote=True)
-        what = "see this notice and download a script that applies the settings for you (Windows)" if env else "see this notice"
+        what = ("see this notice, download a script that applies the settings for you (Windows, Linux or macOS) "
+                "and mark it as done") if env else "see this notice and mark it as done"
         parts.append(f'<p><a href="{link}">Open your dashboard</a> to {what}.</p>')
     parts.append(
         f'<p style="color:#888;font-size:12px">Sent by {html.escape(APP_TITLE)} because of requests from your account. '
@@ -796,12 +928,13 @@ def render_mail(rule: Any, username: str, env: dict[str, str | None]) -> tuple[s
 
 
 def mailable(session: Session, rows: list[ClientViolation]) -> list[ClientViolation]:
-    """Violations whose account still exists and has a mailbox (not an app account)."""
-    names = [v.username for v in rows if not is_app_account(v.username)]
+    """Violations still worth a mail: the account exists, has a mailbox (not
+    an app account) and has not reported the fix."""
+    names = [v.username for v in rows if not is_app_account(v.username) and not is_resolved(v)]
     if not names:
         return []
     known = set(session.exec(select(User.username).where(User.username.in_(names))).all())  # type: ignore[attr-defined]
-    return [v for v in rows if v.username in known]
+    return [v for v in rows if v.username in known and not is_resolved(v)]
 
 
 def mail_targets(session: Session, rule_id: str, only_unmailed: bool, now: datetime | None = None) -> list[ClientViolation]:

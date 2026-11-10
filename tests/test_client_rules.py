@@ -512,6 +512,73 @@ class TestPatch:
         assert result.returncode != 0
         assert (tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8") == before
 
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="sh not installed")
+    @pytest.mark.parametrize("runtime", ["node", "python3"])
+    @pytest.mark.parametrize("before", [
+        None,
+        "\ufeff" + json.dumps({"env": {"KEEP": "1", "OLD": "x"}, "gone": 1}),
+        json.dumps({
+            "env": {"KEEP": "1", "OLD": "x", "A": "é中文"}, "model": "old",
+            "permissions": {"allow": ["Bash(ls:*)"], "deny": [], "nested": [[1, 2], [], {"k": None}]},
+            "num": 1.5, "t": True, "nul": None, "emptyobj": {},
+        }, indent=2),
+    ])
+    def test_the_shell_script_changes_what_apply_env_changes(self, tmp_path, runtime, before):
+        change = {"CLAUDE_CODE_AUTO_MODE_SERVER": "0", "M": "模型 x", "OLD": None, "Q": 'it\'s "q" $HOME `id` & <b>'}
+        result = self._run_sh(tmp_path, change, before, runtime)
+        assert result.returncode == 0, result.stdout + result.stderr
+        raw = (tmp_path / ".claude" / "settings.json").read_bytes()
+        assert not raw.startswith(b"\xef\xbb\xbf")
+        was = json.loads(before.lstrip("\ufeff")) if before else {}
+        got = json.loads(raw.decode("utf-8"))
+        assert got == client_rules.apply_env(copy.deepcopy(was), change)
+        assert {k: v for k, v in got.items() if k != "env"} == {k: v for k, v in was.items() if k != "env"}
+        assert (tmp_path / ".claude" / "settings.json.bak").exists() == (before is not None)
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="sh not installed")
+    @pytest.mark.parametrize("runtime", ["node", "python3"])
+    @pytest.mark.parametrize("before", ["{not json", "[1, 2]", '{"env": "a string"}'])
+    def test_the_shell_script_leaves_a_file_it_cannot_read_alone(self, tmp_path, runtime, before):
+        result = self._run_sh(tmp_path, _ENV, before, runtime)
+        assert result.returncode != 0 and "not applied" in result.stdout
+        assert (tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8") == before
+
+    def test_the_shell_script_says_what_it_needs_when_neither_runtime_is_there(self, tmp_path):
+        result = self._run_sh(tmp_path, _ENV, None, None)
+        assert result.returncode != 0 and "Node.js or Python 3" in result.stderr
+        assert not (tmp_path / ".claude").exists()
+
+    def test_admin_text_never_reaches_the_shell(self):
+        sh = client_rules.render_patch_sh("$(rm -rf ~) `id` 'q' \"q\"", {"A": "$(id) `id` 'q' 中文"}, "x.sh")
+        assert sh.isascii() and "$(" not in sh.split("node - <<")[0] and "`" not in sh.split("node - <<")[0]
+        assert "\r" not in sh and sh.startswith("#!/bin/sh\n")
+
+    def test_both_scripts_carry_the_same_node_logic(self):
+        env = {"A": "1"}
+        node = client_rules._NODE_APPLY.replace("__PATCH_B64__", "X")
+        for script in (client_rules.render_patch_bat("r", env), client_rules.render_patch_sh("r", env)):
+            import re
+            body = re.sub(r"Buffer\.from\('[^']+'", "Buffer.from('X'", script.replace("\r\n", "\n"))
+            assert node in body
+
+    @staticmethod
+    def _run_sh(home: Path, change: dict, before: str | None, runtime: str | None) -> subprocess.CompletedProcess:
+        """Run the .sh as a user would, with only ``runtime`` on the PATH."""
+        if runtime is not None and shutil.which(runtime) is None:
+            pytest.skip(f"{runtime} not installed")
+        if before is not None:
+            (home / ".claude").mkdir()
+            (home / ".claude" / "settings.json").write_text(before, encoding="utf-8")
+        script = home / "claude-code-patch.sh"
+        script.write_text(client_rules.render_patch_sh("rule", change, script.name), encoding="utf-8")
+        bindir = home / "bin"
+        bindir.mkdir()
+        if runtime is not None:
+            (bindir / runtime).symlink_to(shutil.which(runtime))
+        import os
+        env = {"HOME": str(home), "PATH": str(bindir), "LANG": os.environ.get("LANG", "C.UTF-8")}
+        return subprocess.run([shutil.which("sh"), str(script)], env=env, capture_output=True, text=True, timeout=60)
+
     @staticmethod
     def _run(home: Path, change: dict, before: str | None) -> subprocess.CompletedProcess:
         """Run the .bat's own Node line (cmd.exe aside) with ``home`` as the user's home."""
@@ -536,7 +603,8 @@ class TestDashboard:
         body = self._page(client, test_user)
         assert 'id="clientNotice-CC001"' in body and client_checks.BY_ID[AUTO].title in body
         assert "CLAUDE_CODE_AUTO_MODE_SERVER" in body
-        assert "/dashboard/client-rules/CC001/patch.bat" in body
+        assert "/dashboard/client-rules/CC001/patch.bat" in body and "/dashboard/client-rules/CC001/patch.sh" in body
+        assert 'action="/dashboard/client-rules/CC001/resolved"' in body
 
     def test_the_admins_wording_replaces_the_default(self, client, db_session, test_user):
         _configure(db_session, AUTO, title="Our own title", message="Our own words.")
@@ -566,20 +634,20 @@ class TestDashboard:
 
     def test_others_see_nothing(self, client, db_session, test_user):
         _violation(db_session, AUTO, "somebody-else")
-        assert "data-client-notice" not in self._page(client, test_user)
+        assert 'id="clientNotice' not in self._page(client, test_user)
 
     def test_notice_clears_after_the_window_or_when_the_check_is_off(self, client, db_session, test_user):
         row = _violation(db_session, AUTO, "testuser")
         row.last_seen_at = _now() - timedelta(days=client_rules.WINDOW_DAYS + 1)
         db_session.add(row)
         db_session.commit()
-        assert "data-client-notice" not in self._page(client, test_user)
+        assert 'id="clientNotice' not in self._page(client, test_user)
         row.last_seen_at = _now()
         db_session.add(row)
         db_session.commit()
-        assert "data-client-notice" in self._page(client, test_user)
+        assert 'id="clientNotice-CC001"' in self._page(client, test_user)
         _configure(db_session, AUTO, enabled=False)
-        assert "data-client-notice" not in self._page(client, test_user)
+        assert 'id="clientNotice' not in self._page(client, test_user)
 
     def test_message_is_escaped(self, client, db_session, test_user):
         _configure(db_session, AUTO, title="<script>alert(1)</script>")
@@ -595,6 +663,10 @@ class TestDashboard:
         assert resp.status_code == 200 and "attachment" in resp.headers["content-disposition"]
         assert b"GW-PATCH-BEGIN" in resp.content and b"\r\n" in resp.content
         assert client.get("/dashboard/client-rules/CC999/patch.bat", headers=headers).status_code == 404
+        linux = client.get("/dashboard/client-rules/CC001/patch.sh", headers=headers)
+        assert linux.status_code == 200 and linux.content.startswith(b"#!/bin/sh\n") and b"\r" not in linux.content
+        assert 'filename="claude-code-patch-CC001.sh"' in linux.headers["content-disposition"]
+        assert client.get("/dashboard/client-rules/CC001/patch.exe", headers=headers).status_code == 404
 
     def test_no_download_without_a_patch(self, client, db_session, test_user):
         _violation(db_session, NO_CLOUD_ACCESS, "testuser")           # this check has no default patch
@@ -602,7 +674,88 @@ class TestDashboard:
         headers = web_auth_header(sub=test_user.username)
         assert client.get(f"/dashboard/client-rules/{NO_CLOUD_ACCESS}/patch.bat", headers=headers).status_code == 404
         body = self._page(client, test_user)
-        assert f'id="clientNotice-{NO_CLOUD_ACCESS}"' in body and "patch.bat" not in body
+        assert f'id="clientNotice-{NO_CLOUD_ACCESS}"' in body and "patch.bat" not in body and "patch.sh" not in body
+
+
+class TestResolved:
+    """"I've applied it": the gateway cannot see a settings file, so the
+    account says so, and the next violating request says otherwise."""
+
+    _URL = "/dashboard/client-rules/CC001/resolved"
+
+    def _page(self, client, user: User) -> str:
+        return client.get("/dashboard", headers=web_auth_header(sub=user.username)).text
+
+    def _json(self, user: User) -> dict:
+        return {**web_auth_header(sub=user.username), "Accept": "application/json"}
+
+    def test_the_notice_goes_away_at_once(self, client, db_session, test_user):
+        _violation(db_session, AUTO, "testuser")
+        assert 'id="clientNotice-CC001"' in self._page(client, test_user)
+        resp = client.post(self._URL, headers=self._json(test_user))
+        assert resp.status_code == 200 and resp.json() == {"ok": True, "rule_id": "CC001"}
+        assert 'id="clientNotice' not in self._page(client, test_user)
+        [row] = _violations(db_session, AUTO)
+        assert row.resolved_at is not None and client_rules.is_resolved(row)
+
+    def test_a_later_violation_brings_it_back(self, client, db_session, test_user):
+        client_rules.refresh()
+        _messages(client, safeguards={})
+        client.post(self._URL, headers=self._json(test_user))
+        assert 'id="clientNotice' not in self._page(client, test_user)
+        client_rules.reset()            # the next hour: the write throttle has passed
+        client_rules.refresh()
+        _messages(client, safeguards={})
+        [row] = _violations(db_session, AUTO)
+        assert not client_rules.is_resolved(row)
+        assert 'id="clientNotice-CC001"' in self._page(client, test_user)
+
+    def test_only_that_check_and_only_that_account(self, client, db_session, test_user, admin_user):
+        _violation(db_session, AUTO, "testuser")
+        _violation(db_session, AUTO, "admin")
+        _configure(db_session, OUTDATED)
+        _violation(db_session, OUTDATED, "testuser")
+        client.post(self._URL, headers=self._json(test_user))
+        body = self._page(client, test_user)
+        assert 'id="clientNotice-CC001"' not in body and 'id="clientNotice-CC003"' in body
+        assert 'id="clientNotice-CC001"' in self._page(client, admin_user)
+
+    def test_nothing_to_mark_is_a_404(self, client, db_session, test_user):
+        assert client.post(self._URL, headers=self._json(test_user)).status_code == 404
+        _violation(db_session, AUTO, "somebody-else")
+        assert client.post(self._URL, headers=self._json(test_user)).status_code == 404
+        assert not client_rules.is_resolved(_violations(db_session, AUTO)[0])
+
+    def test_without_javascript_it_goes_back_to_the_dashboard(self, client, db_session, test_user):
+        _violation(db_session, AUTO, "testuser")
+        resp = client.post(self._URL, headers=web_auth_header(sub=test_user.username), follow_redirects=False)
+        assert resp.status_code == 303 and resp.headers["location"] == "/dashboard"
+
+    def test_an_account_that_says_fixed_is_not_mailed(self, db_session, test_user, admin_user, mail_on):
+        _configure(db_session, AUTO, auto_email=True)
+        _violation(db_session, AUTO, "testuser")
+        _violation(db_session, AUTO, "admin")
+        assert client_rules.resolve(db_session, AUTO, "testuser")
+        assert "sent=1" in client_rules.run_auto_mail(db_session)
+        assert [to for to, _, _ in mail_on] == ["admin@example.test"]
+        assert client_rules.send_rule_mail(AUTO, only_unmailed=False) == {"sent": 1, "failed": 0}
+        assert [to for to, _, _ in mail_on] == ["admin@example.test"] * 2
+
+    def test_admin_sees_who_says_fixed_and_counts_only_the_open_ones(self, client, db_session, admin_user, test_user):
+        _violation(db_session, AUTO, "testuser")
+        _violation(db_session, AUTO, "admin")
+        client_rules.resolve(db_session, AUTO, "testuser")
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        card = body.split('id="client-rule-CC001"', 1)[1].split('id="client-rule-CC002"', 1)[0]
+        assert "1 account" in card and "1 say fixed" in card and "says fixed" in card
+        strip = body.split('id="clientRuleAttention"', 1)[1][:1500]
+        assert "CC001" in strip and "· 1 account<" in strip
+
+    def test_a_check_everyone_reports_fixed_needs_no_attention(self, client, db_session, admin_user, test_user):
+        _violation(db_session, AUTO, "testuser")
+        client_rules.resolve(db_session, AUTO, "testuser")
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        assert 'id="clientRuleAttention"' not in body
 
 
 class TestAdminSettings:
@@ -693,6 +846,9 @@ class TestAdminSettings:
         assert client.get(url, params={"audience": "aws"}, headers=headers).status_code == 200
         assert client.get(url, params={"audience": "local"}, headers=headers).status_code == 404   # nothing for them
         assert client.get(url, params={"audience": "everyone"}, headers=headers).status_code == 400
+        linux = client.get(url.replace(".bat", ".sh"), params={"audience": "aws"}, headers=headers)
+        assert linux.status_code == 200 and linux.content.startswith(b"#!/bin/sh") and b"claude-code-patch-CC001-aws.sh" in linux.content
+        assert client.get(url.replace(".bat", ".zip"), params={"audience": "aws"}, headers=headers).status_code == 404
 
     def test_variants_are_saved_and_shown_back_as_lines(self, client, db_session, admin_user):
         form = {**_FORM, "patch": "SERVER=0\n-OLD", "patch_azure": '{"MODEL": "azure-m"}', "patch_aws": "MODEL=claude-m"}

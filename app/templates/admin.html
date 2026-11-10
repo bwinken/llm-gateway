@@ -633,7 +633,7 @@ function submitExportCsv() {
             {% if r.enabled %}<span class="text-xs text-t4">{% if r.deprecated %}notice only{% else %}{{ r.action }}{% if r.auto_email %} · auto mail{% endif %}{% endif %}{% if r.has_patch %} · patch{% endif %}</span>
             {% else %}<span class="gw-badge gw-badge-muted">off</span>{% endif %}
             {% if r.stale %}<span class="text-xs" style="color:#3dd68c">quiet for {{ r.quiet_days }} days</span>{% endif %}
-            <span class="ml-auto text-xs font-mono" style="color:{{ '#f5a623' if r.hits else '' }}">{{ r.hits | length }} account{{ '' if r.hits | length == 1 else 's' }}</span>
+            <span class="ml-auto text-xs font-mono" style="color:{{ '#f5a623' if r.open else '' }}">{{ r.open }} account{{ '' if r.open == 1 else 's' }}{% if r.hits|length - r.open %} <span class="text-t4">· {{ r.hits|length - r.open }} say fixed</span>{% endif %}</span>
         </summary>
         <div class="px-3 pb-3 pt-1">
             <p class="text-xs text-t3 max-w-3xl mb-2">{{ r.description }}</p>
@@ -696,8 +696,10 @@ function submitExportCsv() {
                 </div>
                 <div class="mt-4 flex flex-wrap items-center gap-2">
                     <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
-                    {% if r.has_patch %}<span class="text-xs text-t4">Patch script as saved:
-                        {% for a in ('local', 'azure', 'aws') %}<a href="/admin/client-rules/{{ r.id }}/patch.bat?audience={{ a }}" class="text-ab hover:underline">{{ {'local': 'local-only', 'azure': 'Azure', 'aws': 'AWS'}[a] }}</a>{{ ' · ' if not loop.last }}{% endfor %}</span>{% endif %}
+                    {% if r.has_patch %}<span class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="What each kind of account downloads, as saved: .bat for Windows, .sh for Linux / macOS. A link is a 404 when that audience gets no variables.">Patch scripts:
+                        {% for a in ('local', 'azure', 'aws') %}{{ {'local': 'local-only', 'azure': 'Azure', 'aws': 'AWS'}[a] }}
+                        <a href="/admin/client-rules/{{ r.id }}/patch.bat?audience={{ a }}" class="text-ab hover:underline">.bat</a>
+                        <a href="/admin/client-rules/{{ r.id }}/patch.sh?audience={{ a }}" class="text-ab hover:underline">.sh</a>{{ ' · ' if not loop.last }}{% endfor %}</span>{% endif %}
                     <span class="ml-auto flex flex-wrap items-center gap-2 gw-tip gw-tip-wide"
                           data-tip="Mails this rule as the form stands now, saved or not, to the address in the box: yours by default, any address of the company domain. 'As' picks whose patch the mail shows.">
                         <label class="text-xs text-t4">Test mail to</label>
@@ -716,16 +718,18 @@ function submitExportCsv() {
             {% if r.hits %}
             <div class="overflow-x-auto">
             <table class="gw-table">
-                <thead><tr><th>Account</th><th>Claude Code</th><th>First seen</th><th>Last seen</th><th>Mailed</th></tr></thead>
+                <thead><tr><th>Account</th><th class="gw-tip gw-tip-wide" data-tip="Open: still counted. Says fixed: the account pressed 'I've applied it' on its dashboard and has not violated since; it is not mailed, and goes back to Open by itself on its next violation.">Status</th><th>Claude Code</th><th>First seen</th><th>Last seen</th><th>Mailed</th></tr></thead>
                 <tbody>
                     {% for h in r.hits %}
-                    <tr>
+                    <tr class="{{ 'opacity-60' if h.resolved }}">
                         <td class="text-sm"><a href="?q={{ h.username | urlencode }}#users" class="font-mono text-t1 hover:underline">{{ h.username }}</a></td>
+                        <td class="text-xs whitespace-nowrap">{% if h.resolved %}<span class="text-ag">says fixed</span> <span class="text-t4 font-mono">{{ h.resolved }}</span>{% else %}<span style="color:#f5a623">open</span>{% endif %}</td>
                         <td class="font-mono text-xs text-t3">{{ h.version or '—' }}</td>
                         <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ h.first_seen }}</td>
                         <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ h.last_seen }}</td>
                         <td class="text-xs">
-                            {% if not h.mailable %}<span class="text-t4">no mailbox</span>
+                            {% if h.resolved %}<span class="text-t4">{{ h.mailed or '—' }}</span>
+                            {% elif not h.mailable %}<span class="text-t4">no mailbox</span>
                             {% elif h.mail_error %}<span class="text-ar">{{ h.mail_error }}</span>
                             {% elif h.mailed %}<span class="font-mono text-t3">{{ h.mailed }}</span>
                             {% else %}<span class="text-t4">not yet</span>{% endif %}

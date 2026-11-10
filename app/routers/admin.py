@@ -529,8 +529,8 @@ def admin_page(
             "budget_pressure": budget_pressure,
             "client_rules": client_rules_view,
             "client_rule_attention": [
-                {"id": r["id"], "name": r["name"], "count": len(r["hits"])}
-                for r in (client_rules_view or {}).get("rules", []) if r["enabled"] and r["hits"]
+                {"id": r["id"], "name": r["name"], "count": r["open"]}
+                for r in (client_rules_view or {}).get("rules", []) if r["enabled"] and r["open"]
             ],
             "client_rule_days": client_rules.WINDOW_DAYS,
             "system_status": system_status,
@@ -1174,9 +1174,12 @@ def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
                 "first_seen": _local_label(v.first_seen_at), "last_seen": _local_label(v.last_seen_at),
                 "mailed": _local_label(v.mailed_at), "mail_error": v.mail_error,
                 "mailable": v.username in mailable,
+                # The account said it applied the fix and has not violated since.
+                "resolved": _local_label(v.resolved_at) if client_rules.is_resolved(v) else "",
             }
             for v in rows
         ],
+        "open": sum(1 for v in rows if not client_rules.is_resolved(v)),
         "mailable": len(mailable),
         "unmailed": sum(1 for v in rows if v.username in mailable and v.mailed_at is None),
     }
@@ -1340,25 +1343,30 @@ def send_client_rule_mail(
     return RedirectResponse(url="/admin", status_code=303)
 
 
-@router.get("/client-rules/{rule_id}/patch.bat")
+@router.get("/client-rules/{rule_id}/patch.{fmt}")
 def preview_client_rule_patch(
     rule_id: str,
+    fmt: str,
     audience: str = Query("local"),
     session: Session = Depends(get_session),
 ):
     """The patch script one kind of account downloads (``audience``:
-    ``local``, ``azure`` or ``aws``), for the admin to check."""
+    ``local``, ``azure`` or ``aws``; ``fmt``: ``bat`` for Windows, ``sh``
+    for Linux / macOS), for the admin to check."""
     rule = _client_rule_or_404(session, rule_id)
+    if fmt not in client_rules.PATCH_FORMATS:
+        raise HTTPException(status_code=404, detail="No such patch format.")
     try:
         env = client_rules.effective_env(rule, *client_rules.audience_flags(audience))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not env:
         raise HTTPException(status_code=404, detail="This check has no settings patch for that audience.")
+    filename = f"claude-code-patch-{rule.id}-{audience}.{fmt}"
     return Response(
-        content=client_rules.render_patch_bat(f"{rule.id} {rule.name}", env).encode("utf-8"),
+        content=client_rules.render_patch(fmt, f"{rule.id} {rule.name}", env, filename).encode("utf-8"),
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="claude-code-patch-{rule.id}-{audience}.bat"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

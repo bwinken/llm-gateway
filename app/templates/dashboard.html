@@ -58,7 +58,7 @@
      style="background:rgba(245,166,35,0.05);border-color:rgba(245,166,35,0.3)">
     <div class="px-4 py-2.5 flex flex-wrap items-baseline gap-x-2">
         <span class="text-sm font-bold" style="color:#f5a623">Action needed</span>
-        <span class="text-xs text-t3">{{ client_notices|length }} thing{{ '' if client_notices|length == 1 else 's' }} to change in your Claude Code setup</span>
+        <span class="text-xs text-t3" data-client-notice-count>{{ client_notices|length }} thing{{ '' if client_notices|length == 1 else 's' }} to change in your Claude Code setup</span>
     </div>
     {% for n in client_notices %}
     <details id="clientNotice-{{ n.rule_id }}" data-client-notice class="group text-sm" {{ 'open' if client_notices|length == 1 }}
@@ -76,12 +76,25 @@
             {% if n.patch %}
             <div class="text-t3 mt-2">Put these in the <code class="font-mono">env</code> block of <code class="font-mono">~/.claude/settings.json</code>, then restart Claude Code:</div>
             <pre class="mt-2 p-3 rounded text-xs font-mono text-t2 overflow-x-auto" style="background:rgba(0,0,0,0.25)">{{ n.patch }}</pre>
-            <div class="mt-2 flex flex-wrap items-center gap-3">
-                <a href="/dashboard/client-rules/{{ n.rule_id }}/patch.bat" class="gw-btn gw-btn-primary text-sm px-4 py-2">Download patch (Windows)</a>
-                <span class="text-t4 text-xs">Run it once: it sets only the variables above, leaves the rest of the file alone and saves a backup as settings.json.bak.</span>
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+                <span class="text-t3 text-xs mr-1">Or let a script do it:</span>
+                <a href="/dashboard/client-rules/{{ n.rule_id }}/patch.bat" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Windows (.bat)</a>
+                <a href="/dashboard/client-rules/{{ n.rule_id }}/patch.sh" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Linux / macOS (.sh)</a>
+            </div>
+            <div class="text-t4 text-xs mt-1.5">
+                Windows: double-click the file. Linux / macOS: <code class="font-mono">sh claude-code-patch-{{ n.rule_id }}.sh</code>.
+                Either sets only the variables above, leaves the rest of the file alone and saves a backup as settings.json.bak.
             </div>
             {% endif %}
-            <div class="text-t4 text-xs mt-2">Last seen {{ n.seen_local }}{% if n.client_version %} · Claude Code {{ n.client_version }}{% endif %}. This notice clears {{ client_notice_days }} days after your last such request.</div>
+            <div class="mt-3 pt-3 flex flex-wrap items-center gap-3" style="border-top:1px solid rgba(245,166,35,0.12)">
+                <form action="/dashboard/client-rules/{{ n.rule_id }}/resolved" method="POST" data-client-resolved>
+                    <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5">I've applied it</button>
+                </form>
+                <span class="text-t4 text-xs">
+                    Hides this notice. It comes back by itself if the gateway sees the same problem again.
+                    Last seen {{ n.seen_local }}{% if n.client_version %} with Claude Code {{ n.client_version }}{% endif %}.
+                </span>
+            </div>
         </div>
     </details>
     {% endfor %}
@@ -997,6 +1010,32 @@ result = client.system_one(
 </details>
 </div>
 <script>gwTabs('dashTabs', 'dashTab');</script>
+<script>
+/* "I've applied it" on a client-rule notice: post it, drop the row (and the
+   panel with its last row), and say that it returns if the problem does. */
+(function() {
+    var panel = document.getElementById('clientNotices');
+    if (!panel) return;
+    panel.addEventListener('submit', function(e) {
+        var form = e.target;
+        if (!form.hasAttribute('data-client-resolved')) return;
+        e.preventDefault();
+        var btn = form.querySelector('button');
+        btn.disabled = true;
+        fetch(form.getAttribute('action'), { method: 'POST', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            .then(function() {
+                form.closest('[data-client-notice]').remove();
+                var left = panel.querySelectorAll('[data-client-notice]').length;
+                if (!left) panel.remove();
+                else panel.querySelector('[data-client-notice-count]').textContent =
+                    left + (left === 1 ? ' thing' : ' things') + ' to change in your Claude Code setup';
+                gwToast('Marked as done. The notice returns if the gateway sees the problem again.', 'ok');
+            })
+            .catch(function(err) { btn.disabled = false; gwToast('Could not save that — ' + err.message, 'error'); });
+    });
+})();
+</script>
 
 {# ── API Key Modal ── #}
 <div id="apiKeyModal" class="fixed inset-0 z-50 hidden">

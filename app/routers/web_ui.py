@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Security
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
@@ -518,25 +518,49 @@ def _client_notices(session: Session, user: User) -> list[dict]:
     return notices
 
 
-@router.get("/dashboard/client-rules/{rule_id}/patch.bat")
+@router.get("/dashboard/client-rules/{rule_id}/patch.{fmt}")
 def client_rule_patch(
     rule_id: str,
+    fmt: str,
     user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
 ):
-    """The Windows script that sets a rule's environment variables in the
-    ``env`` block of the user's ``~/.claude/settings.json`` (the variant for
-    this account: local-only, Azure or AWS). Only for an account with a
-    recorded violation of that check."""
+    """The script that sets a rule's environment variables in the ``env``
+    block of the user's ``~/.claude/settings.json`` (the variant for this
+    account: local-only, Azure or AWS), as ``patch.bat`` (Windows) or
+    ``patch.sh`` (Linux / macOS). Only for an account with a recorded
+    violation of that check."""
+    if fmt not in client_rules.PATCH_FORMATS:
+        raise HTTPException(status_code=404, detail="No such patch format.")
     found = client_rules.patch_for(session, rule_id, user)
     if found is None:
         raise HTTPException(status_code=404, detail="No settings patch for this account.")
     rule, env = found
+    filename = f"claude-code-patch-{rule.id}.{fmt}"
     return Response(
-        content=client_rules.render_patch_bat(f"{rule.id} {rule.name}", env).encode("utf-8"),
+        content=client_rules.render_patch(fmt, f"{rule.id} {rule.name}", env, filename).encode("utf-8"),
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="claude-code-patch-{rule.id}.bat"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/dashboard/client-rules/{rule_id}/resolved")
+def client_rule_resolved(
+    rule_id: str,
+    request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """The user says they applied the fix: their notice for this check goes
+    away and they are no longer mailed about it. The gateway cannot see a
+    settings file, so it takes their word; the next violating request
+    reopens the notice by itself."""
+    if not client_rules.resolve(session, rule_id, user.username):
+        raise HTTPException(status_code=404, detail="Nothing to mark as done for this account.")
+    logger.info("Client rule marked as fixed by the account | rule={} user={}", rule_id, user.username)
+    if "application/json" in (request.headers.get("accept") or "").lower():
+        return JSONResponse({"ok": True, "rule_id": rule_id})
+    return RedirectResponse(url="/dashboard", status_code=303)
 
 
 @router.get("/dashboard/install-claude-code.bat")
