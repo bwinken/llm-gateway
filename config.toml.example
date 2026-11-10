@@ -361,6 +361,13 @@ api_key = ""                        # decider's server checks no key
 #    "global.anthropic.claude-haiku-5-5") gets adaptive thinking with the
 #    effort level; older models a budget_tokens bucket. Claude 4.7+ never
 #    receives temperature / top_p (any non-default value is a 400).
+#  - Other families (OpenAI, Kimi, GLM, Nova, ...) need nothing extra: when a
+#    model rejects temperature / top_p / stop, the gateway drops the field
+#    Bedrock names and retries. The OpenAI GPT models (gpt-5.x, gpt-6) are
+#    served on Converse only through an inference profile: use
+#    "us.openai.gpt-5.6-terra" or "global.openai....", not the bare
+#    "openai.gpt-5.6-terra". gpt-oss keeps its plain ID
+#    ("openai.gpt-oss-120b-1:0").
 #  - `rate_limit_fallback` (optional): another [bedrock_models.*] alias that
 #    takes the request when this model answers 429 (ThrottlingException).
 #    Same chain rules as on [azure_models.*]; never crosses backends.
