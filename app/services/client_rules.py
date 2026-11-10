@@ -22,7 +22,8 @@ notice which accounts send requests of a certain kind and reach those people:
   terminal; the retry goes through. App accounts are never reminded.
 - **Mail**: to ``<username>@<COMPANY_EMAIL_DOMAIN>`` (``mailer``), sent by
   an admin's click or by the ``client_rule_mail`` job for checks with
-  ``auto_email``.
+  ``auto_email``. One mail per account, about everything it has open, with
+  one patch that covers it all (``open_items``, ``combined_env``).
 - **Versions** (``client_versions``): the Claude Code version in each
   Messages request's User-Agent, per account.
 
@@ -893,38 +894,135 @@ def version_overview(session: Session, now: datetime | None = None) -> dict[str,
     return {"versions": versions, "accounts": len(latest), "days": VERSION_WINDOW_DAYS}
 
 
-# ── Mail ──
+# ── Everything an account has open ──
 
-def render_mail(rule: Any, username: str, env: dict[str, str | None]) -> tuple[str, str]:
-    """``(subject, html)`` of a check's mail to one account. ``rule`` needs
-    ``id``, ``title``, ``message`` and ``email_subject`` (a Rule, or a form
-    being tested); ``env`` is the patch meant for that account. Everything
-    an admin wrote is escaped."""
+def open_items(
+    session: Session, now: datetime | None = None, usernames: list[str] | None = None,
+) -> dict[str, list[tuple[Rule, ClientViolation]]]:
+    """Per account, the enabled checks it has an open violation of (inside
+    the window, not reported as fixed), in the order of the code. This is
+    "what this person still has to change": the dashboard's combined patch
+    and the mail are built from it, so one account is told once, about
+    everything."""
+    enabled = {rule.id: (index, rule) for index, rule in enumerate(rules(session)) if rule.enabled}
+    query = select(ClientViolation).where(ClientViolation.last_seen_at >= _active_since(now))
+    if usernames is not None:
+        if not usernames:
+            return {}
+        query = query.where(ClientViolation.username.in_(usernames))  # type: ignore[attr-defined]
+    grouped: dict[str, list[tuple[int, Rule, ClientViolation]]] = {}
+    for row in session.exec(query).all():
+        if row.rule_id in enabled and not is_resolved(row):
+            index, rule = enabled[row.rule_id]
+            grouped.setdefault(row.username, []).append((index, rule, row))
+    return {
+        username: [(rule, row) for _, rule, row in sorted(entries, key=lambda e: e[0])]
+        for username, entries in grouped.items()
+    }
+
+
+def combined_env(rule_list: list[Any], azure: bool, aws: bool) -> dict[str, str | None]:
+    """One patch for several checks: each check's patch for this account, in
+    the order given (the code's). Where two set the same variable, the later
+    check wins; ``env_conflicts`` tells the admin when that happens."""
+    env: dict[str, str | None] = {}
+    for rule in rule_list:
+        env.update(effective_env(rule, azure, aws))
+    return env
+
+
+def env_conflicts(rule_list: list[Rule]) -> list[dict[str, Any]]:
+    """Variables that enabled checks set to different values for the same
+    kind of account, with the check that wins in a combined patch."""
+    found: dict[tuple, dict[str, Any]] = {}
+    for audience in AUDIENCES:
+        azure, aws = audience_flags(audience)
+        setters: dict[str, list[tuple[str, str | None]]] = {}
+        for rule in rule_list:
+            if rule.enabled:
+                for name, value in effective_env(rule, azure, aws).items():
+                    setters.setdefault(name, []).append((rule.id, value))
+        for name, entries in setters.items():
+            if len({value for _, value in entries}) > 1:
+                key = (name, tuple(entries))
+                found.setdefault(key, {"name": name, "rules": entries, "winner": entries[-1][0], "audiences": []})
+                found[key]["audiences"].append(audience)
+    return list(found.values())
+
+
+def combined_for(session: Session, user: User, now: datetime | None = None) -> dict[str, Any] | None:
+    """The dashboard's "everything at once": the merged patch of all the
+    account's open checks. None with fewer than two (one notice is its own)."""
+    items = open_items(session, now, [user.username]).get(user.username, [])
+    if len(items) < 2:
+        return None
+    env = combined_env([rule for rule, _ in items], *audience_of(user))
+    return {"count": len(items), "env": env, "patch": env_snippet(env)}
+
+
+def resolve_all(session: Session, username: str, now: datetime | None = None) -> int:
+    """"I've applied everything": resolve every open item of the account.
+    Returns how many."""
+    now = now or utcnow()
+    items = open_items(session, now, [username]).get(username, [])
+    for _, row in items:
+        row.resolved_at = max(now, row.last_seen_at)
+        session.add(row)
+    session.commit()
+    return len(items)
+
+
+# ── Mail: one per account, covering everything it has open ──
+
+def render_digest(username: str, rule_list: list[Any], env: dict[str, str | None]) -> tuple[str, str]:
+    """``(subject, html)`` of the mail to one account about the checks in
+    ``rule_list`` (each needs ``id``, ``title``, ``message``,
+    ``email_subject``), with ``env`` as the one patch that covers them all.
+    Everything an admin wrote is escaped."""
     public_url = mailer.settings()["public_url"]
-    subject = (rule.email_subject or f"[{APP_TITLE}] {rule.title}").strip()
+    count = len(rule_list)
+    if count == 1:
+        subject = (rule_list[0].email_subject or f"[{APP_TITLE}] {rule_list[0].title}").strip()
+    else:
+        subject = f"[{APP_TITLE}] {count} things to change in your Claude Code setup"
     parts = [
         '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222;line-height:1.6">',
         f"<p>Hi {html.escape(username)},</p>",
-        f'<p style="font-size:16px;font-weight:600;margin-bottom:4px">{html.escape(rule.title)}</p>',
     ]
-    if rule.message:
-        parts.append("<p>" + html.escape(rule.message).replace("\n", "<br>") + "</p>")
-    if env:
+    if count > 1:
         parts.append(
-            "<p>Environment settings for <code>~/.claude/settings.json</code>:</p>"
+            f"<p>Requests from your account show {count} things to change in your Claude Code setup. "
+            + ("You can fix them all in one go with the settings at the end of this mail.</p>" if env else "</p>")
+        )
+    for number, rule in enumerate(rule_list, 1):
+        heading = f"{number}. {rule.title}" if count > 1 else rule.title
+        parts.append(f'<p style="font-size:16px;font-weight:600;margin-bottom:4px">{html.escape(heading)}</p>')
+        if rule.message:
+            parts.append("<p>" + html.escape(rule.message).replace("\n", "<br>") + "</p>")
+    if env:
+        lead = "Everything above in one block, for" if count > 1 else "Environment settings for"
+        parts.append(
+            f"<p>{lead} <code>~/.claude/settings.json</code>:</p>"
             '<pre style="background:#f4f4f4;padding:10px;border-radius:4px;font-size:13px">'
             + html.escape(env_snippet(env)) + "</pre>"
         )
     if public_url:
         link = html.escape(f"{public_url}/dashboard", quote=True)
-        what = ("see this notice, download a script that applies the settings for you (Windows, Linux or macOS) "
-                "and mark it as done") if env else "see this notice and mark it as done"
+        notice = "these notices" if count > 1 else "this notice"
+        what = (f"see {notice}, download one script that applies the settings for you (Windows, Linux or macOS) "
+                "and mark them as done") if env else f"see {notice} and mark them as done"
         parts.append(f'<p><a href="{link}">Open your dashboard</a> to {what}.</p>')
+    references = ", ".join(html.escape(rule.id) for rule in rule_list)
     parts.append(
         f'<p style="color:#888;font-size:12px">Sent by {html.escape(APP_TITLE)} because of requests from your account. '
-        f"Reference: {html.escape(rule.id)}.</p></div>"
+        f"Reference: {references}.</p></div>"
     )
     return subject, "".join(parts)
+
+
+def render_mail(rule: Any, username: str, env: dict[str, str | None]) -> tuple[str, str]:
+    """The mail about one check alone (the admin's test mail)."""
+    return render_digest(username, [rule], env)
 
 
 def mailable(session: Session, rows: list[ClientViolation]) -> list[ClientViolation]:
@@ -938,7 +1036,7 @@ def mailable(session: Session, rows: list[ClientViolation]) -> list[ClientViolat
 
 
 def mail_targets(session: Session, rule_id: str, only_unmailed: bool, now: datetime | None = None) -> list[ClientViolation]:
-    """Who a manual send reaches: the check's accounts inside the window
+    """Who a manual send from a check reaches: its accounts inside the window
     (nobody for a deprecated or unknown check)."""
     rule = get_rule(session, rule_id)
     if rule is None or rule.deprecated:
@@ -947,40 +1045,52 @@ def mail_targets(session: Session, rule_id: str, only_unmailed: bool, now: datet
     return [v for v in rows if v.mailed_at is None] if only_unmailed else rows
 
 
-def _send_to(session: Session, rule: Rule, targets: list[ClientViolation]) -> tuple[int, int]:
-    """Mail each target and stamp the outcome on its violation. Returns (sent, failed)."""
-    names = [v.username for v in targets]
-    access = {
-        u.username: audience_of(u)
-        for u in (session.exec(select(User).where(User.username.in_(names))).all() if names else [])  # type: ignore[attr-defined]
+def _send_digests(session: Session, usernames: list[str], now: datetime | None = None) -> tuple[int, int]:
+    """Mail each account once about everything it has open (deprecated
+    checks left out), and stamp the outcome on every violation the mail
+    covered. Returns (sent, failed) in accounts."""
+    usernames = [name for name in dict.fromkeys(usernames) if not is_app_account(name)]
+    if not usernames:
+        return 0, 0
+    users = {
+        u.username: u for u in session.exec(select(User).where(User.username.in_(usernames))).all()  # type: ignore[attr-defined]
     }
-    jobs = [(v.id, v.username) for v in targets]
+    by_account = open_items(session, now, list(users))
+    jobs = []
+    for username in usernames:
+        user = users.get(username)
+        items = [(rule, row) for rule, row in by_account.get(username, []) if not rule.deprecated]
+        if user is None or not items:
+            continue
+        rule_list = [rule for rule, _ in items]
+        subject, body = render_digest(username, rule_list, combined_env(rule_list, *audience_of(user)))
+        jobs.append((username, [row.id for _, row in items], subject, body))
     session.commit()                # nothing is held open while mail is being sent
     sent = failed = 0
-    for violation_id, username in jobs:
-        azure, aws = access.get(username, (False, False))
-        subject, body = render_mail(rule, username, effective_env(rule, azure, aws))
+    for username, violation_ids, subject, body in jobs:
         ok, error = mailer.send(mailer.address_for(username), subject, body)
-        now = utcnow()
-        values: dict[str, Any] = {"mail_attempted_at": now, "mail_error": "" if ok else error}
+        stamp = utcnow()
+        values: dict[str, Any] = {"mail_attempted_at": stamp, "mail_error": "" if ok else error}
         if ok:
-            values["mailed_at"] = now
+            values["mailed_at"] = stamp
             sent += 1
         else:
             failed += 1
-        session.execute(update(ClientViolation).where(ClientViolation.id == violation_id).values(**values))
+        session.execute(update(ClientViolation).where(ClientViolation.id.in_(violation_ids)).values(**values))  # type: ignore[union-attr]
         session.commit()
     return sent, failed
 
 
 def send_rule_mail(rule_id: str, only_unmailed: bool = True, bind=None) -> dict[str, int]:
-    """A manual send, run after the admin's click returned. Blocking; own session."""
+    """A manual send from one check, run after the admin's click returned:
+    its accounts each get the mail about everything they have open.
+    Blocking; own session."""
     try:
         with Session(bind or engine) as session:
-            rule = get_rule(session, rule_id)
-            if rule is None or not mailer.is_enabled():
+            if get_rule(session, rule_id) is None or not mailer.is_enabled():
                 return {"sent": 0, "failed": 0}
-            sent, failed = _send_to(session, rule, mail_targets(session, rule_id, only_unmailed))
+            targets = [v.username for v in mail_targets(session, rule_id, only_unmailed)]
+            sent, failed = _send_digests(session, targets)
         logger.info("Client rule mail | rule={} sent={} failed={}", rule_id, sent, failed)
         return {"sent": sent, "failed": failed}
     except Exception as exc:
@@ -999,26 +1109,26 @@ def _auto_due(violation: ClientViolation, repeat_days: int, now: datetime) -> bo
 
 
 def run_auto_mail(session: Session, now: datetime | None = None) -> str:
-    """The ``client_rule_mail`` job: mail the accounts of every enabled check
-    with ``auto_email`` that have not been mailed (or are due again).
-    Deprecated checks mail nobody."""
+    """The ``client_rule_mail`` job. An account is due when one of its open
+    checks has ``auto_email`` and has not been mailed (or is due again by
+    that check's ``email_repeat_days``); it then gets one mail about
+    everything it has open, which stamps all of it, so the shortest repeat
+    among its checks sets the pace. Deprecated checks mail nobody."""
     if not mailer.is_enabled():
         return "mail not configured"
     now = now or utcnow()
-    auto = [rule for rule in rules(session) if rule.enabled and rule.auto_email and not rule.deprecated]
-    sent = failed = 0
-    budget = MAIL_BATCH
-    for rule in auto:
-        if budget <= 0:
-            break
-        due = [
-            v for v in mailable(session, violations(session, rule.id, now))
-            if _auto_due(v, rule.email_repeat_days, now)
-        ][:budget]
-        budget -= len(due)
-        s, f = _send_to(session, rule, due)
-        sent, failed = sent + s, failed + f
-    return f"rules={len(auto)} sent={sent} failed={failed}"
+    due = [
+        username for username, items in open_items(session, now).items()
+        if not is_app_account(username) and any(
+            rule.auto_email and not rule.deprecated and _auto_due(row, rule.email_repeat_days, now)
+            for rule, row in items
+        )
+    ]
+    if due:
+        known = set(session.exec(select(User.username).where(User.username.in_(due))).all())  # type: ignore[attr-defined]
+        due = [username for username in due if username in known][:MAIL_BATCH]
+    sent, failed = _send_digests(session, due, now)
+    return f"accounts={len(due)} sent={sent} failed={failed}"
 
 
 MAIL_JOB = Job(

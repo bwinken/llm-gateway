@@ -431,6 +431,7 @@ def dashboard(
             legacy_key=is_legacy_api_key(user.api_key),
             legacy_app_keys=sum(1 for a in owned_apps if a.get("legacy_key")),
             client_notices=_client_notices(session, user),
+            client_combined=_client_combined(session, user),
             client_notice_days=client_rules.WINDOW_DAYS,
             server_groups=server_groups,
             claude_code_available=claude_code_available,
@@ -516,6 +517,55 @@ def _client_notices(session: Session, user: User) -> list[dict]:
     for n in notices:
         n["seen_local"] = n["seen_at"].replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
     return notices
+
+
+# "all" routes first: FastAPI matches in order, and no check id is "all".
+def _client_combined(session: Session, user: User) -> dict | None:
+    """The "everything at once" block of the notices panel (never takes the page down)."""
+    try:
+        return client_rules.combined_for(session, user)
+    except Exception as exc:
+        session.rollback()
+        logger.warning("Client combined patch failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
+        return None
+
+
+@router.get("/dashboard/client-rules/all/patch.{fmt}")
+def client_rules_patch_all(
+    fmt: str,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """One script for everything the account has open: the patches of all
+    its open checks merged (``client_rules.combined_env``), as ``patch.bat``
+    or ``patch.sh``."""
+    if fmt not in client_rules.PATCH_FORMATS:
+        raise HTTPException(status_code=404, detail="No such patch format.")
+    combined = client_rules.combined_for(session, user)
+    if combined is None or not combined["env"]:
+        raise HTTPException(status_code=404, detail="No combined settings patch for this account.")
+    filename = f"claude-code-patch-all.{fmt}"
+    name = f"{combined['count']} settings changes"
+    return Response(
+        content=client_rules.render_patch(fmt, name, combined["env"], filename).encode("utf-8"),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/dashboard/client-rules/all/resolved")
+def client_rules_resolved_all(
+    request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """"I've applied everything": every open notice of the account goes
+    away; each returns by itself if the gateway sees its problem again."""
+    count = client_rules.resolve_all(session, user.username)
+    logger.info("Client rules all marked as fixed by the account | user={} count={}", user.username, count)
+    if "application/json" in (request.headers.get("accept") or "").lower():
+        return JSONResponse({"ok": True, "resolved": count})
+    return RedirectResponse(url="/dashboard", status_code=303)
 
 
 @router.get("/dashboard/client-rules/{rule_id}/patch.{fmt}")

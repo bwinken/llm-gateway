@@ -962,14 +962,165 @@ class TestMail:
         assert "a<br>" in body and subject.endswith("<b>t</b>")
 
 
+class TestOneMailPerAccount:
+    """An account with several open checks is told once, about all of them,
+    with one patch that covers them."""
+
+    def _three(self, db_session):
+        _configure(db_session, AUTO, auto_email=True, title="Fix auto mode", patch='{"SERVER": "0", "MODEL": "local-m"}',
+                   patch_aws='{"MODEL": "claude-m"}')
+        _configure(db_session, HTTP, title="Use https", patch='{"ANTHROPIC_BASE_URL": "https://gw.example.test"}')
+        _configure(db_session, OUTDATED, title="Update Claude Code")
+        for rule_id in (AUTO, HTTP, OUTDATED):
+            _violation(db_session, rule_id, "testuser")
+
+    def test_several_open_checks_make_one_mail(self, db_session, test_user, mail_on):
+        self._three(db_session)
+        assert "sent=1" in client_rules.run_auto_mail(db_session)
+        [(to, subject, body)] = mail_on
+        assert to == "testuser@example.test" and "3 things to change in your Claude Code setup" in subject
+        for title in ("1. Fix auto mode", "2. Use https", "3. Update Claude Code"):
+            assert title in body
+        assert body.count("<pre") == 1                                   # one block, not one per check
+        for name in ("SERVER", "MODEL", "ANTHROPIC_BASE_URL"):
+            assert name in body
+        assert "claude-m" in body and "local-m" not in body              # the test user has AWS access
+        assert "Reference: CC001, CC002, CC003." in body
+
+    def test_the_mail_covers_checks_without_automatic_mail_and_marks_them_all(self, db_session, test_user, mail_on):
+        self._three(db_session)                                          # only CC001 has automatic mail
+        client_rules.run_auto_mail(db_session)
+        for rule_id in (AUTO, HTTP, OUTDATED):
+            assert _violations(db_session, rule_id)[0].mailed_at is not None, rule_id
+        client_rules.run_auto_mail(db_session, _now() + timedelta(days=3))
+        assert len(mail_on) == 1                                         # nothing new to say
+
+    def test_one_open_check_keeps_its_own_subject(self, db_session, test_user, mail_on):
+        _configure(db_session, AUTO, auto_email=True, title="Fix auto mode", email_subject="Please fix auto mode")
+        _violation(db_session, AUTO, "testuser")
+        client_rules.run_auto_mail(db_session)
+        [(_, subject, body)] = mail_on
+        assert subject == "Please fix auto mode" and "1. " not in body and "Reference: CC001." in body
+
+    def test_a_new_violation_later_sends_the_whole_list_again(self, db_session, test_user, mail_on):
+        _configure(db_session, AUTO, auto_email=True, title="Fix auto mode")
+        _configure(db_session, HTTP, auto_email=True, title="Use https")
+        _violation(db_session, AUTO, "testuser")
+        now = _now()
+        client_rules.run_auto_mail(db_session, now)
+        _violation(db_session, HTTP, "testuser")
+        client_rules.run_auto_mail(db_session, now + timedelta(hours=1))
+        assert len(mail_on) == 2
+        assert "Fix auto mode" in mail_on[1][2] and "Use https" in mail_on[1][2]
+
+    def test_what_is_fixed_or_deprecated_is_left_out(self, db_session, test_user, mail_on):
+        self._three(db_session)
+        client_rules.resolve(db_session, HTTP, "testuser")
+        with TestLifecycle._with(deprecated="on its way out"):          # CC001, the one with automatic mail
+            assert "sent=0" in client_rules.run_auto_mail(db_session)   # nothing left that asks for mail
+            assert client_rules.send_rule_mail(OUTDATED) == {"sent": 1, "failed": 0}
+        [(_, _, body)] = mail_on
+        assert "Update Claude Code" in body and "Use https" not in body and "Fix auto mode" not in body
+
+    def test_a_manual_send_from_one_check_is_the_same_mail(self, client, db_session, admin_user, test_user, mail_on):
+        self._three(db_session)
+        _violation(db_session, OUTDATED, "admin")                        # admin has only this one open
+        resp = client.post(f"/admin/client-rules/{OUTDATED}/mail", data={"only_unmailed": "on"}, headers=_admin(admin_user))
+        assert resp.json() == {"ok": True, "queued": 2}
+        bodies = {to: (subject, body) for to, subject, body in mail_on}
+        assert "3 things to change" in bodies["testuser@example.test"][0]
+        assert "Fix auto mode" in bodies["testuser@example.test"][1]
+        assert "Update Claude Code" in bodies["admin@example.test"][0] and "Fix auto mode" not in bodies["admin@example.test"][1]
+        assert _violations(db_session, AUTO)[0].mailed_at is not None    # covered by that mail, so marked
+
+    def test_a_later_check_wins_where_two_set_the_same_variable(self):
+        first = SimpleNamespace(patch='{"MODEL": "a", "KEEP": "1"}', patch_azure="", patch_aws="")
+        second = SimpleNamespace(patch='{"MODEL": "b"}', patch_azure="", patch_aws='{"MODEL": "c", "KEEP": null}')
+        assert client_rules.combined_env([first, second], False, False) == {"MODEL": "b", "KEEP": "1"}
+        assert client_rules.combined_env([first, second], False, True) == {"MODEL": "c", "KEEP": None}
+
+    def test_the_admin_is_told_when_two_checks_disagree(self, client, db_session, admin_user):
+        headers = web_auth_header(sub=admin_user.username, scopes=["admin"])
+        _configure(db_session, AUTO, patch='{"MODEL": "a", "SAME": "1"}')
+        _configure(db_session, HTTP, patch='{"SAME": "1"}', patch_aws='{"MODEL": "b"}')
+        [conflict] = client_rules.env_conflicts(client_rules.rules(db_session))
+        assert (conflict["name"], conflict["winner"], conflict["audiences"]) == ("MODEL", HTTP, ["aws"])
+        body = client.get("/admin", headers=headers).text
+        strip = body.split('id="client-rules-conflicts"', 1)[1][:2000]
+        assert "MODEL" in strip and "CC001=a" in strip and "CC002=b" in strip and "CC002 wins" in strip
+        _configure(db_session, HTTP, enabled=False, patch='{"SAME": "1"}', patch_aws='{"MODEL": "b"}')
+        assert client_rules.env_conflicts(client_rules.rules(db_session)) == []      # a check that is off sets nothing
+        assert 'id="client-rules-conflicts"' not in client.get("/admin", headers=headers).text
+
+
+class TestEverythingAtOnce:
+    """The dashboard's one patch and one button for all open notices."""
+
+    def _two(self, db_session):
+        _configure(db_session, AUTO, patch='{"SERVER": "0"}')
+        _configure(db_session, HTTP, patch='{"ANTHROPIC_BASE_URL": "https://gw.example.test"}')
+        _violation(db_session, AUTO, "testuser")
+        _violation(db_session, HTTP, "testuser")
+
+    def _page(self, client, user: User) -> str:
+        return client.get("/dashboard", headers=web_auth_header(sub=user.username)).text
+
+    def _script_env(self, client, user: User, fmt: str) -> dict:
+        import base64
+        import re
+        text = client.get(f"/dashboard/client-rules/all/patch.{fmt}", headers=web_auth_header(sub=user.username)).text
+        return json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))
+
+    def test_two_notices_offer_one_patch_for_both(self, client, db_session, test_user):
+        self._two(db_session)
+        body = self._page(client, test_user)
+        assert 'id="clientNoticesAll"' in body
+        assert "/dashboard/client-rules/all/patch.bat" in body and "/dashboard/client-rules/all/patch.sh" in body
+        want = {"SERVER": "0", "ANTHROPIC_BASE_URL": "https://gw.example.test"}
+        assert self._script_env(client, test_user, "bat") == want and self._script_env(client, test_user, "sh") == want
+
+    def test_one_notice_is_its_own_patch(self, client, db_session, test_user):
+        _violation(db_session, AUTO, "testuser")
+        assert 'id="clientNoticesAll"' not in self._page(client, test_user)
+        resp = client.get("/dashboard/client-rules/all/patch.bat", headers=web_auth_header(sub=test_user.username))
+        assert resp.status_code == 404
+
+    def test_without_any_patch_there_is_still_one_button(self, client, db_session, test_user):
+        _configure(db_session, AUTO, patch="")
+        _configure(db_session, OUTDATED)
+        _violation(db_session, AUTO, "testuser")
+        _violation(db_session, OUTDATED, "testuser")
+        body = self._page(client, test_user)
+        assert 'id="clientNoticesAll"' in body and "all/patch." not in body and "all/resolved" in body
+
+    def test_applied_everything_clears_them_all_and_each_returns_alone(self, client, db_session, test_user):
+        self._two(db_session)
+        headers = {**web_auth_header(sub=test_user.username), "Accept": "application/json"}
+        resp = client.post("/dashboard/client-rules/all/resolved", headers=headers)
+        assert resp.json() == {"ok": True, "resolved": 2}
+        assert 'id="clientNotice' not in self._page(client, test_user)
+        row = _violations(db_session, HTTP)[0]
+        row.last_seen_at = _now() + timedelta(minutes=5)             # http again
+        db_session.add(row)
+        db_session.commit()
+        body = self._page(client, test_user)
+        assert 'id="clientNotice-CC002"' in body and 'id="clientNotice-CC001"' not in body
+
+    def test_only_this_accounts_notices(self, client, db_session, test_user, admin_user):
+        self._two(db_session)
+        _violation(db_session, AUTO, "admin")
+        client.post("/dashboard/client-rules/all/resolved", headers=web_auth_header(sub=test_user.username))
+        assert not client_rules.is_resolved([v for v in _violations(db_session, AUTO) if v.username == "admin"][0])
+
+
 class TestAutoMail:
-    def test_only_checks_that_ask_for_it(self, db_session, test_user, mail_on):
+    def test_only_a_check_that_asks_for_it_starts_a_mail(self, db_session, test_user, admin_user, mail_on):
         _configure(db_session, HTTP, title="quiet one")
         _configure(db_session, AUTO, title="loud one", auto_email=True)
-        _violation(db_session, HTTP, "testuser")
-        _violation(db_session, AUTO, "testuser")
+        _violation(db_session, HTTP, "testuser")           # only the check without automatic mail
+        _violation(db_session, AUTO, "admin")
         assert "sent=1" in client_rules.run_auto_mail(db_session)
-        assert len(mail_on) == 1 and "loud one" in mail_on[0][2]
+        assert [to for to, _, _ in mail_on] == ["admin@example.test"]
 
     def test_a_check_that_is_off_mails_nobody(self, db_session, test_user, mail_on):
         _configure(db_session, AUTO, auto_email=True, enabled=False)

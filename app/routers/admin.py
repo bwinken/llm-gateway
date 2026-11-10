@@ -1187,8 +1187,19 @@ def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
 
 def _client_rules_view(session: Session, admin_user: User) -> dict:
     seen = client_rules.history(session)
+    all_rules = client_rules.rules(session)
     return {
-        "rules": [_client_rule_view(session, r, seen.get(r.id)) for r in client_rules.rules(session)],
+        "rules": [_client_rule_view(session, r, seen.get(r.id)) for r in all_rules],
+        # Variables two enabled checks set differently: the combined patch
+        # and mail take the later check's value, and the admin should know.
+        "conflicts": [
+            {
+                "name": c["name"], "winner": c["winner"],
+                "rules": [{"id": rid, "value": "(removed)" if value is None else value} for rid, value in c["rules"]],
+                "audiences": [{"local": "local-only", "azure": "Azure", "aws": "AWS"}[a] for a in c["audiences"]],
+            }
+            for c in client_rules.env_conflicts(all_rules)
+        ],
         "retired": [
             {
                 "id": c.id, "name": c.name, "reason": c.retired,

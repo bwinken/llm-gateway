@@ -603,6 +603,21 @@ function submitExportCsv() {
         {% else %}<span class="text-ar">off</span> — set {{ cr.mail.missing | join(', ') }} in <span class="font-mono">.env</span> and restart{% endif %}
     </p>
 
+    {% if cr.conflicts %}
+    <div id="client-rules-conflicts" class="mb-4 p-3 rounded text-xs" style="background:rgba(245,166,35,0.06);border:1px solid rgba(245,166,35,0.25)">
+        <div class="font-semibold mb-1" style="color:#f5a623">Two rules set the same variable differently</div>
+        <div class="text-t3 mb-1.5">An account with several open rules gets one patch and one mail for all of them. Where rules disagree, the one listed later wins; change one of them if that is not what you want.</div>
+        {% for c in cr.conflicts %}
+        <div class="text-t2 py-0.5">
+            <code class="font-mono text-t1">{{ c.name }}</code>
+            <span class="text-t4">({{ c.audiences | join(', ') }} accounts)</span>:
+            {% for r in c.rules %}<span class="font-mono {{ 'text-t1' if r.id == c.winner else 'text-t4' }}">{{ r.id }}={{ r.value }}</span>{{ ' · ' if not loop.last }}{% endfor %}
+            <span class="text-t3">→ {{ c.winner }} wins</span>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
     {# Claude Code versions in use #}
     <div class="mb-5">
         <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2 gw-tip gw-tip-wide"
@@ -688,7 +703,7 @@ function submitExportCsv() {
                         <input type="text" name="email_subject" maxlength="200" value="{{ r.email_subject }}" placeholder="default" class="gw-input w-72 text-sm py-1.5 px-2">
                     </div>
                     <label class="flex items-center gap-2 text-sm text-t2 py-1.5 gw-tip gw-tip-wide"
-                           data-tip="The gateway mails each violating account by itself, within about ten minutes of its first violation."><input type="checkbox" name="auto_email" {{ 'checked' if r.auto_email }}> Mail these accounts automatically</label>
+                           data-tip="The gateway mails each violating account by itself, within about ten minutes of its first violation. An account with several rules open gets one mail covering all of them, with one patch."><input type="checkbox" name="auto_email" {{ 'checked' if r.auto_email }}> Mail these accounts automatically</label>
                     <div>
                         <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="With automatic mail: mail an account again after this many days while it keeps violating. 0 = once only.">Repeat after days</label>
                         <input type="number" name="email_repeat_days" min="0" max="365" value="{{ r.email_repeat_days }}" class="gw-input w-24 text-sm font-mono py-1.5 px-2">
@@ -1748,7 +1763,7 @@ function submitExportCsv() {
             if (kind === 'reset') {
                 ask = { text: 'Reset ' + rule + ' to its built-in defaults? Your wording, patch and mail settings for it are dropped; its list of accounts is kept.', okLabel: 'Reset', danger: true };
             } else if (kind === 'mail') {
-                ask = { text: 'Send the ' + rule + ' mail to ' + form.dataset.count + ' account(s)?', okLabel: 'Send' };
+                ask = { text: 'Mail ' + form.dataset.count + ' account(s) with a ' + rule + ' violation? Each gets one mail covering everything it has open, not only ' + rule + '.', okLabel: 'Send' };
             } else if (kind === 'save' && form.querySelector('select[name="action"]').value === 'remind'
                        && form.querySelector('input[name="enabled"]').checked) {
                 ask = { text: 'Remind in the terminal? The first violating request of each account each day will fail once with this message.', okLabel: 'Save' };
