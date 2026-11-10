@@ -1058,6 +1058,33 @@ class TestMail:
         [row] = _violations(db_session, AUTO)
         assert row.mailed_at is None and row.mail_error == "TimeoutError: timed out" and row.mail_attempted_at
 
+    def test_every_mail_says_it_is_automated_and_not_to_reply(self, db_session, test_user, mail_on):
+        _configure(db_session, AUTO, auto_email=True)
+        _configure(db_session, OUTDATED)
+        _violation(db_session, AUTO, "testuser")
+        client_rules.run_auto_mail(db_session)                       # one check
+        _violation(db_session, OUTDATED, "testuser")
+        client_rules.send_rule_mail(OUTDATED, only_unmailed=False)   # two checks, by an admin's click
+        draft = SimpleNamespace(id="CC001", title="t", message="", email_subject="")
+        bodies = [body for _, _, body in mail_on] + [client_rules.render_mail(draft, "u", {})[1]]    # and a test mail
+        assert len(bodies) == 3
+        for body in bodies:
+            assert "This is an automated message" in body and "Please do not reply" in body
+
+    def test_the_mail_points_at_the_support_link_when_there_is_one(self, mail_on):
+        draft = SimpleNamespace(id="CC001", title="t", message="", email_subject="")
+        links = {"support_bot_url": "", "install_guide_url": ""}
+        with patch.object(client_rules.config, "get_site_links", return_value=links):
+            assert "For help" not in client_rules.render_mail(draft, "u", {})[1]
+            links["support_bot_url"] = "https://chat.example.test/bot?a=1&b=2"
+            assert 'href="https://chat.example.test/bot?a=1&amp;b=2"' in client_rules.render_mail(draft, "u", {})[1]
+            links["support_bot_url"] = "/help"                       # site-relative: under PUBLIC_BASE_URL
+            assert 'href="https://gw.example.test/help"' in client_rules.render_mail(draft, "u", {})[1]
+            links["support_bot_url"] = "javascript:alert(1)"
+            assert "For help" not in client_rules.render_mail(draft, "u", {})[1]
+        with patch.object(client_rules.config, "get_site_links", side_effect=RuntimeError("config")):
+            assert "Please do not reply" in client_rules.render_mail(draft, "u", {})[1]
+
     def test_mail_escapes_what_the_admin_wrote(self, mail_on):
         draft = SimpleNamespace(id="CC001", title="<b>t</b>", message="a\n<i>b</i>", email_subject="")
         subject, body = client_rules.render_mail(draft, "u<1>", {"A": "<x>"})

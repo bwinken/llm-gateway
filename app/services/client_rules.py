@@ -52,6 +52,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, func, select, update
 from starlette.concurrency import run_in_threadpool
 
+from app.core import config
 from app.core.config import APP_TITLE
 from app.core.database import engine
 from app.core.logger import logger
@@ -1049,11 +1050,33 @@ def render_digest(username: str, rule_list: list[Any], env: dict[str, str | None
                 "and mark them as done") if env else f"see {notice} and mark them as done"
         parts.append(f'<p><a href="{link}">Open your dashboard</a> to {what}.</p>')
     references = ", ".join(html.escape(rule.id) for rule in rule_list)
+    # The sender is a system mailbox nobody reads: say so, and say where
+    # help is when the admin has set a support link.
+    help_line = ""
+    support = _support_url(public_url)
+    if support:
+        help_line = f' For help, use <a href="{html.escape(support, quote=True)}">the support page</a>.'
     parts.append(
-        f'<p style="color:#888;font-size:12px">Sent by {html.escape(APP_TITLE)} because of requests from your account. '
-        f"Reference: {references}.</p></div>"
+        '<p style="color:#888;font-size:12px;border-top:1px solid #e3e6ea;padding-top:10px;margin-top:18px">'
+        f"This is an automated message from {html.escape(APP_TITLE)}, sent because of requests from your account. "
+        f"Please do not reply to it: replies are not read.{help_line} Reference: {references}.</p></div>"
     )
     return subject, "".join(parts)
+
+
+def _support_url(public_url: str) -> str:
+    """The admin's support link as something a mail can link to: an
+    ``http(s)://`` URL as it is, a site-relative one under ``PUBLIC_BASE_URL``
+    (nothing without it). Never raises."""
+    try:
+        url = (config.get_site_links().get("support_bot_url") or "").strip()
+    except Exception:
+        return ""
+    if url.startswith(("http://", "https://")):
+        return url
+    if url.startswith("/") and not url.startswith("//") and public_url:
+        return public_url + url
+    return ""
 
 
 def render_mail(rule: Any, username: str, env: dict[str, str | None]) -> tuple[str, str]:
