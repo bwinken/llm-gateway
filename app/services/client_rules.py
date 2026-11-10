@@ -45,7 +45,7 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, select, update
+from sqlmodel import Session, func, select, update
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import APP_TITLE
@@ -67,6 +67,8 @@ RESOLUTION_S = 3600
 REFRESH_S = 15.0
 # The version overview counts accounts seen in this many days.
 VERSION_WINDOW_DAYS = 30
+# A check with no violation for this long is suggested for retirement.
+STALE_DAYS = 30
 
 ACTIONS = ("notice", "remind")
 CLIENT = "claude-code"
@@ -380,6 +382,12 @@ class Rule:
     def name(self) -> str:
         return self.check.name
 
+    @property
+    def deprecated(self) -> str:
+        """Why the check is on its way out ("" while it is not). A deprecated
+        check still records and shows its notice, but never reminds or mails."""
+        return self.check.deprecated
+
 
 def _default_patch(lines: str) -> str:
     return dump_env(parse_env(lines))
@@ -573,7 +581,7 @@ async def _observe(request: Any, user: User) -> JSONResponse | None:
         return None
     today = local_today().isoformat()
     for rule in violated:
-        if rule.action != "remind":
+        if rule.action != "remind" or rule.deprecated:
             continue
         key = (rule.id, username)
         with _lock:
@@ -665,6 +673,27 @@ def violations(session: Session, rule_id: str, now: datetime | None = None) -> l
         .where(ClientViolation.rule_id == rule_id, ClientViolation.last_seen_at >= _active_since(now))
         .order_by(ClientViolation.last_seen_at.desc())  # type: ignore[attr-defined]
     ).all())
+
+
+def history(session: Session, now: datetime | None = None) -> dict[str, dict[str, Any]]:
+    """Per violation id, over all time: how many accounts ever had one, when
+    the last one was seen and how many days ago. For judging when a check
+    can be deprecated or retired; includes ids of retired checks."""
+    now = now or utcnow()
+    rows = session.exec(
+        select(ClientViolation.rule_id, func.count(), func.max(ClientViolation.last_seen_at))
+        .group_by(ClientViolation.rule_id)
+    ).all()
+    return {
+        rule_id: {"accounts": int(count), "last_seen_at": last, "quiet_days": max((now - last).days, 0)}
+        for rule_id, count, last in rows if last is not None
+    }
+
+
+def is_stale(rule: Rule, seen: dict[str, Any] | None) -> bool:
+    """An enabled check nobody has tripped for ``STALE_DAYS``: a candidate
+    for retirement. One that never had a violation says nothing either way."""
+    return bool(rule.enabled and seen and seen["quiet_days"] >= STALE_DAYS)
 
 
 def notices_for(session: Session, user: User, now: datetime | None = None) -> list[dict[str, Any]]:
@@ -776,7 +805,11 @@ def mailable(session: Session, rows: list[ClientViolation]) -> list[ClientViolat
 
 
 def mail_targets(session: Session, rule_id: str, only_unmailed: bool, now: datetime | None = None) -> list[ClientViolation]:
-    """Who a manual send reaches: the check's accounts inside the window."""
+    """Who a manual send reaches: the check's accounts inside the window
+    (nobody for a deprecated or unknown check)."""
+    rule = get_rule(session, rule_id)
+    if rule is None or rule.deprecated:
+        return []
     rows = mailable(session, violations(session, rule_id, now))
     return [v for v in rows if v.mailed_at is None] if only_unmailed else rows
 
@@ -834,11 +867,12 @@ def _auto_due(violation: ClientViolation, repeat_days: int, now: datetime) -> bo
 
 def run_auto_mail(session: Session, now: datetime | None = None) -> str:
     """The ``client_rule_mail`` job: mail the accounts of every enabled check
-    with ``auto_email`` that have not been mailed (or are due again)."""
+    with ``auto_email`` that have not been mailed (or are due again).
+    Deprecated checks mail nobody."""
     if not mailer.is_enabled():
         return "mail not configured"
     now = now or utcnow()
-    auto = [rule for rule in rules(session) if rule.enabled and rule.auto_email]
+    auto = [rule for rule in rules(session) if rule.enabled and rule.auto_email and not rule.deprecated]
     sent = failed = 0
     budget = MAIL_BATCH
     for rule in auto:

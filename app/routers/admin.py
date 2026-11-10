@@ -71,7 +71,7 @@ from app.models.schema import (
     legacy_api_key_clause,
     mask_api_key,
 )
-from app.services import audit, client_rules, concurrency, guardrail, ip_allowlist, mailer
+from app.services import audit, client_checks, client_rules, concurrency, guardrail, ip_allowlist, mailer
 from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
@@ -1148,12 +1148,18 @@ async def update_guardrail(
 
 # ── Client rules (app/services/client_rules.py; the checks are code, in client_checks.py) ──
 
-def _client_rule_view(session: Session, rule) -> dict:
+def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
     rows = client_rules.violations(session, rule.id)
     mailable = {v.username for v in client_rules.mailable(session, rows)}
     check = rule.check
     return {
         "id": rule.id, "name": rule.name, "description": check.description, "enabled": rule.enabled,
+        "deprecated": rule.deprecated,
+        # Over all time, for judging when the check can go: see client_rules.history.
+        "last_seen": _local_label(seen["last_seen_at"]) if seen else "",
+        "quiet_days": seen["quiet_days"] if seen else None,
+        "ever_accounts": seen["accounts"] if seen else 0,
+        "stale": client_rules.is_stale(rule, seen),
         "title": rule.title, "message": rule.message,
         "patch": client_rules.env_lines(client_rules.load_env(rule.patch)),
         "patch_azure": client_rules.env_lines(client_rules.load_env(rule.patch_azure)),
@@ -1177,8 +1183,18 @@ def _client_rule_view(session: Session, rule) -> dict:
 
 
 def _client_rules_view(session: Session, admin_user: User) -> dict:
+    seen = client_rules.history(session)
     return {
-        "rules": [_client_rule_view(session, r) for r in client_rules.rules(session)],
+        "rules": [_client_rule_view(session, r, seen.get(r.id)) for r in client_rules.rules(session)],
+        "retired": [
+            {
+                "id": c.id, "name": c.name, "reason": c.retired,
+                "ever_accounts": seen[c.id]["accounts"] if c.id in seen else 0,
+                "last_seen": _local_label(seen[c.id]["last_seen_at"]) if c.id in seen else "",
+            }
+            for c in client_checks.RETIRED
+        ],
+        "stale_days": client_rules.STALE_DAYS,
         "versions": client_rules.version_overview(session),
         "mail": mailer.status(),
         "my_address": mailer.address_for(admin_user.username),
@@ -1306,6 +1322,8 @@ def send_client_rule_mail(
     (default) or all of them. Sending runs after this reply; each account's
     outcome shows in the check's list."""
     rule = _client_rule_or_404(session, rule_id)
+    if rule.deprecated:
+        raise HTTPException(status_code=400, detail=f"{rule.id} is deprecated: its accounts are no longer mailed.")
     if not mailer.is_enabled():
         raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
     unmailed_only = only_unmailed == "on"

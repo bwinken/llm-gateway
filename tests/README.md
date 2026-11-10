@@ -663,6 +663,7 @@ the old `/setup/files/...` route is gone (404).
 
 ### `test_client_rules.py` — client checks, violations, settings patch, mail, Claude Code versions
 - Registry: violation ids are unique and never renumbered; every check has wording; only `CC001` is on before an admin decides; a retired check is no longer evaluated or shown.
+- Lifecycle: a deprecated check still records and shows its notice but never reminds or mails (auto, manual, endpoint); the admin card shows the stage and reason, each check's last violation over all time, and marks one quiet for 30 days; retired checks are listed with their reason.
 - Checks: one test per check (`CC001`–`CC005`), what trips it and what does not.
 - Request path: a violation is recorded under its id and the request is still served; checks that are off record nothing; thresholds are constants in code and the settings table has no judgment column; the account's access reaches the check; plain `http://` is the connection's scheme (a client-sent `X-Forwarded-Proto` changes nothing); hourly write throttle; a broken store or a check that raises never fails a request; the cloud Messages routes are watched too.
 - Versions: recorded per account from the User-Agent; the overview counts each account under its newest version.

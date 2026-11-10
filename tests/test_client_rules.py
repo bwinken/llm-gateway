@@ -145,6 +145,7 @@ class TestRegistry:
 
         retired = tuple(replace(c, retired="superseded") if c.id == AUTO else c for c in client_checks.CHECKS)
         with patch.object(client_checks, "ACTIVE", tuple(c for c in retired if not c.retired)), \
+             patch.object(client_checks, "RETIRED", tuple(c for c in retired if c.retired)), \
              patch.object(client_checks, "BY_ID", {c.id: c for c in retired}):
             client_rules.refresh()
             assert _messages(client, safeguards={})[0].status_code == 200
@@ -153,6 +154,95 @@ class TestRegistry:
             assert AUTO not in [r.id for r in client_rules.rules(db_session)]
             resp = client.post(f"/admin/client-rules/{AUTO}", data=_FORM, headers=_admin(admin_user))
             assert resp.status_code == 404
+
+
+class TestLifecycle:
+    """Active -> deprecated -> retired, all set in code (client_checks.py)."""
+
+    @staticmethod
+    def _with(**changes):
+        """The registry with CC001 changed, patched in for the block."""
+        from contextlib import ExitStack
+        from dataclasses import replace
+
+        checks = tuple(replace(c, **changes) if c.id == AUTO else c for c in client_checks.CHECKS)
+        stack = ExitStack()
+        stack.enter_context(patch.object(client_checks, "ACTIVE", tuple(c for c in checks if not c.retired)))
+        stack.enter_context(patch.object(client_checks, "RETIRED", tuple(c for c in checks if c.retired)))
+        stack.enter_context(patch.object(client_checks, "BY_ID", {c.id: c for c in checks}))
+        return stack
+
+    def test_a_deprecated_check_still_records_and_shows_its_notice(self, client, db_session, test_user):
+        with self._with(deprecated="Claude Code 3 falls back by itself."):
+            client_rules.refresh()
+            assert _messages(client, safeguards={})[0].status_code == 200
+            assert _violators(db_session, AUTO) == ["testuser"]
+            body = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
+            assert 'id="clientNotice-CC001"' in body
+
+    def test_a_deprecated_check_never_reminds(self, client, db_session, test_user):
+        with self._with(deprecated="on its way out"):
+            _configure(db_session, AUTO, action="remind")
+            assert _messages(client, safeguards={})[0].status_code == 200
+            assert _violators(db_session, AUTO) == ["testuser"]
+
+    def test_a_deprecated_check_mails_nobody(self, client, db_session, admin_user, test_user, mail_on):
+        with self._with(deprecated="on its way out"):
+            _configure(db_session, AUTO, auto_email=True)
+            _violation(db_session, AUTO, "testuser")
+            assert "sent=0" in client_rules.run_auto_mail(db_session)
+            assert client_rules.send_rule_mail(AUTO, only_unmailed=False) == {"sent": 0, "failed": 0}
+            resp = client.post(f"/admin/client-rules/{AUTO}/mail", headers=_admin(admin_user))
+            assert resp.status_code == 400 and "deprecated" in resp.json()["detail"]
+        assert mail_on == []
+
+    def test_admin_sees_the_stage_and_the_reason(self, client, db_session, admin_user):
+        headers = web_auth_header(sub=admin_user.username, scopes=["admin"])
+        body = client.get("/admin", headers=headers).text
+        assert "data-cr-deprecated" not in body and 'id="client-rules-retired"' not in body
+        with self._with(deprecated="Claude Code 3 falls back by itself."):
+            body = client.get("/admin", headers=headers).text
+            assert "data-cr-deprecated" in body and "Claude Code 3 falls back by itself." in body
+        with self._with(retired="Nobody has tripped it since March."):
+            _violation(db_session, AUTO, "testuser")
+            body = client.get("/admin", headers=headers).text
+            assert 'id="client-rule-CC001"' not in body
+            retired = body.split('id="client-rules-retired"', 1)[1][:3000]
+            assert "CC001" in retired and "Nobody has tripped it since March." in retired
+
+    def test_history_says_when_a_check_was_last_tripped(self, db_session):
+        now = _now()
+        for name, days in (("a", 40), ("b", 35)):
+            row = _violation(db_session, AUTO, name)
+            row.last_seen_at = now - timedelta(days=days)
+            db_session.add(row)
+        _violation(db_session, HTTP, "c")
+        db_session.commit()
+        seen = client_rules.history(db_session, now)
+        assert (seen[AUTO]["accounts"], seen[AUTO]["quiet_days"]) == (2, 35)      # all time, not the 7-day window
+        assert seen[HTTP]["quiet_days"] == 0 and OUTDATED not in seen
+        assert client_rules.violations(db_session, AUTO, now) == []               # while the active list is empty
+
+    def test_a_check_quiet_for_a_month_is_suggested_for_retirement(self, client, db_session, admin_user):
+        auto = client_rules.get_rule(db_session, AUTO)
+        assert not client_rules.is_stale(auto, None)                              # never tripped: says nothing
+        assert not client_rules.is_stale(auto, {"quiet_days": client_rules.STALE_DAYS - 1})
+        assert client_rules.is_stale(auto, {"quiet_days": client_rules.STALE_DAYS})
+        off = client_rules.get_rule(db_session, HTTP)
+        assert not client_rules.is_stale(off, {"quiet_days": 400})                # a check that is off is not judged
+
+        row = _violation(db_session, AUTO, "testuser")
+        row.last_seen_at = _now() - timedelta(days=45)
+        db_session.add(row)
+        db_session.commit()
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        card = body.split('id="client-rule-CC001"', 1)[1].split('id="client-rule-CC002"', 1)[0]
+        assert "quiet for 45 days" in card and "45 days ago" in card and "1 account ever" in card
+        assert "No violation has ever been recorded." in body.split('id="client-rule-CC002"', 1)[1]
+
+    def test_a_check_is_never_both_stages_ambiguously(self):
+        for check in client_checks.CHECKS:
+            assert (check in client_checks.ACTIVE) != (check in client_checks.RETIRED)
 
 
 class TestChecks:

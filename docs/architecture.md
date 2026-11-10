@@ -186,7 +186,17 @@ The gateway cannot change a user's Claude Code settings. Client rules are how it
 | `CC004` | A model name configured nowhere, which the gateway silently answers with a fallback model (typically Claude Code's background-task default) | no |
 | `CC005` | An Azure / AWS model requested by an account without that access, answered by a local model | no |
 
-`Facts` is what a check may look at: the parsed body (whether a field is there, and `model`; never the conversation), the Claude Code version, the scheme and the account's Azure / AWS access. Everything a check decides with is in the code, thresholds included: the database holds no part of a rule's judgment, only which account violated which id and how each check's accounts are told. To add a check, append a `Check` with the next unused id and a test in `TestChecks`. To retire one, set `retired`: it is no longer evaluated or shown, its id stays taken and its violations stay in the database. Ids are validated at import (format, uniqueness).
+`Facts` is what a check may look at: the parsed body (whether a field is there, and `model`; never the conversation), the Claude Code version, the scheme and the account's Azure / AWS access. Everything a check decides with is in the code, thresholds included: the database holds no part of a rule's judgment, only which account violated which id and how each check's accounts are told. To add a check, append a `Check` with the next unused id and a test in `TestChecks`. Ids are validated at import (format, uniqueness).
+
+**A check's life** is set in code too, in three stages:
+
+| Stage | Detected and recorded | Notice on the dashboard | Reminder and mail | How |
+|---|---|---|---|---|
+| Active | yes | yes | as the admin set them | the admin turns it on |
+| Deprecated | yes | yes | never | `deprecated="why, and what replaces it"` |
+| Retired | no | no | no | `retired="why"` |
+
+Deprecated is the quiet period: the check keeps listing who is left without interrupting or mailing anyone (the mail buttons are disabled and the endpoint answers 400). To know when to move a check on, the card shows for each one when it last had a violation and how many accounts ever had one (`client_rules.history`, over all time rather than the 7-day window), and marks an enabled check nobody has tripped for `STALE_DAYS` (30) as a candidate. A retired check is no longer evaluated; it moves to the card's *Retired* list with its reason, so an id found in old mail or in `client_violations` can still be looked up. Its id stays taken and its violations stay in the database; never delete the entry.
 
 **What an admin sets per check** (`client_rule_settings`, keyed by the id; no row = the defaults in code, and *Reset to defaults* deletes the row): on / off, the action, title and message, the settings patch, and mail. Nothing in the form changes what a check detects.
 

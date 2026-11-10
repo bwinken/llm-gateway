@@ -14,9 +14,19 @@ Adding a check:
 2. Append a ``Check`` with the next unused id. Ids are never reused.
 3. Add a test to ``tests/test_client_rules.py::TestChecks``.
 
-Retiring a check: set ``retired`` to the reason. It is then no longer
-evaluated or shown, its id stays taken, and its recorded violations stay in
-the database. Don't delete the entry.
+A check's life, all of it decided here in code:
+
+1. **Active**: detected, recorded, the account is told (notice, and the
+   reminder / mail the admin chose).
+2. **Deprecated** (set ``deprecated`` to the reason, and what replaces it if
+   anything): still detected and recorded, and the account still sees the
+   notice, but nobody is interrupted or mailed any more. This is the quiet
+   period for watching who is left; the admin page shows when each check
+   last had a violation and suggests retiring one that has been silent for
+   ``client_rules.STALE_DAYS``.
+3. **Retired** (set ``retired`` to the reason): no longer evaluated; the
+   admin page lists it under "Retired" with the reason. Its id stays taken
+   and its recorded violations stay in the database. Don't delete the entry.
 
 Everything a check decides with is here, in code: thresholds such as
 ``MIN_CLAUDE_CODE_VERSION`` are constants in this file, not settings, so
@@ -63,7 +73,8 @@ class Check:
     env_azure: str = ""
     env_aws: str = ""
     enabled: bool = False                # on before an admin has touched it?
-    retired: str = ""                    # non-empty: why it was retired
+    deprecated: str = ""                 # non-empty: why it is on its way out (no reminder, no mail)
+    retired: str = ""                    # non-empty: why it was retired (not evaluated at all)
 
 
 def version_key(version: str) -> tuple[int, ...]:
@@ -209,3 +220,4 @@ for _check in CHECKS:
 
 BY_ID: dict[str, Check] = {check.id: check for check in CHECKS}
 ACTIVE: tuple[Check, ...] = tuple(check for check in CHECKS if not check.retired)
+RETIRED: tuple[Check, ...] = tuple(check for check in CHECKS if check.retired)
