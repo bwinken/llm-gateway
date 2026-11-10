@@ -1176,6 +1176,8 @@ def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
                 "mailable": v.username in mailable,
                 # The account said it applied the fix and has not violated since.
                 "resolved": _local_label(v.resolved_at) if client_rules.is_resolved(v) else "",
+                # An admin asked for a mail that has not gone out yet.
+                "queued": client_rules.is_queued(v),
             }
             for v in rows
         ],
@@ -1211,6 +1213,7 @@ def _client_rules_view(session: Session, admin_user: User) -> dict:
         "stale_days": client_rules.STALE_DAYS,
         "versions": client_rules.version_overview(session),
         "mail": mailer.status(),
+        "mail_pace": {**client_rules.mail_pace(), "waiting": len(client_rules.due_accounts(session))},
         "my_address": mailer.address_for(admin_user.username),
         "actions": client_rules.ACTIONS,
         "window_days": client_rules.WINDOW_DAYS,
@@ -1332,25 +1335,31 @@ def send_client_rule_mail(
     admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
 ):
-    """Mail the accounts currently violating a check: those not mailed yet
-    (default) or all of them. Sending runs after this reply; each account's
-    outcome shows in the check's list."""
+    """Queue a mail to the accounts currently violating a check: those not
+    mailed yet (default) or all of them. Mail never goes out as one burst:
+    the first batch is sent after this reply and the mail job sends the
+    rest, a batch per run (``client_rules.mail_pace``). Each account's state
+    (queued, sent, error) shows in the check's list."""
     rule = _client_rule_or_404(session, rule_id)
     if rule.deprecated:
         raise HTTPException(status_code=400, detail=f"{rule.id} is deprecated: its accounts are no longer mailed.")
     if not mailer.is_enabled():
         raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
     unmailed_only = only_unmailed == "on"
-    queued = len(client_rules.mail_targets(session, rule.id, unmailed_only))
+    queued = client_rules.request_mail(session, rule.id, unmailed_only)
     if queued:
-        background.add_task(client_rules.send_rule_mail, rule.id, unmailed_only)
+        background.add_task(client_rules.send_batch)
+    pace = client_rules.mail_pace()
     logger.info(
         "Client rule mail queued | id={} accounts={} only_unmailed={} admin={}",
         rule.id, queued, unmailed_only, admin_user.username,
     )
     audit.note(mail_queued=queued)
     if _wants_json(request):
-        return JSONResponse({"ok": True, "queued": queued})
+        return JSONResponse({
+            "ok": True, "queued": queued, "batch": pace["batch"],
+            "interval_minutes": round(pace["interval_s"] / 60, 1),
+        })
     return RedirectResponse(url="/admin", status_code=303)
 
 

@@ -20,6 +20,8 @@ os.environ["DATABASE_URL"] = "sqlite://"
 # load_dotenv() never overrides a variable that exists, so a local .env
 # can't switch them back on.
 os.environ["METRICS_ENABLED"] = ""
+# Client-rule mail goes out a pause apart; tests do not wait for it.
+os.environ["CLIENT_RULE_MAIL_PAUSE_S"] = "0"
 
 import httpx
 import jwt as pyjwt

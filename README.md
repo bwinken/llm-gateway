@@ -95,7 +95,7 @@ Model names must be unique across all three backends. [`config.toml.example`](co
 | `ANOMALY_SCAN_INTERVAL_S` | Seconds between the gateway's usage-anomaly scans (`0` turns it off) | `3600` |
 | `EXCHANGE_SERVER`, `EXCHANGE_USER`, `EXCHANGE_PASSWORD`, `EXCHANGE_EMAIL`, `COMPANY_EMAIL_DOMAIN` | Exchange (EWS + NTLM) mail for the admin panel's Client rules; on only when all five are set. Mailboxes are `<username>@<COMPANY_EMAIL_DOMAIN>` | unset (mail off) |
 | `PUBLIC_BASE_URL` | The gateway's browser URL, for the dashboard link in mail and reminders | unset |
-| `CLIENT_RULE_MAIL_INTERVAL_S` | Seconds between runs of the automatic client-rule mail job (`0` turns it off) | `600` |
+| `CLIENT_RULE_MAIL_BATCH`, `CLIENT_RULE_MAIL_PAUSE_S`, `CLIENT_RULE_MAIL_INTERVAL_S` | Pace of client-rule mail, so it never reaches the mail server as a burst: at most this many mails per run, this many seconds apart, a run every this many seconds (`0` turns the job off) | `20`, `2`, `600` |
 | `USAGE_LOG_RETENTION_DAYS` | Daily, delete `usage_logs` rows older than this many days (only days already in the daily rollup, so reports keep them). Unset keeps them forever | unset |
 
 SSO login itself (OIDC issuer, client secret) is configured for oauth2-proxy in `deploy/.env`; see [deploy/README.md](deploy/README.md).

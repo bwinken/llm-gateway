@@ -77,10 +77,20 @@ STALE_DAYS = 30
 ACTIONS = ("notice", "remind")
 CLIENT = "claude-code"
 
-# Automatic mail: a failed send is retried after this long, and one run
-# sends at most this many.
+# A failed send is retried after this long.
 MAIL_RETRY_S = 6 * 3600
-MAIL_BATCH = 200
+
+
+def mail_pace() -> dict[str, Any]:
+    """How fast mail goes out, so a long list never reaches the mail server
+    as one burst: at most ``batch`` mails per run of the mail job, ``pause_s``
+    apart, one run every ``interval_s``. Whatever is left waits for the next
+    run. An admin's click is paced the same way as automatic mail."""
+    return {
+        "batch": max(1, int(env_seconds("CLIENT_RULE_MAIL_BATCH", 20))),
+        "pause_s": env_seconds("CLIENT_RULE_MAIL_PAUSE_S", 2.0),
+        "interval_s": env_seconds("CLIENT_RULE_MAIL_INTERVAL_S", 600.0),
+    }
 
 _UA_VERSION = re.compile(r"claude-cli/(\d+(?:\.\d+){1,3})", re.IGNORECASE)
 
@@ -1045,10 +1055,10 @@ def mail_targets(session: Session, rule_id: str, only_unmailed: bool, now: datet
     return [v for v in rows if v.mailed_at is None] if only_unmailed else rows
 
 
-def _send_digests(session: Session, usernames: list[str], now: datetime | None = None) -> tuple[int, int]:
+def _send_digests(session: Session, usernames: list[str], now: datetime | None = None, pause_s: float = 0.0) -> tuple[int, int]:
     """Mail each account once about everything it has open (deprecated
-    checks left out), and stamp the outcome on every violation the mail
-    covered. Returns (sent, failed) in accounts."""
+    checks left out), ``pause_s`` apart, and stamp the outcome on every
+    violation the mail covered. Returns (sent, failed) in accounts."""
     usernames = [name for name in dict.fromkeys(usernames) if not is_app_account(name)]
     if not usernames:
         return 0, 0
@@ -1064,10 +1074,27 @@ def _send_digests(session: Session, usernames: list[str], now: datetime | None =
             continue
         rule_list = [rule for rule, _ in items]
         subject, body = render_digest(username, rule_list, combined_env(rule_list, *audience_of(user)))
-        jobs.append((username, [row.id for _, row in items], subject, body))
+        jobs.append((username, [row.id for _, row in items], items[0][1].mail_attempted_at, subject, body))
     session.commit()                # nothing is held open while mail is being sent
     sent = failed = 0
-    for username, violation_ids, subject, body in jobs:
+    for position, (username, violation_ids, attempted_before, subject, body) in enumerate(jobs):
+        stamp = utcnow()
+        # Claim the account before sending: a compare-and-set on its first
+        # violation, so the job and an admin's click (or two workers) never
+        # both mail the same person.
+        first = ClientViolation.id == violation_ids[0]
+        unchanged = (
+            ClientViolation.mail_attempted_at.is_(None) if attempted_before is None  # type: ignore[union-attr]
+            else ClientViolation.mail_attempted_at == attempted_before
+        )
+        claimed = session.execute(
+            update(ClientViolation).where(first, unchanged).values(mail_attempted_at=stamp)
+        ).rowcount == 1
+        session.commit()
+        if not claimed:
+            continue
+        if position and pause_s > 0:
+            time.sleep(pause_s)
         ok, error = mailer.send(mailer.address_for(username), subject, body)
         stamp = utcnow()
         values: dict[str, Any] = {"mail_attempted_at": stamp, "mail_error": "" if ok else error}
@@ -1081,23 +1108,6 @@ def _send_digests(session: Session, usernames: list[str], now: datetime | None =
     return sent, failed
 
 
-def send_rule_mail(rule_id: str, only_unmailed: bool = True, bind=None) -> dict[str, int]:
-    """A manual send from one check, run after the admin's click returned:
-    its accounts each get the mail about everything they have open.
-    Blocking; own session."""
-    try:
-        with Session(bind or engine) as session:
-            if get_rule(session, rule_id) is None or not mailer.is_enabled():
-                return {"sent": 0, "failed": 0}
-            targets = [v.username for v in mail_targets(session, rule_id, only_unmailed)]
-            sent, failed = _send_digests(session, targets)
-        logger.info("Client rule mail | rule={} sent={} failed={}", rule_id, sent, failed)
-        return {"sent": sent, "failed": failed}
-    except Exception as exc:
-        logger.warning("Client rule mail failed | rule={} error={}: {}", rule_id, type(exc).__name__, exc)
-        return {"sent": 0, "failed": 0}
-
-
 def _auto_due(violation: ClientViolation, repeat_days: int, now: datetime) -> bool:
     if violation.mail_attempted_at is None:
         return True
@@ -1108,27 +1118,113 @@ def _auto_due(violation: ClientViolation, repeat_days: int, now: datetime) -> bo
     return repeat_days > 0 and violation.mailed_at <= now - timedelta(days=repeat_days)
 
 
+def is_queued(violation: ClientViolation, now: datetime | None = None) -> bool:
+    """An admin asked for this account to be mailed and it has not happened
+    yet (a failed attempt waits ``MAIL_RETRY_S`` before the next)."""
+    requested = violation.mail_requested_at
+    if requested is None or is_resolved(violation):
+        return False
+    if violation.mailed_at is not None and violation.mailed_at >= requested:
+        return False
+    return True
+
+
+def _request_due(violation: ClientViolation, now: datetime) -> bool:
+    if not is_queued(violation, now):
+        return False
+    attempted = violation.mail_attempted_at
+    if attempted is not None and attempted >= violation.mail_requested_at:
+        return attempted <= now - timedelta(seconds=MAIL_RETRY_S)   # tried since the request, and failed
+    return True
+
+
+def request_mail(session: Session, rule_id: str, only_unmailed: bool = True, now: datetime | None = None) -> int:
+    """An admin's click on a check's mail button: queue its accounts (those
+    not mailed yet, or all of them). Nothing is sent here; the mail job
+    sends the queue in batches. Returns how many were queued."""
+    now = now or utcnow()
+    targets = mail_targets(session, rule_id, only_unmailed, now)
+    for row in targets:
+        row.mail_requested_at = now
+        session.add(row)
+    session.commit()
+    return len(targets)
+
+
+def due_accounts(session: Session, now: datetime | None = None) -> list[str]:
+    """Accounts waiting for a mail, in the order they will get it: first
+    those an admin asked for (oldest request first), then those due by a
+    check's automatic mail. Deprecated checks never make an account due."""
+    now = now or utcnow()
+    requested: list[tuple[datetime, str]] = []
+    automatic: list[str] = []
+    for username, items in open_items(session, now).items():
+        if is_app_account(username):
+            continue
+        live = [(rule, row) for rule, row in items if not rule.deprecated]
+        asked = [row.mail_requested_at for _, row in live if _request_due(row, now)]
+        if asked:
+            requested.append((min(asked), username))
+        elif any(rule.auto_email and _auto_due(row, rule.email_repeat_days, now) for rule, row in live):
+            automatic.append(username)
+    ordered = [username for _, username in sorted(requested)] + sorted(automatic)
+    if not ordered:
+        return []
+    known = set(session.exec(select(User.username).where(User.username.in_(ordered))).all())  # type: ignore[attr-defined]
+    return [username for username in ordered if username in known]
+
+
+def send_due(session: Session, now: datetime | None = None) -> dict[str, int]:
+    """Send one batch: the first ``mail_pace()["batch"]`` accounts that are
+    waiting, a pause apart. ``waiting`` is what is left for the next run."""
+    pace = mail_pace()
+    due = due_accounts(session, now)
+    batch = due[:pace["batch"]]
+    sent, failed = _send_digests(session, batch, now, pace["pause_s"])
+    return {"sent": sent, "failed": failed, "waiting": len(due) - len(batch)}
+
+
+def send_batch(bind=None) -> dict[str, int]:
+    """One batch, right now, in its own session: run after an admin's click
+    so the first mails do not wait for the job's next run. Never raises."""
+    try:
+        if not mailer.is_enabled():
+            return {"sent": 0, "failed": 0, "waiting": 0}
+        with Session(bind or engine) as session:
+            result = send_due(session)
+        logger.info("Client rule mail batch | sent={} failed={} waiting={}", result["sent"], result["failed"], result["waiting"])
+        return result
+    except Exception as exc:
+        logger.warning("Client rule mail batch failed | error={}: {}", type(exc).__name__, exc)
+        return {"sent": 0, "failed": 0, "waiting": 0}
+
+
+def send_rule_mail(rule_id: str, only_unmailed: bool = True, bind=None) -> dict[str, int]:
+    """Queue a check's accounts and send the first batch: what an admin's
+    click does, in one call. Returns ``{"sent", "failed"}`` of that batch."""
+    try:
+        with Session(bind or engine) as session:
+            if get_rule(session, rule_id) is None or not mailer.is_enabled():
+                return {"sent": 0, "failed": 0}
+            request_mail(session, rule_id, only_unmailed)
+        result = send_batch(bind)
+        return {"sent": result["sent"], "failed": result["failed"]}
+    except Exception as exc:
+        logger.warning("Client rule mail failed | rule={} error={}: {}", rule_id, type(exc).__name__, exc)
+        return {"sent": 0, "failed": 0}
+
+
 def run_auto_mail(session: Session, now: datetime | None = None) -> str:
-    """The ``client_rule_mail`` job. An account is due when one of its open
-    checks has ``auto_email`` and has not been mailed (or is due again by
-    that check's ``email_repeat_days``); it then gets one mail about
+    """The ``client_rule_mail`` job: one batch per run. An account is due
+    when an admin asked for it, or when one of its open checks has
+    ``auto_email`` and has not been mailed (or is due again by that check's
+    ``email_repeat_days``: weekly, monthly, ...). It gets one mail about
     everything it has open, which stamps all of it, so the shortest repeat
     among its checks sets the pace. Deprecated checks mail nobody."""
     if not mailer.is_enabled():
         return "mail not configured"
-    now = now or utcnow()
-    due = [
-        username for username, items in open_items(session, now).items()
-        if not is_app_account(username) and any(
-            rule.auto_email and not rule.deprecated and _auto_due(row, rule.email_repeat_days, now)
-            for rule, row in items
-        )
-    ]
-    if due:
-        known = set(session.exec(select(User.username).where(User.username.in_(due))).all())  # type: ignore[attr-defined]
-        due = [username for username in due if username in known][:MAIL_BATCH]
-    sent, failed = _send_digests(session, due, now)
-    return f"accounts={len(due)} sent={sent} failed={failed}"
+    result = send_due(session, now)
+    return f"sent={result['sent']} failed={result['failed']} waiting={result['waiting']}"
 
 
 MAIL_JOB = Job(
