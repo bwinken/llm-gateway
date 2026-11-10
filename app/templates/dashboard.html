@@ -50,25 +50,23 @@
 </div>
 {% endif %}
 
-{# ── Claude Code auto mode: this account's client waits for a review no backend gives ── #}
-{% if auto_mode_notice %}
-<div id="autoModeNotice" class="gw-card p-4 mb-6 gw-anim gw-d1 text-sm"
+{# ── Client rules this account's requests matched (admin-written; app/services/client_rules.py) ── #}
+{% for n in client_notices %}
+<div id="clientNotice-{{ n.rule_id }}" class="gw-card p-4 mb-6 gw-anim gw-d1 text-sm" data-client-notice
      style="background:rgba(245,166,35,0.06);border-color:rgba(245,166,35,0.3)">
-    <div class="text-t1 font-semibold mb-0.5">Claude Code auto mode needs two settings to work here</div>
-    <div class="text-t3">
-        Your Claude Code is asking for a server-side safety check that this gateway's models do not provide, so auto mode refuses every action
-        (&ldquo;Auto mode is unavailable: its safety check does not run for this session&rdquo;).
-        Tell Claude Code to run the check itself: add these to the <code class="font-mono">env</code> block of <code class="font-mono">~/.claude/settings.json</code>, then restart Claude Code.
+    <div class="text-t1 font-semibold mb-0.5">{{ n.title }}</div>
+    {% if n.message %}<div class="text-t3 whitespace-pre-line">{{ n.message }}</div>{% endif %}
+    {% if n.patch %}
+    <div class="text-t3 mt-2">Merge these settings into <code class="font-mono">~/.claude/settings.json</code>, then restart Claude Code:</div>
+    <pre class="mt-2 p-3 rounded text-xs font-mono text-t2 overflow-x-auto" style="background:rgba(0,0,0,0.25)">{{ n.patch }}</pre>
+    <div class="mt-2 flex flex-wrap items-center gap-3">
+        <a href="/dashboard/client-rules/{{ n.rule_id }}/patch.bat" class="gw-btn gw-btn-primary text-sm px-4 py-2">Download patch (Windows)</a>
+        <span class="text-t4 text-xs">Run it once: it merges the settings above, keeps everything else and saves a backup as settings.json.bak.</span>
     </div>
-    <pre class="mt-2 p-3 rounded text-xs font-mono text-t2 overflow-x-auto" style="background:rgba(0,0,0,0.25)">"CLAUDE_CODE_AUTO_MODE_SERVER": "0",
-"CLAUDE_CODE_AUTO_MODE_MODEL": "&lt;a model name from the list below&gt;"</pre>
-    <div class="text-t3 mt-2">
-        The check then runs on that model for each action and counts toward your usage, so pick a capable one. Needs Claude Code 2.1.302 or later.
-        {% if installer_fixes_auto_mode %}On Windows, <a href="/setup" class="underline text-t1">re-running the installer</a> writes both settings for you.{% endif %}
-    </div>
-    <div class="text-t4 text-xs mt-2">Last seen {{ auto_mode_seen }}. This notice clears {{ auto_mode_window_days }} days after your last such request.</div>
+    {% endif %}
+    <div class="text-t4 text-xs mt-2">Last seen {{ n.seen_local }}{% if n.client_version %} · Claude Code {{ n.client_version }}{% endif %}. This notice clears {{ client_notice_days }} days after your last matching request.</div>
 </div>
-{% endif %}
+{% endfor %}
 
 {# ── First-time setup: only until the account has made its first request ── #}
 {% if total_reqs == 0 and today_reqs == 0 %}

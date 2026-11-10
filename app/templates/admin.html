@@ -42,7 +42,7 @@
 
 {# ── Needs attention: anomalies, servers, budgets — what to act on first ── #}
 {% set n_crit = anomalies|selectattr('severity', 'equalto', 'critical')|list|length + system_status.down|length + budget_pressure|selectattr('percent', 'ge', 100)|list|length %}
-{% set n_attention = anomalies|length + system_status.down|length + system_status.queueing|length + budget_pressure|length + auto_mode_waiting|length %}
+{% set n_attention = anomalies|length + system_status.down|length + system_status.queueing|length + budget_pressure|length + client_rule_attention|length %}
 <div class="gw-card mb-6 gw-anim gw-d1 overflow-hidden"
      style="border-color:{{ 'rgba(255,92,92,0.35)' if n_crit else 'rgba(245,166,35,0.3)' if n_attention else 'rgba(61,214,140,0.25)' }}">
     <div class="px-5 py-3 flex items-center gap-3" style="border-bottom:1px solid rgba(255,255,255,0.04);background:{{ 'rgba(255,92,92,0.06)' if n_crit else 'rgba(245,166,35,0.05)' if n_attention else 'rgba(61,214,140,0.05)' }}">
@@ -119,19 +119,15 @@
             {% endfor %}
         </div>
     </div>
-    {# Claude Code sessions whose auto mode waits for a review no backend gives #}
-    {% if auto_mode_waiting %}
-    <div id="autoModeWaiting" class="p-4" style="border-top:1px solid rgba(255,255,255,0.05)">
-        <div class="text-[11px] font-bold uppercase tracking-wider text-t3 mb-1">Claude Code auto mode not working
-            <span class="ml-1 normal-case tracking-normal font-normal text-t4">{{ auto_mode_waiting|length }} account{{ '' if auto_mode_waiting|length == 1 else 's' }} in the last {{ auto_mode_window_days }} days</span></div>
-        <div class="text-xs text-t3 mb-2">
-            Their Claude Code waits for a server-side safety check that this gateway's backends do not provide, so auto mode refuses every action.
-            Each of them sees the fix on their dashboard: set <code class="font-mono">CLAUDE_CODE_AUTO_MODE_SERVER=0</code> and <code class="font-mono">CLAUDE_CODE_AUTO_MODE_MODEL</code>. An account leaves this list {{ auto_mode_window_days }} days after its last such request.
-        </div>
+    {# Client rules with accounts currently matching #}
+    {% if client_rule_attention %}
+    <div id="clientRuleAttention" class="p-4" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <div class="text-[11px] font-bold uppercase tracking-wider text-t3 mb-2 gw-tip gw-tip-wide"
+             data-tip="Accounts whose requests matched a client rule in the last {{ client_rule_days }} days. Each of them sees the rule's notice on their dashboard. Rules, patches and mail are under Settings → Client rules.">Client rules matched</div>
         <div class="flex flex-wrap gap-1.5">
-            {% for w in auto_mode_waiting %}
-            <a href="?q={{ w.username | urlencode }}#users" class="text-xs px-2 py-1 rounded hover:bg-[rgba(255,255,255,0.06)]"
-               style="background:rgba(245,166,35,0.08);color:#f5a623" title="Last seen {{ w.seen_local }}">{{ w.display_name or w.username }}</a>
+            {% for r in client_rule_attention %}
+            <a href="#settings" onclick="setTimeout(function(){var c=document.getElementById('client-rule-{{ r.id }}');if(c){c.open=true;c.scrollIntoView({block:'center'});}},50)"
+               class="text-xs px-2 py-1 rounded hover:bg-[rgba(255,255,255,0.06)]" style="background:rgba(245,166,35,0.08);color:#f5a623">{{ r.name }} · {{ r.count }} account{{ '' if r.count == 1 else 's' }}</a>
             {% endfor %}
         </div>
     </div>
@@ -937,6 +933,197 @@ function submitExportCsv() {
     {% endif %}
 </div>
 
+{# ── Client rules: notices, settings patches, mail, Claude Code versions (app/services/client_rules.py) ── #}
+{% macro client_rule_fields(r, actions) %}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-3">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Rule name</label>
+            <input type="text" name="name" required maxlength="100" value="{{ r.name }}" placeholder="Auto mode needs client-side check" class="gw-input w-full text-sm py-1.5 px-2">
+        </div>
+        <div class="flex items-end gap-4">
+            <label class="flex items-center gap-2 text-sm text-t2"><input type="checkbox" name="enabled" {{ 'checked' if r.enabled }}> Enabled</label>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                       data-tip="Notice: the account sees the message on its dashboard. Remind: also answers the first matching request of each day with the message as an error, so it appears in the terminal; sending again works. App accounts are never reminded.">Action</label>
+                <select name="action" class="gw-input text-sm py-1.5 px-2">
+                    {% for a in actions %}<option value="{{ a }}" {{ 'selected' if a == r.action }}>{{ {'notice': 'Notice — dashboard only', 'remind': 'Remind — once a day in the terminal'}[a] }}</option>{% endfor %}
+                </select>
+            </div>
+        </div>
+    </div>
+    <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-4 mb-2 gw-tip gw-tip-wide"
+         data-tip="Checked on every Messages request (/v1/messages and its /azure, /aws twins). Every condition you fill in must hold; fill in at least one.">When a request…</div>
+    <div class="flex flex-wrap items-end gap-3">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="A top-level field of the request body, e.g. safeguards.">Has the field</label>
+            <input type="text" name="body_field" value="{{ r.body_field }}" placeholder="safeguards" class="gw-input w-40 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Claude Code's version, from the request's User-Agent. Other clients never match this condition.">Claude Code older than</label>
+            <input type="text" name="version_below" value="{{ r.version_below }}" placeholder="2.1.302" class="gw-input w-32 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Requested model aliases, comma-separated.">Asks for the model</label>
+            <input type="text" name="models" value="{{ r.models | join(', ') }}" placeholder="old-model" class="gw-input w-48 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Usernames, comma-separated. Leave this and Org codes empty for everyone.">Accounts</label>
+            <input type="text" name="usernames" value="{{ r.usernames | join(', ') }}" placeholder="everyone" class="gw-input w-44 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Org codes</label>
+            <input type="text" name="org_codes" value="{{ r.org_codes | join(', ') }}" placeholder="everyone" class="gw-input w-32 text-sm font-mono py-1.5 px-2">
+        </div>
+    </div>
+    <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-4 mb-2">Tell the account</div>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-3">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Title</label>
+            <input type="text" name="title" required maxlength="200" value="{{ r.title }}" class="gw-input w-full text-sm py-1.5 px-2">
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mt-3 mb-1.5">Message</label>
+            <textarea name="message" rows="5" maxlength="4000" class="gw-input w-full text-sm py-1.5 px-2">{{ r.message }}</textarea>
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                   data-tip='Optional. A JSON object merged into the user&apos;s ~/.claude/settings.json by the script they download: objects merge key by key, null removes a key, anything else replaces. Example: {"env": {"NAME": "value"}}. Everything else in their file is kept.'>Settings patch (JSON)</label>
+            <textarea name="patch" rows="8" spellcheck="false" placeholder='{"env": {"CLAUDE_CODE_AUTO_MODE_SERVER": "0"}}' class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ r.patch }}</textarea>
+        </div>
+    </div>
+    <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-4 mb-2">Mail</div>
+    <div class="flex flex-wrap items-end gap-4">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="Empty: the gateway's name and the title.">Subject</label>
+            <input type="text" name="email_subject" maxlength="200" value="{{ r.email_subject }}" placeholder="default" class="gw-input w-72 text-sm py-1.5 px-2">
+        </div>
+        <label class="flex items-center gap-2 text-sm text-t2 gw-tip gw-tip-wide"
+               data-tip="The gateway mails each matching account by itself, within about ten minutes of its first match."><input type="checkbox" name="auto_email" {{ 'checked' if r.auto_email }}> Mail matching accounts automatically</label>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="With automatic mail: mail an account again after this many days while it keeps matching. 0 = once only.">Repeat after days</label>
+            <input type="number" name="email_repeat_days" min="0" max="365" value="{{ r.email_repeat_days }}" class="gw-input w-24 text-sm font-mono py-1.5 px-2">
+        </div>
+    </div>
+{% endmacro %}
+<div id="client-rules" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #f5a623">
+    <div class="mb-4 max-w-3xl">
+        <h2 class="text-sm font-bold text-t2 mb-1">Client rules</h2>
+        <p class="text-xs text-t4">
+            Reach the people whose Claude Code needs a change the gateway cannot make for them. A rule picks requests by a field, a Claude Code version or a model;
+            the accounts sending them see your message on their dashboard, can download a script that patches their settings.json, and can be mailed.
+        </p>
+    </div>
+    {% if client_rules is none %}
+    <p class="text-xs text-ar">Client rules could not be loaded (has <span class="font-mono">alembic upgrade head</span> been run?).</p>
+    {% else %}
+    {% set cr = client_rules %}
+    <p class="text-xs text-t4 mb-4" id="client-rules-mail-status">
+        Mail:
+        {% if cr.mail.enabled %}<span class="text-ag">on</span> — from <span class="font-mono text-t2">{{ cr.mail.sender }}</span> via <span class="font-mono text-t2">{{ cr.mail.server }}</span>, to <span class="font-mono text-t2">&lt;account&gt;@{{ cr.mail.domain }}</span>{% if not cr.mail.public_url %} · <span class="text-t3">set <span class="font-mono">PUBLIC_BASE_URL</span> to put a dashboard link in mail</span>{% endif %}
+        {% else %}<span class="text-ar">off</span> — set {{ cr.mail.missing | join(', ') }} in <span class="font-mono">.env</span> and restart{% endif %}
+    </p>
+
+    {# Claude Code versions in use #}
+    <div class="mb-5">
+        <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2 gw-tip gw-tip-wide"
+             data-tip="Each account's newest Claude Code version, read from the User-Agent of its Messages requests in the last {{ cr.versions.days }} days.">Claude Code versions
+            <span class="ml-1 normal-case tracking-normal font-normal text-t4">{{ cr.versions.accounts }} account{{ '' if cr.versions.accounts == 1 else 's' }} in {{ cr.versions.days }} days</span></div>
+        {% if cr.versions.versions %}
+        <div class="flex flex-wrap gap-1.5" id="client-versions">
+            {% for v in cr.versions.versions %}
+            <details class="text-xs">
+                <summary class="cursor-pointer select-none px-2 py-1 rounded" style="background:rgba(255,255,255,0.04)"><span class="font-mono text-t1">{{ v.version }}</span> <span class="text-t4">· {{ v.count }}</span></summary>
+                <div class="mt-1 px-2 py-1 text-t3 font-mono max-w-md">{{ v.usernames | join(', ') }}</div>
+            </details>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-xs text-t4">No Claude Code request seen yet.</p>
+        {% endif %}
+    </div>
+
+    {# Rules #}
+    <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">Rules <span class="text-t4 font-mono">{{ cr.rules | length }}</span></div>
+    {% for r in cr.rules %}
+    <details id="client-rule-{{ r.id }}" class="mb-2 rounded" style="border:1px solid rgba(255,255,255,0.06)">
+        <summary class="cursor-pointer select-none px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span class="text-sm font-semibold {{ 'text-t1' if r.enabled else 'text-t4' }}">{{ r.name }}</span>
+            {% if not r.enabled %}<span class="gw-badge gw-badge-muted">off</span>{% endif %}
+            <span class="text-xs text-t3">{{ r.condition }}{% if not r.everyone %} · {{ (r.usernames + r.org_codes) | join(', ') }}{% endif %}</span>
+            <span class="text-xs text-t4">{{ r.action }}{% if r.auto_email %} · auto mail{% endif %}{% if r.patch %} · patch{% endif %}</span>
+            <span class="ml-auto text-xs font-mono" style="color:{{ '#f5a623' if r.hits else '' }}">{{ r.hits | length }} account{{ '' if r.hits | length == 1 else 's' }}</span>
+        </summary>
+        <div class="px-3 pb-3 pt-1">
+            <form action="/admin/client-rules/{{ r.id }}" method="POST" data-cr-form="save">
+                {{ client_rule_fields(r, cr.actions) }}
+                <div class="mt-4 flex flex-wrap items-center gap-2">
+                    <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
+                    {% if r.patch %}<a href="/admin/client-rules/{{ r.id }}/patch.bat" class="gw-btn gw-btn-ghost text-sm px-3 py-2">Download the patch script</a>{% endif %}
+                    <input type="text" name="to" value="{{ cr.my_address }}" aria-label="Test mail address" class="gw-input w-56 text-xs font-mono py-1.5 px-2 ml-auto" {{ 'disabled' if not cr.mail.enabled }}>
+                    <button type="button" data-cr-test class="gw-btn gw-btn-ghost text-sm px-3 py-2" {{ 'disabled' if not cr.mail.enabled }}>Send test mail</button>
+                    <span data-cr-test-result class="text-xs font-mono text-t4"></span>
+                </div>
+            </form>
+
+            <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-5 mb-2">Matching accounts <span class="normal-case tracking-normal font-normal text-t4">last {{ cr.window_days }} days</span></div>
+            {% if r.hits %}
+            <div class="overflow-x-auto">
+            <table class="gw-table">
+                <thead><tr><th>Account</th><th>Claude Code</th><th>First seen</th><th>Last seen</th><th>Mailed</th></tr></thead>
+                <tbody>
+                    {% for h in r.hits %}
+                    <tr>
+                        <td class="text-sm"><a href="?q={{ h.username | urlencode }}#users" class="font-mono text-t1 hover:underline">{{ h.username }}</a></td>
+                        <td class="font-mono text-xs text-t3">{{ h.version or '—' }}</td>
+                        <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ h.first_seen }}</td>
+                        <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ h.last_seen }}</td>
+                        <td class="text-xs">
+                            {% if not h.mailable %}<span class="text-t4">no mailbox</span>
+                            {% elif h.mail_error %}<span class="text-ar">{{ h.mail_error }}</span>
+                            {% elif h.mailed %}<span class="font-mono text-t3">{{ h.mailed }}</span>
+                            {% else %}<span class="text-t4">not yet</span>{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            </div>
+            {% else %}
+            <p class="text-xs text-t4">No account has matched this rule in the last {{ cr.window_days }} days.</p>
+            {% endif %}
+
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+                <form action="/admin/client-rules/{{ r.id }}/mail" method="POST" data-cr-form="mail" data-count="{{ r.unmailed }}" data-name="{{ r.name }}" class="inline">
+                    <input type="hidden" name="only_unmailed" value="on">
+                    <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-2" {{ 'disabled' if not cr.mail.enabled or not r.unmailed }}>Mail the {{ r.unmailed }} not mailed yet</button>
+                </form>
+                <form action="/admin/client-rules/{{ r.id }}/mail" method="POST" data-cr-form="mail" data-count="{{ r.mailable }}" data-name="{{ r.name }}" class="inline">
+                    <input type="hidden" name="only_unmailed" value="off">
+                    <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-2" {{ 'disabled' if not cr.mail.enabled or not r.mailable }}>Mail all {{ r.mailable }}</button>
+                </form>
+                <form action="/admin/client-rules/{{ r.id }}/delete" method="POST" data-cr-form="delete" data-name="{{ r.name }}" class="inline ml-auto">
+                    <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-2 text-ar">Delete rule</button>
+                </form>
+            </div>
+        </div>
+    </details>
+    {% else %}
+    <p class="text-xs text-t4 mb-2">No rules yet.</p>
+    {% endfor %}
+
+    <details class="mt-4 pt-4" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <summary class="cursor-pointer select-none text-sm text-ab">Add a rule</summary>
+        <form action="/admin/client-rules" method="POST" data-cr-form="add" class="mt-3">
+            {{ client_rule_fields({'name': '', 'enabled': true, 'action': 'notice', 'body_field': '', 'version_below': '', 'models': [], 'usernames': [], 'org_codes': [], 'title': '', 'message': '', 'patch': '', 'email_subject': '', 'auto_email': false, 'email_repeat_days': 0}, cr.actions) }}
+            <div class="mt-4 flex flex-wrap items-center gap-2">
+                <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Add rule</button>
+                <input type="text" name="to" value="{{ cr.my_address }}" aria-label="Test mail address" class="gw-input w-56 text-xs font-mono py-1.5 px-2 ml-auto" {{ 'disabled' if not cr.mail.enabled }}>
+                <button type="button" data-cr-test class="gw-btn gw-btn-ghost text-sm px-3 py-2" {{ 'disabled' if not cr.mail.enabled }}>Send test mail</button>
+                <span data-cr-test-result class="text-xs font-mono text-t4"></span>
+            </div>
+        </form>
+    </details>
+    {% endif %}
+</div>
+
 {# ── Site Links (support bot + install guide) ── #}
 <div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #4dd9e8">
     <div class="mb-4">
@@ -1471,6 +1658,68 @@ function submitExportCsv() {
                         if (btn) btn.disabled = false;
                     });
             });
+        });
+    })();
+
+    /* ── Client rules: forms post as JSON, then the page reloads; the test
+       mail button posts the form as it stands (saved or not). ── */
+    (function() {
+        var card = document.getElementById('client-rules');
+        if (!card) return;
+        // Enabled / auto mail travel as explicit on|off: an unchecked box is absent from FormData.
+        function formData(form) {
+            var data = new FormData(form);
+            ['enabled', 'auto_email'].forEach(function(name) {
+                var box = form.querySelector('input[type="checkbox"][name="' + name + '"]');
+                if (box) data.set(name, box.checked ? 'on' : 'off');
+            });
+            return data;
+        }
+        card.addEventListener('submit', function(e) {
+            var form = e.target, kind = form.dataset.crForm;
+            if (!kind) return;
+            e.preventDefault();
+            var ask = null;
+            if (kind === 'delete') {
+                ask = { text: 'Delete the rule "' + form.dataset.name + '" and its list of matching accounts?', okLabel: 'Delete', danger: true };
+            } else if (kind === 'mail') {
+                ask = { text: 'Send the mail of "' + form.dataset.name + '" to ' + form.dataset.count + ' account(s)?', okLabel: 'Send' };
+            } else if ((kind === 'save' || kind === 'add') && form.querySelector('select[name="action"]').value === 'remind') {
+                ask = { text: 'Remind in the terminal? The first matching request of each account each day will fail once with this message.', okLabel: 'Save' };
+            }
+            (ask ? gwConfirm(ask.text, ask) : Promise.resolve(true)).then(function(ok) {
+                if (!ok) return;
+                var btn = form.querySelector('button[type="submit"]');
+                if (btn) btn.disabled = true;
+                gwPost(form.getAttribute('action'), formData(form))
+                    .then(function(r) {
+                        if (kind === 'mail') gwToast('Sending to ' + r.queued + ' account(s). Reload in a moment to see the results.', 'ok');
+                        saveAdminScroll();
+                        setTimeout(function() { window.location.reload(); }, kind === 'mail' ? 1500 : 0);
+                    })
+                    .catch(function(err) {
+                        gwToast('Client rules — ' + err.message, 'error');
+                        if (btn) btn.disabled = false;
+                    });
+            });
+        });
+        card.addEventListener('click', function(e) {
+            var btn = e.target.closest('[data-cr-test]');
+            if (!btn) return;
+            var form = btn.closest('form'), out = form.querySelector('[data-cr-test-result]');
+            btn.disabled = true;
+            out.className = 'text-xs font-mono text-t4';
+            out.textContent = 'Sending…';
+            gwPost('/admin/client-rules/mail-test', formData(form))
+                .then(function(r) {
+                    out.className = 'text-xs font-mono ' + (r.ok ? 'text-ag' : 'text-ar');
+                    out.textContent = r.ok ? 'Sent to ' + r.to : 'Failed — ' + r.detail;
+                })
+                .catch(function(err) {
+                    out.className = 'text-xs font-mono text-ar';
+                    out.textContent = 'Failed — ' + err.message;
+                })
+                .then(function() { btn.disabled = false; });
         });
     })();
 

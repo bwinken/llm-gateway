@@ -62,7 +62,15 @@ async def lifespan(app: FastAPI):
     from app.services.anomaly_scan import SCAN_JOB
     from app.services.scheduler import job_loop
     from app.services.usage_retention import RETENTION_JOB
-    job_tasks = [asyncio.create_task(job_loop(job)) for job in (SCAN_JOB, RETENTION_JOB)]
+    from app.services import client_rules
+    job_tasks = [
+        asyncio.create_task(job_loop(job)) for job in (SCAN_JOB, RETENTION_JOB, client_rules.MAIL_JOB)
+    ]
+
+    # Client rules: this worker's copy of the enabled rules (a failed load
+    # means no notices, never a refused request).
+    await asyncio.to_thread(client_rules.refresh)
+    client_rules_task = asyncio.create_task(client_rules.refresh_loop())
 
     # API IP allowlist: load the rules before serving (an enforcing
     # allowlist with no snapshot would refuse everyone), then keep this
@@ -78,7 +86,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    for task in (health_task, lease_task, rollup_task, allowlist_task, *job_tasks):
+    for task in (health_task, lease_task, rollup_task, allowlist_task, client_rules_task, *job_tasks):
         task.cancel()
         try:
             await task

@@ -119,10 +119,6 @@ class User(SQLModel, table=True):
     # Naive UTC, like concurrency_leases (compared in SQL against naive values).
     api_key_created_at: NaiveDatetime | None = Field(default_factory=lambda: _naive_utcnow())
     api_key_last_used_at: NaiveDatetime | None = Field(default=None)
-    # Last time this account's Claude Code asked for a server-side auto mode
-    # review, which no backend here gives (app/services/auto_mode_notice.py).
-    # Drives the dashboard notice and the admin list; at most one write an hour.
-    auto_mode_server_seen_at: NaiveDatetime | None = Field(default=None)
 
 
 def issue_api_key(user: User) -> str:
@@ -322,6 +318,94 @@ class IpAllowRule(SQLModel, table=True):
     starts_at: NaiveDatetime | None = Field(default=None)
     expires_at: NaiveDatetime | None = Field(default=None)
     created_at: NaiveDatetime = Field()
+
+
+class ClientRule(SQLModel, table=True):
+    """An admin-written rule about client requests (app/services/client_rules.py).
+
+    A Messages request matches when every condition that is set holds:
+    ``body_field`` (the request body has that top-level key),
+    ``version_below`` (Claude Code, from the User-Agent, is older than this)
+    and ``models`` (the requested alias is one of them); and the account is
+    in scope (``usernames`` / ``org_codes``, both empty = everyone). A rule
+    with no condition matches nothing.
+
+    A match is recorded in ``client_rule_hits``. The account then sees
+    ``title`` / ``message`` on its dashboard with ``patch`` (a JSON object
+    merged into ``~/.claude/settings.json``) as a download; ``action`` =
+    ``remind`` also answers the first matching request of each local day
+    with the message as an error. Mail goes out when an admin sends it, or
+    by itself with ``auto_email`` (again every ``email_repeat_days``, 0 =
+    once).
+
+    ``created_by`` and the scope are usernames, not foreign keys, like
+    ``ip_allow_rules``. Timestamps are naive UTC.
+    """
+    __tablename__ = "client_rules"
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field()
+    enabled: bool = Field(default=True, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.true()))
+    body_field: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    version_below: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    models: list[str] = Field(
+        default_factory=list, sa_column=sa.Column(sa.JSON, nullable=False, server_default=sa.text("'[]'")),
+    )
+    usernames: list[str] = Field(
+        default_factory=list, sa_column=sa.Column(sa.JSON, nullable=False, server_default=sa.text("'[]'")),
+    )
+    org_codes: list[str] = Field(
+        default_factory=list, sa_column=sa.Column(sa.JSON, nullable=False, server_default=sa.text("'[]'")),
+    )
+    title: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    message: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
+    patch: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
+    action: str = Field(default="notice", sa_column=sa.Column(sa.String, nullable=False, server_default="notice"))
+    email_subject: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    auto_email: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
+    email_repeat_days: int = Field(default=0, sa_column=sa.Column(sa.Integer, nullable=False, server_default="0"))
+    created_by: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    created_at: NaiveDatetime = Field()
+    updated_at: NaiveDatetime = Field()
+
+
+class ClientRuleHit(SQLModel, table=True):
+    """One account matching one client rule: when it first and last did
+    (written at most hourly per worker), the Claude Code version it had,
+    the local day it last got the in-terminal reminder, and its mail state.
+
+    ``username`` is not a foreign key: deleting an account leaves the row,
+    and readers skip names without an account.
+    """
+    __tablename__ = "client_rule_hits"
+    __table_args__ = (sa.UniqueConstraint("rule_id", "username", name="uq_client_rule_hits_rule_user"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    rule_id: int = Field(foreign_key="client_rules.id", index=True)
+    username: str = Field()
+    client_version: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    first_seen_at: NaiveDatetime = Field()
+    last_seen_at: NaiveDatetime = Field()
+    reminded_on: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    mailed_at: NaiveDatetime | None = Field(default=None)
+    mail_attempted_at: NaiveDatetime | None = Field(default=None)
+    mail_error: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+
+
+class ClientVersion(SQLModel, table=True):
+    """Which client versions an account has used (Claude Code, read from
+    the User-Agent of its Messages requests): one row per account and
+    version, stamped at most hourly per worker. ``username`` is not a
+    foreign key."""
+    __tablename__ = "client_versions"
+    __table_args__ = (sa.UniqueConstraint("username", "client", "version", name="uq_client_versions_user_client_version"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    username: str = Field(index=True)
+    client: str = Field()
+    version: str = Field()
+    first_seen_at: NaiveDatetime = Field()
+    last_seen_at: NaiveDatetime = Field()
 
 
 class AuditLog(SQLModel, table=True):

@@ -26,9 +26,10 @@ from app.core.config import (
     get_site_links,
 )
 from app.core.database import get_session
+from app.core.logger import logger
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ, seconds_until_local_midnight
-from app.services import auto_mode_notice
+from app.services import client_rules
 from app.services.model_order import (
     catalog_key,
     positions,
@@ -429,13 +430,8 @@ def dashboard(
             owned_apps=owned_apps,
             legacy_key=is_legacy_api_key(user.api_key),
             legacy_app_keys=sum(1 for a in owned_apps if a.get("legacy_key")),
-            auto_mode_notice=auto_mode_notice.is_active(user.auto_mode_server_seen_at),
-            auto_mode_seen=(
-                user.auto_mode_server_seen_at.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
-                if user.auto_mode_server_seen_at else ""
-            ),
-            auto_mode_window_days=auto_mode_notice.WINDOW_DAYS,
-            installer_fixes_auto_mode=claude_code_available and _installer_sets_auto_mode(),
+            client_notices=_client_notices(session, user.username),
+            client_notice_days=client_rules.WINDOW_DAYS,
             server_groups=server_groups,
             claude_code_available=claude_code_available,
             azure_access=user.can_use_azure or user.is_admin,
@@ -509,15 +505,37 @@ def refresh_owned_app_key(
     return JSONResponse({"ok": True, "api_key": target.api_key})
 
 
-def _installer_sets_auto_mode() -> bool:
-    """Whether the deployed installer (the operator's copy of the example,
-    possibly older) writes the auto mode setting, so the dashboard notice
-    only recommends re-running it when that helps."""
+def _client_notices(session: Session, username: str) -> list[dict]:
+    """The client-rule notices for this account (never takes the page down)."""
     try:
-        text = (_SETUP_DIR / "install-claude-code.bat").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    return auto_mode_notice.SERVER_ENV in text
+        notices = client_rules.notices_for(session, username)
+    except Exception as exc:  # e.g. before `alembic upgrade`
+        session.rollback()
+        logger.warning("Client notices failed | user={} error={}: {}", username, type(exc).__name__, exc)
+        return []
+    for n in notices:
+        n["seen_local"] = n["seen_at"].replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+    return notices
+
+
+@router.get("/dashboard/client-rules/{rule_id}/patch.bat")
+def client_rule_patch(
+    rule_id: int,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """The Windows script that merges a rule's settings patch into the
+    user's ``~/.claude/settings.json``. Only for an account that matched
+    the rule."""
+    found = client_rules.patch_for(session, rule_id, user.username)
+    if found is None:
+        raise HTTPException(status_code=404, detail="No settings patch for this account.")
+    rule, patch = found
+    return Response(
+        content=client_rules.render_patch_bat(rule.name, patch).encode("utf-8"),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="claude-code-patch-{rule.id}.bat"'},
+    )
 
 
 @router.get("/dashboard/install-claude-code.bat")

@@ -661,6 +661,15 @@ set, and the admin panel shows the current values.
 Renders the Claude Code section with no CA-certificate tab, requires login, and
 the old `/setup/files/...` route is gone (404).
 
+### `test_client_rules.py` — client rules, settings patch, mail, Claude Code versions
+- Matching: body field, Claude Code version (other clients never match), model, scope, disabled rules; hourly write throttle; a broken store never fails a request; the cloud Messages routes are watched too.
+- Versions: recorded per account from the User-Agent; the overview counts each account under its newest version.
+- Reminder (`action = remind`): first matching request of the day is a 400 with the message, the retry passes, once a day across workers, never for app accounts.
+- Patch: only a JSON object is accepted; `merge_patch` semantics; admin text never reaches cmd.exe; the generated script's Node part is run for real against several settings files (skipped without `node`) and must equal `merge_patch`; an unreadable settings file is left alone. The PowerShell part is not run.
+- Dashboard: notice, patch text and download for a matching account only; clears after the window or when the rule is off; escaped.
+- Admin: add / edit / delete, input validation, admin-only, the card with rules, versions and the "Needs attention" entry, patch preview.
+- Mail: off until every setting is present; company-domain addresses only; failures become a summary; test mail; manual send (unmailed only / all, no app accounts, no deleted accounts); automatic job (opt-in per rule, once or every N days, window, retry after a failure, idle when unconfigured). `mailer._send_sync` is patched: no test talks to Exchange.
+
 ---
 
 ## Adding new tests

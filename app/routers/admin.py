@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from urllib.parse import urlencode
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Security
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, Request, Security
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import case, delete, update
@@ -61,6 +62,7 @@ from app.core.timeutil import LOCAL_TZ, local_month_start
 from app.models.schema import (
     AnomalyEvent,
     AppOwner,
+    ClientRule,
     IpAllowRule,
     User,
     UsageLog,
@@ -70,7 +72,7 @@ from app.models.schema import (
     legacy_api_key_clause,
     mask_api_key,
 )
-from app.services import audit, auto_mode_notice, concurrency, guardrail, ip_allowlist
+from app.services import audit, client_rules, concurrency, guardrail, ip_allowlist, mailer
 from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
@@ -464,10 +466,12 @@ def admin_page(
     # the page can lead with it instead of burying it under the analytics.
     today_totals = get_today_totals(session)
     budget_pressure = get_budget_pressure(session)
-    auto_mode_waiting = [
-        {**row, "seen_local": row["seen_at"].replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime("%m-%d %H:%M")}
-        for row in auto_mode_notice.affected(session)
-    ]
+    try:
+        client_rules_view = _client_rules_view(session, admin_user)
+    except Exception as exc:  # e.g. before `alembic upgrade`: the card says so, the page still renders
+        session.rollback()
+        logger.warning("Client rules view failed | error={}: {}", type(exc).__name__, exc)
+        client_rules_view = None
     system_status = summarize_server_status([
         {"name": alias, "alive": is_alive(route["base_url"]),
          "waiting": (get_metrics(route["base_url"]) or {}).get("waiting")}
@@ -524,8 +528,12 @@ def admin_page(
             "cloud_budget_fallback": get_cloud_budget_fallback(),
             "today_totals": today_totals,
             "budget_pressure": budget_pressure,
-            "auto_mode_waiting": auto_mode_waiting,
-            "auto_mode_window_days": auto_mode_notice.WINDOW_DAYS,
+            "client_rules": client_rules_view,
+            "client_rule_attention": [
+                {"id": r["id"], "name": r["name"], "count": len(r["hits"])}
+                for r in (client_rules_view or {}).get("rules", []) if r["enabled"] and r["hits"]
+            ],
+            "client_rule_days": client_rules.WINDOW_DAYS,
             "system_status": system_status,
             "concurrency_mode": concurrency_mode,
             "concurrency_limit": concurrency_limit,
@@ -1137,6 +1145,219 @@ async def update_guardrail(
     if _wants_json(request):
         return JSONResponse({"ok": True, "guardrail": _guardrail_view()})
     return RedirectResponse(url="/admin", status_code=303)
+
+
+# ── Client rules (app/services/client_rules.py) ──
+
+def _client_rule_view(session: Session, rule: ClientRule) -> dict:
+    rows = client_rules.hits(session, rule.id)
+    mailable = {h.username for h in client_rules.mailable(session, rows)}
+    return {
+        "id": rule.id, "name": rule.name, "enabled": rule.enabled,
+        "body_field": rule.body_field, "version_below": rule.version_below,
+        "models": list(rule.models or []), "usernames": list(rule.usernames or []),
+        "org_codes": list(rule.org_codes or []), "title": rule.title, "message": rule.message,
+        "patch": rule.patch, "action": rule.action, "email_subject": rule.email_subject,
+        "auto_email": rule.auto_email, "email_repeat_days": rule.email_repeat_days,
+        "created_by": rule.created_by, "condition": client_rules.condition_text(rule),
+        "everyone": not rule.usernames and not rule.org_codes,
+        "hits": [
+            {
+                "username": h.username, "version": h.client_version,
+                "first_seen": _local_label(h.first_seen_at), "last_seen": _local_label(h.last_seen_at),
+                "mailed": _local_label(h.mailed_at), "mail_error": h.mail_error,
+                "mailable": h.username in mailable,
+            }
+            for h in rows
+        ],
+        "mailable": len(mailable),
+        "unmailed": sum(1 for h in rows if h.username in mailable and h.mailed_at is None),
+    }
+
+
+def _client_rules_view(session: Session, admin_user: User) -> dict:
+    rules = session.exec(select(ClientRule).order_by(ClientRule.id)).all()
+    return {
+        "rules": [_client_rule_view(session, r) for r in rules],
+        "versions": client_rules.version_overview(session),
+        "mail": mailer.status(),
+        "my_address": mailer.address_for(admin_user.username),
+        "actions": client_rules.ACTIONS,
+        "window_days": client_rules.WINDOW_DAYS,
+    }
+
+
+def _client_rule_form(
+    name: str = Form(""),
+    enabled: str = Form(""),
+    body_field: str = Form(""),
+    version_below: str = Form(""),
+    models: str = Form(""),
+    usernames: str = Form(""),
+    org_codes: str = Form(""),
+    title: str = Form(""),
+    message: str = Form(""),
+    patch: str = Form(""),
+    action: str = Form("notice"),
+    email_subject: str = Form(""),
+    auto_email: str = Form(""),
+    email_repeat_days: str = Form("0"),
+) -> dict:
+    return {
+        "name": name, "enabled": enabled == "on", "body_field": body_field, "version_below": version_below,
+        "models": models, "usernames": usernames, "org_codes": org_codes, "title": title, "message": message,
+        "patch": patch, "action": action, "email_subject": email_subject, "auto_email": auto_email == "on",
+        "email_repeat_days": email_repeat_days,
+    }
+
+
+def _client_rule_or_404(session: Session, rule_id: int) -> ClientRule:
+    rule = session.get(ClientRule, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    return rule
+
+
+@router.post("/client-rules")
+def add_client_rule(
+    request: Request,
+    form: dict = Depends(_client_rule_form),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Add a client rule (admin panel → Client rules). Takes effect in this
+    worker at once, in the others within ``client_rules.REFRESH_S`` seconds."""
+    try:
+        rule = client_rules.save_rule(session, client_rules.clean_fields(session, form), created_by=admin_user.username)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    client_rules.refresh()
+    logger.info(
+        "Client rule added | id={} name={!r} when={} action={} admin={}",
+        rule.id, rule.name, client_rules.condition_text(rule), rule.action, admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "id": rule.id})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/client-rules/mail-test")
+def test_client_rule_mail(
+    form: dict = Depends(_client_rule_form),
+    to: str = Form(""),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+):
+    """Send the mail of the rule as it stands in the form (saved or not) to
+    one address, the admin's own by default, so the Exchange settings and
+    the wording can be checked before anyone else gets it. Only addresses
+    of the company domain are accepted."""
+    if not mailer.is_enabled():
+        raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
+    to = to.strip() or mailer.address_for(admin_user.username)
+    if not mailer.in_company_domain(to):
+        raise HTTPException(status_code=400, detail=f"Test mail goes to @{mailer.settings()['domain']} addresses only.")
+    title = str(form["title"]).strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Give the notice a title first.")
+    try:
+        patch = client_rules.format_patch(client_rules.parse_patch(form["patch"]))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    draft = SimpleNamespace(
+        name=str(form["name"]).strip() or "test", title=title, message=str(form["message"]).strip(),
+        patch=patch, email_subject=str(form["email_subject"]).strip(),
+    )
+    subject, body = client_rules.render_mail(draft, admin_user.username)
+    ok, error = mailer.send(to, "[TEST] " + subject, body)
+    audit.note(mail_test_to=to, mail_test_ok=ok)
+    return JSONResponse({"ok": ok, "to": to, "detail": error})
+
+
+@router.post("/client-rules/{rule_id}")
+def edit_client_rule(
+    rule_id: int,
+    request: Request,
+    form: dict = Depends(_client_rule_form),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Save a client rule's conditions, notice, patch, action and mail settings."""
+    rule = _client_rule_or_404(session, rule_id)
+    try:
+        rule = client_rules.save_rule(session, client_rules.clean_fields(session, form), rule=rule)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    client_rules.refresh()
+    logger.info(
+        "Client rule saved | id={} name={!r} enabled={} when={} action={} auto_email={} admin={}",
+        rule.id, rule.name, rule.enabled, client_rules.condition_text(rule), rule.action, rule.auto_email,
+        admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "id": rule.id})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/client-rules/{rule_id}/delete")
+def delete_client_rule(
+    rule_id: int,
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Delete a client rule and its record of who matched it."""
+    rule = _client_rule_or_404(session, rule_id)
+    name = rule.name
+    client_rules.delete_rule(session, rule)
+    client_rules.refresh()
+    logger.info("Client rule deleted | id={} name={!r} admin={}", rule_id, name, admin_user.username)
+    audit.note(rule_name=name)
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "deleted": rule_id})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/client-rules/{rule_id}/mail")
+def send_client_rule_mail(
+    rule_id: int,
+    request: Request,
+    background: BackgroundTasks,
+    only_unmailed: str = Form("on"),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Mail the accounts currently matching a rule: those not mailed yet
+    (default) or all of them. Sending runs after this reply; each account's
+    outcome shows in the rule's list."""
+    rule = _client_rule_or_404(session, rule_id)
+    if not mailer.is_enabled():
+        raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
+    unmailed_only = only_unmailed == "on"
+    queued = len(client_rules.mail_targets(session, rule.id, unmailed_only))
+    if queued:
+        background.add_task(client_rules.send_rule_mail, rule.id, unmailed_only)
+    logger.info(
+        "Client rule mail queued | id={} name={!r} accounts={} only_unmailed={} admin={}",
+        rule.id, rule.name, queued, unmailed_only, admin_user.username,
+    )
+    audit.note(rule_name=rule.name, mail_queued=queued)
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "queued": queued})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.get("/client-rules/{rule_id}/patch.bat")
+def preview_client_rule_patch(rule_id: int, session: Session = Depends(get_session)):
+    """The patch script a matching account downloads, for the admin to check."""
+    found = client_rules.patch_for(session, rule_id, None)
+    if found is None:
+        raise HTTPException(status_code=404, detail="This rule has no settings patch.")
+    rule, patch = found
+    return Response(
+        content=client_rules.render_patch_bat(rule.name, patch).encode("utf-8"),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="claude-code-patch-{rule.id}.bat"'},
+    )
 
 
 _GUARDRAIL_TEST_TEXT = "Hello! Can you help me write a short poem about the sea?"
