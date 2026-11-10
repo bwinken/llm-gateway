@@ -18,10 +18,12 @@ Retiring a check: set ``retired`` to the reason. It is then no longer
 evaluated or shown, its id stays taken, and its recorded violations stay in
 the database. Don't delete the entry.
 
-What an admin can change per check (admin panel → Client rules, stored in
-``client_rule_settings``) is everything except the detection: on / off, the
-action, the wording, the settings patch, mail, and the one optional
-parameter a check declares (``param_label``).
+Everything a check decides with is here, in code: thresholds such as
+``MIN_CLAUDE_CODE_VERSION`` are constants in this file, not settings, so
+the database never holds any part of a rule's judgment. It holds the
+violations (by id) and, per check, how its accounts are told (admin panel →
+Client rules, ``client_rule_settings``): on / off, the action, the wording,
+the settings patch and mail.
 """
 
 from __future__ import annotations
@@ -45,7 +47,6 @@ class Facts:
     scheme: str         # "http" or "https", as the client connected
     azure_access: bool  # the account may use Azure models (admins: always)
     aws_access: bool    # the account may use AWS Bedrock models (admins: always)
-    param: str          # the check's parameter as the admin set it (or its default)
 
 
 @dataclass(frozen=True)
@@ -62,10 +63,6 @@ class Check:
     env_azure: str = ""
     env_aws: str = ""
     enabled: bool = False                # on before an admin has touched it?
-    param_label: str = ""                # set when the check takes a parameter
-    param_help: str = ""
-    param_default: str = ""
-    param_pattern: str = ""              # a regex a non-empty parameter must match
     retired: str = ""                    # non-empty: why it was retired
 
 
@@ -77,8 +74,11 @@ def version_key(version: str) -> tuple[int, ...]:
         return ()
 
 
-def _names(text: str) -> set[str]:
-    return {name for name in re.split(r"[,\s]+", text or "") if name}
+# ── Thresholds (part of the judgment, so they live here) ──
+
+# CC003: Claude Code older than this is out of date. 2.1.302 is the first
+# version that honors CLAUDE_CODE_AUTO_MODE_MODEL.
+MIN_CLAUDE_CODE_VERSION = "2.1.302"
 
 
 # ── Detection ──
@@ -94,8 +94,8 @@ def _plain_http(f: Facts) -> bool:
 
 
 def _outdated_claude_code(f: Facts) -> bool:
-    minimum, have = version_key(f.param), version_key(f.version)
-    return bool(minimum and have and have < minimum)
+    have = version_key(f.version)
+    return bool(have) and have < version_key(MIN_CLAUDE_CODE_VERSION)
 
 
 def _unknown_model(f: Facts) -> bool:
@@ -116,10 +116,6 @@ def _cloud_model_without_access(f: Facts) -> bool:
     if f.model in config.get_bedrock_models_snapshot():
         return not f.aws_access
     return False
-
-
-def _retiring_model(f: Facts) -> bool:
-    return bool(f.model) and f.model in _names(f.param)
 
 
 # ── The checks ──
@@ -162,14 +158,16 @@ CHECKS: tuple[Check, ...] = (
     Check(
         id="CC003",
         name="Claude Code is out of date",
-        description="Claude Code is older than the minimum version below. Other clients are never listed.",
+        description=(
+            f"Claude Code is older than {MIN_CLAUDE_CODE_VERSION} (MIN_CLAUDE_CODE_VERSION in client_checks.py). "
+            "Other clients are never listed."
+        ),
         detect=_outdated_claude_code,
         title="Please update Claude Code",
-        message="Your Claude Code is older than the version this gateway expects. Run the installer again to update it.",
-        param_label="Minimum version",
-        param_help="Claude Code versions lower than this are listed, e.g. 2.1.302.",
-        param_default="2.1.302",
-        param_pattern=r"^[vV]?\d+(\.\d+){0,3}$",
+        message=(
+            f"Your Claude Code is older than {MIN_CLAUDE_CODE_VERSION}, the version this gateway expects. "
+            "Run the installer again to update it."
+        ),
     ),
     Check(
         id="CC004",
@@ -199,16 +197,6 @@ CHECKS: tuple[Check, ...] = (
             "You selected a cloud model your account cannot use, so a local model answers instead. "
             "Pick a model from your dashboard's list, or ask an administrator for cloud access."
         ),
-    ),
-    Check(
-        id="CC006",
-        name="Uses a model that is being retired",
-        description="The requested model is one of the names below. Lists nobody until you name at least one.",
-        detect=_retiring_model,
-        title="The model you use is being retired",
-        message="A model you use will be removed from this gateway. Apply the settings below to move to its replacement.",
-        param_label="Models being retired",
-        param_help="Model names, comma-separated.",
     ),
 )
 

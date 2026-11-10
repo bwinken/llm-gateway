@@ -327,19 +327,19 @@ class ClientRuleSetting(SQLModel, table=True):
     (``rule_id``, e.g. ``CC001``) and its default wording and patch. A row
     here exists only once an admin has saved that check's form, and then
     holds everything the form has: on / off, the action (``notice`` or
-    ``remind``), the check's parameter, the notice text, the settings patch
+    ``remind``), the notice text, the settings patch
     (environment variables for the ``env`` block of settings.json, as JSON:
     the base for every account and what Azure / AWS accounts get on top) and
     mail (``auto_email``, again every ``email_repeat_days``, 0 = once).
     No row means the check's defaults. A row whose check was retired or
-    removed from the code is ignored.
+    removed from the code is ignored. Nothing here is part of a check's
+    judgment: thresholds are constants in the code too.
     """
     __tablename__ = "client_rule_settings"
 
     rule_id: str = Field(primary_key=True)
     enabled: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
     action: str = Field(default="notice", sa_column=sa.Column(sa.String, nullable=False, server_default="notice"))
-    param: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     title: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     message: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
     patch: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))

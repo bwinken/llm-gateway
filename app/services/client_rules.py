@@ -5,9 +5,9 @@ notice which accounts send requests of a certain kind and reach those people:
 
 - **Checks** are code (``client_checks.CHECKS``), each with a violation id
   (``CC001``, ...). An admin does not write conditions; per check they set
-  on / off, the action, the wording, the settings patch, mail and the
-  check's one parameter (``client_rule_settings``; no row = the defaults
-  in code).
+  on / off, the action, the wording, the settings patch and mail
+  (``client_rule_settings``; no row = the defaults in code). Nothing a
+  check decides with is in the database.
 - **Violation** (``client_violations``): an account tripped an enabled
   check. For ``WINDOW_DAYS`` after its last one the account sees the notice
   on its dashboard, with the patch (environment variables for the ``env``
@@ -361,7 +361,6 @@ class Rule:
     check: Check
     enabled: bool
     action: str
-    param: str
     title: str
     message: str
     patch: str          # stored form (JSON), like the columns
@@ -389,14 +388,14 @@ def _default_patch(lines: str) -> str:
 def _rule(check: Check, row: ClientRuleSetting | None) -> Rule:
     if row is None:
         return Rule(
-            check=check, enabled=check.enabled, action="notice", param=check.param_default,
+            check=check, enabled=check.enabled, action="notice",
             title=check.title, message=check.message, patch=_default_patch(check.env),
             patch_azure=_default_patch(check.env_azure), patch_aws=_default_patch(check.env_aws),
             email_subject="", auto_email=False, email_repeat_days=0, customized=False, updated_by="",
         )
     return Rule(
         check=check, enabled=bool(row.enabled), action=row.action if row.action in ACTIONS else "notice",
-        param=row.param or "", title=row.title or check.title, message=row.message or "",
+        title=row.title or check.title, message=row.message or "",
         patch=row.patch or "", patch_azure=row.patch_azure or "", patch_aws=row.patch_aws or "",
         email_subject=row.email_subject or "", auto_email=bool(row.auto_email),
         email_repeat_days=int(row.email_repeat_days or 0), customized=True, updated_by=row.updated_by or "",
@@ -537,7 +536,7 @@ def _reminder_response(rule: Rule) -> JSONResponse:
 
 def _violated(rule: Rule, facts: dict[str, Any]) -> bool:
     try:
-        return bool(rule.check.detect(Facts(param=rule.param, **facts)))
+        return bool(rule.check.detect(Facts(**facts)))
     except Exception as exc:  # a broken check finds nothing; it never breaks a request
         if _due(("err", rule.id)):
             logger.warning("Client check {} failed | error={}: {}", rule.id, type(exc).__name__, exc)
@@ -604,13 +603,8 @@ async def observe_request(request: Any, user: User) -> JSONResponse | None:
 
 # ── Admin: settings of a check ──
 
-def clean_fields(check: Check, form: dict[str, Any]) -> dict[str, Any]:
-    """Validate an admin's form for ``check``. Returns column values; raises ValueError."""
-    param = str(form.get("param") or "").strip()
-    if not check.param_label:
-        param = ""
-    elif len(param) > 500 or (param and check.param_pattern and not re.match(check.param_pattern, param)):
-        raise ValueError(f"{check.param_label}: {check.param_help or 'not a valid value.'}")
+def clean_fields(form: dict[str, Any]) -> dict[str, Any]:
+    """Validate an admin's form for a check. Returns column values; raises ValueError."""
     title = str(form.get("title") or "").strip()
     if not title or len(title) > 200:
         raise ValueError("Give the notice a title (200 characters at most).")
@@ -627,7 +621,7 @@ def clean_fields(check: Check, form: dict[str, Any]) -> dict[str, Any]:
     if not 0 <= repeat <= 365:
         raise ValueError("Repeat days must be between 0 and 365.")
     return {
-        "enabled": bool(form.get("enabled")), "action": action, "param": param, "title": title, "message": message,
+        "enabled": bool(form.get("enabled")), "action": action, "title": title, "message": message,
         "patch": dump_env(parse_env(str(form.get("patch") or ""))),
         "patch_azure": dump_env(parse_env(str(form.get("patch_azure") or ""))),
         "patch_aws": dump_env(parse_env(str(form.get("patch_aws") or ""))),

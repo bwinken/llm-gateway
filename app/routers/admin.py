@@ -1154,7 +1154,6 @@ def _client_rule_view(session: Session, rule) -> dict:
     check = rule.check
     return {
         "id": rule.id, "name": rule.name, "description": check.description, "enabled": rule.enabled,
-        "param_label": check.param_label, "param_help": check.param_help, "param": rule.param,
         "title": rule.title, "message": rule.message,
         "patch": client_rules.env_lines(client_rules.load_env(rule.patch)),
         "patch_azure": client_rules.env_lines(client_rules.load_env(rule.patch_azure)),
@@ -1191,7 +1190,6 @@ def _client_rules_view(session: Session, admin_user: User) -> dict:
 def _client_rule_form(
     enabled: str = Form(""),
     action: str = Form("notice"),
-    param: str = Form(""),
     title: str = Form(""),
     message: str = Form(""),
     patch: str = Form(""),
@@ -1202,7 +1200,7 @@ def _client_rule_form(
     email_repeat_days: str = Form("0"),
 ) -> dict:
     return {
-        "enabled": enabled == "on", "action": action, "param": param, "title": title, "message": message,
+        "enabled": enabled == "on", "action": action, "title": title, "message": message,
         "patch": patch, "patch_azure": patch_azure, "patch_aws": patch_aws,
         "email_subject": email_subject, "auto_email": auto_email == "on",
         "email_repeat_days": email_repeat_days,
@@ -1237,7 +1235,7 @@ def test_client_rule_mail(
     if not mailer.in_company_domain(to):
         raise HTTPException(status_code=400, detail=f"Test mail goes to @{mailer.settings()['domain']} addresses only.")
     try:
-        values = client_rules.clean_fields(rule.check, form)
+        values = client_rules.clean_fields(form)
         draft = SimpleNamespace(id=rule.id, **values)
         env = client_rules.effective_env(draft, *client_rules.audience_flags(audience.strip().lower() or "local"))
     except ValueError as exc:
@@ -1256,21 +1254,21 @@ def save_client_rule(
     admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
 ):
-    """Save a check's settings: on / off, action, parameter, notice, patch
-    and mail. What the check detects is code and is not editable. Takes
+    """Save a check's settings: on / off, action, notice, patch and mail.
+    What the check detects, thresholds included, is code and not editable. Takes
     effect in this worker at once, in the others within
     ``client_rules.REFRESH_S`` seconds."""
     rule = _client_rule_or_404(session, rule_id)
     try:
         rule = client_rules.save_settings(
-            session, rule.check, client_rules.clean_fields(rule.check, form), updated_by=admin_user.username,
+            session, rule.check, client_rules.clean_fields(form), updated_by=admin_user.username,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     client_rules.refresh()
     logger.info(
-        "Client rule saved | id={} enabled={} action={} param={!r} auto_email={} admin={}",
-        rule.id, rule.enabled, rule.action, rule.param, rule.auto_email, admin_user.username,
+        "Client rule saved | id={} enabled={} action={} auto_email={} admin={}",
+        rule.id, rule.enabled, rule.action, rule.auto_email, admin_user.username,
     )
     if _wants_json(request):
         return JSONResponse({"ok": True, "id": rule.id})

@@ -40,7 +40,6 @@ HTTP = "CC002"
 OUTDATED = "CC003"
 UNKNOWN_MODEL = "CC004"
 NO_CLOUD_ACCESS = "CC005"
-RETIRING = "CC006"
 
 
 def _now() -> datetime:
@@ -52,7 +51,7 @@ def _configure(db_session, rule_id: str, **kw) -> client_rules.Rule:
     its current ones), and load them into this worker."""
     rule = client_rules.get_rule(db_session, rule_id)
     values = dict(
-        enabled=True, action=rule.action, param=rule.param, title=rule.title, message=rule.message,
+        enabled=True, action=rule.action, title=rule.title, message=rule.message,
         patch=rule.patch, patch_azure=rule.patch_azure, patch_aws=rule.patch_aws,
         email_subject=rule.email_subject, auto_email=rule.auto_email, email_repeat_days=rule.email_repeat_days,
     )
@@ -121,7 +120,7 @@ def mail_on(monkeypatch):
 
 
 def _facts(**kw) -> client_checks.Facts:
-    values = dict(body={}, model="", version="", scheme="https", azure_access=False, aws_access=False, param="")
+    values = dict(body={}, model="", version="", scheme="https", azure_access=False, aws_access=False)
     values.update(kw)
     return client_checks.Facts(**values)
 
@@ -131,7 +130,7 @@ class TestRegistry:
         ids = [c.id for c in client_checks.CHECKS]
         assert len(ids) == len(set(ids)) and all(i.startswith("CC") and len(i) == 5 for i in ids)
         # Never renumber: these ids are in the database and in mail people received.
-        assert ids[:6] == ["CC001", "CC002", "CC003", "CC004", "CC005", "CC006"]
+        assert ids[:5] == ["CC001", "CC002", "CC003", "CC004", "CC005"]
 
     def test_every_check_can_tell_its_user_something(self):
         for check in client_checks.CHECKS:
@@ -169,10 +168,11 @@ class TestChecks:
 
     def test_cc003_outdated_claude_code(self):
         detect = client_checks.BY_ID[OUTDATED].detect
-        assert detect(_facts(version="2.1.99", param="2.1.302"))
-        assert not detect(_facts(version="2.1.302", param="2.1.302"))
-        assert not detect(_facts(version="", param="2.1.302"))          # other clients are never listed
-        assert not detect(_facts(version="2.1.99", param=""))
+        with patch.object(client_checks, "MIN_CLAUDE_CODE_VERSION", "2.1.302"):
+            assert detect(_facts(version="2.1.99")) and detect(_facts(version="2.0"))
+            assert not detect(_facts(version="2.1.302")) and not detect(_facts(version="2.2.0"))
+            assert not detect(_facts(version=""))          # other clients are never listed
+        assert client_checks.version_key(client_checks.MIN_CLAUDE_CODE_VERSION)   # the constant is a version
 
     def test_cc004_unknown_model(self):
         detect = client_checks.BY_ID[UNKNOWN_MODEL].detect
@@ -187,11 +187,6 @@ class TestChecks:
         assert not detect(_facts(model="bedrock-claude", aws_access=True))
         assert detect(_facts(model="bedrock-claude", azure_access=True))      # the wrong cloud does not help
         assert not detect(_facts(model="test-llm")) and not detect(_facts(model="nope"))
-
-    def test_cc006_retiring_model(self):
-        detect = client_checks.BY_ID[RETIRING].detect
-        assert detect(_facts(model="old-a", param="old-a, old-b")) and detect(_facts(model="old-b", param="old-a old-b"))
-        assert not detect(_facts(model="test-llm", param="old-a")) and not detect(_facts(model="old-a", param=""))
 
 
 class TestVersionParsing:
@@ -239,13 +234,23 @@ class TestRequestPath:
             assert client.post("http://testserver/v1/messages", json=body, headers=sneaky).status_code == 200
         assert _violators(db_session, HTTP) == ["testuser"]
 
-    def test_the_admins_parameter_reaches_the_check(self, client, db_session, test_user):
-        _configure(db_session, OUTDATED, param="2.1.200")
-        _messages(client)                                           # 2.1.280 is new enough for 2.1.200
-        assert _violators(db_session, OUTDATED) == []
-        _configure(db_session, OUTDATED, param="2.1.302")
-        _messages(client)
+    def test_thresholds_are_code_not_settings(self, client, db_session, test_user):
+        """The minimum version is a constant in client_checks.py; the settings
+        row holds nothing a check decides with."""
+        _configure(db_session, OUTDATED)
+        with patch.object(client_checks, "MIN_CLAUDE_CODE_VERSION", "2.1.200"):
+            _messages(client)                                       # 2.1.280 is new enough for 2.1.200
+            assert _violators(db_session, OUTDATED) == []
+        client_rules.reset()
+        client_rules.refresh()
+        with patch.object(client_checks, "MIN_CLAUDE_CODE_VERSION", "2.1.302"):
+            _messages(client)
         assert _violators(db_session, OUTDATED) == ["testuser"]
+        columns = set(ClientRuleSetting.__table__.columns.keys())
+        assert columns == {
+            "rule_id", "enabled", "action", "title", "message", "patch", "patch_azure", "patch_aws",
+            "email_subject", "auto_email", "email_repeat_days", "updated_by", "updated_at",
+        }
 
     def test_access_flags_reach_the_check(self, client, db_session, test_user):
         _configure(db_session, NO_CLOUD_ACCESS)
@@ -546,12 +551,11 @@ class TestAdminSettings:
 
     def test_what_a_check_detects_is_not_in_the_form(self, client, db_session, admin_user, test_user):
         """Posting condition-like fields changes nothing: detection is code."""
-        form = {**_FORM, "body_field": "anything", "plain_http": "on", "param": "ignored: CC001 takes no parameter"}
+        form = {**_FORM, "body_field": "anything", "plain_http": "on", "param": "9.9.9", "version_below": "9.9.9"}
         assert client.post(f"/admin/client-rules/{AUTO}", data=form, headers=_admin(admin_user)).status_code == 200
-        db_session.expire_all()
-        assert client_rules.get_rule(db_session, AUTO).param == ""
-        _messages(client, url="http://testserver/v1/messages")
-        assert _violators(db_session, AUTO) == []
+        assert client.post(f"/admin/client-rules/{OUTDATED}", data=form, headers=_admin(admin_user)).status_code == 200
+        _messages(client, url="http://testserver/v1/messages", ua="claude-cli/9.0.0 (external, cli)")
+        assert _violators(db_session, AUTO) == [] and _violators(db_session, OUTDATED) == []
 
     @pytest.mark.parametrize("rule_id, change, message", [
         (AUTO, {"patch": "{broken"}, "not valid JSON"),
@@ -560,7 +564,6 @@ class TestAdminSettings:
         (AUTO, {"action": "block"}, "Action"),
         (AUTO, {"title": ""}, "title"),
         (AUTO, {"email_repeat_days": "999"}, "between 0 and 365"),
-        (OUTDATED, {"param": "latest"}, "Minimum version"),
     ])
     def test_bad_input_is_refused(self, client, db_session, admin_user, rule_id, change, message):
         resp = client.post(f"/admin/client-rules/{rule_id}", data={**_FORM, **change}, headers=_admin(admin_user))
@@ -590,7 +593,8 @@ class TestAdminSettings:
         assert 'id="client-versions"' in body and "2.1.280" in body
         assert 'id="clientRuleAttention"' in body and "1 account" in body
         assert "?q=testuser#users" in body
-        assert 'name="param"' in body and "Minimum version" in body       # CC003 declares a parameter
+        assert 'name="param"' not in body                                  # thresholds are not editable
+        assert client_checks.MIN_CLAUDE_CODE_VERSION in body                 # but the admin can see them
 
     def test_admin_can_preview_each_audiences_script(self, client, db_session, admin_user):
         _configure(db_session, AUTO, patch="", patch_aws='{"MODEL": "claude-m"}')

@@ -178,18 +178,17 @@ The gateway cannot change a user's Claude Code settings. Client rules are how it
 
 **Checks are code** (`client_checks.CHECKS`). Each has a violation id that never changes, a `detect(Facts)` function, a name and description for the admin, and default wording and patch for the user. A field name such as `safeguards` is an implementation detail of one check, not something an admin has to know.
 
-| Id | Finds | Parameter | On by default |
-|---|---|---|---|
-| `CC001` | Auto mode waiting for a server-side check (request has `safeguards`) | | yes |
-| `CC002` | Requests arriving over `http://` (`request.url.scheme`, which uvicorn sets from nginx's `X-Forwarded-Proto` for trusted peers; never the header read directly). Seen only while nginx serves the API on port 80 | | no |
-| `CC003` | Claude Code older than a minimum version (from the `claude-cli/<version>` User-Agent; other clients never trip it) | minimum version | no |
-| `CC004` | A model name configured nowhere, which the gateway silently answers with a fallback model (typically Claude Code's background-task default) | | no |
-| `CC005` | An Azure / AWS model requested by an account without that access, answered by a local model | | no |
-| `CC006` | A model being retired | the model names | no |
+| Id | Finds | On by default |
+|---|---|---|
+| `CC001` | Auto mode waiting for a server-side check (request has `safeguards`) | yes |
+| `CC002` | Requests arriving over `http://` (`request.url.scheme`, which uvicorn sets from nginx's `X-Forwarded-Proto` for trusted peers; never the header read directly). Seen only while nginx serves the API on port 80 | no |
+| `CC003` | Claude Code older than `MIN_CLAUDE_CODE_VERSION`, a constant in `client_checks.py` (from the `claude-cli/<version>` User-Agent; other clients never trip it) | no |
+| `CC004` | A model name configured nowhere, which the gateway silently answers with a fallback model (typically Claude Code's background-task default) | no |
+| `CC005` | An Azure / AWS model requested by an account without that access, answered by a local model | no |
 
-`Facts` is what a check may look at: the parsed body (whether a field is there, and `model`; never the conversation), the Claude Code version, the scheme, the account's Azure / AWS access and the check's parameter. To add a check, append a `Check` with the next unused id and a test in `TestChecks`. To retire one, set `retired`: it is no longer evaluated or shown, its id stays taken and its violations stay in the database. Ids are validated at import (format, uniqueness).
+`Facts` is what a check may look at: the parsed body (whether a field is there, and `model`; never the conversation), the Claude Code version, the scheme and the account's Azure / AWS access. Everything a check decides with is in the code, thresholds included: the database holds no part of a rule's judgment, only which account violated which id and how each check's accounts are told. To add a check, append a `Check` with the next unused id and a test in `TestChecks`. To retire one, set `retired`: it is no longer evaluated or shown, its id stays taken and its violations stay in the database. Ids are validated at import (format, uniqueness).
 
-**What an admin sets per check** (`client_rule_settings`, keyed by the id; no row = the defaults in code, and *Reset to defaults* deletes the row): on / off, the action, the check's parameter, title and message, the settings patch, and mail. Nothing in the form changes what a check detects.
+**What an admin sets per check** (`client_rule_settings`, keyed by the id; no row = the defaults in code, and *Reset to defaults* deletes the row): on / off, the action, title and message, the settings patch, and mail. Nothing in the form changes what a check detects.
 
 **Request path.** `observe_request` runs at the top of the three Messages routes (`/v1/messages`, `/azure/v1/messages`, `/aws/v1/messages`). It reads a per-worker snapshot of the enabled checks with their settings (reloaded every `REFRESH_S` = 15 s and after each admin change) and writes at most once an hour per account per worker: the Claude Code version into `client_versions` (one row per account and version) and each violation into `client_violations` (`rule_id` = the check's id, first / last seen, version). Any failure is logged and the request proceeds, and a check that raises finds nothing without affecting the others.
 

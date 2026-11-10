@@ -995,12 +995,6 @@ function submitExportCsv() {
                             {% for a in cr.actions %}<option value="{{ a }}" {{ 'selected' if a == r.action }}>{{ {'notice': 'Notice — dashboard only', 'remind': 'Remind — once a day in the terminal'}[a] }}</option>{% endfor %}
                         </select>
                     </div>
-                    {% if r.param_label %}
-                    <div>
-                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="{{ r.param_help }}">{{ r.param_label }}</label>
-                        <input type="text" name="param" value="{{ r.param }}" maxlength="500" class="gw-input w-64 text-sm font-mono py-1.5 px-2">
-                    </div>
-                    {% endif %}
                 </div>
                 <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-4 mb-2">Tell the account</div>
                 <div class="max-w-3xl">
