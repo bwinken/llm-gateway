@@ -56,16 +56,23 @@ from app.core import config
 from app.core.config import APP_TITLE
 from app.core.database import engine
 from app.core.logger import logger
-from app.core.timeutil import local_today
+from app.core.timeutil import LOCAL_TZ, local_today
 from app.models.schema import ClientRuleSetting, ClientVersion, ClientViolation, User, is_app_account
 from app.services import client_checks, mailer
 from app.services.client_checks import Check, Facts, version_key
 from app.services.scheduler import Job, env_seconds
 
 # How long after an account's last violation its notice (and its place in
-# the admin lists and mail runs) stays. A fixed client stops tripping the
-# check, so a notice clears by itself.
-WINDOW_DAYS = 7
+# the admin lists and mail runs) stays. An account that has not tripped a
+# check for this long, because it fixed its settings without saying so or
+# stopped using Claude Code, is left alone: no notice, no mail. When it
+# trips the check again it starts over as a new case and is told again.
+WINDOW_DAYS = 15
+
+# The monthly reminder (when an admin turned it on): on this day of the
+# month, from this hour, Asia/Taipei.
+MONTHLY_DAY = 1
+MONTHLY_HOUR = 9
 # One write per account per worker per hour, per check and per version.
 RESOLUTION_S = 3600
 # Other workers pick up a settings change within this long.
@@ -628,6 +635,16 @@ def _touch_violation(session: Session, rule_id: str, username: str, version: str
     values: dict[str, Any] = {"last_seen_at": now}
     if version:
         values["client_version"] = version
+    # Back after dropping out of the window (the account had stopped, or
+    # stopped using Claude Code): a new case. What was mailed, asked for or
+    # reported fixed belongs to the old one, so the account is told again.
+    fresh = {"mailed_at": None, "mail_attempted_at": None, "mail_error": "", "mail_requested_at": None, "resolved_at": None}
+    gone_since = now - timedelta(days=WINDOW_DAYS)
+    if session.execute(
+        update(ClientViolation).where(*where, ClientViolation.last_seen_at < gone_since).values(**values, **fresh)
+    ).rowcount:
+        session.commit()
+        return
     if session.execute(update(ClientViolation).where(*where).values(**values)).rowcount:
         session.commit()
         return
@@ -1046,7 +1063,7 @@ def render_digest(username: str, rule_list: list[Any], env: dict[str, str | None
     if public_url:
         link = html.escape(f"{public_url}/dashboard", quote=True)
         notice = "these notices" if count > 1 else "this notice"
-        what = (f"see {notice}, download one script that applies the settings for you (Windows, Linux or macOS) "
+        what = (f"see {notice}, download one script that applies the settings for you (Windows or Linux) "
                 "and mark them as done") if env else f"see {notice} and mark them as done"
         parts.append(f'<p><a href="{link}">Open your dashboard</a> to {what}.</p>')
     references = ", ".join(html.escape(rule.id) for rule in rule_list)
@@ -1127,7 +1144,8 @@ def _send_digests(session: Session, usernames: list[str], now: datetime | None =
     session.commit()                # nothing is held open while mail is being sent
     sent = failed = 0
     for position, (username, violation_ids, attempted_before, subject, body) in enumerate(jobs):
-        stamp = utcnow()
+        # The caller's clock when it gave one (a run "as of" a time), else the real one.
+        stamp = now if now is not None else utcnow()
         # Claim the account before sending: a compare-and-set on its first
         # violation, so the job and an admin's click (or two workers) never
         # both mail the same person.
@@ -1145,7 +1163,7 @@ def _send_digests(session: Session, usernames: list[str], now: datetime | None =
         if position and pause_s > 0:
             time.sleep(pause_s)
         ok, error = mailer.send(mailer.address_for(username), subject, body)
-        stamp = utcnow()
+        stamp = now if now is not None else utcnow()
         values: dict[str, Any] = {"mail_attempted_at": stamp, "mail_error": "" if ok else error}
         if ok:
             values["mailed_at"] = stamp
@@ -1164,7 +1182,11 @@ def _auto_due(violation: ClientViolation, repeat_days: int, now: datetime) -> bo
         return False
     if violation.mail_error or violation.mailed_at is None:
         return True  # the last attempt failed
-    return repeat_days > 0 and violation.mailed_at <= now - timedelta(days=repeat_days)
+    # A reminder is for an account still doing it: seen again since its last mail.
+    return (
+        repeat_days > 0 and violation.mailed_at <= now - timedelta(days=repeat_days)
+        and violation.last_seen_at > violation.mailed_at
+    )
 
 
 def is_queued(violation: ClientViolation, now: datetime | None = None) -> bool:
@@ -1198,6 +1220,51 @@ def request_mail(session: Session, rule_id: str, only_unmailed: bool = True, now
         session.add(row)
     session.commit()
     return len(targets)
+
+
+def monthly_mail() -> dict[str, Any]:
+    """The monthly reminder's switch and when it runs next (local time)."""
+    local = datetime.now(LOCAL_TZ)
+    run = local.replace(day=MONTHLY_DAY, hour=MONTHLY_HOUR, minute=0, second=0, microsecond=0)
+    if local.day != MONTHLY_DAY:      # this month's day has passed (or the hour, on the day: it runs until midnight)
+        run = (run.replace(day=28) + timedelta(days=4)).replace(day=MONTHLY_DAY)
+    return {
+        "enabled": config.get_client_monthly_mail(), "day": MONTHLY_DAY, "hour": MONTHLY_HOUR,
+        "next": run.strftime("%Y-%m-%d %H:%M"),
+    }
+
+
+def queue_monthly(session: Session, now: datetime | None = None) -> int:
+    """The monthly reminder: on ``MONTHLY_DAY`` from ``MONTHLY_HOUR``
+    (Asia/Taipei), when an admin turned it on, queue every account that
+    still has something open. Each violation is queued once a month, and
+    only if the account has been seen doing it since it was last mailed.
+    The queue then goes out in the usual batches. Returns accounts queued."""
+    if not config.get_client_monthly_mail():
+        return 0
+    now = now or utcnow()
+    local = now.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ)
+    if local.day != MONTHLY_DAY or local.hour < MONTHLY_HOUR:
+        return 0
+    month_start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).replace(tzinfo=None)
+    queued = 0
+    for username, items in open_items(session, now).items():
+        if is_app_account(username):
+            continue
+        touched = False
+        for rule, row in items:
+            if rule.deprecated:
+                continue
+            if row.mail_requested_at is not None and row.mail_requested_at >= month_start:
+                continue      # already queued this month
+            if row.mailed_at is not None and row.last_seen_at <= row.mailed_at:
+                continue      # told already, and not seen doing it since
+            row.mail_requested_at = now
+            session.add(row)
+            touched = True
+        queued += touched
+    session.commit()
+    return queued
 
 
 def due_accounts(session: Session, now: datetime | None = None) -> list[str]:
@@ -1264,16 +1331,20 @@ def send_rule_mail(rule_id: str, only_unmailed: bool = True, bind=None) -> dict[
 
 
 def run_auto_mail(session: Session, now: datetime | None = None) -> str:
-    """The ``client_rule_mail`` job: one batch per run. An account is due
-    when an admin asked for it, or when one of its open checks has
+    """The ``client_rule_mail`` job: one batch per run. On the monthly
+    reminder's day it first queues everyone who still has something open
+    (``queue_monthly``). An account is due
+    when an admin (or the monthly reminder) asked for it, or when one of its open checks has
     ``auto_email`` and has not been mailed (or is due again by that check's
     ``email_repeat_days``: weekly, monthly, ...). It gets one mail about
     everything it has open, which stamps all of it, so the shortest repeat
     among its checks sets the pace. Deprecated checks mail nobody."""
     if not mailer.is_enabled():
         return "mail not configured"
+    monthly = queue_monthly(session, now)
     result = send_due(session, now)
-    return f"sent={result['sent']} failed={result['failed']} waiting={result['waiting']}"
+    detail = f"sent={result['sent']} failed={result['failed']} waiting={result['waiting']}"
+    return f"{detail} monthly_queued={monthly}" if monthly else detail
 
 
 MAIL_JOB = Job(

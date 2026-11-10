@@ -35,6 +35,7 @@ from app.core.config import (
     GUARDRAIL_TIMEOUT_RANGE_S,
     IP_ALLOWLIST_MODES,
     bedrock_shared_settings,
+    get_client_monthly_mail,
     get_cloud_budget_fallback,
     get_cloud_daily_limit,
     get_concurrency_settings,
@@ -49,6 +50,7 @@ from app.core.config import (
     get_model_routing_snapshot,
     get_site_links,
     save_config,
+    set_client_monthly_mail,
     set_cloud_budget_fallback,
     set_concurrency_settings,
     set_cloud_daily_limit,
@@ -1217,6 +1219,7 @@ def _client_rules_view(session: Session, admin_user: User) -> dict:
         "baseline": client_rules.env_lines(client_rules.baseline_env()),
         "mail": mailer.status(),
         "mail_pace": {**client_rules.mail_pace(), "waiting": len(client_rules.due_accounts(session))},
+        "monthly": {**client_rules.monthly_mail(), "enabled": get_client_monthly_mail()},
         "my_address": mailer.address_for(admin_user.username),
         "actions": client_rules.ACTIONS,
         "window_days": client_rules.WINDOW_DAYS,
@@ -1248,6 +1251,24 @@ def _client_rule_or_404(session: Session, rule_id: str):
     if rule is None:
         raise HTTPException(status_code=404, detail="No such client check.")
     return rule
+
+
+@router.post("/client-rules/monthly-mail")
+def set_client_rules_monthly_mail(
+    request: Request,
+    enabled: str = Form(""),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+):
+    """Turn the monthly reminder on or off (``[app].client_rules_monthly_mail``).
+    While on, on the 1st of every month from 09:00 (Asia/Taipei) the mail
+    job queues every account that still has something open, and sends the
+    queue in its usual batches. Nothing is sent by this call."""
+    on = enabled.strip().lower() == "on"
+    set_client_monthly_mail(on)
+    logger.info("Client rules monthly mail {} | admin={}", "on" if on else "off", admin_user.username)
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "enabled": on})
+    return RedirectResponse(url="/admin", status_code=303)
 
 
 @router.post("/client-rules/{rule_id}/mail-test")

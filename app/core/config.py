@@ -942,6 +942,31 @@ def set_cloud_budget_fallback(enabled: bool) -> None:
     _save_app_keys({_CLOUD_BUDGET_FALLBACK_KEY: bool(enabled)})
 
 
+# Client rules: mail everyone who still has something open on the 1st of
+# each month (admin panel → Clients; app/services/client_rules.queue_monthly).
+_CLIENT_MONTHLY_MAIL_KEY = "client_rules_monthly_mail"
+
+
+def get_client_monthly_mail() -> bool:
+    """Whether the monthly client-rule reminder is on
+    (``[app].client_rules_monthly_mail``; missing or invalid → ``False``).
+    Auto-reloads on file change."""
+    _check_auto_reload()
+    val = APP_CONFIG.get(_CLIENT_MONTHLY_MAIL_KEY, False)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "yes", "on", "1")
+    return False
+
+
+def set_client_monthly_mail(enabled: bool) -> None:
+    """Persist ``[app].client_rules_monthly_mail`` to config.toml and reload."""
+    _save_app_keys({_CLIENT_MONTHLY_MAIL_KEY: bool(enabled)})
+
+
 # Per-user concurrency limit (admin panel → "Concurrency Limit" card; enforced
 # by app/services/concurrency.py). "Off" is an explicit mode rather than a
 # magic limit value, so the limit itself is always a real number >= 1.

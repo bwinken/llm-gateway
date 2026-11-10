@@ -1058,6 +1058,11 @@ class TestMail:
         [row] = _violations(db_session, AUTO)
         assert row.mailed_at is None and row.mail_error == "TimeoutError: timed out" and row.mail_attempted_at
 
+    def test_the_mail_names_the_platforms_people_here_use(self, mail_on):
+        draft = SimpleNamespace(id="CC001", title="t", message="", email_subject="")
+        body = client_rules.render_mail(draft, "u", {"A": "1"})[1]
+        assert "(Windows or Linux)" in body and "macOS" not in body
+
     def test_every_mail_says_it_is_automated_and_not_to_reply(self, db_session, test_user, mail_on):
         _configure(db_session, AUTO, auto_email=True)
         _configure(db_session, OUTDATED)
@@ -1350,6 +1355,190 @@ class TestPacedMail:
         assert "at most 2 mails" in pace and "3 waiting" in pace
         card = body.split('id="client-rule-CC001"', 1)[1].split('id="client-rule-CC002"', 1)[0]
         assert card.count(">queued<") == 3
+
+
+class TestQuietAccounts:
+    """An account that has not tripped a check for 15 days (it stopped using
+    Claude Code, or fixed it without saying so) is left alone, and starts
+    over as a new case when it trips the check again."""
+
+    def test_the_window_is_fifteen_days(self):
+        assert client_rules.WINDOW_DAYS == 15
+
+    def test_after_fifteen_quiet_days_nothing_is_shown_or_mailed(self, client, db_session, test_user, mail_on):
+        _configure(db_session, AUTO, auto_email=True, email_repeat_days=7)
+        row = _violation(db_session, AUTO, "testuser")
+        page = lambda: client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text  # noqa: E731
+        row.last_seen_at = _now() - timedelta(days=14)
+        db_session.add(row)
+        db_session.commit()
+        assert 'id="clientNotice-CC001"' in page() and client_rules.due_accounts(db_session) == ["testuser"]
+        row.last_seen_at = _now() - timedelta(days=15, minutes=1)
+        db_session.add(row)
+        db_session.commit()
+        assert 'id="clientNotice' not in page() and client_rules.due_accounts(db_session) == []
+        assert client_rules.violations(db_session, AUTO) == []                 # gone from the admin's list too
+
+    def test_coming_back_is_a_new_case(self, client, db_session, test_user, mail_on):
+        """Mailed once, reported fixed, then quiet for a month: on the next
+        violation the account is told again, as if for the first time."""
+        _configure(db_session, AUTO, auto_email=True)                           # "Once": no reminders
+        long_ago = _now() - timedelta(days=40)
+        _violation(db_session, AUTO, "testuser", mailed_at=long_ago, mail_attempted_at=long_ago,
+                   resolved_at=long_ago, mail_requested_at=long_ago)
+        row = _violations(db_session, AUTO)[0]
+        row.first_seen_at = row.last_seen_at = long_ago - timedelta(hours=1)
+        db_session.add(row)
+        db_session.commit()
+        assert client_rules.run_auto_mail(db_session) == "sent=0 failed=0 waiting=0"
+
+        _messages(client, safeguards={})                                        # back, and still doing it
+        [row] = _violations(db_session, AUTO)
+        assert (row.mailed_at, row.mail_attempted_at, row.resolved_at, row.mail_requested_at) == (None, None, None, None)
+        assert abs((row.first_seen_at - (long_ago - timedelta(hours=1))).total_seconds()) < 1   # the first time stays on record
+        assert 'id="clientNotice-CC001"' in client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
+        assert client_rules.run_auto_mail(db_session) == "sent=1 failed=0 waiting=0"
+
+    def test_a_violation_inside_the_window_keeps_its_state(self, client, db_session, test_user):
+        recent = _now() - timedelta(days=3)
+        _violation(db_session, AUTO, "testuser", mailed_at=recent, mail_attempted_at=recent)
+        row = _violations(db_session, AUTO)[0]
+        row.last_seen_at = recent
+        db_session.add(row)
+        db_session.commit()
+        client_rules.refresh()
+        _messages(client, safeguards={})
+        assert _violations(db_session, AUTO)[0].mailed_at is not None           # not a new case: no second "first" mail
+
+    def test_a_reminder_only_goes_to_an_account_seen_again_since_its_last_mail(self, db_session, test_user, mail_on):
+        _configure(db_session, AUTO, auto_email=True, email_repeat_days=7)
+        _violation(db_session, AUTO, "testuser")
+        start = _now()
+        client_rules.run_auto_mail(db_session, start)
+        # Day 8: inside the 15-day window, a week since the mail, but not seen doing it since: it fixed it.
+        assert client_rules.run_auto_mail(db_session, start + timedelta(days=8)) == "sent=0 failed=0 waiting=0"
+        row = _violations(db_session, AUTO)[0]
+        row.last_seen_at = start + timedelta(days=8, minutes=30)                # no, still doing it
+        db_session.add(row)
+        db_session.commit()
+        assert client_rules.run_auto_mail(db_session, start + timedelta(days=8, hours=1)) == "sent=1 failed=0 waiting=0"
+
+
+class TestMonthlyReminder:
+    """A switch on the Clients card: while on, the 1st of every month from
+    09:00 (Asia/Taipei) queues everyone who still has something open."""
+
+    FIRST = datetime(2026, 12, 1, 1, 30)        # naive UTC = 2026-12-01 09:30 in Taipei
+
+    @pytest.fixture
+    def monthly(self):
+        with patch.object(client_rules.config, "get_client_monthly_mail", return_value=True):
+            yield
+
+    def _open(self, db_session, when: datetime, *names: str, rule_id: str = AUTO, **kw) -> None:
+        for name in names:
+            if db_session.exec(select(User).where(User.username == name)).first() is None:
+                db_session.add(User(username=name, password_hash="x", api_key=f"sk-{name}", daily_limit_usd=1.0))
+            db_session.add(ClientViolation(rule_id=rule_id, username=name, first_seen_at=when, last_seen_at=when, **kw))
+        db_session.commit()
+
+    def test_off_by_default(self, db_session, test_user, mail_on):
+        from app.core import config
+
+        assert config.get_client_monthly_mail() is False
+        self._open(db_session, self.FIRST - timedelta(hours=2), "testuser")
+        client_rules.refresh()
+        assert client_rules.queue_monthly(db_session, self.FIRST) == 0
+        assert client_rules.run_auto_mail(db_session, self.FIRST) == "sent=0 failed=0 waiting=0"
+
+    @pytest.mark.parametrize("when, queued", [
+        (datetime(2026, 11, 30, 15, 59), 0),     # Nov 30 23:59 Taipei
+        (datetime(2026, 11, 30, 16, 30), 0),     # Dec 1 00:30 Taipei: the day, before the hour
+        (datetime(2026, 12, 1, 0, 59), 0),       # Dec 1 08:59
+        (datetime(2026, 12, 1, 1, 0), 2),        # Dec 1 09:00
+        (datetime(2026, 12, 1, 15, 30), 2),      # Dec 1 23:30
+        (datetime(2026, 12, 1, 16, 5), 0),       # Dec 2 00:05
+    ])
+    def test_it_runs_on_the_first_from_nine_local_time(self, db_session, monthly, when, queued):
+        self._open(db_session, when - timedelta(hours=2), "ann", "ben")
+        assert client_rules.queue_monthly(db_session, when) == queued
+
+    def test_everyone_with_something_open_gets_one_mail_in_batches(self, db_session, monthly, mail_on, monkeypatch):
+        monkeypatch.setenv("CLIENT_RULE_MAIL_BATCH", "2")
+        _configure(db_session, OUTDATED)                                        # neither check has automatic mail
+        seen = self.FIRST - timedelta(days=3)
+        self._open(db_session, seen, "ann", "ben", "cat")
+        self._open(db_session, seen, "ann", rule_id=OUTDATED)
+        assert client_rules.run_auto_mail(db_session, self.FIRST) == "sent=2 failed=0 waiting=1 monthly_queued=3"
+        assert client_rules.run_auto_mail(db_session, self.FIRST + timedelta(minutes=10)) == "sent=1 failed=0 waiting=0"
+        assert client_rules.run_auto_mail(db_session, self.FIRST + timedelta(minutes=20)) == "sent=0 failed=0 waiting=0"
+        assert sorted(to for to, _, _ in mail_on) == ["ann@example.test", "ben@example.test", "cat@example.test"]
+        ann = [body for to, _, body in mail_on if to == "ann@example.test"][0]
+        assert "Reference: CC001, CC003." in ann                                # everything ann has open, in one mail
+
+    def test_it_leaves_out_who_is_quiet_fixed_or_told_and_not_seen_since(self, db_session, monthly, mail_on):
+        recent = self.FIRST - timedelta(days=2)
+        self._open(db_session, recent, "still")                                             # open, never mailed
+        self._open(db_session, self.FIRST - timedelta(days=20), "quiet")                    # outside the 15 days
+        self._open(db_session, recent, "fixed", resolved_at=recent + timedelta(hours=1))    # said "I've applied it"
+        self._open(db_session, recent, "told", mailed_at=recent + timedelta(hours=1),
+                   mail_attempted_at=recent + timedelta(hours=1))                           # mailed after its last violation
+        self._open(db_session, recent, "again", mailed_at=recent - timedelta(days=5),
+                   mail_attempted_at=recent - timedelta(days=5))                            # mailed, and seen doing it since
+        db_session.add(ClientViolation(rule_id=AUTO, username="app_batch", first_seen_at=recent, last_seen_at=recent))
+        db_session.commit()
+        client_rules.run_auto_mail(db_session, self.FIRST)
+        assert sorted(to for to, _, _ in mail_on) == ["again@example.test", "still@example.test"]
+
+    def test_once_a_month(self, db_session, monthly, mail_on):
+        self._open(db_session, self.FIRST - timedelta(days=1), "ann")
+        client_rules.run_auto_mail(db_session, self.FIRST)
+        for row in _violations(db_session, AUTO):                               # still doing it, later the same day
+            row.last_seen_at = self.FIRST + timedelta(hours=3)
+            db_session.add(row)
+        db_session.commit()
+        assert client_rules.queue_monthly(db_session, self.FIRST + timedelta(hours=4)) == 0
+        assert len(mail_on) == 1
+        january = datetime(2027, 1, 1, 2, 0)
+        for row in _violations(db_session, AUTO):
+            row.last_seen_at = january - timedelta(days=1)
+            db_session.add(row)
+        db_session.commit()
+        client_rules.run_auto_mail(db_session, january)
+        assert len(mail_on) == 2
+
+    def test_a_deprecated_check_is_not_part_of_it(self, db_session, monthly, mail_on):
+        self._open(db_session, self.FIRST - timedelta(days=1), "ann")
+        with TestLifecycle._with(deprecated="on its way out"):
+            assert client_rules.run_auto_mail(db_session, self.FIRST) == "sent=0 failed=0 waiting=0"
+
+    def test_the_switch(self, client, admin_user, mail_on):
+        headers = web_auth_header(sub=admin_user.username, scopes=["admin"])
+        body = client.get("/admin", headers=headers).text
+        switch = body.split('id="client-rules-monthly"', 1)[1][:1500]
+        assert ">Turn on<" in switch and 'name="enabled" value="on"' in switch
+        with patch("app.routers.admin.set_client_monthly_mail") as save:        # never a real config write in tests
+            resp = client.post("/admin/client-rules/monthly-mail", data={"enabled": "on"}, headers=_admin(admin_user))
+            assert resp.json() == {"ok": True, "enabled": True} and save.call_args.args == (True,)
+            client.post("/admin/client-rules/monthly-mail", data={"enabled": "off"}, headers=_admin(admin_user))
+            assert save.call_args.args == (False,)
+        assert mail_on == []                                                    # the click itself sends nothing
+        with patch("app.routers.admin.get_client_monthly_mail", return_value=True):
+            switch = client.get("/admin", headers=headers).text.split('id="client-rules-monthly"', 1)[1][:1500]
+        assert ">Turn off<" in switch and "Next:" in switch
+
+    def test_only_admins_can_switch_it(self, client, test_user):
+        headers = {**web_auth_header(sub=test_user.username), "Accept": "application/json"}
+        with patch("app.routers.admin.set_client_monthly_mail") as save:
+            assert client.post("/admin/client-rules/monthly-mail", data={"enabled": "on"}, headers=headers).status_code in (401, 403)
+        save.assert_not_called()
+
+    def test_the_setting_is_read_like_the_other_app_switches(self):
+        from app.core import config
+
+        for raw, expected in (("true", True), (True, True), ("no", False), ([1], False)):
+            with patch.dict("app.core.config.APP_CONFIG", {"client_rules_monthly_mail": raw}):
+                assert config.get_client_monthly_mail() is expected, raw
 
 
 class TestRegularReminders:

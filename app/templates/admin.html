@@ -605,6 +605,22 @@ function submitExportCsv() {
         <br><span class="gw-tip gw-tip-wide" data-tip="Mail is never sent as one burst. A click on a mail button queues the accounts; the first batch goes out at once and the rest follow, one batch per run. Automatic mail is paced the same way. Set CLIENT_RULE_MAIL_BATCH, CLIENT_RULE_MAIL_PAUSE_S and CLIENT_RULE_MAIL_INTERVAL_S in .env to change it.">Sent in batches: at most {{ cr.mail_pace.batch }} mails every {{ '%g' | format(cr.mail_pace.interval_s / 60) }} min, {{ '%g' | format(cr.mail_pace.pause_s) }} s apart</span>{% if cr.mail_pace.waiting %} · <span style="color:#f5a623">{{ cr.mail_pace.waiting }} waiting</span>{% endif %}
         {% endif %}
     </p>
+    {% if cr.mail.enabled %}
+    <form action="/admin/client-rules/monthly-mail" method="POST" data-cr-form="monthly" data-on="{{ 'on' if cr.monthly.enabled else 'off' }}"
+          id="client-rules-monthly" class="flex flex-wrap items-center gap-3 mb-4 p-3 rounded" style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06)">
+        <input type="hidden" name="enabled" value="{{ 'off' if cr.monthly.enabled else 'on' }}">
+        <span class="text-sm font-semibold text-t2">Monthly reminder</span>
+        {% if cr.monthly.enabled %}
+        <span class="text-xs text-ag">on</span>
+        <span class="text-xs text-t3">Every month on day {{ cr.monthly.day }} from {{ '%02d' | format(cr.monthly.hour) }}:00, everyone who still has something open is mailed, in the usual batches. Next: <span class="font-mono text-t2">{{ cr.monthly.next }}</span></span>
+        <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5 ml-auto">Turn off</button>
+        {% else %}
+        <span class="text-xs text-t4">off</span>
+        <span class="text-xs text-t3">Turn it on to mail everyone who still has something open on day {{ cr.monthly.day }} of every month, from {{ '%02d' | format(cr.monthly.hour) }}:00.</span>
+        <button type="submit" class="gw-btn gw-btn-primary text-sm px-3 py-1.5 ml-auto">Turn on</button>
+        {% endif %}
+    </form>
+    {% endif %}
 
     {% if cr.baseline %}
     <p class="text-xs text-t4 mb-4 gw-tip gw-tip-wide" id="client-rules-baseline"
@@ -725,7 +741,7 @@ function submitExportCsv() {
                 </div>
                 <div class="mt-4 flex flex-wrap items-center gap-2">
                     <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
-                    {% if r.has_patch %}<span class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="What each kind of account downloads, as saved: .bat for Windows, .sh for Linux / macOS. A link is a 404 when that audience gets no variables.">Patch scripts:
+                    {% if r.has_patch %}<span class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="What each kind of account downloads, as saved: .bat for Windows, .sh for Linux. A link is a 404 when that audience gets no variables.">Patch scripts:
                         {% for a in ('local', 'azure', 'aws') %}{{ {'local': 'local-only', 'azure': 'Azure', 'aws': 'AWS'}[a] }}
                         <a href="/admin/client-rules/{{ r.id }}/patch.bat?audience={{ a }}" class="text-ab hover:underline">.bat</a>
                         <a href="/admin/client-rules/{{ r.id }}/patch.sh?audience={{ a }}" class="text-ab hover:underline">.sh</a>{{ ' · ' if not loop.last }}{% endfor %}</span>{% endif %}
@@ -1786,7 +1802,9 @@ function submitExportCsv() {
                 }
             }
             var ask = null;
-            if (kind === 'reset') {
+            if (kind === 'monthly' && form.dataset.on === 'off') {
+                ask = { text: 'Turn the monthly reminder on? From now on, on the 1st of every month, everyone who still has something open gets one mail about all of it. Nothing is sent today unless today is the 1st.', okLabel: 'Turn on' };
+            } else if (kind === 'reset') {
                 ask = { text: 'Reset ' + rule + ' to its built-in defaults? Your wording, patch and mail settings for it are dropped; its list of accounts is kept.', okLabel: 'Reset', danger: true };
             } else if (kind === 'mail') {
                 ask = { text: 'Mail ' + form.dataset.count + ' account(s) with a ' + rule + ' violation? Each gets one mail covering everything it has open, not only ' + rule + '.', okLabel: 'Send' };

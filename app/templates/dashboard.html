@@ -67,7 +67,7 @@
             <span class="text-t1 font-semibold mr-1">Fix everything at once</span>
             {% if client_combined.patch %}
             <a href="/dashboard/client-rules/all/patch.bat" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Windows (.bat)</a>
-            <a href="/dashboard/client-rules/all/patch.sh" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Linux / macOS (.sh)</a>
+            <a href="/dashboard/client-rules/all/patch.sh" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Linux (.sh)</a>
             {% endif %}
             <form action="/dashboard/client-rules/all/resolved" method="POST" data-client-resolved-all>
                 <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5">I've applied everything</button>
@@ -103,10 +103,10 @@
             <div class="mt-2 flex flex-wrap items-center gap-2">
                 <span class="text-t3 text-xs mr-1">Or let a script do it:</span>
                 <a href="/dashboard/client-rules/{{ n.rule_id }}/patch.bat" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Windows (.bat)</a>
-                <a href="/dashboard/client-rules/{{ n.rule_id }}/patch.sh" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Linux / macOS (.sh)</a>
+                <a href="/dashboard/client-rules/{{ n.rule_id }}/patch.sh" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Linux (.sh)</a>
             </div>
             <div class="text-t4 text-xs mt-1.5">
-                Windows: double-click the file. Linux / macOS: <code class="font-mono">sh claude-code-patch-{{ n.rule_id }}.sh</code>.
+                Windows: double-click the file. Linux: <code class="font-mono">sh claude-code-patch-{{ n.rule_id }}.sh</code>.
                 Either sets only the variables above, leaves the rest of the file alone and saves a backup as settings.json.bak.
             </div>
             {% endif %}
