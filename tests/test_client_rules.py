@@ -146,6 +146,28 @@ class TestMatching:
         _messages(client, model="retired-model")
         assert len(_hits(db_session, rule)) == 1
 
+    def test_plain_http_condition(self, client, db_session, test_user):
+        rule = _rule(db_session, body_field="", plain_http=True)
+
+        async def _post(*args, **kwargs):
+            return make_httpx_response(200, _DOWNSTREAM)
+
+        body = {"model": "test-llm", "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]}
+        with patch.object(client.__httpx_mock__, "post", side_effect=_post):
+            assert client.post("https://testserver/v1/messages", json=body, headers=auth_header()).status_code == 200
+            assert _hits(db_session, rule) == []
+            # A client cannot hide behind its own header: the scheme is the connection's.
+            sneaky = {**auth_header(), "X-Forwarded-Proto": "https"}
+            assert client.post("http://testserver/v1/messages", json=body, headers=sneaky).status_code == 200
+        assert [h.username for h in _hits(db_session, rule)] == ["testuser"]
+
+    def test_plain_http_alone_is_a_condition(self, client, db_session, admin_user):
+        form = {**_FORM, "body_field": "", "plain_http": "on"}
+        resp = client.post("/admin/client-rules", data=form, headers=_admin(admin_user))
+        assert resp.status_code == 200, resp.text
+        rule = db_session.get(ClientRule, resp.json()["id"])
+        assert rule.plain_http and client_rules.condition_text(rule) == "sent over http://"
+
     def test_every_condition_must_hold(self, client, db_session, test_user):
         rule = _rule(db_session, version_below="2.0.0")
         _messages(client, safeguards={})                     # has the field, but 2.1.280 is not older

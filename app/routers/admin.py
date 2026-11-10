@@ -1154,7 +1154,7 @@ def _client_rule_view(session: Session, rule: ClientRule) -> dict:
     mailable = {h.username for h in client_rules.mailable(session, rows)}
     return {
         "id": rule.id, "name": rule.name, "enabled": rule.enabled,
-        "body_field": rule.body_field, "version_below": rule.version_below,
+        "body_field": rule.body_field, "version_below": rule.version_below, "plain_http": rule.plain_http,
         "models": list(rule.models or []), "usernames": list(rule.usernames or []),
         "org_codes": list(rule.org_codes or []), "title": rule.title, "message": rule.message,
         "patch": rule.patch, "action": rule.action, "email_subject": rule.email_subject,
@@ -1192,6 +1192,7 @@ def _client_rule_form(
     enabled: str = Form(""),
     body_field: str = Form(""),
     version_below: str = Form(""),
+    plain_http: str = Form(""),
     models: str = Form(""),
     usernames: str = Form(""),
     org_codes: str = Form(""),
@@ -1205,6 +1206,7 @@ def _client_rule_form(
 ) -> dict:
     return {
         "name": name, "enabled": enabled == "on", "body_field": body_field, "version_below": version_below,
+        "plain_http": plain_http == "on",
         "models": models, "usernames": usernames, "org_codes": org_codes, "title": title, "message": message,
         "patch": patch, "action": action, "email_subject": email_subject, "auto_email": auto_email == "on",
         "email_repeat_days": email_repeat_days,

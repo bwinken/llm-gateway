@@ -4,7 +4,8 @@ The gateway cannot change a user's Claude Code settings. What it can do is
 notice which accounts send requests of a certain kind and reach those people:
 
 - **Rule** (``client_rules``): conditions on a Messages request (a body
-  field is present, Claude Code is older than a version, the model alias)
+  field is present, Claude Code is older than a version, the model alias,
+  the request came over plain ``http://``)
   for everyone or for listed accounts / org codes.
 - **Hit** (``client_rule_hits``): an account matched a rule. For
   ``WINDOW_DAYS`` after its last match the account sees the rule's message
@@ -107,6 +108,7 @@ class _Rule:
     id: int
     body_field: str
     version_below: tuple[int, ...]
+    plain_http: bool
     models: frozenset[str]
     usernames: frozenset[str]
     org_codes: frozenset[str]  # casefolded
@@ -114,8 +116,10 @@ class _Rule:
     title: str
     message: str
 
-    def matches(self, body: dict, version: str, username: str, org_code: str) -> bool:
-        if not (self.body_field or self.version_below or self.models):
+    def matches(self, body: dict, version: str, scheme: str, username: str, org_code: str) -> bool:
+        if not (self.body_field or self.version_below or self.models or self.plain_http):
+            return False
+        if self.plain_http and scheme != "http":
             return False
         if self.usernames or self.org_codes:
             if username not in self.usernames and not (org_code and org_code.casefold() in self.org_codes):
@@ -144,6 +148,7 @@ def _load(session: Session) -> tuple[_Rule, ...]:
     return tuple(
         _Rule(
             id=row.id, body_field=row.body_field or "", version_below=version_key(row.version_below or ""),
+            plain_http=bool(row.plain_http),
             models=frozenset(str(m) for m in (row.models or [])),
             usernames=frozenset(str(u) for u in (row.usernames or [])),
             org_codes=frozenset(str(c).casefold() for c in (row.org_codes or [])),
@@ -273,7 +278,11 @@ async def _observe(request: Any, user: User) -> JSONResponse | None:
         body = {}
     username = user.username
     version = parse_version(request.headers.get("user-agent"))
-    matched = [r for r in _snapshot if r.matches(body, version, username, user.org_code or "")]
+    # The scheme the client used: uvicorn's proxy-headers handling sets it
+    # from nginx's X-Forwarded-Proto (trusted peers only), like the client
+    # address. Never read the header here: the client can send its own.
+    scheme = request.url.scheme
+    matched = [r for r in _snapshot if r.matches(body, version, scheme, username, user.org_code or "")]
 
     record_version = bool(version) and _due(("v", username, version))
     hit_ids = [r.id for r in matched if _due(("h", r.id, username))]
@@ -520,8 +529,9 @@ def clean_fields(session: Session, form: dict[str, Any]) -> dict[str, Any]:
     if version_below and not _VERSION.match(version_below):
         raise ValueError("Version must look like 2.1.302.")
     models = ip_allowlist.split_names(str(form.get("models") or ""))
-    if not (body_field or version_below or models):
-        raise ValueError("Set at least one condition: a request field, a version or a model.")
+    plain_http = bool(form.get("plain_http"))
+    if not (body_field or version_below or models or plain_http):
+        raise ValueError("Set at least one condition: a request field, a version, a model or plain http.")
     usernames = ip_allowlist.split_names(str(form.get("usernames") or ""))
     org_codes = ip_allowlist.split_names(str(form.get("org_codes") or ""))
     usernames, org_codes = ip_allowlist.validate_who(session, usernames, org_codes)
@@ -542,6 +552,7 @@ def clean_fields(session: Session, form: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Repeat days must be between 0 and 365.")
     return {
         "name": name, "body_field": body_field, "version_below": version_below, "models": models,
+        "plain_http": plain_http,
         "usernames": usernames, "org_codes": org_codes, "title": title, "message": message,
         "patch": format_patch(parse_patch(str(form.get("patch") or ""))), "action": action,
         "email_subject": str(form.get("email_subject") or "").strip()[:200],
@@ -580,6 +591,8 @@ def condition_text(rule: ClientRule) -> str:
         parts.append(f"Claude Code < {rule.version_below}")
     if rule.models:
         parts.append("model " + " / ".join(rule.models))
+    if rule.plain_http:
+        parts.append("sent over http://")
     return " and ".join(parts) or "no condition"
 
 

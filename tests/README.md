@@ -662,7 +662,7 @@ Renders the Claude Code section with no CA-certificate tab, requires login, and
 the old `/setup/files/...` route is gone (404).
 
 ### `test_client_rules.py` — client rules, settings patch, mail, Claude Code versions
-- Matching: body field, Claude Code version (other clients never match), model, scope, disabled rules; hourly write throttle; a broken store never fails a request; the cloud Messages routes are watched too.
+- Matching: body field, Claude Code version (other clients never match), model, plain `http://` (a client-sent `X-Forwarded-Proto` changes nothing), scope, disabled rules; hourly write throttle; a broken store never fails a request; the cloud Messages routes are watched too.
 - Versions: recorded per account from the User-Agent; the overview counts each account under its newest version.
 - Reminder (`action = remind`): first matching request of the day is a 400 with the message, the retry passes, once a day across workers, never for app accounts.
 - Patch: only a JSON object is accepted; `merge_patch` semantics; admin text never reaches cmd.exe; the generated script's Node part is run for real against several settings files (skipped without `node`) and must equal `merge_patch`; an unreadable settings file is left alone. The PowerShell part is not run.

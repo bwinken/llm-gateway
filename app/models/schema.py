@@ -325,8 +325,9 @@ class ClientRule(SQLModel, table=True):
 
     A Messages request matches when every condition that is set holds:
     ``body_field`` (the request body has that top-level key),
-    ``version_below`` (Claude Code, from the User-Agent, is older than this)
-    and ``models`` (the requested alias is one of them); and the account is
+    ``version_below`` (Claude Code, from the User-Agent, is older than this),
+    ``models`` (the requested alias is one of them) and ``plain_http`` (the
+    request reached the gateway over ``http://``); and the account is
     in scope (``usernames`` / ``org_codes``, both empty = everyone). A rule
     with no condition matches nothing.
 
@@ -348,6 +349,7 @@ class ClientRule(SQLModel, table=True):
     enabled: bool = Field(default=True, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.true()))
     body_field: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     version_below: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    plain_http: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
     models: list[str] = Field(
         default_factory=list, sa_column=sa.Column(sa.JSON, nullable=False, server_default=sa.text("'[]'")),
     )
