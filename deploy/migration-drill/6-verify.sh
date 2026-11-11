@@ -1,9 +1,9 @@
 #!/bin/bash
-# 步驟 5（演練機器）：驗證容器化的環境，和正式環境的快照對照
+# 步驟 6（演練機器）：驗證容器化的環境，和正式環境的快照對照
 #
 # 用法:
-#   bash deploy/migration-drill/5-verify.sh
-#   DRILL_TEST_MODEL=<模型別名> bash deploy/migration-drill/5-verify.sh   # 多打一個真的請求
+#   bash deploy/migration-drill/6-verify.sh
+#   DRILL_TEST_MODEL=<模型別名> bash deploy/migration-drill/6-verify.sh   # 多打一個真的請求
 #
 # 每一項印出 ✔ / ✘，全部通過才回傳 0。不會改動 config.toml，寫進資料庫的只有
 # 一個臨時帳號 migration_drill（以及它那一筆用量）。可以重複執行。
@@ -12,12 +12,13 @@
 # 雲端模型會產生費用）。設了就用臨時帳號送一個 max_tokens=8 的 chat 請求，
 # 並確認它記進 usage_logs。只支援本機（vLLM）模型的別名。
 . "$(dirname "$0")/lib.sh"
-step_begin 5-verify
+step_begin 6-verify
 need docker curl sha256sum
 guard_not_production
 [ -f "$MARKER" ] || die "這裡沒有演練環境：先跑 4-up.sh"
 snap="$STATE_DIR/snapshot.env"; restored="$STATE_DIR/restored.env"
-[ -f "$snap" ] && [ -f "$restored" ] || die "找不到 $STATE_DIR 的快照：4-up.sh 沒有跑完？"
+[ -f "$snap" ] || die "找不到 $STATE_DIR/snapshot.env：4-up.sh 沒有跑完？"
+[ -f "$restored" ] || die "資料還沒搬進來：先跑 5-load-data.sh"
 
 PORT="$(kv "$DEPLOY_DIR/.env" GATEWAY_PORT)"; BASE="http://127.0.0.1:$PORT"
 PASS=0; FAIL=0; FAILED=()
@@ -46,7 +47,7 @@ fi
 
 if [ "$(docker inspect -f '{{.State.Status}}' "$GW_CONTAINER" 2>/dev/null)" != running ]; then
     note "passed=$PASS failed=$FAIL"
-    die "gateway 容器沒有在執行，後面的檢查無法進行（docker logs $GW_CONTAINER 看原因；重來：6-teardown.sh → 4-up.sh）"
+    die "gateway 容器沒有在執行，後面的檢查無法進行（docker logs $GW_CONTAINER 看原因；重來：7-teardown.sh → 4-up.sh）"
 fi
 
 # ── 資料 ──
@@ -67,6 +68,8 @@ for t in $SNAPSHOT_TABLES; do
         fail "$t：還原 ${got:-0} 筆，比快照的 $want 少"
     fi
 done
+leases="$(drill_psql "SELECT count(*) FROM concurrency_leases WHERE worker_id NOT LIKE '$(hostname):%'" 2>/dev/null || echo 0)"
+[ "$leases" = 0 ] && pass "沒有舊主機留下的並發 lease" || fail "沒有舊主機留下的並發 lease（還有 $leases 筆）"
 trg="$(drill_psql "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'audit_log'::regclass AND NOT tgisinternal" 2>/dev/null || echo 0)"
 [ "$trg" -ge 2 ] && pass "audit_log 的防竄改觸發器還在（$trg 個）" || fail "audit_log 的防竄改觸發器還在（$trg 個）"
 
@@ -148,14 +151,17 @@ fi
 section "時間（正式切換的停機時間估計）"
 b="$(kv "$snap" backup_seconds)"; r="$(kv "$restored" restore_seconds)"
 m="$(kv "$restored" migrate_seconds)"; s="$(kv "$restored" start_seconds)"
-echo "  備份 ${b:-?}s ／ 還原 ${r:-?}s ／ migration ${m:-?}s ／ 啟動到就緒 ${s:-?}s"
-echo "  在原主機直接切換（不搬資料）：migration + 啟動 ≈ $(( ${m:-0} + ${s:-0} ))s，另加停掉 systemd 服務的時間"
-echo "  搬到新主機（資料一起搬）：備份 + 還原 + migration + 啟動 ≈ $(( ${b:-0} + ${r:-0} + ${m:-0} + ${s:-0} ))s，另加複製檔案的時間"
+l="$(kv "$restored" load_seconds)"          # 步驟 5 從停掉 gateway 到重新就緒的實測秒數
+move=$(( ${b:-0} + ${l:-0} )); inplace=$(( ${m:-0} + ${s:-0} ))
+echo "  備份 ${b:-?}s ／ 載入資料（停止 → 就緒）${l:-?}s，其中還原 ${r:-?}s、migration ${m:-?}s、啟動 ${s:-?}s"
+echo "  搬到新主機（容器先開好，資料最後搬）：備份 + 載入 ≈ ${move}s"
+echo "      另加：把備份檔複製到新主機、切換流量（DNS / 負載平衡）的時間"
+echo "  在原主機直接切換（不搬資料）：migration + 啟動 ≈ ${inplace}s，另加停掉 systemd 服務的時間"
 
-note "passed=$PASS failed=$FAIL downtime_inplace=$(( ${m:-0} + ${s:-0} ))s downtime_move=$(( ${b:-0} + ${r:-0} + ${m:-0} + ${s:-0} ))s test_model=${DRILL_TEST_MODEL:--}"
+note "passed=$PASS failed=$FAIL downtime_move=${move}s downtime_inplace=${inplace}s test_model=${DRILL_TEST_MODEL:--}"
 echo
 if [ "$FAIL" -gt 0 ]; then
     note "failed_checks=$(IFS='|'; echo "${FAILED[*]}" | tr ' \t' '__' | cut -c1-300)"
     die "驗證沒有通過：$FAIL 項失敗，$PASS 項通過"
 fi
-ok "驗證通過：$PASS 項全部通過。演練完記得跑：bash deploy/migration-drill/6-teardown.sh"
+ok "驗證通過：$PASS 項全部通過。演練完記得跑：bash deploy/migration-drill/7-teardown.sh"

@@ -11,7 +11,7 @@
 #   state.tar.gz.gpg              config.toml、keys/public.pem、清理過的 .env
 #   snapshot.env                  備份當下的快照：筆數、schema 版本、PG 版本、設定檔雜湊（沒有密鑰）
 #   SHA256SUMS                    演練機器用來確認檔案沒有在搬運途中損毀
-# 把整個目錄帶到演練機器，接著跑 2 ~ 6。
+# 把整個目錄帶到演練機器，接著跑 2 ~ 7。
 #
 # .env 會先清理再打包：寄信（EXCHANGE_*）、Langfuse、DATABASE_URL、保留期設定不會離開正式主機，
 # 演練環境因此不會寄信給使用者、不會把資料送進正式的 Langfuse。

@@ -3,8 +3,8 @@
 #
 # 目錄的角色：
 #   正式主機：REPO_ROOT 就是 ~/opt/llm-gateway，只跑 1-bundle.sh，唯讀（除了多一份備份）。
-#   演練機器：REPO_ROOT 是一份乾淨的 checkout，2 ~ 6 會在裡面建立 config/、keys/、logs/、
-#             .env、deploy/.env、deploy/pgdata（全部被 .gitignore 忽略），6-teardown.sh 全部刪除。
+#   演練機器：REPO_ROOT 是一份乾淨的 checkout，2 ~ 7 會在裡面建立 config/、keys/、logs/、
+#             .env、deploy/.env、deploy/pgdata（全部被 .gitignore 忽略），7-teardown.sh 全部刪除。
 set -euo pipefail
 
 DRILL_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

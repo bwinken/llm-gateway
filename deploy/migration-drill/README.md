@@ -2,7 +2,7 @@
 
 [繁體中文](README.zh-TW.md)
 
-On **another machine**, with a backup of production, walk the whole "systemd → container" move end to end: back up, test the restore, build the image, bring the containers up, run the migrations, verify, tear down. Production is only read (one extra online backup) and never stops.
+On **another machine**, with a backup of production, walk the whole "systemd → container" move end to end, in the order the real move uses: **bring every container up first, move the data last**. The steps are: back up, test the restore, build the image, bring the containers up, load the data, verify, tear down. Production is only read (one extra online backup) and never stops.
 
 The drill answers three questions:
 
@@ -17,8 +17,8 @@ Every step's outcome goes to `drill.log`, which serves as the audit record (ISO 
 | | Production host | Drill machine |
 |---|---|---|
 | Directory | `~/opt/llm-gateway` (the existing install) | a clean checkout, e.g. `~/llm-gateway-drill` |
-| Runs | `1-bundle.sh` only | `2` to `6` |
-| What changes | one more backup, plus the bundle | the drill environment (`6-teardown.sh` removes all of it) |
+| Runs | `1-bundle.sh` only | `2` to `7` |
+| What changes | one more backup, plus the bundle | the drill environment (`7-teardown.sh` removes all of it) |
 
 The drill machine needs:
 
@@ -27,7 +27,7 @@ The drill machine needs:
 - A checkout of this repository **at the version you intend to deploy**: the drill's migrations and image come from it.
 - The private key that decrypts the backup.
 
-The drill machine **must not be the production host**. Steps `2` to `6` refuse to run when they find any of these:
+The drill machine **must not be the production host**. Steps `2` to `7` refuse to run when they find any of these:
 
 - a running `llm-gateway` systemd service;
 - an `llm-gateway-pg` / `llm-gateway` container the drill did not create;
@@ -40,11 +40,14 @@ The drill machine **must not be the production host**. Steps `2` to `6` refuse t
 | 1 | production | `bash deploy/migration-drill/1-bundle.sh` | Online database backup; packs `config.toml`, the public key and a cleaned `.env`; records a snapshot | an encrypted bundle exists |
 | 2 | drill machine | `bash deploy/migration-drill/2-restore-test.sh` | Checks the file hashes; restores the backup into a throwaway container and inspects it | the restore succeeds, with its rows and triggers |
 | 3 | drill machine | `bash deploy/migration-drill/3-image.sh` | Builds the gateway image (or loads one built elsewhere) | the image loads the code and lists the migrations |
-| 4 | drill machine | `bash deploy/migration-drill/4-up.sh` | Unpacks the settings → starts PostgreSQL → restores → migrates → starts the gateway container | the gateway is ready |
-| 5 | drill machine | `bash deploy/migration-drill/5-verify.sh` | Checks everything against the snapshot; estimates the downtime | every line is ✔ |
-| 6 | drill machine | `bash deploy/migration-drill/6-teardown.sh` | Deletes all data in the drill environment | nothing is left |
+| 4 | drill machine | `bash deploy/migration-drill/4-up.sh` | **Containers first:** unpacks the settings → starts PostgreSQL → creates the schema in an empty database → starts the gateway container | the gateway is ready on an empty database |
+| 5 | drill machine | `bash deploy/migration-drill/5-load-data.sh` | **Data last:** stops the gateway → recreates the database → restores → migrates → starts the gateway | the gateway is ready with production's data |
+| 6 | drill machine | `bash deploy/migration-drill/6-verify.sh` | Checks everything against the snapshot; estimates the downtime | every line is ✔ |
+| 7 | drill machine | `bash deploy/migration-drill/7-teardown.sh` | Deletes all data in the drill environment | nothing is left |
 
-A failing step stops there; nothing continues on its own. Fix the cause and rerun that step; to redo `4`, run `6` first.
+A failing step stops there; nothing continues on its own. Fix the cause and rerun that step; `5` can be repeated, and to redo `4`, run `7` first.
+
+Step 5 calls `deploy/load-backup.sh`, the script the real move runs on the new server: the drill rehearses the actual command, and its time is the main part of the downtime.
 
 ### 1. Bundle, on the production host
 
@@ -77,7 +80,7 @@ Carry the whole directory to the drill machine:
 rsync -a ~/backup/llm-gateway/migration-bundle-<time> user@drill-host:~/
 ```
 
-### 2 to 5. On the drill machine
+### 2 to 6. On the drill machine
 
 Settings go in `drill.env` (copy `drill.env.example`) or in the environment; a variable given on the command line wins.
 
@@ -100,21 +103,26 @@ bash deploy/migration-drill/4-up.sh
 ```
 
 ```bash
-bash deploy/migration-drill/5-verify.sh
+bash deploy/migration-drill/5-load-data.sh
+```
+
+```bash
+bash deploy/migration-drill/6-verify.sh
 ```
 
 - **The private key** (`DRILL_GPG_KEY`) is imported into a temporary directory for the run and deleted afterwards; it never enters the drill machine's keyring. gpg asks for its passphrase on the terminal.
 - **No internet on the drill machine:** `docker build` and `docker save` elsewhere, bring the file, and run step 3 with `IMAGE_TAR=<file>`. For an internal mirror, set `PYTHON_IMAGE` / `UV_IMAGE`.
 - **The image that passed the drill is the image to deploy:** take the same tag (or the same `docker save` file) to production; do not rebuild.
-- Step 4 uses the same `deploy/docker-compose.yml` as production (compose project `llmgw-drill`), so what is rehearsed is what will run.
+- Steps 4 and 5 use the same `deploy/docker-compose.yml` as production (compose project `llmgw-drill`), so what is rehearsed is what will run.
+- Between steps 4 and 5 the gateway runs on an empty database: the state of a new server that is prepared and waiting for the switch. It is a good moment to look at how it behaves.
 - If `5432` / `8050` are taken on the drill machine, set `PG_PORT` / `GATEWAY_PORT`.
 
-### What step 5 checks
+### What step 6 checks
 
 | Area | Checks |
 |---|---|
 | Container | running, `/readyz`, `/healthz`, host networking, non-root, listening on `127.0.0.1` only |
-| Data | schema is the image's latest; each table restored at least as many rows as the snapshot; `audit_log`'s append-only triggers are present |
+| Data | schema is the image's latest; each table restored at least as many rows as the snapshot; no concurrency leases left over from the old host; `audit_log`'s append-only triggers are present |
 | Settings | `config.toml` has production's hash; the gateway reads the mounted file (not the built-in example); the config directory accepts a write and a rename (how the admin page saves); logs reach the host; the public key is readable |
 | No outside effects | no mail / Langfuse / retention settings in the container; mail is off |
 | API | a temporary account's key authenticates; `/v1/models` lists models; a wrong key gets 401; the gateway sees the `X-Forwarded-For` client address; the web UI answers 401 without a login |
@@ -132,17 +140,17 @@ Row counts are compared as "at least", because the snapshot is taken just before
 
 ### Reading the downtime
 
-Step 5 ends with two figures:
+Step 6 ends with two figures:
 
-- **Switching in place** (the database stays; only the gateway moves from systemd to a container): migration + start. This is the usual case.
-- **Moving to a new host** (data moves too): backup + restore + migration + start, plus the time to copy the files.
+- **Moving to a new server** (containers first, data last): backup + data load. "Data load" is the measured time step 5 took from stopping the gateway to having it ready again, covering restore, migration and start. Add the time to copy the backup file to the new server and to switch traffic.
+- **Switching in place** (the database stays; only the gateway moves from systemd to a container): migration + start.
 
 Both are measured with production's data volume, so they can go straight into the change request.
 
-### 6. Tear down
+### 7. Tear down
 
 ```bash
-bash deploy/migration-drill/6-teardown.sh
+bash deploy/migration-drill/7-teardown.sh
 ```
 
 The drill environment is a full copy of production's data (every API key): **always run this when done**. It removes the containers, volumes, the restored database (`deploy/pgdata`), `config/`, `keys/`, `logs/`, `.env` and `deploy/.env`, then confirms nothing is left. `--image` removes the image too.
@@ -154,8 +162,9 @@ Only the records stay (`drill.log`, `restore-drill.log`); they hold no data and 
 `drill.log` has one tab-separated line per step, failed ones included:
 
 ```
-2026-11-11 15:08:46  step=4-up      result=OK  elapsed=11s  by=alice@drill-host  bundle=migration-bundle-2026-11-11_150722 restore=1s migrate=1s start=5s schema=07899844c700->c1a7e4b9d2f6 ...
-2026-11-11 15:08:50  step=5-verify  result=OK  elapsed=4s   by=alice@drill-host  passed=29 failed=0 downtime_inplace=6s downtime_move=8s ...
+2026-11-11 16:09:38  step=4-up         result=OK  elapsed=10s  by=alice@drill-host  bundle=migration-bundle-2026-11-11_160917 empty_migrate=2s start=5s ...
+2026-11-11 16:09:56  step=5-load-data  result=OK  elapsed=10s  by=alice@drill-host  restore=1s migrate=2s start=5s total=10s schema=07899844c700->c1a7e4b9d2f6 users=200
+2026-11-11 16:10:00  step=6-verify     result=OK  elapsed=4s   by=alice@drill-host  passed=30 failed=0 downtime_move=11s downtime_inplace=7s ...
 ```
 
 `1-bundle.sh` leaves its line in the `drill.log` on the production host. File the log together with this sheet:
@@ -167,18 +176,22 @@ Only the records stay (`drill.log`, `restore-drill.log`); they hold no data and 
 | Image (tag and the id `3-image.sh` recorded) | |
 | Bundle (directory name) | |
 | Schema: at backup → after migration | |
-| Step 5 result (passed / failed checks) | |
-| Estimated downtime (in place / new host) | |
+| Step 6 result (passed / failed checks) | |
+| Estimated downtime (new server / in place) | |
 | Problems found and what was done | |
-| Step 6 run; bundle and private key deleted | |
+| Step 7 run; bundle and private key deleted | |
 
 ## After a passing drill: the real switch and rollback
 
-The switch itself is in [deploy/README, "Running the gateway in a container"](../README.md#running-the-gateway-in-a-container), and so is the rollback: stop the container and re-enable the systemd service; both read the same `config/config.toml`.
+The switch and its rollback are in [deploy/README, "Running the gateway in a container"](../README.md#running-the-gateway-in-a-container):
+
+- **Moving to a new server** (the order the drill rehearses): see "Moving to a new server (containers first, data last)". The new server is prepared ahead; at the switch the old server stops its gateway and takes a backup, the new server runs `deploy/load-backup.sh`, then traffic moves.
+- **Switching in place:** see "Switching in place (same host)".
 
 Before switching, confirm that:
 
 - the image is the one that passed the drill;
+- the new server reaches vLLM, Azure, Bedrock, Exchange and Langfuse (firewalls and allowlists on those sides need its address);
 - `deploy/backup-db.sh` ran just before;
 - `GATEWAY_UID` / `GATEWAY_GID` in `deploy/.env` are the user owning `config/` and `logs/`;
 - the announced downtime is at least what the drill measured.
@@ -192,7 +205,8 @@ Before switching, confirm that:
 | `無法解開 state.tar.gz.gpg` / `解密失敗` | No private key: set `DRILL_GPG_KEY` |
 | `PostgreSQL 主版本不同` | Use an image of production's major version |
 | `127.0.0.1:5432 已經有服務在聽` | Set `PG_PORT` / `GATEWAY_PORT` |
-| `migration 失敗` | See `deploy/migration-drill/.state/migrate.log`. This is what the drill is for: fix it before upgrading production |
-| `演練環境已經存在` | Run `6-teardown.sh` first |
+| `migration 失敗` | Read the migrate output the script printed. This is what the drill is for: fix it before upgrading production |
+| `演練環境已經存在` | Run `7-teardown.sh` first |
+| `資料還沒搬進來` | Run `5-load-data.sh` first |
 
 The scripts print their messages in Traditional Chinese, like the other scripts under `deploy/`.

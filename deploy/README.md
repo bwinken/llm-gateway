@@ -130,7 +130,9 @@ The container binds `127.0.0.1` only. It also keeps the host's hostname, so conc
 
 The container runs as `GATEWAY_UID:GATEWAY_GID` (`deploy/.env`, default `1000:1000`), which must own `config/` and `logs/`. Create both before the first start: a missing directory is created by Docker as root, and admin saves would then fail.
 
-**Switching over:**
+### Switching in place (same host)
+
+The database stays where it is; only the gateway moves from systemd to a container.
 
 ```bash
 cd ~/opt/llm-gateway
@@ -163,6 +165,49 @@ Don't run `deploy/setup.sh` after switching: it reinstalls and starts the system
 `migrate` runs `alembic upgrade head` (after waiting for the database), and `gateway` starts only when it succeeded. The same holds for every later `up -d`. The health check polls `/readyz`.
 
 **Rollback:** run `docker compose -f deploy/docker-compose.yml rm -sf gateway migrate`, remove the `COMPOSE_PROFILES=gateway` line from `deploy/.env`, then `systemctl --user enable --now llm-gateway`. Because `.env` points `CONFIG_DIR` at the same `config/`, both read the same file. A migration that already ran stays applied; that is fine as long as the code being rolled back to is at or after it, as with any upgrade.
+
+### Moving to a new server (containers first, data last)
+
+When the gateway and its database move to another host, bring every container up on the new server first, confirm it works, and move the data last. Downtime is then only the data move. Rehearse it with [`deploy/migration-drill/`](migration-drill/README.md), which runs the same steps and measures the time.
+
+**Prepare the new server (no downtime).**
+
+1. Put the code and the image there: a checkout of the same version, then `docker build` or `docker load`.
+2. Create `config/config.toml`, `keys/public.pem`, `.env` and `deploy/.env`. In `deploy/.env` set a new `PG_PASSWORD`, `GATEWAY_IMAGE`, `GATEWAY_UID` / `GATEWAY_GID` and `COMPOSE_PROFILES=gateway`; `DATABASE_URL` in `.env` uses the new password.
+3. Start everything on an empty database:
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+4. Set up nginx and the certificate. If the hostname changes, register the new callback URL in AuthCenter.
+5. Check it: `/readyz`, the login page, and that the **new server's address** can reach vLLM, Azure, Bedrock, Exchange and Langfuse. Firewalls and allowlists on those sides often name the old server.
+
+Until the switch the new server's database is empty. **Do not load production data into it for testing while the old server is still serving:** the new server's scheduled jobs would act on it, and client-rule mail would go out from both. To test with real data, use the migration drill, which strips the mail settings.
+
+**Switch (downtime starts at step 1).**
+
+```bash
+# old server
+systemctl --user stop llm-gateway            # 1. requests fail from here; no new writes
+bash deploy/backup-db.sh                     # 2. final backup
+# copy the newest backup file and config.toml (admins may have edited it) to the new server
+
+# new server
+BACKUP_GPG_KEY=/media/usb/llm-gateway-backup.key.asc \
+    bash deploy/load-backup.sh ~/llm-gateway-<time>.dump.gpg     # 3. replace the empty database, migrate, start
+```
+
+`deploy/load-backup.sh` shows what the current database holds and asks for its name before replacing it; a database that is not empty is saved to `<BACKUP_DIR>/before-load/` first. It then stops the gateway container, recreates the database, restores, clears the old server's concurrency leases, runs the migrations and starts the gateway, printing the time each phase took. A failed restore or migration leaves the gateway stopped. It refuses on a host with a running `llm-gateway` systemd service.
+
+4. Check the new server: the row counts the script printed, a login, one request with an existing key.
+5. Point traffic at the new server (DNS, load balancer or the upstream in nginx).
+
+**Rollback.** Before traffic moved: `systemctl --user start llm-gateway` on the old server; its data was never touched. After traffic moved: point it back and start the old gateway, knowing that usage recorded on the new server in between is not in the old database. Keep the old server's database until the new one has run cleanly for a while.
+
+**Afterwards.** Move the backup cron line (`backup-db.sh`) to the new server and run `restore-drill.sh` there once. Delete the copy in `before-load/`. When the old server is retired, remove its `pgdata` and backups: they hold every API key.
+
+### Updates and building
 
 **Updates:** build a new image tag, set `GATEWAY_IMAGE` in `deploy/.env`, run `backup-db.sh`, then `docker compose -f deploy/docker-compose.yml up -d`. Compose replaces the container. `stop_grace_period` is 300 s, so open streams can finish, as with nginx's limit.
 
@@ -360,6 +405,7 @@ docker compose -f deploy/docker-compose.yml up -d
     ├── setup.sh              # Deployment script
     ├── backup-db.sh          # Online database backup (pg_dump, verify, encrypt, retention)
     ├── restore-drill.sh      # Restore a backup into a throwaway container, log the result
+    ├── load-backup.sh        # Load a backup into this host's database, migrate, start the gateway (new-server cutover)
     ├── migration-drill/      # Rehearse the move to containers on another machine (own README)
     ├── gen-selfsigned-cert.sh               # Self-signed TLS cert for :443
     ├── llm-gateway.service                  # Gateway systemd unit

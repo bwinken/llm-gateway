@@ -1,9 +1,9 @@
 #!/bin/bash
-# 步驟 6（演練機器）：把演練環境刪乾淨
+# 步驟 7（演練機器）：把演練環境刪乾淨
 #
 # 用法:
-#   bash deploy/migration-drill/6-teardown.sh             # 刪除演練環境
-#   bash deploy/migration-drill/6-teardown.sh --image     # 連 gateway 映像一起刪
+#   bash deploy/migration-drill/7-teardown.sh             # 刪除演練環境
+#   bash deploy/migration-drill/7-teardown.sh --image     # 連 gateway 映像一起刪
 #
 # 演練環境裡是一份完整的正式資料（所有 API key），演練完一定要刪：
 #   - 容器、網路、volume（compose project llmgw-drill）
@@ -12,7 +12,7 @@
 # 留下來的只有紀錄：drill.log、restore-drill.log（不含任何資料或密鑰）。
 # 演練包本身不在這個目錄裡，請另外刪除。
 . "$(dirname "$0")/lib.sh"
-step_begin 6-teardown
+step_begin 7-teardown
 need docker
 guard_not_production
 [ -f "$MARKER" ] || die "這個目錄沒有演練記號（.migration-drill）：沒有演練環境可以刪，也不會動任何東西"
