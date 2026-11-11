@@ -45,85 +45,14 @@
     <div class="text-t3">
         {% if legacy_key %}Your key{% if legacy_app_keys %} and {{ legacy_app_keys }} of your app key{{ '' if legacy_app_keys == 1 else 's' }}{% endif %}{% else %}{{ legacy_app_keys }} of your app key{{ '' if legacy_app_keys == 1 else 's' }}{% endif %}
         {{ 'is' if n_legacy == 1 else 'are' }} in an older, weaker format. {{ 'It keeps' if n_legacy == 1 else 'They keep' }} working, but a newly generated key is far harder to guess.
-        Regenerate ({% if legacy_key %}<b>My API Key → Regenerate</b>{% endif %}{% if legacy_key and legacy_app_keys %}; {% endif %}{% if legacy_app_keys %}<b>Refresh</b> under My Apps{% endif %}) when you can update your clients: the old key stops working at once.
+        Regenerate ({% if legacy_key %}<b>My API Key → Regenerate</b>{% endif %}{% if legacy_key and legacy_app_keys %}; {% endif %}{% if legacy_app_keys %}<b>Refresh</b> under My Apps{% endif %}) when you can update your clients: the old key stops working at once.{% if legacy_key %}
+        For Claude Code, the same window then offers a script that puts the new key into its settings.{% endif %}
     </div>
 </div>
 {% endif %}
 
-{# ── Client-rule notices for this account (app/services/client_rules.py), as one compact
-      panel: a row per notice that opens to the fix, so several notices do not push the
-      budget below the fold. A single notice starts open. ── #}
-{% if client_notices %}
-<div id="clientNotices" class="gw-card mb-6 gw-anim gw-d1 overflow-hidden"
-     style="background:rgba(245,166,35,0.05);border-color:rgba(245,166,35,0.3)">
-    <div class="px-4 py-2.5 flex flex-wrap items-baseline gap-x-2">
-        <span class="text-sm font-bold" style="color:#f5a623">Action needed</span>
-        <span class="text-xs text-t3" data-client-notice-count>{{ client_notices|length }} thing{{ '' if client_notices|length == 1 else 's' }} to change in your Claude Code setup</span>
-    </div>
-    {# Several notices: one patch and one button for all of them. #}
-    {% if client_combined %}
-    <div id="clientNoticesAll" class="px-4 py-3 text-sm" style="border-top:1px solid rgba(245,166,35,0.15);background:rgba(245,166,35,0.04)">
-        <div class="flex flex-wrap items-center gap-2">
-            <span class="text-t1 font-semibold mr-1">Fix everything at once</span>
-            {% if client_combined.patch %}
-            <a href="/dashboard/client-rules/all/patch.bat" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Windows (.bat)</a>
-            <a href="/dashboard/client-rules/all/patch.sh" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Linux (.sh)</a>
-            {% endif %}
-            <form action="/dashboard/client-rules/all/resolved" method="POST" data-client-resolved-all>
-                <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5">I've applied everything</button>
-            </form>
-        </div>
-        {% if client_combined.patch %}
-        <details class="group mt-2">
-            <summary class="cursor-pointer select-none list-none text-xs text-t3 flex items-center gap-1">
-                <svg class="w-3.5 h-3.5 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                One script sets all {{ client_combined.count }} at once; see what it sets
-            </summary>
-            <pre class="mt-2 p-3 rounded text-xs font-mono text-t2 overflow-x-auto" style="background:rgba(0,0,0,0.25)">{{ client_combined.patch }}</pre>
-        </details>
-        {% endif %}
-    </div>
-    {% endif %}
-    {% for n in client_notices %}
-    <details id="clientNotice-{{ n.rule_id }}" data-client-notice class="group text-sm" {{ 'open' if client_notices|length == 1 }}
-             style="border-top:1px solid rgba(245,166,35,0.15)">
-        <summary class="px-4 py-3 flex items-center gap-3 cursor-pointer select-none list-none hover:bg-[rgba(255,255,255,0.02)]">
-            <span class="font-mono text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style="background:rgba(245,166,35,0.12);color:#f5a623">{{ n.rule_id }}</span>
-            <span class="text-t1 font-semibold">{{ n.title }}</span>
-            <span class="ml-auto flex items-center gap-1.5 text-xs text-t3 flex-shrink-0">
-                <span class="group-open:hidden">{{ 'Show the fix' if n.patch else 'Details' }}</span><span class="hidden group-open:inline">Hide</span>
-                <svg class="w-4 h-4 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-            </span>
-        </summary>
-        <div class="px-4 pb-4">
-            {% if n.message %}<div class="text-t3 whitespace-pre-line">{{ n.message }}</div>{% endif %}
-            {% if n.patch %}
-            <div class="text-t3 mt-2">Put these in the <code class="font-mono">env</code> block of <code class="font-mono">~/.claude/settings.json</code>, then restart Claude Code:</div>
-            <pre class="mt-2 p-3 rounded text-xs font-mono text-t2 overflow-x-auto" style="background:rgba(0,0,0,0.25)">{{ n.patch }}</pre>
-            <div class="mt-2 flex flex-wrap items-center gap-2">
-                <span class="text-t3 text-xs mr-1">Or let a script do it:</span>
-                <a href="/dashboard/client-rules/{{ n.rule_id }}/patch.bat" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Windows (.bat)</a>
-                <a href="/dashboard/client-rules/{{ n.rule_id }}/patch.sh" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Linux (.sh)</a>
-            </div>
-            <div class="text-t4 text-xs mt-1.5">
-                Windows: double-click the file. Linux: <code class="font-mono">sh claude-code-patch-{{ n.rule_id }}.sh</code>.
-                Either sets only the variables above, leaves the rest of the file alone and saves a backup as settings.json.bak.
-            </div>
-            {% endif %}
-            <div class="mt-3 pt-3 flex flex-wrap items-center gap-3" style="border-top:1px solid rgba(245,166,35,0.12)">
-                <form action="/dashboard/client-rules/{{ n.rule_id }}/resolved" method="POST" data-client-resolved>
-                    <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5">I've applied it</button>
-                </form>
-                <span class="text-t4 text-xs">
-                    Hides this notice. It comes back by itself if the gateway sees the same problem again.
-                    Last seen {{ n.seen_local }}{% if n.client_version %} with Claude Code {{ n.client_version }}{% endif %}.
-                </span>
-            </div>
-        </div>
-    </details>
-    {% endfor %}
-</div>
-{% endif %}
+{# ── Client-rule notices for this account: the shared partial, also served alone ── #}
+{% include "_client_notices.html" %}
 
 {# ── First-time setup: only until the account has made its first request ── #}
 {% if total_reqs == 0 and today_reqs == 0 %}
@@ -1035,44 +964,41 @@ result = client.system_one(
 </div>
 <script>gwTabs('dashTabs', 'dashTab');</script>
 <script>
-/* "I've applied it" on a client-rule notice: post it, drop the row (and the
-   panel with its last row), and say that it returns if the problem does. */
+/* "I've applied it" on a client-rule notice: post it, then take the panel
+   again from the server (GET /dashboard/client-notices), so the one patch
+   and what it covers match what is still open. Delegated from the document,
+   because the panel element is replaced. */
 (function() {
-    var panel = document.getElementById('clientNotices');
-    if (!panel) return;
-    panel.addEventListener('submit', function(e) {
+    function post(form) {
+        return fetch(form.getAttribute('action'), { method: 'POST', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+    }
+    function repaint() {
+        var panel = document.getElementById('clientNotices');
+        if (!panel) return;
+        return fetch('/dashboard/client-notices', { headers: { 'Accept': 'text/html' }, credentials: 'same-origin' })
+            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+            .then(function(html) {
+                if (html.trim()) panel.outerHTML = html; else panel.remove();
+            })
+            .catch(function() { window.location.reload(); });
+    }
+    document.addEventListener('submit', function(e) {
         var form = e.target;
-        if (form.hasAttribute('data-client-resolved-all')) {
-            e.preventDefault();
-            var all = form.querySelector('button');
-            all.disabled = true;
-            fetch(form.getAttribute('action'), { method: 'POST', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
-                .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-                .then(function() {
-                    panel.remove();
-                    gwToast('All marked as done. A notice returns if the gateway sees its problem again.', 'ok');
-                })
-                .catch(function(err) { all.disabled = false; gwToast('Could not save that — ' + err.message, 'error'); });
-            return;
-        }
-        if (!form.hasAttribute('data-client-resolved')) return;
+        var all = form.hasAttribute && form.hasAttribute('data-client-resolved-all');
+        if (!all && !(form.hasAttribute && form.hasAttribute('data-client-resolved'))) return;
         e.preventDefault();
         var btn = form.querySelector('button');
         btn.disabled = true;
-        fetch(form.getAttribute('action'), { method: 'POST', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
-            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        post(form)
             .then(function() {
-                form.closest('[data-client-notice]').remove();
-                var left = panel.querySelectorAll('[data-client-notice]').length;
-                if (!left) panel.remove();
-                else {
-                    panel.querySelector('[data-client-notice-count]').textContent =
-                        left + (left === 1 ? ' thing' : ' things') + ' to change in your Claude Code setup';
-                    // With one notice left, "everything at once" is that notice's own patch.
-                    var all = document.getElementById('clientNoticesAll');
-                    if (left < 2 && all) all.remove();
+                if (all) {
+                    document.getElementById('clientNotices').remove();
+                    gwToast('All marked as done. A notice returns if the gateway sees its problem again.', 'ok');
+                    return;
                 }
                 gwToast('Marked as done. The notice returns if the gateway sees the problem again.', 'ok');
+                return repaint();
             })
             .catch(function(err) { btn.disabled = false; gwToast('Could not save that — ' + err.message, 'error'); });
     });
@@ -1096,6 +1022,20 @@ result = client.system_one(
                 <div id="dashCopyFeedback" class="text-xs text-ag font-medium mt-1.5 h-4"></div>
                 <div class="mt-4 rounded-lg px-4 py-3" style="background:rgba(245,166,35,0.05);border:1px solid rgba(245,166,35,0.12)">
                     <p class="text-xs text-aa"><b>Keep this key secret.</b> Anyone with your API key can make requests on your behalf.</p>
+                </div>
+                {# The key as a settings patch (GET /dashboard/api-key/patch.*): what to run after Regenerate. #}
+                <div id="dashKeyPatch" class="mt-4 rounded-lg px-4 py-3" style="background:rgba(99,152,255,0.05);border:1px solid rgba(99,152,255,0.18)">
+                    <p id="dashKeyPatchLead" class="text-xs text-t2 font-semibold mb-2">Using Claude Code? Let a script put this key into its settings</p>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <a href="/dashboard/api-key/patch.bat" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Windows (.bat)</a>
+                        <a href="/dashboard/api-key/patch.sh" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Linux (.sh)</a>
+                    </div>
+                    <p class="text-xs text-t4 mt-2">
+                        Sets <code class="font-mono">{{ api_key_env }}</code> in the <code class="font-mono">env</code> block of
+                        <code class="font-mono">~/.claude/settings.json</code> to the key above and changes nothing else (a backup is saved as
+                        settings.json.bak). Run it on every machine where you use Claude Code, restart Claude Code, then delete the
+                        file: it contains your key.
+                    </p>
                 </div>
             </div>
             <div class="flex items-center justify-between px-6 py-4 bg-n1 rounded-b-2xl" style="border-top:1px solid rgba(255,255,255,0.04)">
@@ -1124,11 +1064,25 @@ result = client.system_one(
     }
     function dashCopyKey() { copyToClipboard(document.getElementById('dashKeyValue').value, document.getElementById('dashCopyFeedback')); }
     function dashRefreshKey() {
-        if (!confirm('Regenerate your API key? The old key will stop working immediately.')) return;
-        var btn=document.getElementById('dashRefreshBtn'); btn.disabled=true; btn.classList.add('opacity-50');
-        fetch('/dashboard/refresh-key',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
-            if(d.ok){document.getElementById('dashKeyValue').value=d.api_key;{% if legacy_key and not legacy_app_keys %}var n=document.getElementById('legacyKeyNotice');if(n)n.remove();{% endif %}document.getElementById('dashCopyFeedback').textContent='Key regenerated!';setTimeout(function(){document.getElementById('dashCopyFeedback').textContent='';},3000);}else alert('Failed.');
-        }).catch(function(){alert('Error.');}).finally(function(){btn.disabled=false;btn.classList.remove('opacity-50');});
+        gwConfirm('Regenerate your API key? The old key stops working immediately, on every machine that uses it.',
+                  { okLabel: 'Regenerate', danger: true }).then(function(ok) {
+            if (!ok) return;
+            var btn=document.getElementById('dashRefreshBtn'); btn.disabled=true; btn.classList.add('opacity-50');
+            fetch('/dashboard/refresh-key',{method:'POST',headers:{'Accept':'application/json'},credentials:'same-origin'})
+                .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+                .then(function(d){
+                    if(!d.ok) throw new Error('refused');
+                    document.getElementById('dashKeyValue').value=d.api_key;
+                    {% if legacy_key and not legacy_app_keys %}var n=document.getElementById('legacyKeyNotice');if(n)n.remove();{% endif %}
+                    // The old key is dead: point at the script that installs the new one.
+                    document.getElementById('dashKeyPatchLead').textContent=
+                        'Your old key no longer works. Run this on every machine where you use Claude Code:';
+                    document.getElementById('dashKeyPatch').style.borderColor='rgba(99,152,255,0.6)';
+                    gwToast('Key regenerated. Download the script below to update Claude Code.', 'ok');
+                })
+                .catch(function(err){ gwToast('Regenerate failed — '+err.message, 'error'); })
+                .finally(function(){ btn.disabled=false; btn.classList.remove('opacity-50'); });
+        });
     }
     document.addEventListener('keydown',function(e){if(e.key==='Escape')document.getElementById('apiKeyModal').classList.add('hidden');});
 

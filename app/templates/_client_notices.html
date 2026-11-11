@@ -1,0 +1,95 @@
+{# Client-rule notices for one account (app/services/client_rules.py): included by
+   dashboard.html and served alone by GET /dashboard/client-notices, which the page swaps
+   in after "I've applied it". Renders nothing when the account has nothing open.
+
+   One patch per account: however many notices there are, the panel leads with a single
+   download that fixes everything a script can fix (client_combined), and says which
+   notices it does not cover. The rows below explain each notice and show its variables
+   for doing it by hand; they have no download of their own. A single notice starts open. #}
+{% if client_notices %}
+{% set fix = client_combined %}
+{% set n_notices = client_notices|length %}
+<div id="clientNotices" class="gw-card mb-6 gw-anim gw-d1 overflow-hidden"
+     style="background:rgba(245,166,35,0.05);border-color:rgba(245,166,35,0.3)">
+    <div class="px-4 py-2.5 flex flex-wrap items-baseline gap-x-2">
+        <span class="text-sm font-bold" style="color:#f5a623">Action needed</span>
+        <span class="text-xs text-t3">{{ n_notices }} thing{{ '' if n_notices == 1 else 's' }} to change in your Claude Code setup</span>
+    </div>
+    {% if fix and (fix.patch or fix.count > 1) %}
+    <div id="clientNoticesAll" class="px-4 py-3 text-sm" style="border-top:1px solid rgba(245,166,35,0.15);background:rgba(245,166,35,0.04)">
+        <div class="flex flex-wrap items-center gap-2">
+            <span class="text-t1 font-semibold mr-1">
+                {%- if not fix.patch -%}All done?
+                {%- elif fix.count == 1 -%}Let one script apply it
+                {%- elif fix.manual -%}One script fixes {{ fix.covered|length }} of these {{ fix.count }}
+                {%- else -%}Fix everything with one script
+                {%- endif -%}
+            </span>
+            {% if fix.patch %}
+            <a href="/dashboard/client-rules/all/patch.bat" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Windows (.bat)</a>
+            <a href="/dashboard/client-rules/all/patch.sh" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Linux (.sh)</a>
+            {% endif %}
+            {% if fix.count > 1 %}
+            <form action="/dashboard/client-rules/all/resolved" method="POST" data-client-resolved-all>
+                <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5">I've applied everything</button>
+            </form>
+            {% endif %}
+        </div>
+        {% if fix.patch %}
+        <div class="text-t4 text-xs mt-2">
+            Windows: double-click the file. Linux: <code class="font-mono">sh claude-code-patch.sh</code>.
+            It sets only the variables shown here in <code class="font-mono">~/.claude/settings.json</code>, leaves the rest of
+            the file alone and saves a backup as settings.json.bak. Restart Claude Code afterwards.
+        </div>
+        {% if fix.manual %}
+        <div class="text-t3 text-xs mt-1.5" data-client-manual>
+            Not something a script can change: <span class="font-mono">{{ fix.manual|join(', ') }}</span>.
+            See below what to do for {{ 'it' if fix.manual|length == 1 else 'them' }}.
+        </div>
+        {% endif %}
+        {% if fix.count > 1 %}
+        <details class="group mt-2">
+            <summary class="cursor-pointer select-none list-none text-xs text-t3 flex items-center gap-1">
+                <svg class="w-3.5 h-3.5 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                See what the script sets ({{ fix.covered|join(', ') }})
+            </summary>
+            <pre class="mt-2 p-3 rounded text-xs font-mono text-t2 overflow-x-auto" style="background:rgba(0,0,0,0.25)">{{ fix.patch }}</pre>
+        </details>
+        {% endif %}
+        {% endif %}
+    </div>
+    {% endif %}
+    {% for n in client_notices %}
+    <details id="clientNotice-{{ n.rule_id }}" data-client-notice class="group text-sm" {{ 'open' if n_notices == 1 }}
+             style="border-top:1px solid rgba(245,166,35,0.15)">
+        <summary class="px-4 py-3 flex items-center gap-3 cursor-pointer select-none list-none hover:bg-[rgba(255,255,255,0.02)]">
+            <span class="font-mono text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style="background:rgba(245,166,35,0.12);color:#f5a623">{{ n.rule_id }}</span>
+            <span class="text-t1 font-semibold">{{ n.title }}</span>
+            <span class="ml-auto flex items-center gap-1.5 text-xs text-t3 flex-shrink-0">
+                <span class="group-open:hidden">{{ 'Show the fix' if n.patch else 'Details' }}</span><span class="hidden group-open:inline">Hide</span>
+                <svg class="w-4 h-4 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </span>
+        </summary>
+        <div class="px-4 pb-4">
+            {% if n.message %}<div class="text-t3 whitespace-pre-line">{{ n.message }}</div>{% endif %}
+            {% if n.patch %}
+            <div class="text-t3 mt-2">
+                The script above sets this for you. To do it by hand instead, put these in the
+                <code class="font-mono">env</code> block of <code class="font-mono">~/.claude/settings.json</code>, then restart Claude Code:
+            </div>
+            <pre class="mt-2 p-3 rounded text-xs font-mono text-t2 overflow-x-auto" style="background:rgba(0,0,0,0.25)">{{ n.patch }}</pre>
+            {% endif %}
+            <div class="mt-3 pt-3 flex flex-wrap items-center gap-3" style="border-top:1px solid rgba(245,166,35,0.12)">
+                <form action="/dashboard/client-rules/{{ n.rule_id }}/resolved" method="POST" data-client-resolved>
+                    <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5">I've applied it</button>
+                </form>
+                <span class="text-t4 text-xs">
+                    Hides this notice. It comes back by itself if the gateway sees the same problem again.
+                    Last seen {{ n.seen_local }}{% if n.client_version %} with Claude Code {{ n.client_version }}{% endif %}.
+                </span>
+            </div>
+        </div>
+    </details>
+    {% endfor %}
+</div>
+{% endif %}

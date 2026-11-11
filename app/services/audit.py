@@ -6,7 +6,8 @@
   (the SSO-cookie paths, ``browser_security.COOKIE_AUTH_PREFIXES``), except
   the read-only probes in ``_NOT_AUDITED``;
 - the reads that hand out credentials or bulk data: a full API key
-  (``GET /admin/users/{id}/api-key``) and every ``/admin/api/export/*``.
+  (``GET /admin/users/{id}/api-key``), every ``/admin/api/export/*`` and an
+  account's own key as a settings patch (``GET /dashboard/api-key/patch.*``).
 
 Being a middleware, it covers a new endpoint without anyone remembering to.
 Each row has the actor (JWT ``sub``), method, route template, path, status
@@ -57,7 +58,7 @@ _NOT_AUDITED: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/admin/api/test-model"),
     ("POST", "/admin/guardrail/test"),
 })
-_AUDITED_READS = re.compile(r"^/admin/(users/\d+/api-key|api/export/.+)$")
+_AUDITED_READS = re.compile(r"^/(admin/(users/\d+/api-key|api/export/.+)|dashboard/api-key/patch\.(bat|sh))$")
 # The whole model config: its handler notes a diff instead of the body.
 _BODY_NOT_RECORDED = frozenset({"/admin/api/config"})
 _TARGET_RE = re.compile(r"^/(?:admin/users|dashboard/app)/(\d+)(?:/|$)")

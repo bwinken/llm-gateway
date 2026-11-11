@@ -1382,6 +1382,10 @@ function submitExportCsv() {
                 <label for="modalKeyValue" class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-2">API Key</label>
                 <input id="modalKeyValue" type="text" readonly class="gw-input w-full px-3 py-2.5 font-mono text-sm select-all">
                 <div id="modalCopyFeedback" class="text-xs text-ag font-medium mt-1.5 h-4" aria-live="polite"></div>
+                <p class="text-xs text-t4 mt-2">
+                    A regenerated key stops the account's clients until they use the new one. For Claude Code the account
+                    can download a script that sets it: its dashboard → <b>My API Key</b>.
+                </p>
             </div>
             <div class="flex items-center justify-between px-6 py-4 bg-n1 rounded-b-2xl" style="border-top:1px solid rgba(255,255,255,0.04)">
                 <button type="button" onclick="refreshKey()" id="modalRefreshBtn" class="gw-btn gw-btn-warn text-sm px-4 py-2">
