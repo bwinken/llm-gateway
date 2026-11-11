@@ -1343,6 +1343,37 @@ def client_rules_mail_log(
     return JSONResponse(_mail_log_view(client_rules.mail_log(session, status.strip().lower(), q, page)))
 
 
+@router.post("/client-rules/mail-test-all")
+def test_client_rules_mail_all(
+    to: str = Form(""),
+    audience: str = Form("local"),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Send, to one address, the mail an account gets when it has every
+    rule that is on open at once: all of them listed, with the one merged
+    patch (as saved). ``to`` and ``audience`` as for a rule's own test mail."""
+    if not mailer.is_enabled():
+        raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
+    to = to.strip() or mailer.address_for(admin_user.username)
+    if not mailer.in_company_domain(to):
+        raise HTTPException(status_code=400, detail=f"Test mail goes to @{mailer.settings()['domain']} addresses only.")
+    try:
+        subject, body, rule_ids = client_rules.render_digest_preview(
+            session, to.partition("@")[0], audience.strip().lower() or "local",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    subject = "[TEST] " + subject
+    ok, error = mailer.send(to, subject, body)
+    client_rules.record_mail(
+        session, address=to, subject=subject, rule_ids=rule_ids, kind="test", ok=ok, error=error,
+        actor=admin_user.username,
+    )
+    audit.note(mail_test_to=to, mail_test_ok=ok)
+    return JSONResponse({"ok": ok, "to": to, "detail": error, "rules": rule_ids})
+
+
 @router.post("/client-rules/{rule_id}/mail-test")
 def test_client_rule_mail(
     rule_id: str,

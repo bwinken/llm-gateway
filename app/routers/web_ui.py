@@ -434,6 +434,7 @@ def dashboard(
             client_combined=_client_combined(session, user),
             client_notice_days=client_rules.WINDOW_DAYS,
             api_key_env=client_rules.API_KEY_ENV,
+            api_key_env_retired=client_rules.API_KEY_ENV_RETIRED,
             server_groups=server_groups,
             claude_code_available=claude_code_available,
             azure_access=user.can_use_azure or user.is_admin,
@@ -619,8 +620,9 @@ def api_key_patch(
     user: User = Security(get_web_user, scopes=["read"]),
 ):
     """A script that puts the account's current API key into Claude Code
-    (``client_rules.API_KEY_ENV`` in the ``env`` block of settings.json,
-    nothing else), as ``patch.bat`` or ``patch.sh``: what a user runs on each
+    (``client_rules.key_env``: ``ANTHROPIC_AUTH_TOKEN`` set in the ``env``
+    block of settings.json, the older ``ANTHROPIC_API_KEY`` removed, nothing
+    else), as ``patch.bat`` or ``patch.sh``: what a user runs on each
     machine after regenerating the key. Only ever the caller's own key; the
     download is in the audit log (``audit._AUDITED_READS``) and never cached."""
     if fmt not in client_rules.PATCH_FORMATS:

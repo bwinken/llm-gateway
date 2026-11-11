@@ -121,7 +121,7 @@
   <span class="text-ag">"model"</span>: <span class="text-ag">"your-model-alias"</span>,
   <span class="text-ag">"env"</span>: {
     <span class="text-ag">"ANTHROPIC_BASE_URL"</span>: <span class="text-ag">"https://your-gateway"</span>,
-    <span class="text-ag">"ANTHROPIC_API_KEY"</span>:  <span class="text-ag">"YOUR_API_KEY"</span>,
+    <span class="text-ag">"ANTHROPIC_AUTH_TOKEN"</span>: <span class="text-ag">"YOUR_API_KEY"</span>,
     <span class="text-ag">"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"</span>: <span class="text-ag">"1"</span>
   }
 }</pre>
@@ -131,8 +131,7 @@
                     {% set env_groups = [
                         ("Gateway routing", [
                             ("ANTHROPIC_BASE_URL", "Base URL of the Claude-compatible API. Point this at the gateway."),
-                            ("ANTHROPIC_API_KEY", "Your personal API key (from the dashboard). Used as Bearer token."),
-                            ("ANTHROPIC_AUTH_TOKEN", "Alternative token header. Use API_KEY unless told otherwise."),
+                            ("ANTHROPIC_AUTH_TOKEN", "Your personal API key (from the dashboard), sent as the Bearer token. The only variable the key goes in: after regenerating it, My API Key on the dashboard has a script that updates it."),
                             ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "Set to 1 to fill the /model picker from the gateway's /v1/models at startup. It has its own switch: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC does not turn it off (Claude Code 2.1.257 and later). Only model IDs containing \"claude\" or \"anthropic\" are kept."),
                         ]),
                         ("Custom model option", [

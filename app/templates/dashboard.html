@@ -1032,7 +1032,8 @@ result = client.system_one(
                     </div>
                     <p class="text-xs text-t4 mt-2">
                         Sets <code class="font-mono">{{ api_key_env }}</code> in the <code class="font-mono">env</code> block of
-                        <code class="font-mono">~/.claude/settings.json</code> to the key above and changes nothing else (a backup is saved as
+                        <code class="font-mono">~/.claude/settings.json</code> to the key above{% if api_key_env_retired %}, removes the older
+                        <code class="font-mono">{{ api_key_env_retired|join(', ') }}</code>{% endif %} and changes nothing else (a backup is saved as
                         settings.json.bak). Run it on every machine where you use Claude Code, restart Claude Code, then delete the
                         file: it contains your key.
                     </p>

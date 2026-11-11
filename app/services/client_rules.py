@@ -504,17 +504,22 @@ def render_patch(fmt: str, name: str, env: dict[str, str | None], filename: str)
 
 # ── The account's API key, as a patch ──
 
-# The variable Claude Code reads the gateway key from (sent as
+# The one variable Claude Code gets the gateway key in (sent as
 # ``Authorization: Bearer``). A regenerated key reaches a user's machine as a
-# patch that sets this one variable and nothing else.
+# patch that sets it.
 API_KEY_ENV = "ANTHROPIC_AUTH_TOKEN"
+# Variables that used to hold the key as well (older installers wrote both).
+# The key patch removes them: a second copy would go stale on the next
+# regenerate and keep being sent as ``x-api-key``.
+API_KEY_ENV_RETIRED = ("ANTHROPIC_API_KEY",)
 
 
 def key_env(api_key: str) -> dict[str, str | None]:
     """The patch that puts an account's current API key into Claude Code:
-    ``API_KEY_ENV`` and nothing else. It is not a check's patch (no
-    violation, no baseline) and is only ever served to the account itself."""
-    return {API_KEY_ENV: api_key}
+    ``API_KEY_ENV`` set to the key, ``API_KEY_ENV_RETIRED`` removed, nothing
+    else. It is not a check's patch (no violation, no baseline) and is only
+    ever served to the account itself."""
+    return {API_KEY_ENV: api_key, **{name: None for name in API_KEY_ENV_RETIRED}}
 
 
 # ── The checks as configured ──
@@ -1161,6 +1166,22 @@ def _support_url(public_url: str) -> str:
 def render_mail(rule: Any, username: str, env: dict[str, str | None]) -> tuple[str, str]:
     """The mail about one check alone (the admin's test mail)."""
     return render_digest(username, [rule], env)
+
+
+def render_digest_preview(session: Session, username: str, audience: str = "local") -> tuple[str, str, list[str]]:
+    """``(subject, html, rule ids)`` of the mail an account of ``audience``
+    would get with every check open that can mail (enabled, not deprecated),
+    as saved: the admin's test of the mail about several things at once,
+    with the one merged patch. Raises ValueError for an unknown audience or
+    when no check is on."""
+    azure, aws = audience_flags(audience)
+    rule_list = [rule for rule in rules(session) if rule.enabled and not rule.deprecated]
+    if not rule_list:
+        raise ValueError("No rule is on, so there is nothing to mail.")
+    subject, body = render_digest(
+        username, rule_list, combined_env(rule_list, azure, aws), split_covered(rule_list, azure, aws)[1],
+    )
+    return subject, body, [rule.id for rule in rule_list]
 
 
 def mailable(session: Session, rows: list[ClientViolation]) -> list[ClientViolation]:
