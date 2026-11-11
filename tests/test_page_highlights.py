@@ -11,14 +11,18 @@ import pytest
 
 from app.models.schema import User, UsageLog
 from app.services.stats import get_budget_pressure, get_today_totals, summarize_server_status
-from tests.conftest import web_auth_header
+from tests.conftest import earlier_today, web_auth_header
 
 
-def _spend(session, user: User, usd: float, *, minutes_ago: int = 5) -> None:
+def _spend(session, user: User, usd: float, *, minutes_ago: int | None = None) -> None:
+    """Record spending. With no ``minutes_ago`` it is spent today (never a plain
+    "5 minutes ago", which is yesterday just after local midnight); an explicit
+    ``minutes_ago`` places it on an earlier day."""
+    when = earlier_today() if minutes_ago is None else datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
     session.add(UsageLog(
         user_id=user.id, model="test-llm", model_type="llm", input_tokens=1000,
         output_tokens=100, cost_usd=Decimal(str(usd)), endpoint="/v1/messages",
-        created_at=datetime.now(timezone.utc) - timedelta(minutes=minutes_ago),
+        created_at=when,
     ))
     session.commit()
 

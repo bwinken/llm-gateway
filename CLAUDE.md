@@ -17,6 +17,7 @@ uv run ruff check . [--fix]                # lint (CI runs the same)
 uv run alembic upgrade head                # apply migrations
 uv run alembic revision --autogenerate -m "description"
 uv add <package>                           # add a dependency (commit uv.lock too)
+docker build -f deploy/migration/Dockerfile -t llm-gateway:dev .   # gateway image (deploy/migration/README.md)
 ```
 
 ## Repo map
@@ -24,7 +25,7 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | Path | What lives there |
 |---|---|
 | `app/main.py` | App, lifespan (DB init, httpx clients, health loop, concurrency-lease heartbeat, usage rollup loop, scheduled jobs), middleware, `AccountDisabledError` handler |
-| `app/core/config.py` | `config.toml` → `MODEL_ROUTING`, `AZURE_MODELS`, `BEDROCK_MODELS`, pricing and fallback maps; `[app]` getters/setters; `save_config` |
+| `app/core/config.py` | `config.toml` (in `CONFIG_DIR`, default the project root) → `MODEL_ROUTING`, `AZURE_MODELS`, `BEDROCK_MODELS`, pricing and fallback maps; `[app]` getters/setters; `save_config` |
 | `app/core/deps.py` | API-key auth, daily limit and cloud cap, concurrency-limited dependencies |
 | `app/core/auth.py` | Web-UI JWT auth (`get_web_user`, scopes) |
 | `app/core/browser_security.py` | CORS policy (no credentials) and `CrossSiteRequestGuard` for the cookie-authenticated `/admin`, `/dashboard` writes |
@@ -46,7 +47,8 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | `app/templates/` | `dashboard.html`, `_client_notices.html` (the dashboard's client-rule notices, also served alone by `/dashboard/client-notices`), `admin.html`, `_admin_user_table.html` (Users / Apps tables, also served alone by `/admin/user-table`), `admin_models.html` (model-config SPA), `base.html` (`gwTabs`, `gwToast`, `gwConfirm`) |
 | `alembic/versions/` | Migrations (PostgreSQL-only: they do not run on SQLite) |
 | `scripts/` | Manual runs of the in-gateway jobs: `scan_anomalies.py`, `rollup_usage_daily.py` (inspect / `--recompute`), `cleanup_usage_logs.py` (retention preview); plus `azure_latency_probe.py` (per-phase Azure latency, direct vs. via gateway), SQLite → PG migration, legacy `add_owner_id.py`, dev PG helper |
-| `deploy/` | gateway systemd unit (no timers: jobs run in the gateway), nginx example, docker-compose (PG + oauth2-proxy), `setup.sh`, `backup-db.sh` (online `pg_dump` with verify + retention; a host cron task, not a gateway job) |
+| `deploy/` | gateway systemd unit (no timers: jobs run in the gateway), nginx example, docker-compose (PG + oauth2-proxy), `setup.sh`, `backup-db.sh` (online `pg_dump` with verify, optional GnuPG public-key encryption, retention; a host cron task, not a gateway job), `restore-drill.sh` (restores a backup into a throwaway no-network container, checks it, appends to `restore-drill.log`) |
+| `deploy/migration/` | Everything for running the gateway as a container and moving to a new server, with its own README. Image: `Dockerfile` + `Dockerfile.dockerignore` (`uv sync --locked --no-dev`, non-root, no secrets in the build context), `wait_for_db.py`. Compose: `docker-compose.gateway.yml` (`migrate` + `gateway`, layered on `deploy/docker-compose.yml`), `compose.sh` (both files), `gateway.env.example`. Data move: `load-backup.sh`. Drill: `1-bundle.sh` (production: backup + cleaned settings + snapshot, encrypted), then on the drill machine `2-restore-test.sh`, `3-image.sh`, `4-up.sh` (stack up on an empty database), `5-load-data.sh` (calls `load-backup.sh`), `6-verify.sh`, `7-teardown.sh`; `lib.sh` is shared; every step appends to `drill.log` |
 | `setup/install-claude-code-example.bat` | Windows Claude Code installer, personalized with the user's key by `/dashboard/install-claude-code.bat` |
 
 ## Request flow
@@ -183,6 +185,27 @@ Each of these has broken production or a test before. The parenthesized test pin
 - `admin_models.html` writes every input straight into its `config` object through `setField`. There is no DOM re-collection at save time.
 - `GET /admin/api/config` sends model secrets as `<stored:section/alias/field>` references, never values; `PUT` and *Test connection* resolve them. A new secret config key goes in `config.SECRET_FIELDS` (`tests/test_config_secrets.py`).
 
+**Containers**
+- Existing deployments must not notice any of this: `deploy/docker-compose.yml`, `deploy/.env.example` and `.env.example` stay as they are, and everything new for the container deployment or the move goes under `deploy/migration/`. The gateway services live in `deploy/migration/docker-compose.gateway.yml` and are only loaded by `compose.sh`; never add them (or a profile, or a healthcheck) to the original file.
+- A host that runs the gateway container is managed with `deploy/migration/compose.sh` only: a plain `docker compose -f deploy/docker-compose.yml down` there stops PostgreSQL under a still-running gateway. Layering keeps one compose project, so PostgreSQL and oauth2-proxy are not recreated when the gateway is added.
+- The gateway container uses `network_mode: host`: requests must keep arriving from `127.0.0.1`, the only address uvicorn trusts for `X-Forwarded-For`. On a bridge network the client address becomes Docker's gateway and the IP allowlist, failed-auth throttle, audit `client` and `CC002` all go wrong. It binds `127.0.0.1` (the image's default `GATEWAY_HOST` too), never `0.0.0.0` on the host network.
+- `config.toml` is read from and written to `CONFIG_DIR`; the container mounts that **directory**. `save_config` writes a temp file in the same directory and `os.replace`s it, which a single-file bind mount refuses (the rename onto a mount point fails).
+- Every container that imports `app` (`gateway` and `migrate`) gets the path overrides in `x-gateway-paths` (`CONFIG_DIR`, `LOG_DIR`, `AUTH_CENTER_PUBLIC_KEY_PATH`, `METRICS_DIR`): `.env` may hold host paths, and `app.core.logger` creates `LOG_DIR` at import, so a host path there kills the container.
+- `migrate` runs before `gateway` on every `up` (`service_completed_successfully`).
+- The image is built with `-f deploy/migration/Dockerfile` from the repository root. Its ignore file is `Dockerfile.dockerignore` beside it (BuildKit reads `<Dockerfile>.dockerignore`); it excludes `deploy/` except `wait_for_db.py`, so `pgdata` and `deploy/.env` never enter the build context.
+
+**Migration drill**
+- Steps 2 to 7 start with `guard_not_production` and refuse on any sign of a production install (the systemd service, a container not labeled with the drill's compose project, an existing `.env` / `config.toml` / `pgdata` without the `.migration-drill` marker). `7-teardown.sh` deletes only the paths that marker lists. Never weaken either: these scripts start a stack and delete data.
+- A copy of production must not act on the outside world: `1-bundle.sh` strips `ENV_STRIP_RE` from `.env` before it leaves production (`EXCHANGE_*` would mail real users, `LANGFUSE_*` would pollute production traces, the retention setting would delete drill rows) and `4-up.sh` filters again. A new setting with an outside effect goes in `ENV_STRIP_RE`, and `6-verify.sh` checks it is absent.
+- The bundle is refused unencrypted unless `DRILL_ALLOW_PLAINTEXT=1`; it holds every API key and downstream secret.
+- `drill.env` never overrides a variable given on the command line (`lib.sh` restores the preset environment after sourcing it): otherwise `BUNDLE=... bash 4-up.sh` silently uses the file's bundle.
+- The drill uses the same compose files as the real move (through `compose.sh`), not copies, and loads data with `load-backup.sh`, the script the real cutover runs: it rehearses what will run, containers first and data last. Don't give the drill its own restore path. As root it runs the container as uid 1000, never 0.
+- `load-backup.sh` replaces a database, so it keeps its guards: it checks the file is a dump and can be decrypted **before** touching anything, shows what the current database holds and wants its name typed (or `--yes`), saves a non-empty database to `before-load/` first, refuses beside a running systemd gateway, and never starts the gateway after a failed restore or migration. It deletes the restored `concurrency_leases` rows (the old host's workers; their hostname differs, so only the 180 s TTL would clear them).
+
+**Backups**
+- An encrypted backup never leaves plaintext behind: verify the dump, encrypt it, delete the plaintext, and only then `mv` the `.gpg` into place. In-progress files start with `.` so the monthly copy and pruning (which glob `llm-gateway-*`) never take one for a backup. The gateway host holds the public key only; nothing there may need the private key.
+- `restore-drill.sh` removes its container with `docker rm -f -v`: without `-v` the image's data volume survives even a `--rm` container, leaving a full restored copy of the database on the host. Every run, failed ones included, appends to the drill log; that line is the audit evidence.
+
 **Lint and config**
 - Ruff's rule set is deliberately narrow (`E4`, `E7`, `E9`, `F`). Don't widen it: the default set fights intentional patterns such as blind excepts and `Depends()` defaults.
 - `config.toml` is gitignored. Reads fall back to `config.toml.example` (CI has no `config.toml`); `save_config` always writes `config.toml`.
@@ -242,4 +265,4 @@ Pitfalls:
 
 ## CI
 
-`.github/workflows/ci.yml`: `uv sync --locked --dev` → `ruff check .` → `pytest tests/ -q` on Python 3.11 for pushes to `main` and every PR. `--locked` fails a PR that edits `pyproject.toml` without re-running `uv lock`. `.github/workflows/security.yml` runs `pip-audit` on the locked runtime dependencies and gitleaks on new commits (whole history weekly). Every `--ignore-vuln` there carries its reason; add none without one, and drop it when the fix ships. Fake keys belong under `tests/` or in `*.example` files, which `.gitleaks.toml` allowlists; docs write a key as `sk-your-api-key` (its one stopword).
+`.github/workflows/ci.yml`: `uv sync --locked --dev` → `ruff check .` → `pytest tests/ -q` on Python 3.11 for pushes to `main` and every PR. `--locked` fails a PR that edits `pyproject.toml` without re-running `uv lock`. `.github/workflows/security.yml` runs `pip-audit` on the locked runtime dependencies and gitleaks on new commits (whole history weekly). Every `--ignore-vuln` there carries its reason; add none without one, and drop it when the fix ships. Fake keys belong under `tests/` or in `*.example` files, which `.gitleaks.toml` allowlists; docs and scripts write a key as `sk-your-api-key` (its one stopword), never another made-up key: a literal after `Authorization: Bearer` in a shell script fails the scan (`curl-auth-header`). A false positive already in the history gets its fingerprint in `.gitleaksignore` with the reason.

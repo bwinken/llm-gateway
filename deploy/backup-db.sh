@@ -4,7 +4,7 @@
 # 用法:
 #   bash deploy/backup-db.sh                 # 備份到 ~/backup/llm-gateway
 #   bash deploy/backup-db.sh /mnt/nas/llmgw  # 備份到指定目錄
-#   bash deploy/backup-db.sh --check FILE    # 只檢查某個備份檔能否讀取
+#   bash deploy/backup-db.sh --check FILE    # 只檢查某個備份檔能否讀取（.gpg 需要私鑰）
 #
 # 線上備份：pg_dump 在一個快照交易裡讀完整個資料庫，備份內容一致，
 # 不會擋住 gateway 的一般讀寫，服務不用停。它只會擋住改表結構的動作，
@@ -12,7 +12,12 @@
 #
 # 產出：
 #   <備份目錄>/daily/llm-gateway-YYYY-MM-DD_HHMMSS.dump   （pg_dump -Fc 壓縮格式）
+#   <備份目錄>/daily/llm-gateway-YYYY-MM-DD_HHMMSS.dump.gpg（設了加密時，取代上一行）
 #   <備份目錄>/monthly/...                                （每月第一份另存一份）
+#
+# 加密（建議開啟）：用 GnuPG 公鑰加密，備份主機上只放公鑰。私鑰由負責人另外保管
+# （離線），所以備份主機或 NAS 被拿走時，備份內容仍讀不到。驗證在加密前做，
+# 未加密的暫存檔驗證完立刻刪除，只有加密檔會留下或複製到異地。
 # 保留：最新 KEEP_DAILY 份每日備份、KEEP_MONTHLY 份每月備份，其餘刪除。
 #
 # 可用環境變數覆蓋：
@@ -22,9 +27,14 @@
 #   PG_CONTAINER    PostgreSQL 容器名稱（預設 llm-gateway-pg）
 #   ENV_FILE        讀取 PG_USER / PG_DB 的檔案（預設 deploy/.env）
 #   BACKUP_COPY_TO  備份完成後再用 rsync 複製到此（例如 user@nas:/backup/llmgw/），留空則不複製
+#   BACKUP_GPG_RECIPIENT_FILE  加密用的公鑰檔（gpg --export --armor 匯出的 .asc）；免匯入 keyring
+#   BACKUP_GPG_RECIPIENT       或：已匯入本機 keyring 的公鑰（指紋或 email）
+#                              兩者都沒設時不加密，並提醒
 #
+# 還原演練（建議每季）：bash deploy/restore-drill.sh，還原到一次性的容器並留下紀錄。
 # 還原（到一個新的資料庫，詳見 deploy/README.md 的「資料庫備份」）：
 #   docker exec -i llm-gateway-pg pg_restore -U <PG_USER> --create -d postgres < FILE
+#   加密檔先解密：gpg --decrypt FILE.gpg | docker exec -i llm-gateway-pg pg_restore ...
 #
 # 結束碼：0 成功；非 0 失敗（失敗時不會留下不完整的備份檔）。
 set -euo pipefail
@@ -50,15 +60,35 @@ command -v docker >/dev/null || die "找不到 docker 指令"
 docker inspect -f '{{.State.Running}}' "$PG_CONTAINER" 2>/dev/null | grep -q true \
     || die "PostgreSQL 容器 $PG_CONTAINER 沒有在執行（docker ps 確認名稱，或設 PG_CONTAINER）"
 
-# 備份檔可讀：pg_restore --list 能完整列出內容
+# 備份檔可讀：pg_restore --list 能完整列出內容（.gpg 先解密，需要私鑰）
 check_dump() {
-    docker exec -i "$PG_CONTAINER" pg_restore --list < "$1" > /dev/null
+    if [[ "$1" == *.gpg ]]; then
+        command -v gpg >/dev/null || die "找不到 gpg 指令，無法解密 $1"
+        gpg --quiet --decrypt "$1" | docker exec -i "$PG_CONTAINER" pg_restore --list > /dev/null
+    else
+        docker exec -i "$PG_CONTAINER" pg_restore --list < "$1" > /dev/null
+    fi
 }
 
 if [ "${1:-}" = "--check" ]; then
     [ -f "${2:-}" ] || die "用法: bash deploy/backup-db.sh --check FILE"
     check_dump "$2" && ok "備份檔可讀取: $2" || die "備份檔無法讀取或已損毀: $2"
     exit 0
+fi
+
+# ── 加密設定（先檢查，免得 dump 完才發現公鑰有問題）──
+GPG_ARGS=()
+if [ -n "${BACKUP_GPG_RECIPIENT_FILE:-}" ]; then
+    [ -r "$BACKUP_GPG_RECIPIENT_FILE" ] || die "讀不到 BACKUP_GPG_RECIPIENT_FILE: $BACKUP_GPG_RECIPIENT_FILE"
+    GPG_ARGS=(--recipient-file "$BACKUP_GPG_RECIPIENT_FILE")
+elif [ -n "${BACKUP_GPG_RECIPIENT:-}" ]; then
+    GPG_ARGS=(--recipient "$BACKUP_GPG_RECIPIENT" --trust-model always)
+fi
+if [ ${#GPG_ARGS[@]} -gt 0 ]; then
+    command -v gpg >/dev/null || die "設了 BACKUP_GPG_RECIPIENT(_FILE) 但找不到 gpg 指令"
+    # 用一小段資料試加密：公鑰不存在、過期或不能加密時在這裡就失敗
+    echo probe | gpg --batch --quiet --yes "${GPG_ARGS[@]}" --encrypt > /dev/null 2>&1 \
+        || die "無法用指定的公鑰加密（檢查 BACKUP_GPG_RECIPIENT(_FILE)，或 gpg --list-keys）"
 fi
 
 # ── 讀 PG_USER / PG_DB ──
@@ -101,8 +131,11 @@ fi
 
 stamp="$(date '+%Y-%m-%d_%H%M%S')"
 final="$DAILY_DIR/llm-gateway-$stamp.dump"
-tmp="$final.partial"
-trap 'rm -f "$tmp"' EXIT
+[ ${#GPG_ARGS[@]} -gt 0 ] && final="$final.gpg"
+# 暫存檔以 . 開頭：不會被每月另存、保留期清理當成備份
+tmp="$DAILY_DIR/.llm-gateway-$stamp.dump.partial"
+tmp_enc="$DAILY_DIR/.llm-gateway-$stamp.dump.gpg.partial"
+trap 'rm -f "$tmp" "$tmp_enc"' EXIT
 
 info "開始備份 $PG_DB（容器 $PG_CONTAINER，資料庫約 $((db_bytes / 1048576)) MB）"
 start=$(date +%s)
@@ -110,7 +143,15 @@ docker exec "$PG_CONTAINER" pg_dump -U "$PG_USER" -d "$PG_DB" -Fc > "$tmp" \
     || die "pg_dump 失敗，未產生備份"
 [ -s "$tmp" ] || die "pg_dump 產生的檔案是空的"
 check_dump "$tmp" || die "備份檔驗證失敗（pg_restore --list 讀不了）"
-mv "$tmp" "$final"
+if [ ${#GPG_ARGS[@]} -gt 0 ]; then
+    gpg --batch --quiet --yes "${GPG_ARGS[@]}" --output "$tmp_enc" --encrypt "$tmp" \
+        || die "gpg 加密失敗，未產生備份"
+    [ -s "$tmp_enc" ] || die "加密後的檔案是空的"
+    rm -f "$tmp"
+    mv "$tmp_enc" "$final"
+else
+    mv "$tmp" "$final"
+fi
 trap - EXIT
 elapsed=$(( $(date +%s) - start ))
 
@@ -118,10 +159,13 @@ size="$(du -h "$final" | cut -f1)"
 users="$(psql_value "SELECT count(*) FROM users" 2>/dev/null || echo '?')"
 version="$(psql_value "SELECT version_num FROM alembic_version" 2>/dev/null || echo '?')"
 ok "備份完成：$final（$size，${elapsed}s，users=$users，schema=$version）"
+if [ ${#GPG_ARGS[@]} -eq 0 ]; then
+    warn "未設定 BACKUP_GPG_RECIPIENT_FILE：備份沒有加密，內含所有 API key 與個資"
+fi
 
 # ── 每月第一份另存 ──
 month="$(date '+%Y-%m')"
-if ! ls "$MONTHLY_DIR"/llm-gateway-"$month"-*.dump >/dev/null 2>&1; then
+if ! ls "$MONTHLY_DIR"/llm-gateway-"$month"-*.dump* >/dev/null 2>&1; then
     cp -p "$final" "$MONTHLY_DIR/"
     ok "已另存為 $month 的每月備份"
 fi
@@ -129,7 +173,8 @@ fi
 # ── 保留期：刪掉最舊的 ──
 prune() {
     local dir="$1" keep="$2" old
-    old="$(ls -1 "$dir"/llm-gateway-*.dump 2>/dev/null | sort | head -n -"$keep" || true)"
+    # 檔名以時間開頭，加密與未加密的備份一起依時間排序
+    old="$(ls -1 "$dir"/llm-gateway-*.dump "$dir"/llm-gateway-*.dump.gpg 2>/dev/null | sort | head -n -"$keep" || true)"
     [ -z "$old" ] && return 0
     echo "$old" | while read -r f; do rm -f "$f"; info "已刪除過期備份 $(basename "$f")"; done
 }

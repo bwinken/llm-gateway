@@ -27,7 +27,22 @@ from app.core.logger import logger
 load_dotenv()
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-_CONFIG_PATH = _PROJECT_ROOT / "config.toml"
+
+
+def _config_dir() -> Path:
+    """Directory holding ``config.toml``: ``CONFIG_DIR``, else the project root.
+
+    ``save_config`` replaces the file atomically (temp file in the same
+    directory, then ``os.replace``), so the file must live in a directory the
+    gateway can write. A container mounts that directory: a bind mount of the
+    single file refuses the rename, and an unmounted file vanishes with
+    the container.
+    """
+    configured = os.getenv("CONFIG_DIR", "").strip()
+    return Path(configured).expanduser() if configured else _PROJECT_ROOT
+
+
+_CONFIG_PATH = _config_dir() / "config.toml"
 # Shipped sample config, used as a read-only fallback when config.toml is
 # absent (fresh clone, CI checkout). config.toml is gitignored — it holds
 # real downstream URLs and API keys — so without this fallback importing

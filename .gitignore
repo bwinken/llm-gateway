@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 config.toml
+/config/
 *.db
 pgdata/
 keys/
@@ -11,3 +12,8 @@ keys/
 monitor/
 logs/
 deploy/llm-gateway.nginx.conf
+# migration drill: per-run settings, records and the drill environment's marker
+deploy/migration/drill.env
+deploy/migration/*.log
+deploy/migration/.state/
+/.migration-drill

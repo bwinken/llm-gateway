@@ -33,6 +33,36 @@ class TestActiveConfigPath:
             assert cfg._config_mtime_now() == 0.0
 
 
+class TestConfigDir:
+    """CONFIG_DIR moves config.toml into a directory a container can mount."""
+
+    def test_defaults_to_the_project_root(self, monkeypatch):
+        monkeypatch.delenv("CONFIG_DIR", raising=False)
+        assert cfg._config_dir() == cfg._PROJECT_ROOT
+
+    def test_blank_means_the_project_root(self, monkeypatch):
+        monkeypatch.setenv("CONFIG_DIR", "  ")
+        assert cfg._config_dir() == cfg._PROJECT_ROOT
+
+    def test_points_at_the_given_directory(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+        assert cfg._config_dir() == tmp_path
+
+    def test_example_stays_with_the_code(self):
+        """The read-only fallback ships in the image, not in the mounted directory."""
+        assert cfg._EXAMPLE_CONFIG_PATH == cfg._PROJECT_ROOT / "config.toml.example"
+
+    def test_a_save_replaces_the_file_inside_that_directory(self, tmp_path):
+        """The atomic write's temp file lives next to the config, so the rename
+        stays inside the mounted directory."""
+        path = tmp_path / "config.toml"
+        path.write_text("[app]\n", encoding="utf-8")
+        with patch.object(cfg, "_CONFIG_PATH", path), patch.object(cfg, "reload_config"):
+            cfg.save_config({}, {}, {})
+        assert path.exists()
+        assert [p.name for p in tmp_path.iterdir()] == ["config.toml"]
+
+
 class TestExampleConfigIsUsable:
     def test_example_file_ships_with_the_repo(self):
         assert cfg._EXAMPLE_CONFIG_PATH.exists(), (

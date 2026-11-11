@@ -1,0 +1,7 @@
+# Findings gitleaks should skip, one fingerprint per line (see .gitleaks.toml).
+# Each entry says what it is and why it is not a secret.
+
+# A deliberately invalid placeholder ("sk-drill-wrong-key") that the migration
+# drill sent to check a wrong key gets 401. Never a credential. The script now
+# uses the documented placeholder instead; this commit stays in the history.
+45512991ba5f48a4043041a8f22445b32f1e9f5b:deploy/migration-drill/5-verify.sh:curl-auth-header:119

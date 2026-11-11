@@ -23,6 +23,8 @@ os.environ["METRICS_ENABLED"] = ""
 # Client-rule mail goes out a pause apart; tests do not wait for it.
 os.environ["CLIENT_RULE_MAIL_PAUSE_S"] = "0"
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import jwt as pyjwt
 import pytest
@@ -524,6 +526,18 @@ def client(db_session, test_user):
         yield tc
 
     app.dependency_overrides.clear()
+
+
+def earlier_today(minutes_ago: int = 5) -> datetime:
+    """A moment ``minutes_ago`` minutes back that is still today in Asia/Taipei.
+
+    Reports count local calendar days, so a plain "5 minutes ago" is yesterday
+    during the first five minutes after local midnight (16:00 UTC). Tests that
+    meant "spent today" failed whenever CI ran in that window. Clamp to the
+    start of today."""
+    from app.core.timeutil import local_day_start_utc
+
+    return max(datetime.now(timezone.utc) - timedelta(minutes=minutes_ago), local_day_start_utc())
 
 
 def auth_header(api_key: str = "sk-testkey123") -> dict[str, str]:
