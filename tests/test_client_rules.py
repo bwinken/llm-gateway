@@ -777,6 +777,29 @@ class TestResolved:
         assert not client_rules.is_resolved(row)
         assert 'id="clientNotice-CC001"' in self._page(client, test_user)
 
+    def test_violating_again_after_saying_fixed_is_a_new_case_for_mail(self, client, db_session, test_user, admin_user, mail_on):
+        _configure(db_session, AUTO, auto_email=True)                    # no repeat: one mail per case
+        row = _violation(db_session, AUTO, "testuser")
+        start = row.last_seen_at
+        assert "sent=1" in client_rules.run_auto_mail(db_session, start)
+        client_rules.resolve(db_session, AUTO, "testuser", start + timedelta(minutes=5))
+        assert "sent=0" in client_rules.run_auto_mail(db_session, start + timedelta(hours=7))
+        again = start + timedelta(days=2)
+        client_rules._touch_violation(db_session, AUTO, "testuser", "2.1.0", again)
+        [row] = _violations(db_session, AUTO)
+        assert not client_rules.is_resolved(row) and row.mailed_at is None and row.resolved_at is not None
+        assert [v.username for v in client_rules.mail_targets(db_session, AUTO, only_unmailed=True, now=again)] == ["testuser"]
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        card = body.split('id="client-rule-CC001"', 1)[1].split('id="client-rule-CC002"', 1)[0]
+        assert "said fixed" in card and "not yet" in card
+        assert "sent=1" in client_rules.run_auto_mail(db_session, again)
+        assert len(mail_on) == 2
+
+    def test_an_open_violation_seen_again_keeps_its_mail_state(self, db_session, test_user):
+        row = _violation(db_session, AUTO, "testuser", mailed_at=_now(), mail_attempted_at=_now())
+        client_rules._touch_violation(db_session, AUTO, "testuser", "", row.last_seen_at + timedelta(hours=2))
+        assert _violations(db_session, AUTO)[0].mailed_at is not None
+
     def test_only_that_check_and_only_that_account(self, client, db_session, test_user, admin_user):
         _violation(db_session, AUTO, "testuser")
         _violation(db_session, AUTO, "admin")
@@ -1167,6 +1190,62 @@ class TestOneMailPerAccount:
         assert "Fix auto mode" in bodies["testuser@example.test"][1]
         assert "Update Claude Code" in bodies["admin@example.test"][0] and "Fix auto mode" not in bodies["admin@example.test"][1]
         assert _violations(db_session, AUTO)[0].mailed_at is not None    # covered by that mail, so marked
+
+    def test_a_click_on_one_check_queues_the_account_in_every_list(self, db_session, test_user, mail_on):
+        self._three(db_session)                  # the mail it asks for covers all three
+        assert client_rules.request_mail(db_session, OUTDATED) == 1
+        for rule_id in (AUTO, HTTP, OUTDATED):
+            [row] = _violations(db_session, rule_id)
+            assert client_rules.is_queued(row), rule_id
+        client_rules.send_batch(db_session.get_bind())
+        for rule_id in (AUTO, HTTP, OUTDATED):
+            [row] = _violations(db_session, rule_id)
+            assert row.mailed_at is not None and not client_rules.is_queued(row), rule_id
+        assert len(mail_on) == 1
+
+    def test_the_other_lists_show_it_queued_then_mailed(self, client, db_session, admin_user, test_user, mail_on):
+        self._three(db_session)
+        client_rules.request_mail(db_session, OUTDATED)
+        def page() -> str:
+            return client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+
+        card = page().split('id="client-rule-CC001"', 1)[1].split('id="client-rule-CC002"', 1)[0]
+        assert "queued" in card and "not yet" not in card
+        client_rules.send_batch(db_session.get_bind())
+        card = page().split('id="client-rule-CC001"', 1)[1].split('id="client-rule-CC002"', 1)[0]
+        assert "queued" not in card and "not yet" not in card and "Mail the 0 not mailed yet" in card
+
+    def test_mail_everyone_reaches_every_check_at_once(self, client, db_session, admin_user, test_user, mail_on):
+        _configure(db_session, AUTO, title="Fix auto mode")
+        _configure(db_session, HTTP, title="Use https")
+        _violation(db_session, AUTO, "testuser")
+        _violation(db_session, HTTP, "admin")
+        _violation(db_session, HTTP, "app_bot")                          # no mailbox
+        _violation(db_session, HTTP, "gone")                             # no account
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        strip = body.split('id="client-rules-mail-all"', 1)[1][:1800]
+        assert "Mail the 2 not mailed yet" in strip and "Mail all 2" in strip
+        resp = client.post("/admin/client-rules/mail-all", data={"only_unmailed": "on"}, headers=_admin(admin_user))
+        assert resp.status_code == 200 and resp.json()["queued"] == 2
+        assert sorted(to for to, _, _ in mail_on) == ["admin@example.test", "testuser@example.test"]
+        # Everyone has been told: "not mailed yet" has nobody left, "all" still has both.
+        assert client_rules.request_mail_all(db_session, only_unmailed=True) == 0
+        resp = client.post("/admin/client-rules/mail-all", data={"only_unmailed": "off"}, headers=_admin(admin_user))
+        assert resp.json()["queued"] == 2 and len(mail_on) == 4
+
+    def test_mail_everyone_skips_fixed_and_deprecated(self, db_session, test_user, admin_user, mail_on):
+        _configure(db_session, AUTO)
+        _configure(db_session, HTTP)
+        _violation(db_session, AUTO, "testuser")
+        _violation(db_session, HTTP, "admin")
+        client_rules.resolve(db_session, HTTP, "admin")
+        assert client_rules.mail_all_targets(db_session, only_unmailed=False) == ["testuser"]
+        with TestLifecycle._with(deprecated="on its way out"):          # CC001
+            assert client_rules.mail_all_targets(db_session, only_unmailed=False) == []
+
+    def test_mail_everyone_needs_mail_configured(self, client, db_session, admin_user):
+        resp = client.post("/admin/client-rules/mail-all", data={"only_unmailed": "on"}, headers=_admin(admin_user))
+        assert resp.status_code == 400
 
     def test_a_later_check_wins_where_two_set_the_same_variable(self):
         first = SimpleNamespace(patch='{"MODEL": "a", "KEEP": "1"}', patch_azure="", patch_aws="")

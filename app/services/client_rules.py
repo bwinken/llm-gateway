@@ -649,6 +649,18 @@ def _touch_violation(session: Session, rule_id: str, username: str, version: str
     ).rowcount:
         session.commit()
         return
+    # Back after the account said it applied the fix: open again, and a new
+    # case for mail (the mail it got was about the one it reported fixed).
+    # ``resolved_at`` stays, so the admin's list can say it was reported fixed.
+    reopened = {key: value for key, value in fresh.items() if key != "resolved_at"}
+    if session.execute(
+        update(ClientViolation)
+        .where(*where, ClientViolation.resolved_at.is_not(None),  # type: ignore[union-attr]
+               ClientViolation.resolved_at >= ClientViolation.last_seen_at, ClientViolation.resolved_at < now)
+        .values(**values, **reopened)
+    ).rowcount:
+        session.commit()
+        return
     if session.execute(update(ClientViolation).where(*where).values(**values)).rowcount:
         session.commit()
         return
@@ -1287,17 +1299,54 @@ def _request_due(violation: ClientViolation, now: datetime) -> bool:
     return True
 
 
+def _queue_accounts(session: Session, usernames: list[str], now: datetime) -> int:
+    """Queue ``usernames`` for a mail: stamp the request on everything each
+    has open (deprecated checks left out), because the one mail it gets
+    covers all of it. Every check's list then shows the account as queued,
+    not only the list the admin clicked in. Returns accounts queued."""
+    queued = 0
+    for items in open_items(session, now, list(dict.fromkeys(usernames))).values():
+        rows = [row for rule, row in items if not rule.deprecated]
+        for row in rows:
+            row.mail_requested_at = now
+            session.add(row)
+        queued += bool(rows)
+    session.commit()
+    return queued
+
+
 def request_mail(session: Session, rule_id: str, only_unmailed: bool = True, now: datetime | None = None) -> int:
     """An admin's click on a check's mail button: queue its accounts (those
     not mailed yet, or all of them). Nothing is sent here; the mail job
     sends the queue in batches. Returns how many were queued."""
     now = now or utcnow()
     targets = mail_targets(session, rule_id, only_unmailed, now)
-    for row in targets:
-        row.mail_requested_at = now
-        session.add(row)
-    session.commit()
-    return len(targets)
+    return _queue_accounts(session, [row.username for row in targets], now)
+
+
+def mail_all_targets(session: Session, only_unmailed: bool = True, now: datetime | None = None) -> list[str]:
+    """Who "mail everyone" reaches: the accounts with a mailbox that have
+    anything open under any check (deprecated ones left out); with
+    ``only_unmailed``, those with something open they were never mailed about."""
+    names = []
+    for username, items in open_items(session, now).items():
+        rows = [row for rule, row in items if not rule.deprecated]
+        if is_app_account(username) or not rows:
+            continue
+        if only_unmailed and all(row.mailed_at is not None for row in rows):
+            continue
+        names.append(username)
+    if not names:
+        return []
+    known = set(session.exec(select(User.username).where(User.username.in_(names))).all())  # type: ignore[attr-defined]
+    return sorted(name for name in names if name in known)
+
+
+def request_mail_all(session: Session, only_unmailed: bool = True, now: datetime | None = None) -> int:
+    """An admin's click on "mail everyone": queue every account of
+    ``mail_all_targets``, whatever the check. Nothing is sent here."""
+    now = now or utcnow()
+    return _queue_accounts(session, mail_all_targets(session, only_unmailed, now), now)
 
 
 def monthly_mail() -> dict[str, Any]:
