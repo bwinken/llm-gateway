@@ -110,7 +110,7 @@ docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 
 ## 以容器執行 gateway
 
-`setup.sh` 把 gateway 裝成 systemd 服務，這仍是預設做法。同一個 gateway 也可以改用容器執行：用 repo 根目錄的 `Dockerfile`，加上 `deploy/docker-compose.yml` 裡的 `migrate` 和 `gateway` 兩個服務。這兩個服務放在 compose profile `gateway` 後面，所以平常的 `docker compose up -d` 和以前一樣，只啟動 PostgreSQL 與 oauth2-proxy。建議先用 [`deploy/migration-drill/`](migration-drill/README.zh-TW.md) 在另一台機器演練一次：它會把正式環境的備份還原過去、把這些容器建起來、逐項驗證，並量出停機時間。
+`setup.sh` 把 gateway 裝成 systemd 服務，這仍是預設做法。同一個 gateway 也可以改用容器執行：用 repo 根目錄的 `Dockerfile`，加上 `deploy/docker-compose.yml` 裡的 `migrate` 和 `gateway` 兩個服務。這兩個服務放在 compose profile `gateway` 後面，所以在 systemd 部署上，平常的 `docker compose up -d` 和以前一樣，只啟動 PostgreSQL 與 oauth2-proxy，換成新的檔案也不會重建這兩個容器。這個檔案需要 Docker Compose v2（`docker compose version`），太舊的 Compose 讀不了它。建議先用 [`deploy/migration-drill/`](migration-drill/README.zh-TW.md) 在另一台機器演練一次：它會把正式環境的備份還原過去、把這些容器建起來、逐項驗證，並量出停機時間。
 
 **主機網路（host networking）。** gateway 容器使用 `network_mode: host`，看到的網路和 systemd 服務完全一樣：
 - nginx 照舊連 `127.0.0.1:8050`；
@@ -139,18 +139,32 @@ mkdir -p config && mv config.toml config/                  # 2. config 移進自
 echo "CONFIG_DIR=$HOME/opt/llm-gateway/config" >> .env     #    systemd 也從這裡讀（回退時用）
 chown -R "$(id -u):$(id -g)" config logs
 # 3. deploy/.env：GATEWAY_UID / GATEWAY_GID 填 `id -u` / `id -g` 的結果
-docker compose -f deploy/docker-compose.yml build gateway  # 4. 建映像（或用下面的 docker load）
+docker compose -f deploy/docker-compose.yml --profile gateway build gateway  # 4. 建映像（或用下面的 docker load）
 systemctl --user disable --now llm-gateway                 # 5. 停掉 systemd：兩者都用 :8050
-docker compose -f deploy/docker-compose.yml --profile gateway up -d
-docker compose -f deploy/docker-compose.yml --profile gateway logs migrate   # migration 有跑完？
-docker inspect -f '{{.State.Health.Status}}' llm-gateway                     # healthy？
+echo "COMPOSE_PROFILES=gateway" >> deploy/.env             # 6. 之後平常的 up / down 就會包含 gateway
+docker compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml logs migrate   # migration 有跑完？
+docker inspect -f '{{.State.Health.Status}}' llm-gateway   # healthy？
 ```
+
+`deploy/.env` 裡的 `COMPOSE_PROFILES=gateway` 讓日常指令涵蓋 gateway。少了它，`docker compose down` 會停掉 PostgreSQL，卻留下 gateway 容器在沒有資料庫的狀態下繼續跑（在 `up -d` 之前所有請求都會失敗），而 `up -d` 也不會套用新的映像。
+
+切換之後，日常操作的結果：
+
+| 操作 | 結果 |
+|---|---|
+| `docker compose ... up -d` | 先跑 `migrate`，再啟動或換掉 `gateway`；PostgreSQL 和 oauth2-proxy 的設定沒變就不會動 |
+| `docker compose ... down` | 全部停止並移除；進行中的串流最多有 300 秒可以跑完 |
+| `docker compose ... restart` | 重啟執行中的容器；不會重跑 `migrate` |
+| 主機重開機 | Docker 會把 PostgreSQL、oauth2-proxy 和 gateway 帶回來（`restart: unless-stopped`），不會重跑 `migrate`。gateway 比 PostgreSQL 早起來時，它的 worker 會一直重試到資料庫有回應 |
+
+切換之後不要再跑 `deploy/setup.sh`：它會重新安裝並啟動 systemd 服務，和容器搶 8050 port。
 
 `migrate` 會先等資料庫就緒，再跑 `alembic upgrade head`；成功後 `gateway` 才會啟動。之後每次 `up -d` 都一樣。健康檢查打的是 `/readyz`。
 
-**回退：** 先 `docker compose -f deploy/docker-compose.yml stop gateway`，再 `systemctl --user enable --now llm-gateway`。`.env` 的 `CONFIG_DIR` 指向同一個 `config/`，所以兩者讀的是同一份設定。已經跑過的 migration 會保留；只要回退到的程式版本不早於那個 migration 就沒問題，和一般升版相同。
+**回退：** 先 `docker compose -f deploy/docker-compose.yml rm -sf gateway migrate`，把 `deploy/.env` 的 `COMPOSE_PROFILES=gateway` 那一行刪掉，再 `systemctl --user enable --now llm-gateway`。`.env` 的 `CONFIG_DIR` 指向同一個 `config/`，所以兩者讀的是同一份設定。已經跑過的 migration 會保留；只要回退到的程式版本不早於那個 migration 就沒問題，和一般升版相同。
 
-**更新：** 建一個新的映像 tag，改 `deploy/.env` 的 `GATEWAY_IMAGE`，跑 `backup-db.sh`，再 `docker compose ... --profile gateway up -d`，compose 會換掉容器。`stop_grace_period` 是 300 秒，和 nginx 的上限一樣，進行中的串流可以跑完。
+**更新：** 建一個新的映像 tag，改 `deploy/.env` 的 `GATEWAY_IMAGE`，跑 `backup-db.sh`，再 `docker compose -f deploy/docker-compose.yml up -d`，compose 會換掉容器。`stop_grace_period` 是 300 秒，和 nginx 的上限一樣，進行中的串流可以跑完。
 
 **建置映像：**
 - 映像只裝 `uv.lock` 鎖定的版本（`uv sync --locked --no-dev`），以非 root 使用者執行，裡面沒有任何密鑰（`.dockerignore` 把 `.env`、`config.toml`、`keys/`、`deploy/`、`tests/` 排除在 build context 之外）。

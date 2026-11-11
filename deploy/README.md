@@ -110,7 +110,7 @@ docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 
 ## Running the gateway in a container
 
-`setup.sh` installs the gateway as a systemd service, and that stays the default. The same gateway can run as a container instead: the `Dockerfile` at the repository root, plus the `migrate` and `gateway` services in `deploy/docker-compose.yml`. Those two services sit behind the compose profile `gateway`, so a plain `docker compose up -d` starts PostgreSQL and oauth2-proxy exactly as before. Rehearse the move on another machine first with [`deploy/migration-drill/`](migration-drill/README.md): it restores a production backup there, brings these containers up, verifies them and measures the downtime.
+`setup.sh` installs the gateway as a systemd service, and that stays the default. The same gateway can run as a container instead: the `Dockerfile` at the repository root, plus the `migrate` and `gateway` services in `deploy/docker-compose.yml`. Those two services sit behind the compose profile `gateway`, so on a systemd deployment a plain `docker compose up -d` starts PostgreSQL and oauth2-proxy exactly as before, and the new file does not recreate those containers. The file needs Docker Compose v2 (`docker compose version`); a much older Compose cannot parse it. Rehearse the move on another machine first with [`deploy/migration-drill/`](migration-drill/README.md): it restores a production backup there, brings these containers up, verifies them and measures the downtime.
 
 **Host networking.** The gateway container uses `network_mode: host`, so it sees the same network the systemd service did:
 - nginx keeps proxying to `127.0.0.1:8050`;
@@ -139,18 +139,32 @@ mkdir -p config && mv config.toml config/                  # 2. config into its 
 echo "CONFIG_DIR=$HOME/opt/llm-gateway/config" >> .env     #    the systemd unit reads it there too (rollback)
 chown -R "$(id -u):$(id -g)" config logs
 # 3. deploy/.env: GATEWAY_UID / GATEWAY_GID = output of `id -u` / `id -g`
-docker compose -f deploy/docker-compose.yml build gateway  # 4. build (or docker load, below)
+docker compose -f deploy/docker-compose.yml --profile gateway build gateway  # 4. build (or docker load, below)
 systemctl --user disable --now llm-gateway                 # 5. stop systemd: both use :8050
-docker compose -f deploy/docker-compose.yml --profile gateway up -d
-docker compose -f deploy/docker-compose.yml --profile gateway logs migrate   # migrations ran?
-docker inspect -f '{{.State.Health.Status}}' llm-gateway                     # healthy?
+echo "COMPOSE_PROFILES=gateway" >> deploy/.env             # 6. from now on plain up / down include the gateway
+docker compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml logs migrate   # migrations ran?
+docker inspect -f '{{.State.Health.Status}}' llm-gateway   # healthy?
 ```
+
+`COMPOSE_PROFILES=gateway` in `deploy/.env` is what makes the everyday commands cover the gateway. Without it, `docker compose down` stops PostgreSQL and leaves the gateway container running with no database (every request fails until `up -d`), and `up -d` never applies a new image.
+
+What the everyday operations do once switched:
+
+| Operation | Result |
+|---|---|
+| `docker compose ... up -d` | Runs `migrate`, then starts or replaces `gateway`; PostgreSQL and oauth2-proxy are left alone unless their settings changed |
+| `docker compose ... down` | Stops and removes all of them; open streams get up to 300 s to finish |
+| `docker compose ... restart` | Restarts the running containers; `migrate` is not rerun |
+| Host reboot | Docker brings PostgreSQL, oauth2-proxy and the gateway back (`restart: unless-stopped`). `migrate` does not rerun. If the gateway comes up before PostgreSQL, its workers retry until the database answers |
+
+Don't run `deploy/setup.sh` after switching: it reinstalls and starts the systemd service, which would compete for port 8050.
 
 `migrate` runs `alembic upgrade head` (after waiting for the database), and `gateway` starts only when it succeeded. The same holds for every later `up -d`. The health check polls `/readyz`.
 
-**Rollback:** run `docker compose -f deploy/docker-compose.yml stop gateway`, then `systemctl --user enable --now llm-gateway`. Because `.env` points `CONFIG_DIR` at the same `config/`, both read the same file. A migration that already ran stays applied; that is fine as long as the code being rolled back to is at or after it, as with any upgrade.
+**Rollback:** run `docker compose -f deploy/docker-compose.yml rm -sf gateway migrate`, remove the `COMPOSE_PROFILES=gateway` line from `deploy/.env`, then `systemctl --user enable --now llm-gateway`. Because `.env` points `CONFIG_DIR` at the same `config/`, both read the same file. A migration that already ran stays applied; that is fine as long as the code being rolled back to is at or after it, as with any upgrade.
 
-**Updates:** build a new image tag, set `GATEWAY_IMAGE` in `deploy/.env`, run `backup-db.sh`, then `docker compose ... --profile gateway up -d`. Compose replaces the container. `stop_grace_period` is 300 s, so open streams can finish, as with nginx's limit.
+**Updates:** build a new image tag, set `GATEWAY_IMAGE` in `deploy/.env`, run `backup-db.sh`, then `docker compose -f deploy/docker-compose.yml up -d`. Compose replaces the container. `stop_grace_period` is 300 s, so open streams can finish, as with nginx's limit.
 
 **Building:**
 - The image takes exactly what `uv.lock` pins (`uv sync --locked --no-dev`), runs as a non-root user, and carries no secrets (`.dockerignore` keeps `.env`, `config.toml`, `keys/`, `deploy/` and `tests/` out of the build context).
