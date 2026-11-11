@@ -110,7 +110,7 @@ docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 
 ## Running the gateway in a container
 
-`setup.sh` installs the gateway as a systemd service, and that stays the default. The same gateway can run as a container instead: the `Dockerfile` at the repository root, plus the `migrate` and `gateway` services in `deploy/docker-compose.yml`. Those two services sit behind the compose profile `gateway`, so a plain `docker compose up -d` starts PostgreSQL and oauth2-proxy exactly as before.
+`setup.sh` installs the gateway as a systemd service, and that stays the default. The same gateway can run as a container instead: the `Dockerfile` at the repository root, plus the `migrate` and `gateway` services in `deploy/docker-compose.yml`. Those two services sit behind the compose profile `gateway`, so a plain `docker compose up -d` starts PostgreSQL and oauth2-proxy exactly as before. Rehearse the move on another machine first with [`deploy/migration-drill/`](migration-drill/README.md): it restores a production backup there, brings these containers up, verifies them and measures the downtime.
 
 **Host networking.** The gateway container uses `network_mode: host`, so it sees the same network the systemd service did:
 - nginx keeps proxying to `127.0.0.1:8050`;
@@ -346,6 +346,7 @@ docker compose -f deploy/docker-compose.yml up -d
     ├── setup.sh              # Deployment script
     ├── backup-db.sh          # Online database backup (pg_dump, verify, encrypt, retention)
     ├── restore-drill.sh      # Restore a backup into a throwaway container, log the result
+    ├── migration-drill/      # Rehearse the move to containers on another machine (own README)
     ├── gen-selfsigned-cert.sh               # Self-signed TLS cert for :443
     ├── llm-gateway.service                  # Gateway systemd unit
     ├── llm-gateway-example.nginx.conf       # Nginx template

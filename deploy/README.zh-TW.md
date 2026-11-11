@@ -110,7 +110,7 @@ docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 
 ## 以容器執行 gateway
 
-`setup.sh` 把 gateway 裝成 systemd 服務，這仍是預設做法。同一個 gateway 也可以改用容器執行：用 repo 根目錄的 `Dockerfile`，加上 `deploy/docker-compose.yml` 裡的 `migrate` 和 `gateway` 兩個服務。這兩個服務放在 compose profile `gateway` 後面，所以平常的 `docker compose up -d` 和以前一樣，只啟動 PostgreSQL 與 oauth2-proxy。
+`setup.sh` 把 gateway 裝成 systemd 服務，這仍是預設做法。同一個 gateway 也可以改用容器執行：用 repo 根目錄的 `Dockerfile`，加上 `deploy/docker-compose.yml` 裡的 `migrate` 和 `gateway` 兩個服務。這兩個服務放在 compose profile `gateway` 後面，所以平常的 `docker compose up -d` 和以前一樣，只啟動 PostgreSQL 與 oauth2-proxy。建議先用 [`deploy/migration-drill/`](migration-drill/README.zh-TW.md) 在另一台機器演練一次：它會把正式環境的備份還原過去、把這些容器建起來、逐項驗證，並量出停機時間。
 
 **主機網路（host networking）。** gateway 容器使用 `network_mode: host`，看到的網路和 systemd 服務完全一樣：
 - nginx 照舊連 `127.0.0.1:8050`；
@@ -345,6 +345,7 @@ docker compose -f deploy/docker-compose.yml up -d
     ├── setup.sh              # 部署腳本
     ├── backup-db.sh          # 資料庫線上備份（pg_dump、驗證、加密、保留期）
     ├── restore-drill.sh      # 把備份還原到一次性容器演練，留下紀錄
+    ├── migration-drill/      # 在另一台機器演練搬遷到容器（有自己的 README）
     ├── gen-selfsigned-cert.sh               # 產生 :443 用的自簽 TLS 憑證
     ├── llm-gateway.service                  # Gateway systemd unit
     ├── llm-gateway-example.nginx.conf       # Nginx 範本

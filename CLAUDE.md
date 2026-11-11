@@ -49,6 +49,7 @@ docker build -t llm-gateway:dev .          # gateway image (deploy/README.md, "R
 | `scripts/` | Manual runs of the in-gateway jobs: `scan_anomalies.py`, `rollup_usage_daily.py` (inspect / `--recompute`), `cleanup_usage_logs.py` (retention preview); plus `azure_latency_probe.py` (per-phase Azure latency, direct vs. via gateway), `wait_for_db.py` (the compose `migrate` step), SQLite → PG migration, legacy `add_owner_id.py`, dev PG helper |
 | `Dockerfile`, `.dockerignore` | Gateway image: `uv sync --locked --no-dev`, non-root, no uv at runtime, no secrets in the build context |
 | `deploy/` | gateway systemd unit (no timers: jobs run in the gateway), nginx example, docker-compose (PG + oauth2-proxy; profile `gateway` adds the `migrate` + `gateway` containers), `setup.sh`, `backup-db.sh` (online `pg_dump` with verify, optional GnuPG public-key encryption, retention; a host cron task, not a gateway job), `restore-drill.sh` (restores a backup into a throwaway no-network container, checks it, appends to `restore-drill.log`) |
+| `deploy/migration-drill/` | Rehearsal of the move to containers on another machine, with its own README: `1-bundle.sh` (production: backup + cleaned settings + snapshot, encrypted), then `2-restore-test.sh`, `3-image.sh`, `4-up.sh`, `5-verify.sh`, `6-teardown.sh` on the drill machine; `lib.sh` is shared; every step appends to `drill.log` |
 | `setup/install-claude-code-example.bat` | Windows Claude Code installer, personalized with the user's key by `/dashboard/install-claude-code.bat` |
 
 ## Request flow
@@ -190,6 +191,13 @@ Each of these has broken production or a test before. The parenthesized test pin
 - `config.toml` is read from and written to `CONFIG_DIR`; the container mounts that **directory**. `save_config` writes a temp file in the same directory and `os.replace`s it, which a single-file bind mount refuses (the rename onto a mount point fails).
 - Every container that imports `app` (`gateway` and `migrate`) gets the path overrides in `x-gateway-paths` (`CONFIG_DIR`, `LOG_DIR`, `AUTH_CENTER_PUBLIC_KEY_PATH`, `METRICS_DIR`): `.env` may hold host paths, and `app.core.logger` creates `LOG_DIR` at import, so a host path there kills the container.
 - `migrate` runs before `gateway` on every `up` (`service_completed_successfully`). The gateway services stay behind the `gateway` profile and the `postgres` service is left as it was, so a plain `up -d` on a systemd deployment changes nothing (no added healthcheck: that would recreate the production PG container).
+
+**Migration drill**
+- Steps 2 to 6 start with `guard_not_production` and refuse on any sign of a production install (the systemd service, a container not labeled with the drill's compose project, an existing `.env` / `config.toml` / `pgdata` without the `.migration-drill` marker). `6-teardown.sh` deletes only the paths that marker lists. Never weaken either: these scripts start a stack and delete data.
+- A copy of production must not act on the outside world: `1-bundle.sh` strips `ENV_STRIP_RE` from `.env` before it leaves production (`EXCHANGE_*` would mail real users, `LANGFUSE_*` would pollute production traces, the retention setting would delete drill rows) and `4-up.sh` filters again. A new setting with an outside effect goes in `ENV_STRIP_RE`, and `5-verify.sh` checks it is absent.
+- The bundle is refused unencrypted unless `DRILL_ALLOW_PLAINTEXT=1`; it holds every API key and downstream secret.
+- `drill.env` never overrides a variable given on the command line (`lib.sh` restores the preset environment after sourcing it): otherwise `BUNDLE=... bash 4-up.sh` silently uses the file's bundle.
+- The drill uses the production `deploy/docker-compose.yml`, not a copy, so it rehearses what will run. As root it runs the container as uid 1000, never 0.
 
 **Backups**
 - An encrypted backup never leaves plaintext behind: verify the dump, encrypt it, delete the plaintext, and only then `mv` the `.gpg` into place. In-progress files start with `.` so the monthly copy and pruning (which glob `llm-gateway-*`) never take one for a backup. The gateway host holds the public key only; nothing there may need the private key.
