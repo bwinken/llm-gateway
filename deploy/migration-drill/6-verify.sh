@@ -122,7 +122,9 @@ fi
 n_models="$(curl -s -m 15 -H "Authorization: Bearer $key" "$BASE/v1/models" | grep -o '"id"' | wc -l || true)"
 [ "$n_models" -ge 1 ] && pass "/v1/models 列出 $n_models 個模型" || fail "/v1/models 列出模型（0 個）"
 probe="203.0.113.$(( (RANDOM % 200) + 20 ))"
-[ "$(http_code -H 'Authorization: Bearer sk-drill-wrong-key' -H "X-Forwarded-For: $probe" "$BASE/v1/me")" = 401 ] \
+# 一把不存在的 key：用文件裡的佔位字樣（.gitleaks.toml 認得它，不會被當成外洩的密鑰）
+wrong_key="sk-your-api-key"
+[ "$(http_code -H "Authorization: Bearer $wrong_key" -H "X-Forwarded-For: $probe" "$BASE/v1/me")" = 401 ] \
     && pass "錯誤的 key 被拒絕（401）" || fail "錯誤的 key 被拒絕（401）"
 sleep 1
 docker logs --since 30s "$GW_CONTAINER" 2>&1 | grep -q "client=$probe" \

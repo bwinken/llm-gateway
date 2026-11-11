@@ -3,14 +3,14 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
 
 from app.models.schema import AppOwner, UsageLog, User
-from tests.conftest import web_auth_header
+from tests.conftest import earlier_today, web_auth_header
 
 JSON = {"Accept": "application/json"}
 
@@ -31,7 +31,7 @@ def _spend(session, user: User, usd: float) -> None:
     session.add(UsageLog(
         user_id=user.id, model="test-llm", model_type="llm", input_tokens=1500,
         output_tokens=500, cost_usd=Decimal(str(usd)), endpoint="/v1/messages",
-        created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        created_at=earlier_today(),   # not a plain "5 minutes ago": that is last month just after midnight on the 1st
     ))
     session.commit()
 
