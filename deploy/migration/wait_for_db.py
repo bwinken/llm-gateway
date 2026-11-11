@@ -5,6 +5,9 @@ e.g. the compose ``migrate`` service on a fresh host where PostgreSQL and the
 gateway come up together:
 
     python scripts/wait_for_db.py [--timeout 60]
+
+It lives in deploy/migration/ with the rest of the container deployment; the
+Dockerfile copies it to scripts/ inside the image.
 """
 
 from __future__ import annotations

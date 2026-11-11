@@ -1,7 +1,9 @@
-# LLM Gateway image. Build from the repository root:
-#   docker build -t llm-gateway:<version> .
-# Run it with deploy/docker-compose.yml (profile "gateway"), which supplies the
-# mounts and settings below; deploy/README.md, "Running the gateway in a container".
+# LLM Gateway image. Build from the repository root (the build context):
+#   docker build -f deploy/migration/Dockerfile -t llm-gateway:<version> .
+# or: bash deploy/migration/compose.sh build gateway
+# What stays out of the build context is listed in Dockerfile.dockerignore, next
+# to this file. Run the image with compose.sh, which supplies the mounts and
+# settings below; see deploy/migration/README.md.
 #
 # What lives outside the image (never baked in):
 #   /app/config      config.toml (CONFIG_DIR). Mount the DIRECTORY: the admin
@@ -39,6 +41,7 @@ COPY alembic.ini config.toml.example pyproject.toml ./
 COPY alembic/ alembic/
 COPY app/ app/
 COPY scripts/ scripts/
+COPY deploy/migration/wait_for_db.py scripts/wait_for_db.py
 COPY setup/ setup/
 # Code stays root-owned and read-only. The writable directories accept any
 # uid, because compose runs the container as the host user that owns the

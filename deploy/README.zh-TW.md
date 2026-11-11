@@ -97,132 +97,15 @@ systemctl --user status llm-gateway     # 查看狀態
 systemctl --user restart llm-gateway    # 重啟
 journalctl --user -u llm-gateway -f     # 查看服務輸出（應用程式日誌：~/opt/llm-gateway/logs/）
 
-# Gateway（容器，見「以容器執行 gateway」）
-docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml --profile gateway ps
-docker logs -f llm-gateway
-docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml --profile gateway restart gateway
-
 # PostgreSQL + oauth2-proxy（Docker Compose）
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml logs -f
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml restart
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 ```
 
-## 以容器執行 gateway
+## 以容器執行 gateway、搬到新主機
 
-`setup.sh` 把 gateway 裝成 systemd 服務，這仍是預設做法。同一個 gateway 也可以改用容器執行：用 repo 根目錄的 `Dockerfile`，加上 `deploy/docker-compose.yml` 裡的 `migrate` 和 `gateway` 兩個服務。這兩個服務放在 compose profile `gateway` 後面，所以在 systemd 部署上，平常的 `docker compose up -d` 和以前一樣，只啟動 PostgreSQL 與 oauth2-proxy，換成新的檔案也不會重建這兩個容器。這個檔案需要 Docker Compose v2（`docker compose version`），太舊的 Compose 讀不了它。建議先用 [`deploy/migration-drill/`](migration-drill/README.zh-TW.md) 在另一台機器演練一次：它會把正式環境的備份還原過去、把這些容器建起來、逐項驗證，並量出停機時間。
-
-**主機網路（host networking）。** gateway 容器使用 `network_mode: host`，看到的網路和 systemd 服務完全一樣：
-- nginx 照舊連 `127.0.0.1:8050`；
-- `.env` 的 `DATABASE_URL`（`localhost:5432`）和 proxy 設定不用改；
-- 請求的來源是 `127.0.0.1`，也就是 uvicorn 唯一信任 `X-Forwarded-For` 的位址。若改用 bridge 網路，所有請求都會看起來來自 Docker 的閘道位址，IP allowlist、登入失敗鎖定（一個壞 client 會鎖住所有人）、audit log 的 client 欄位和 `CC002` 明文 http 檢查都會出錯。
-
-容器只綁 `127.0.0.1`。它沿用主機的 hostname，所以前一個容器留下的並發 lease 會在啟動時清掉。
-
-**留在主機上的東西**（在 `~/opt/llm-gateway/` 底下，掛進容器）：
-
-| 主機路徑 | 容器內 | 說明 |
-|---|---|---|
-| `config/config.toml` | `/app/config`（`CONFIG_DIR`） | admin 頁面用暫存檔加 rename 改寫它，所以掛的是**目錄**；只掛單一檔案會讓 admin 每次存檔都失敗 |
-| `keys/public.pem` | `/app/keys`（唯讀） | |
-| `logs/` | `/app/logs`（`LOG_DIR`） | `docker logs llm-gateway` 也有同樣的內容 |
-| `.env` | 環境變數 | 不用改。compose 會用容器內路徑覆蓋 `CONFIG_DIR`、`LOG_DIR`、`AUTH_CENTER_PUBLIC_KEY_PATH`、`METRICS_DIR`，所以 `.env` 裡寫主機路徑也沒關係 |
-
-容器以 `GATEWAY_UID:GATEWAY_GID`（`deploy/.env`，預設 `1000:1000`）執行，這個使用者必須擁有 `config/` 和 `logs/`。第一次啟動前先建立這兩個目錄：目錄不存在時 Docker 會以 root 身分建立，之後 admin 存檔就會失敗。
-
-### 在原主機切換
-
-資料庫留在原地，只有 gateway 從 systemd 換成容器。
-
-```bash
-cd ~/opt/llm-gateway
-bash deploy/backup-db.sh                                   # 1. 先備份
-mkdir -p config && mv config.toml config/                  # 2. config 移進自己的目錄
-echo "CONFIG_DIR=$HOME/opt/llm-gateway/config" >> .env     #    systemd 也從這裡讀（回退時用）
-chown -R "$(id -u):$(id -g)" config logs
-# 3. deploy/.env：GATEWAY_UID / GATEWAY_GID 填 `id -u` / `id -g` 的結果
-docker compose -f deploy/docker-compose.yml --profile gateway build gateway  # 4. 建映像（或用下面的 docker load）
-systemctl --user disable --now llm-gateway                 # 5. 停掉 systemd：兩者都用 :8050
-echo "COMPOSE_PROFILES=gateway" >> deploy/.env             # 6. 之後平常的 up / down 就會包含 gateway
-docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml logs migrate   # migration 有跑完？
-docker inspect -f '{{.State.Health.Status}}' llm-gateway   # healthy？
-```
-
-`deploy/.env` 裡的 `COMPOSE_PROFILES=gateway` 讓日常指令涵蓋 gateway。少了它，`docker compose down` 會停掉 PostgreSQL，卻留下 gateway 容器在沒有資料庫的狀態下繼續跑（在 `up -d` 之前所有請求都會失敗），而 `up -d` 也不會套用新的映像。
-
-切換之後，日常操作的結果：
-
-| 操作 | 結果 |
-|---|---|
-| `docker compose ... up -d` | 先跑 `migrate`，再啟動或換掉 `gateway`；PostgreSQL 和 oauth2-proxy 的設定沒變就不會動 |
-| `docker compose ... down` | 全部停止並移除；進行中的串流最多有 300 秒可以跑完 |
-| `docker compose ... restart` | 重啟執行中的容器；不會重跑 `migrate` |
-| 主機重開機 | Docker 會把 PostgreSQL、oauth2-proxy 和 gateway 帶回來（`restart: unless-stopped`），不會重跑 `migrate`。gateway 比 PostgreSQL 早起來時，它的 worker 會一直重試到資料庫有回應 |
-
-切換之後不要再跑 `deploy/setup.sh`：它會重新安裝並啟動 systemd 服務，和容器搶 8050 port。
-
-`migrate` 會先等資料庫就緒，再跑 `alembic upgrade head`；成功後 `gateway` 才會啟動。之後每次 `up -d` 都一樣。健康檢查打的是 `/readyz`。
-
-**回退：** 先 `docker compose -f deploy/docker-compose.yml rm -sf gateway migrate`，把 `deploy/.env` 的 `COMPOSE_PROFILES=gateway` 那一行刪掉，再 `systemctl --user enable --now llm-gateway`。`.env` 的 `CONFIG_DIR` 指向同一個 `config/`，所以兩者讀的是同一份設定。已經跑過的 migration 會保留；只要回退到的程式版本不早於那個 migration 就沒問題，和一般升版相同。
-
-### 搬到新主機（容器先開好，資料最後搬）
-
-gateway 連同資料庫要搬到另一台主機時，先在新主機把所有容器開好、確認沒問題，資料最後才搬。這樣停機時間只有搬資料那一段。請先用 [`deploy/migration-drill/`](migration-drill/README.zh-TW.md) 演練：它跑的是同樣的步驟，並量出時間。
-
-**準備新主機（不停機）。**
-
-1. 把程式和映像放上去：同一版的 checkout，然後 `docker build` 或 `docker load`。
-2. 建立 `config/config.toml`、`keys/public.pem`、`.env`、`deploy/.env`。`deploy/.env` 設新的 `PG_PASSWORD`、`GATEWAY_IMAGE`、`GATEWAY_UID` / `GATEWAY_GID` 和 `COMPOSE_PROFILES=gateway`；`.env` 的 `DATABASE_URL` 用新密碼。
-3. 在空的資料庫上把全部服務開起來：
-
-```bash
-docker compose -f deploy/docker-compose.yml up -d
-```
-
-4. 設定 nginx 和憑證。網域有變的話，到 AuthCenter 登記新的 callback URL。
-5. 確認：`/readyz`、登入頁，以及**從新主機的位址**連得到 vLLM、Azure、Bedrock、Exchange、Langfuse。對方的防火牆和白名單常常只寫了舊主機。
-
-切換之前，新主機的資料庫是空的。**舊主機還在服務時，不要把正式資料載入新主機來測試：** 新主機的排程工作會開始處理這些資料，client-rule 的信會從兩邊各寄一次。要用真實資料測試，請用搬遷演練（它會拿掉寄信設定）。
-
-**切換（從第 1 步開始停機）。**
-
-```bash
-# 舊主機
-systemctl --user stop llm-gateway            # 1. 從這裡開始請求失敗；不再有新的寫入
-bash deploy/backup-db.sh                     # 2. 最後一次備份
-# 把最新的備份檔和 config.toml（admin 可能改過）複製到新主機
-
-# 新主機
-BACKUP_GPG_KEY=/media/usb/llm-gateway-backup.key.asc \
-    bash deploy/load-backup.sh ~/llm-gateway-<時間>.dump.gpg     # 3. 取代空的資料庫、migration、啟動
-```
-
-`deploy/load-backup.sh` 會先列出現有資料庫的內容，要你輸入資料庫名稱才會取代；現有資料庫不是空的時，會先另存到 `<BACKUP_DIR>/before-load/`。接著它停掉 gateway 容器、重建資料庫、還原、清掉舊主機留下的並發 lease、跑 migration、啟動 gateway，並印出每一段花的時間。還原或 migration 失敗時，gateway 不會被啟動。主機上有執行中的 `llm-gateway` systemd 服務時，它拒絕執行。
-
-4. 確認新主機：腳本印出的筆數、登入一次、用既有的 key 打一個請求。
-5. 把流量切到新主機（DNS、負載平衡，或 nginx 的 upstream）。
-
-**回退。** 流量還沒切：在舊主機 `systemctl --user start llm-gateway`，它的資料完全沒被動過。流量已經切了：把流量切回去並啟動舊的 gateway，但這段期間記在新主機的用量不會在舊資料庫裡。舊主機的資料庫請保留到新主機穩定運作一段時間。
-
-**切換之後。** 把備份的 cron（`backup-db.sh`）移到新主機，並在那裡跑一次 `restore-drill.sh`。刪除 `before-load/` 裡的另存檔。舊主機除役時，刪除它的 `pgdata` 和備份：裡面有所有 API key。
-
-### 更新與建置
-
-**更新：** 建一個新的映像 tag，改 `deploy/.env` 的 `GATEWAY_IMAGE`，跑 `backup-db.sh`，再 `docker compose -f deploy/docker-compose.yml up -d`，compose 會換掉容器。`stop_grace_period` 是 300 秒，和 nginx 的上限一樣，進行中的串流可以跑完。
-
-**建置映像：**
-- 映像只裝 `uv.lock` 鎖定的版本（`uv sync --locked --no-dev`），以非 root 使用者執行，裡面沒有任何密鑰（`.dockerignore` 把 `.env`、`config.toml`、`keys/`、`deploy/`、`tests/` 排除在 build context 之外）。
-- 要經過 proxy 時加 `--build-arg HTTPS_PROXY=...`。基底映像由 build arg 指定，可以改用公司內部的 mirror：`--build-arg PYTHON_IMAGE=registry.internal/python:3.11-slim-bookworm --build-arg UV_IMAGE=registry.internal/astral-sh/uv:0.11.32`。
-- 主機不能連外時，在別台機器建好再帶過去：
-
-```bash
-docker build -t llm-gateway:2026.11.1 .                   # 在能連外的機器上
-docker save llm-gateway:2026.11.1 | gzip > llm-gateway-2026.11.1.tar.gz
-docker load < llm-gateway-2026.11.1.tar.gz                # 在 gateway 主機上；再設 GATEWAY_IMAGE=llm-gateway:2026.11.1
-```
-
-手動執行的腳本在容器內跑：`docker compose -f deploy/docker-compose.yml exec gateway python scripts/rollup_usage_daily.py`。
+相關的東西都在 [`deploy/migration/`](migration/README.zh-TW.md)，有自己的 README：gateway 映像與它的 compose 檔、搬到新主機的步驟，以及演練搬遷的腳本。systemd 部署完全用不到那裡的東西：`deploy/docker-compose.yml` 沒有改，gateway 容器定義在另一個檔案，只有 `deploy/migration/compose.sh` 會載入它。
 
 ## 排程任務與腳本
 
@@ -392,20 +275,18 @@ docker compose -f deploy/docker-compose.yml up -d
 ├── app/                      # 應用程式碼
 ├── scripts/                  # 異常掃描、usage log 清理、一次性工具
 ├── .venv/                    # uv 管理的虛擬環境
-├── config.toml               # 模型路由設定（容器：config/config.toml，CONFIG_DIR）
+├── config.toml               # 模型路由設定
 ├── .env                      # 應用環境變數
 ├── keys/public.pem           # AuthCenter 公鑰
 ├── logs/                     # 應用程式日誌，每個 worker 一個檔（LOG_DIR）
-├── Dockerfile                # Gateway 映像（容器部署）
 └── deploy/
-    ├── docker-compose.yml    # PG + oauth2-proxy；profile "gateway"：migrate + gateway 容器
+    ├── docker-compose.yml    # PG + oauth2-proxy
     ├── .env                  # Docker 服務環境變數（範本：.env.example）
     ├── pgdata/               # PostgreSQL 資料
     ├── setup.sh              # 部署腳本
     ├── backup-db.sh          # 資料庫線上備份（pg_dump、驗證、加密、保留期）
     ├── restore-drill.sh      # 把備份還原到一次性容器演練，留下紀錄
-    ├── load-backup.sh        # 把備份載入這台主機的資料庫、跑 migration、啟動 gateway（搬到新主機時用）
-    ├── migration-drill/      # 在另一台機器演練搬遷到容器（有自己的 README）
+    ├── migration/            # gateway 容器、搬到新主機與演練（有自己的 README）
     ├── gen-selfsigned-cert.sh               # 產生 :443 用的自簽 TLS 憑證
     ├── llm-gateway.service                  # Gateway systemd unit
     ├── llm-gateway-example.nginx.conf       # Nginx 範本

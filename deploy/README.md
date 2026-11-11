@@ -97,132 +97,15 @@ systemctl --user status llm-gateway     # Check status
 systemctl --user restart llm-gateway    # Restart
 journalctl --user -u llm-gateway -f     # View service output (app logs: ~/opt/llm-gateway/logs/)
 
-# Gateway (container, see Running the gateway in a container)
-docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml --profile gateway ps
-docker logs -f llm-gateway
-docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml --profile gateway restart gateway
-
 # PostgreSQL + oauth2-proxy (Docker Compose)
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml logs -f
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml restart
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 ```
 
-## Running the gateway in a container
+## Running the gateway in a container, moving to a new server
 
-`setup.sh` installs the gateway as a systemd service, and that stays the default. The same gateway can run as a container instead: the `Dockerfile` at the repository root, plus the `migrate` and `gateway` services in `deploy/docker-compose.yml`. Those two services sit behind the compose profile `gateway`, so on a systemd deployment a plain `docker compose up -d` starts PostgreSQL and oauth2-proxy exactly as before, and the new file does not recreate those containers. The file needs Docker Compose v2 (`docker compose version`); a much older Compose cannot parse it. Rehearse the move on another machine first with [`deploy/migration-drill/`](migration-drill/README.md): it restores a production backup there, brings these containers up, verifies them and measures the downtime.
-
-**Host networking.** The gateway container uses `network_mode: host`, so it sees the same network the systemd service did:
-- nginx keeps proxying to `127.0.0.1:8050`;
-- the `.env` `DATABASE_URL` (`localhost:5432`) and proxy settings keep working;
-- requests arrive from `127.0.0.1`, the one address uvicorn trusts for `X-Forwarded-For`. On a bridge network every request would appear to come from Docker's gateway address, which breaks the IP allowlist, the failed-auth lockout (one bad client locks out everyone), the audit log's client column and the `CC002` plain-http check.
-
-The container binds `127.0.0.1` only. It also keeps the host's hostname, so concurrency leases left by a previous container are swept at startup.
-
-**What stays on the host** (under `~/opt/llm-gateway/`, mounted into the container):
-
-| Host path | In the container | Notes |
-|---|---|---|
-| `config/config.toml` | `/app/config` (`CONFIG_DIR`) | The admin page rewrites it with a temp file and a rename, so the **directory** is mounted; a single-file mount would make every admin save fail |
-| `keys/public.pem` | `/app/keys` (read-only) | |
-| `logs/` | `/app/logs` (`LOG_DIR`) | `docker logs llm-gateway` has the same lines |
-| `.env` | environment | Unchanged. Compose overrides `CONFIG_DIR`, `LOG_DIR`, `AUTH_CENTER_PUBLIC_KEY_PATH` and `METRICS_DIR` with the container's paths, so host paths in `.env` don't matter |
-
-The container runs as `GATEWAY_UID:GATEWAY_GID` (`deploy/.env`, default `1000:1000`), which must own `config/` and `logs/`. Create both before the first start: a missing directory is created by Docker as root, and admin saves would then fail.
-
-### Switching in place (same host)
-
-The database stays where it is; only the gateway moves from systemd to a container.
-
-```bash
-cd ~/opt/llm-gateway
-bash deploy/backup-db.sh                                   # 1. back up
-mkdir -p config && mv config.toml config/                  # 2. config into its directory
-echo "CONFIG_DIR=$HOME/opt/llm-gateway/config" >> .env     #    the systemd unit reads it there too (rollback)
-chown -R "$(id -u):$(id -g)" config logs
-# 3. deploy/.env: GATEWAY_UID / GATEWAY_GID = output of `id -u` / `id -g`
-docker compose -f deploy/docker-compose.yml --profile gateway build gateway  # 4. build (or docker load, below)
-systemctl --user disable --now llm-gateway                 # 5. stop systemd: both use :8050
-echo "COMPOSE_PROFILES=gateway" >> deploy/.env             # 6. from now on plain up / down include the gateway
-docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml logs migrate   # migrations ran?
-docker inspect -f '{{.State.Health.Status}}' llm-gateway   # healthy?
-```
-
-`COMPOSE_PROFILES=gateway` in `deploy/.env` is what makes the everyday commands cover the gateway. Without it, `docker compose down` stops PostgreSQL and leaves the gateway container running with no database (every request fails until `up -d`), and `up -d` never applies a new image.
-
-What the everyday operations do once switched:
-
-| Operation | Result |
-|---|---|
-| `docker compose ... up -d` | Runs `migrate`, then starts or replaces `gateway`; PostgreSQL and oauth2-proxy are left alone unless their settings changed |
-| `docker compose ... down` | Stops and removes all of them; open streams get up to 300 s to finish |
-| `docker compose ... restart` | Restarts the running containers; `migrate` is not rerun |
-| Host reboot | Docker brings PostgreSQL, oauth2-proxy and the gateway back (`restart: unless-stopped`). `migrate` does not rerun. If the gateway comes up before PostgreSQL, its workers retry until the database answers |
-
-Don't run `deploy/setup.sh` after switching: it reinstalls and starts the systemd service, which would compete for port 8050.
-
-`migrate` runs `alembic upgrade head` (after waiting for the database), and `gateway` starts only when it succeeded. The same holds for every later `up -d`. The health check polls `/readyz`.
-
-**Rollback:** run `docker compose -f deploy/docker-compose.yml rm -sf gateway migrate`, remove the `COMPOSE_PROFILES=gateway` line from `deploy/.env`, then `systemctl --user enable --now llm-gateway`. Because `.env` points `CONFIG_DIR` at the same `config/`, both read the same file. A migration that already ran stays applied; that is fine as long as the code being rolled back to is at or after it, as with any upgrade.
-
-### Moving to a new server (containers first, data last)
-
-When the gateway and its database move to another host, bring every container up on the new server first, confirm it works, and move the data last. Downtime is then only the data move. Rehearse it with [`deploy/migration-drill/`](migration-drill/README.md), which runs the same steps and measures the time.
-
-**Prepare the new server (no downtime).**
-
-1. Put the code and the image there: a checkout of the same version, then `docker build` or `docker load`.
-2. Create `config/config.toml`, `keys/public.pem`, `.env` and `deploy/.env`. In `deploy/.env` set a new `PG_PASSWORD`, `GATEWAY_IMAGE`, `GATEWAY_UID` / `GATEWAY_GID` and `COMPOSE_PROFILES=gateway`; `DATABASE_URL` in `.env` uses the new password.
-3. Start everything on an empty database:
-
-```bash
-docker compose -f deploy/docker-compose.yml up -d
-```
-
-4. Set up nginx and the certificate. If the hostname changes, register the new callback URL in AuthCenter.
-5. Check it: `/readyz`, the login page, and that the **new server's address** can reach vLLM, Azure, Bedrock, Exchange and Langfuse. Firewalls and allowlists on those sides often name the old server.
-
-Until the switch the new server's database is empty. **Do not load production data into it for testing while the old server is still serving:** the new server's scheduled jobs would act on it, and client-rule mail would go out from both. To test with real data, use the migration drill, which strips the mail settings.
-
-**Switch (downtime starts at step 1).**
-
-```bash
-# old server
-systemctl --user stop llm-gateway            # 1. requests fail from here; no new writes
-bash deploy/backup-db.sh                     # 2. final backup
-# copy the newest backup file and config.toml (admins may have edited it) to the new server
-
-# new server
-BACKUP_GPG_KEY=/media/usb/llm-gateway-backup.key.asc \
-    bash deploy/load-backup.sh ~/llm-gateway-<time>.dump.gpg     # 3. replace the empty database, migrate, start
-```
-
-`deploy/load-backup.sh` shows what the current database holds and asks for its name before replacing it; a database that is not empty is saved to `<BACKUP_DIR>/before-load/` first. It then stops the gateway container, recreates the database, restores, clears the old server's concurrency leases, runs the migrations and starts the gateway, printing the time each phase took. A failed restore or migration leaves the gateway stopped. It refuses on a host with a running `llm-gateway` systemd service.
-
-4. Check the new server: the row counts the script printed, a login, one request with an existing key.
-5. Point traffic at the new server (DNS, load balancer or the upstream in nginx).
-
-**Rollback.** Before traffic moved: `systemctl --user start llm-gateway` on the old server; its data was never touched. After traffic moved: point it back and start the old gateway, knowing that usage recorded on the new server in between is not in the old database. Keep the old server's database until the new one has run cleanly for a while.
-
-**Afterwards.** Move the backup cron line (`backup-db.sh`) to the new server and run `restore-drill.sh` there once. Delete the copy in `before-load/`. When the old server is retired, remove its `pgdata` and backups: they hold every API key.
-
-### Updates and building
-
-**Updates:** build a new image tag, set `GATEWAY_IMAGE` in `deploy/.env`, run `backup-db.sh`, then `docker compose -f deploy/docker-compose.yml up -d`. Compose replaces the container. `stop_grace_period` is 300 s, so open streams can finish, as with nginx's limit.
-
-**Building:**
-- The image takes exactly what `uv.lock` pins (`uv sync --locked --no-dev`), runs as a non-root user, and carries no secrets (`.dockerignore` keeps `.env`, `config.toml`, `keys/`, `deploy/` and `tests/` out of the build context).
-- Behind a proxy, pass `--build-arg HTTPS_PROXY=...`. Base images come from build args, so an internal mirror works: `--build-arg PYTHON_IMAGE=registry.internal/python:3.11-slim-bookworm --build-arg UV_IMAGE=registry.internal/astral-sh/uv:0.11.32`.
-- For a host without internet access, build elsewhere and carry the image over:
-
-```bash
-docker build -t llm-gateway:2026.11.1 .                   # on a machine with access
-docker save llm-gateway:2026.11.1 | gzip > llm-gateway-2026.11.1.tar.gz
-docker load < llm-gateway-2026.11.1.tar.gz                # on the gateway host; then GATEWAY_IMAGE=llm-gateway:2026.11.1
-```
-
-Manual scripts run inside the container: `docker compose -f deploy/docker-compose.yml exec gateway python scripts/rollup_usage_daily.py`.
+Everything for that lives in [`deploy/migration/`](migration/README.md), with its own README: the gateway image and its compose file, the steps for moving to a new server, and a drill that rehearses the move. Nothing there is used by a systemd deployment: `deploy/docker-compose.yml` is unchanged, and the gateway container is defined in a separate file that only `deploy/migration/compose.sh` loads.
 
 ## Scheduled Jobs and Scripts
 
@@ -393,20 +276,18 @@ docker compose -f deploy/docker-compose.yml up -d
 ├── app/                      # Application code
 ├── scripts/                  # Anomaly scan, usage-log cleanup, one-off tools
 ├── .venv/                    # uv-managed virtual environment
-├── config.toml               # Model routing config (container: config/config.toml, CONFIG_DIR)
+├── config.toml               # Model routing config
 ├── .env                      # Application env vars
 ├── keys/public.pem           # AuthCenter public key
 ├── logs/                     # App log files, one per worker (LOG_DIR)
-├── Dockerfile                # Gateway image (container deployment)
 └── deploy/
-    ├── docker-compose.yml    # PG + oauth2-proxy; profile "gateway": migrate + gateway containers
+    ├── docker-compose.yml    # PG + oauth2-proxy
     ├── .env                  # Docker services env vars (template: .env.example)
     ├── pgdata/               # PostgreSQL data
     ├── setup.sh              # Deployment script
     ├── backup-db.sh          # Online database backup (pg_dump, verify, encrypt, retention)
     ├── restore-drill.sh      # Restore a backup into a throwaway container, log the result
-    ├── load-backup.sh        # Load a backup into this host's database, migrate, start the gateway (new-server cutover)
-    ├── migration-drill/      # Rehearse the move to containers on another machine (own README)
+    ├── migration/            # Gateway container, move to a new server, and its drill (own README)
     ├── gen-selfsigned-cert.sh               # Self-signed TLS cert for :443
     ├── llm-gateway.service                  # Gateway systemd unit
     ├── llm-gateway-example.nginx.conf       # Nginx template

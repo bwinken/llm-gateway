@@ -2,14 +2,14 @@
 # 把一份備份載入「這台主機」的 PostgreSQL 容器，跑 migration，啟動 gateway 容器
 #
 # 用法:
-#   bash deploy/load-backup.sh FILE          # FILE：backup-db.sh 產生的 .dump 或 .dump.gpg
-#   bash deploy/load-backup.sh FILE --yes    # 不詢問（腳本裡用）
+#   bash deploy/migration/load-backup.sh FILE          # FILE：backup-db.sh 產生的 .dump 或 .dump.gpg
+#   bash deploy/migration/load-backup.sh FILE --yes    # 不詢問（腳本裡用）
 #
 # 用途：搬到新主機時的最後一步。新主機上的容器（PostgreSQL、gateway 等）先全部開好、
 # 確認沒問題，資料最後才搬過來：
 #   舊主機：停掉 gateway → bash deploy/backup-db.sh → 把備份檔複製到新主機
-#   新主機：bash deploy/load-backup.sh <備份檔>
-# 流程見 deploy/README 的「搬到新主機」；deploy/migration-drill/ 用同一支腳本演練。
+#   新主機：bash deploy/migration/load-backup.sh <備份檔>
+# 流程見 deploy/README 的「搬到新主機」；deploy/migration/ 用同一支腳本演練。
 #
 # ⚠ 這會「取代」這台主機上的資料庫：現有的資料庫整個刪除，換成備份的內容。
 # 所以：
@@ -29,6 +29,7 @@
 #   BACKUP_DIR       另存現有資料庫的位置（預設 ~/backup/llm-gateway），紀錄檔 load-backup.log 也在這裡
 #   PG_CONTAINER     PostgreSQL 容器名稱（預設 llm-gateway-pg）
 #   ENV_FILE         讀取 PG_USER / PG_DB / GATEWAY_PORT 的檔案（預設 deploy/.env）
+# gateway 容器的定義在同一個資料夾的 docker-compose.gateway.yml（透過 compose.sh 使用）。
 #   COMPOSE_PROJECT_NAME   compose project 名稱（docker compose 自己會讀；演練用）
 #   LOAD_SUMMARY_FILE      把結果寫成 KEY=value 的檔案（演練用）
 #
@@ -50,7 +51,7 @@ PG_CONTAINER="${PG_CONTAINER:-llm-gateway-pg}"
 GW_CONTAINER="llm-gateway"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/backup/llm-gateway}"
 LOAD_LOG="$BACKUP_DIR/load-backup.log"
-ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env}"
+ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/../.env}"
 TABLES="users usage_logs usage_daily audit_log app_owners ip_allow_rules client_violations anomaly_events"
 
 FILE=""; YES=0
@@ -78,7 +79,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-[ -n "$FILE" ] || { echo "用法: bash deploy/load-backup.sh FILE [--yes]" >&2; exit 2; }
+[ -n "$FILE" ] || { echo "用法: bash deploy/migration/load-backup.sh FILE [--yes]" >&2; exit 2; }
 umask 077
 [ -f "$FILE" ] && [ -s "$FILE" ] || die "找不到備份檔，或檔案是空的: $FILE"
 command -v docker >/dev/null || die "找不到 docker 指令"
@@ -90,17 +91,17 @@ GATEWAY_PORT="$(env_value GATEWAY_PORT)"; GATEWAY_PORT="${GATEWAY_PORT:-8050}"
 [ -n "$PG_USER" ] && [ -n "$PG_DB" ] || die "$ENV_FILE 裡缺少 PG_USER 或 PG_DB"
 case "$PG_DB$PG_USER" in *[!A-Za-z0-9_]*) die "PG_USER / PG_DB 只能是英數字與底線" ;; esac
 
-compose() { docker compose -f "$SCRIPT_DIR/docker-compose.yml" "$@"; }
+compose() { bash "$SCRIPT_DIR/compose.sh" "$@"; }
 psql_db() { docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -At -v ON_ERROR_STOP=1 -c "$1"; }
 psql_admin() { docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -At -v ON_ERROR_STOP=1 -c "$1"; }
 table_exists() { [ "$(psql_db "SELECT to_regclass('public.$1') IS NOT NULL")" = "t" ]; }
 
 docker inspect -f '{{.State.Running}}' "$PG_CONTAINER" 2>/dev/null | grep -q true \
-    || die "PostgreSQL 容器 $PG_CONTAINER 沒有在執行：先把這台主機的容器開好（docker compose up -d）"
+    || die "PostgreSQL 容器 $PG_CONTAINER 沒有在執行：先把這台主機的容器開好（bash deploy/migration/compose.sh up -d）"
 if command -v systemctl >/dev/null && systemctl --user is-active --quiet llm-gateway 2>/dev/null; then
     die "這台主機有執行中的 llm-gateway systemd 服務。這支腳本會取代資料庫，只用在以容器執行 gateway 的主機；確定要做請先停掉它"
 fi
-image="$(compose --profile gateway config --images 2>/dev/null | grep -v -e postgres -e oauth2 | head -n1 || true)"
+image="$(compose config --images 2>/dev/null | grep -v -e postgres -e oauth2 | head -n1 || true)"
 [ -n "$image" ] && docker image inspect "$image" >/dev/null 2>&1 \
     || die "找不到 gateway 映像 ${image:-（compose 設定讀不到）}：先建置或 docker load（deploy/.env 的 GATEWAY_IMAGE）"
 
@@ -196,7 +197,7 @@ ok "還原完成（${restore_s}s，schema $schema_before）：${counts//count_/}
 # ── 4. Migration ──
 info "執行 migration（alembic upgrade head）"
 t=$(date +%s)
-compose --profile gateway up --no-deps --exit-code-from migrate migrate > "$ERR_FILE" 2>&1 \
+compose up --no-deps --exit-code-from migrate migrate > "$ERR_FILE" 2>&1 \
     || { tail -n 15 "$ERR_FILE" >&2; die "migration 失敗，gateway 沒有啟動（上面是 migrate 的輸出）"; }
 migrate_s=$(( $(date +%s) - t ))
 schema_after="$(psql_db "SELECT string_agg(version_num, ',') FROM alembic_version")"
@@ -209,7 +210,7 @@ fi
 # ── 5. Gateway ──
 info "啟動 gateway 容器"
 t=$(date +%s)
-compose --profile gateway up -d gateway >/dev/null 2>&1 || die "無法啟動 gateway（docker compose up gateway）"
+compose up -d gateway >/dev/null 2>&1 || die "無法啟動 gateway（compose.sh up gateway）"
 ready=0
 for _ in $(seq 1 90); do
     if curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$GATEWAY_PORT/readyz" 2>/dev/null; then ready=1; break; fi

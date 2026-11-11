@@ -13,7 +13,7 @@ monitor/
 logs/
 deploy/llm-gateway.nginx.conf
 # migration drill: per-run settings, records and the drill environment's marker
-deploy/migration-drill/drill.env
-deploy/migration-drill/*.log
-deploy/migration-drill/.state/
+deploy/migration/drill.env
+deploy/migration/*.log
+deploy/migration/.state/
 /.migration-drill

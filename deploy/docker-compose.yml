@@ -13,27 +13,7 @@
 #   2. docker compose -f deploy/docker-compose.yml up -d
 #   3. 設定 Nginx (參考 deploy/llm-gateway.nginx.conf)
 #   4. sudo nginx -t && sudo systemctl reload nginx
-#
-# Gateway 本身預設由 systemd 執行（deploy/llm-gateway.service），上面的 up -d
-# 不會啟動它。改用容器執行時加上 profile "gateway"（見 deploy/README.md 的
-# 「Running the gateway in a container」）：
-#   docker compose -f deploy/docker-compose.yml --profile gateway up -d
-# 切換之後在 deploy/.env 加上 COMPOSE_PROFILES=gateway，平常的 up -d / down 就會包含它。
 # ============================================================
-
-# gateway 與 migrate 共用：容器內的路徑一律指向掛載點，覆蓋 .env 裡可能寫的主機路徑
-# （migrate 也會 import app，.env 的 LOG_DIR 若是主機路徑，它一樣會失敗）
-x-gateway-paths: &gateway-paths
-  CONFIG_DIR: /app/config
-  LOG_DIR: /app/logs
-  AUTH_CENTER_PUBLIC_KEY_PATH: /app/keys/public.pem
-  # tmpfs：每次啟動從零開始（容器內主程序 pid 固定，放在保留的目錄會混到上一輪）
-  METRICS_DIR: /tmp/llm-gateway-metrics
-
-x-gateway-volumes: &gateway-volumes
-  - ../config:/app/config
-  - ../keys:/app/keys:ro
-  - ../logs:/app/logs
 
 services:
   # ─── PostgreSQL ─────────────────────────────────────────────
@@ -110,72 +90,3 @@ services:
     # ─── 內網 DNS 解析（如果容器無法解析 AuthCenter 域名）───
     # extra_hosts:
     #   - "auth.company.com:192.168.x.x"
-
-  # ─── Gateway 容器（profile "gateway"）───────────────────────
-  # 只有加上 --profile gateway 才會啟動；systemd 部署完全不受影響。
-  # 先停掉 systemd 的 llm-gateway：兩者都聽 127.0.0.1:8050。
-  #
-  # network_mode: host —— 和 systemd 部署看到的網路完全一樣：
-  #   - nginx 照舊連 127.0.0.1:8050，nginx 設定不用改
-  #   - 連線來源是 127.0.0.1，uvicorn 預設只信任它的 X-Forwarded-For，
-  #     所以 IP allowlist、登入失敗鎖定、audit log 拿到的是真實的使用者 IP
-  #     （bridge 網路下來源會變成 docker 的閘道位址，這些全部會錯）
-  #   - .env 的 DATABASE_URL（localhost:5432）、HTTP(S)_PROXY 不用改
-  #   - hostname 和主機相同，重建容器後並發 lease 仍會在啟動時清掉
-  #
-  # 主機上的目錄（相對於 deploy/，即 ~/opt/llm-gateway/ 底下）：
-  #   ../config/  config.toml 所在目錄（admin 頁面會寫入；必須掛目錄，不能掛單一檔案）
-  #   ../keys/    AuthCenter 公鑰（唯讀）
-  #   ../logs/    每個 worker 的 log 檔
-  #   ../.env     gateway 的設定與密鑰（DATABASE_URL 等），以環境變數傳入
-  # 這些目錄要屬於 GATEWAY_UID（預設 1000）。
-
-  # 每次啟動前先跑 alembic upgrade head；跑完才啟動 gateway
-  migrate:
-    profiles: ["gateway"]
-    image: ${GATEWAY_IMAGE:-llm-gateway:latest}
-    build:
-      context: ..
-    network_mode: host
-    user: "${GATEWAY_UID:-1000}:${GATEWAY_GID:-1000}"
-    env_file: ../.env
-    environment: *gateway-paths
-    volumes: *gateway-volumes
-    tmpfs:
-      - /tmp
-    command: ["sh", "-c", "python scripts/wait_for_db.py --timeout 90 && exec alembic upgrade head"]
-    depends_on:
-      - postgres
-    restart: "no"
-
-  gateway:
-    profiles: ["gateway"]
-    image: ${GATEWAY_IMAGE:-llm-gateway:latest}
-    build:
-      context: ..
-    container_name: llm-gateway
-    restart: unless-stopped
-    network_mode: host
-    init: true
-    user: "${GATEWAY_UID:-1000}:${GATEWAY_GID:-1000}"
-    env_file: ../.env
-    environment:
-      <<: *gateway-paths
-      GATEWAY_HOST: 127.0.0.1
-      GATEWAY_PORT: ${GATEWAY_PORT:-8050}
-      GATEWAY_WORKERS: ${GATEWAY_WORKERS:-2}
-    volumes: *gateway-volumes
-    tmpfs:
-      - /tmp
-    # 串流最長可到 nginx 的 300s；預設 10s 就 SIGKILL，部署時會切斷進行中的回應
-    stop_grace_period: 300s
-    healthcheck:
-      # /readyz 只看資料庫（vLLM 掛掉不該讓 gateway 被判定不健康）
-      test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('GATEWAY_PORT', '8050') + '/readyz', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    depends_on:
-      migrate:
-        condition: service_completed_successfully

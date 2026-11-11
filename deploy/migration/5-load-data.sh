@@ -2,9 +2,9 @@
 # 步驟 5（演練機器）：容器都開好之後，才把資料搬進來
 #
 # 用法:
-#   bash deploy/migration-drill/5-load-data.sh [演練包目錄]
+#   bash deploy/migration/5-load-data.sh [演練包目錄]
 #
-# 這一步就是正式切換時的停機時間：呼叫 deploy/load-backup.sh，和正式搬遷用的是同一支腳本。
+# 這一步就是正式切換時的停機時間：呼叫 deploy/migration/load-backup.sh，和正式搬遷用的是同一支腳本。
 #   1. 停掉 gateway 容器
 #   2. 刪除並重建資料庫（步驟 4 留下的空 schema）
 #   3. 還原演練包裡的備份
@@ -26,11 +26,11 @@ mkdir -p "$STATE_DIR"
 rm -f "$STATE_DIR/load.env"
 COMPOSE_PROJECT_NAME="$DRILL_PROJECT" BACKUP_GPG_KEY="${DRILL_GPG_KEY:-}" BACKUP_DIR="$STATE_DIR/load" \
     LOAD_SUMMARY_FILE="$STATE_DIR/load.env" \
-    bash "$DEPLOY_DIR/load-backup.sh" "$BUNDLE_DUMP" --yes \
+    bash "$DRILL_HOME/load-backup.sh" "$BUNDLE_DUMP" --yes \
     || die "載入資料失敗（詳見上面的訊息）"
 [ -f "$STATE_DIR/load.env" ] || die "load-backup.sh 沒有留下結果"
 cp "$STATE_DIR/load.env" "$STATE_DIR/restored.env"
 
 r="$STATE_DIR/restored.env"
 note "bundle=$(basename "$BUNDLE") restore=$(kv "$r" restore_seconds)s migrate=$(kv "$r" migrate_seconds)s start=$(kv "$r" start_seconds)s total=$(kv "$r" load_seconds)s schema=$(kv "$r" schema_version)->$(kv "$r" schema_after) users=$(kv "$r" count_users)"
-ok "資料已載入，gateway 已就緒。下一步：bash deploy/migration-drill/6-verify.sh"
+ok "資料已載入，gateway 已就緒。下一步：bash deploy/migration/6-verify.sh"

@@ -2,7 +2,7 @@
 # 步驟 2（演練機器）：確認演練包裡的備份真的還原得回來
 #
 # 用法:
-#   bash deploy/migration-drill/2-restore-test.sh [演練包目錄]
+#   bash deploy/migration/2-restore-test.sh [演練包目錄]
 #
 # 先核對 SHA256SUMS（搬運途中有沒有損毀），再呼叫 deploy/restore-drill.sh：
 # 還原到一次性的容器、檢查內容、刪除。這一步沒過就不要往下做。
@@ -23,4 +23,4 @@ DRILL_IMAGE="$image" DRILL_LOG="$DRILL_HOME/restore-drill.log" \
     bash "$DEPLOY_DIR/restore-drill.sh" "$BUNDLE_DUMP" || die "還原演練失敗（詳見上面的訊息與 $DRILL_HOME/restore-drill.log）"
 
 note "bundle=$(basename "$BUNDLE") image=$image $(tail -n1 "$DRILL_HOME/restore-drill.log" | cut -f6 | grep -oE '(restore|schema|users|usage_logs)=[^ ]+' | tr '\n' ' ')"
-ok "備份可以還原。下一步：bash deploy/migration-drill/3-image.sh"
+ok "備份可以還原。下一步：bash deploy/migration/3-image.sh"

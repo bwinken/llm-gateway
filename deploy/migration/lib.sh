@@ -140,7 +140,7 @@ plain_stream() {
 }
 
 # ── 演練環境的 compose / psql ──
-compose() { docker compose -p "$DRILL_PROJECT" -f "$DEPLOY_DIR/docker-compose.yml" "$@"; }
+compose() { bash "$DRILL_HOME/compose.sh" -p "$DRILL_PROJECT" "$@"; }
 drill_psql() {
     docker exec "$PG_CONTAINER" psql -U "$(kv "$DEPLOY_DIR/.env" PG_USER)" -d "$(kv "$DEPLOY_DIR/.env" PG_DB)" \
         -At -v ON_ERROR_STOP=1 -c "$1"

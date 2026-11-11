@@ -2,8 +2,8 @@
 # 步驟 7（演練機器）：把演練環境刪乾淨
 #
 # 用法:
-#   bash deploy/migration-drill/7-teardown.sh             # 刪除演練環境
-#   bash deploy/migration-drill/7-teardown.sh --image     # 連 gateway 映像一起刪
+#   bash deploy/migration/7-teardown.sh             # 刪除演練環境
+#   bash deploy/migration/7-teardown.sh --image     # 連 gateway 映像一起刪
 #
 # 演練環境裡是一份完整的正式資料（所有 API key），演練完一定要刪：
 #   - 容器、網路、volume（compose project llmgw-drill）
@@ -20,7 +20,7 @@ guard_not_production
 pg_image="$(docker inspect -f '{{.Config.Image}}' "$PG_CONTAINER" 2>/dev/null || true)"
 info "停止並刪除容器、網路、volume"
 if [ -f "$DEPLOY_DIR/.env" ]; then
-    compose --profile gateway down -v --remove-orphans >/dev/null 2>&1 || warn "docker compose down 有錯誤，繼續清理"
+    compose down -v --remove-orphans >/dev/null 2>&1 || warn "docker compose down 有錯誤，繼續清理"
 fi
 for c in $(docker ps -aq --filter "label=com.docker.compose.project=$DRILL_PROJECT"); do docker rm -f -v "$c" >/dev/null; done
 

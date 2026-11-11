@@ -2,8 +2,8 @@
 # 步驟 3（演練機器）：準備 gateway 映像
 #
 # 用法:
-#   bash deploy/migration-drill/3-image.sh                 # 用這份 checkout 建映像
-#   IMAGE_TAR=llm-gateway.tar.gz bash deploy/migration-drill/3-image.sh   # 不能連外：載入別處建好的映像
+#   bash deploy/migration/3-image.sh                 # 用這份 checkout 建映像
+#   IMAGE_TAR=llm-gateway.tar.gz bash deploy/migration/3-image.sh   # 不能連外：載入別處建好的映像
 #
 # 可用環境變數（也可寫在 drill.env）：
 #   GATEWAY_IMAGE   映像名稱（預設 llm-gateway:drill）。正式切換要用的就是這個映像，
@@ -31,7 +31,7 @@ else
         [ -n "${!v:-}" ] && args+=(--build-arg "$v=${!v}")
     done
     [ -n "${DRILL_BUILD_NETWORK:-}" ] && args+=(--network "$DRILL_BUILD_NETWORK")
-    docker build "${args[@]}" -t "$GATEWAY_IMAGE" "$REPO_ROOT" || die "docker build 失敗"
+    docker build "${args[@]}" -f "$DRILL_HOME/Dockerfile" -t "$GATEWAY_IMAGE" "$REPO_ROOT" || die "docker build 失敗"
     note "source=build"
 fi
 
@@ -44,4 +44,4 @@ docker run --rm --network none --user "$(id -u):$(id -g)" "$GATEWAY_IMAGE" pytho
 
 note "image=$GATEWAY_IMAGE id=$(docker image inspect -f '{{.Id}}' "$GATEWAY_IMAGE" | cut -c8-19) head=$head_rev seconds=$(( $(date +%s) - start ))"
 ok "映像就緒：$GATEWAY_IMAGE（migration 最新版本 $head_rev）"
-ok "下一步：bash deploy/migration-drill/4-up.sh"
+ok "下一步：bash deploy/migration/4-up.sh"

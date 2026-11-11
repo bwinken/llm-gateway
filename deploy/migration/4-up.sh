@@ -2,7 +2,7 @@
 # 步驟 4（演練機器）：先把容器全部開好，資料庫是空的
 #
 # 用法:
-#   bash deploy/migration-drill/4-up.sh [演練包目錄]
+#   bash deploy/migration/4-up.sh [演練包目錄]
 #
 # 對應正式搬遷的「事前準備」：新主機上的容器先開好、確認沒問題，資料最後才搬（步驟 5）。
 #   1. 解開設定：config/config.toml、keys/public.pem、.env（DATABASE_URL 指向演練資料庫）
@@ -57,12 +57,12 @@ cp "$work/config.toml" "$REPO_ROOT/config/config.toml"
 chmod 644 "$REPO_ROOT/keys/public.pem" 2>/dev/null || true
 chmod 755 "$REPO_ROOT/keys"
 {
-    echo "# 由 migration-drill/4-up.sh 產生：正式主機的 .env，拿掉會對外產生副作用的設定"
+    echo "# 由 migration/4-up.sh 產生：正式主機的 .env，拿掉會對外產生副作用的設定"
     grep -Ev "$ENV_STRIP_RE" "$work/env" 2>/dev/null || true      # 手工做的演練包也再濾一次
     echo "DATABASE_URL=postgresql://$PG_USER_NAME:$PG_PASSWORD_DRILL@localhost:$PG_PORT/$PG_DB_NAME"
 } > "$REPO_ROOT/.env"
 cat > "$DEPLOY_DIR/.env" <<ENVEOF
-# 由 migration-drill/4-up.sh 產生（演練用，7-teardown.sh 會刪除）
+# 由 migration/4-up.sh 產生（演練用，7-teardown.sh 會刪除）
 PG_USER=$PG_USER_NAME
 PG_PASSWORD=$PG_PASSWORD_DRILL
 PG_DB=$PG_DB_NAME
@@ -103,7 +103,7 @@ fi
 # ── 3. Migration：在空的資料庫上建立 schema ──
 info "建立 schema（alembic upgrade head，空的資料庫）"
 t=$(date +%s)
-compose --profile gateway up --no-deps --exit-code-from migrate migrate > "$STATE_DIR/migrate-empty.log" 2>&1 \
+compose up --no-deps --exit-code-from migrate migrate > "$STATE_DIR/migrate-empty.log" 2>&1 \
     || { tail -n 15 "$STATE_DIR/migrate-empty.log" >&2; die "在空資料庫上跑 migration 失敗（完整輸出：$STATE_DIR/migrate-empty.log）"; }
 migrate_s=$(( $(date +%s) - t ))
 ok "schema 建立完成（${migrate_s}s）"
@@ -111,7 +111,7 @@ ok "schema 建立完成（${migrate_s}s）"
 # ── 4. Gateway ──
 info "啟動 gateway 容器"
 t=$(date +%s)
-compose --profile gateway up -d gateway >/dev/null 2>&1 || die "無法啟動 gateway（docker compose up gateway）"
+compose up -d gateway >/dev/null 2>&1 || die "無法啟動 gateway（compose.sh up gateway）"
 health=""
 for _ in $(seq 1 90); do
     health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$GW_CONTAINER" 2>/dev/null || echo missing)"
@@ -132,4 +132,4 @@ users="$(drill_psql 'SELECT count(*) FROM users')"
 
 note "bundle=$(basename "$BUNDLE") empty_migrate=${migrate_s}s start=${start_s}s pg=$drill_ver image=$GATEWAY_IMAGE"
 ok "容器都開好了，gateway 已就緒（${start_s}s）：http://127.0.0.1:$GATEWAY_PORT（資料庫是空的）"
-ok "下一步，把資料搬進來：bash deploy/migration-drill/5-load-data.sh"
+ok "下一步，把資料搬進來：bash deploy/migration/5-load-data.sh"

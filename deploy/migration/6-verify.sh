@@ -2,8 +2,8 @@
 # 步驟 6（演練機器）：驗證容器化的環境，和正式環境的快照對照
 #
 # 用法:
-#   bash deploy/migration-drill/6-verify.sh
-#   DRILL_TEST_MODEL=<模型別名> bash deploy/migration-drill/6-verify.sh   # 多打一個真的請求
+#   bash deploy/migration/6-verify.sh
+#   DRILL_TEST_MODEL=<模型別名> bash deploy/migration/6-verify.sh   # 多打一個真的請求
 #
 # 每一項印出 ✔ / ✘，全部通過才回傳 0。不會改動 config.toml，寫進資料庫的只有
 # 一個臨時帳號 migration_drill（以及它那一筆用量）。可以重複執行。
@@ -166,4 +166,4 @@ if [ "$FAIL" -gt 0 ]; then
     note "failed_checks=$(IFS='|'; echo "${FAILED[*]}" | tr ' \t' '__' | cut -c1-300)"
     die "驗證沒有通過：$FAIL 項失敗，$PASS 項通過"
 fi
-ok "驗證通過：$PASS 項全部通過。演練完記得跑：bash deploy/migration-drill/7-teardown.sh"
+ok "驗證通過：$PASS 項全部通過。演練完記得跑：bash deploy/migration/7-teardown.sh"

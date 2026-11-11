@@ -1,0 +1,38 @@
+# Build-context exclusions for the Dockerfile next to this file (BuildKit reads
+# <Dockerfile>.dockerignore). The image takes only what the Dockerfile COPYs;
+# this keeps secrets, data and bulk out of the build context altogether.
+
+# Secrets and per-site settings: mounted or passed at run time, never baked in
+.env
+.env.*
+!.env.example
+config.toml
+config/
+keys/
+*.pem
+*.key
+*.asc
+
+# Data and runtime output. deploy/ holds pgdata and deploy/.env; the one file
+# the image needs from it is named explicitly.
+deploy/
+!deploy/migration/wait_for_db.py
+logs/
+*.db
+*.dump
+*.dump.gpg
+pgdata/
+backup/
+
+# Development
+.git/
+.github/
+.venv/
+venv/
+tests/
+docs/
+.claude/
+.pytest_cache/
+.ruff_cache/
+**/__pycache__/
+**/*.pyc

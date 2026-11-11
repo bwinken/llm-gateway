@@ -2,8 +2,8 @@
 # 步驟 1（在「正式主機」執行）：備份資料庫，連同設定打包成演練包
 #
 # 用法:
-#   BACKUP_GPG_RECIPIENT_FILE=~/opt/llm-gateway/keys/backup.pub.asc bash deploy/migration-drill/1-bundle.sh
-#   bash deploy/migration-drill/1-bundle.sh /path/to/output-dir
+#   BACKUP_GPG_RECIPIENT_FILE=~/opt/llm-gateway/keys/backup.pub.asc bash deploy/migration/1-bundle.sh
+#   bash deploy/migration/1-bundle.sh /path/to/output-dir
 #
 # 對正式環境只做讀取：一次線上備份（deploy/backup-db.sh，不停機），外加讀設定檔。
 # 產出 <BACKUP_DIR>/migration-bundle-<時間>/：
@@ -66,6 +66,9 @@ umask 077
 mkdir -p "$OUT"
 [ -z "$(ls -A "$OUT")" ] || die "$OUT 不是空的"
 OUT="$(cd "$OUT" && pwd)"
+# 中途失敗就把做到一半的演練包刪掉：不完整的目錄不該被帶去演練
+BUNDLE_DONE=0
+CLEANUPS+=('[ "$BUNDLE_DONE" = 1 ] || rm -rf "$OUT"')
 
 # ── 快照：緊接在備份之前，所以備份裡的筆數只會多不會少 ──
 info "記錄正式環境的快照"
@@ -117,9 +120,10 @@ fi
 rm -rf "$work"
 
 ( cd "$OUT" && sha256sum -- * > SHA256SUMS )
+BUNDLE_DONE=1
 
 note "bundle=$OUT backup=${backup_s}s schema=$(kv "$OUT/snapshot.env" schema_version) users=$(kv "$OUT/snapshot.env" count_users) encrypted=$([ ${#GPG_ARGS[@]} -gt 0 ] && echo yes || echo no)"
 ok "演練包完成：$OUT（$(du -sh "$OUT" | cut -f1)）"
 info "沒有帶走的設定：${removed:-（無）}"
 info "下一步：把整個目錄複製到演練機器（例如 rsync -a $OUT user@drill-host:~/），在那裡的 checkout 執行："
-info "  BUNDLE=~/$(basename "$OUT") bash deploy/migration-drill/2-restore-test.sh"
+info "  BUNDLE=~/$(basename "$OUT") bash deploy/migration/2-restore-test.sh"
