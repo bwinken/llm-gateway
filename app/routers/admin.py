@@ -1179,6 +1179,8 @@ def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
                 "mailable": v.username in mailable,
                 # The account said it applied the fix and has not violated since.
                 "resolved": _local_label(v.resolved_at) if client_rules.is_resolved(v) else "",
+                # It said so, then violated again: open, and a new case for mail.
+                "reopened": _local_label(v.resolved_at) if v.resolved_at and not client_rules.is_resolved(v) else "",
                 # An admin asked for a mail that has not gone out yet.
                 "queued": client_rules.is_queued(v),
             }
@@ -1236,6 +1238,11 @@ def _client_rules_view(session: Session, admin_user: User) -> dict:
         "mail": mailer.status(),
         "mail_pace": {**client_rules.mail_pace(), "waiting": len(client_rules.due_accounts(session))},
         "monthly": {**client_rules.monthly_mail(), "enabled": get_client_monthly_mail()},
+        # The card's "mail everyone" buttons: accounts with anything open, under any rule.
+        "mail_all": {
+            "open": len(client_rules.mail_all_targets(session, only_unmailed=False)),
+            "unmailed": len(client_rules.mail_all_targets(session, only_unmailed=True)),
+        },
         "my_address": mailer.address_for(admin_user.username),
         "mail_log": _mail_log_view(client_rules.mail_log(session)),
         "actions": client_rules.ACTIONS,
@@ -1285,6 +1292,39 @@ def set_client_rules_monthly_mail(
     logger.info("Client rules monthly mail {} | admin={}", "on" if on else "off", admin_user.username)
     if _wants_json(request):
         return JSONResponse({"ok": True, "enabled": on})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/client-rules/mail-all")
+def send_client_rules_mail_all(
+    request: Request,
+    background: BackgroundTasks,
+    only_unmailed: str = Form("on"),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Queue a mail to every account with anything open, whatever the
+    check: those with something they were never mailed about (default) or
+    all of them. Each gets one mail covering everything it has open. Paced
+    like every other send: the first batch goes out after this reply, the
+    mail job sends the rest."""
+    if not mailer.is_enabled():
+        raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
+    unmailed_only = only_unmailed == "on"
+    queued = client_rules.request_mail_all(session, unmailed_only)
+    if queued:
+        background.add_task(client_rules.send_batch)
+    pace = client_rules.mail_pace()
+    logger.info(
+        "Client rule mail queued for every rule | accounts={} only_unmailed={} admin={}",
+        queued, unmailed_only, admin_user.username,
+    )
+    audit.note(mail_queued=queued)
+    if _wants_json(request):
+        return JSONResponse({
+            "ok": True, "queued": queued, "batch": pace["batch"],
+            "interval_minutes": round(pace["interval_s"] / 60, 1),
+        })
     return RedirectResponse(url="/admin", status_code=303)
 
 

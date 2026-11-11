@@ -620,6 +620,18 @@ function submitExportCsv() {
         <button type="submit" class="gw-btn gw-btn-primary text-sm px-3 py-1.5 ml-auto">Turn on</button>
         {% endif %}
     </form>
+    <div id="client-rules-mail-all" class="flex flex-wrap items-center gap-3 mb-4 p-3 rounded" style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06)">
+        <span class="text-sm font-semibold text-t2">Mail everyone</span>
+        <span class="text-xs text-t3">{{ cr.mail_all.open }} account(s) have something open under any rule. Each gets one mail covering everything it has open.</span>
+        <form action="/admin/client-rules/mail-all" method="POST" data-cr-form="mail-all" data-count="{{ cr.mail_all.unmailed }}" class="inline ml-auto">
+            <input type="hidden" name="only_unmailed" value="on">
+            <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5" {{ 'disabled' if not cr.mail_all.unmailed }}>Mail the {{ cr.mail_all.unmailed }} not mailed yet</button>
+        </form>
+        <form action="/admin/client-rules/mail-all" method="POST" data-cr-form="mail-all" data-count="{{ cr.mail_all.open }}" class="inline">
+            <input type="hidden" name="only_unmailed" value="off">
+            <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5" {{ 'disabled' if not cr.mail_all.open }}>Mail all {{ cr.mail_all.open }}</button>
+        </form>
+    </div>
     {% endif %}
 
     {% if cr.baseline %}
@@ -763,12 +775,12 @@ function submitExportCsv() {
             {% if r.hits %}
             <div class="overflow-x-auto">
             <table class="gw-table">
-                <thead><tr><th>Account</th><th class="gw-tip gw-tip-wide" data-tip="Open: still counted. Says fixed: the account pressed 'I've applied it' on its dashboard and has not violated since; it is not mailed, and goes back to Open by itself on its next violation.">Status</th><th>Claude Code</th><th>First seen</th><th>Last seen</th><th>Mailed</th></tr></thead>
+                <thead><tr><th>Account</th><th class="gw-tip gw-tip-wide" data-tip="Open: still counted. Says fixed: the account pressed 'I've applied it' on its dashboard and has not violated since; it is not mailed. On its next violation it goes back to Open by itself and counts as not mailed yet.">Status</th><th>Claude Code</th><th>First seen</th><th>Last seen</th><th>Mailed</th></tr></thead>
                 <tbody>
                     {% for h in r.hits %}
                     <tr class="{{ 'opacity-60' if h.resolved }}">
                         <td class="text-sm"><a href="?q={{ h.username | urlencode }}#users" class="font-mono text-t1 hover:underline">{{ h.username }}</a></td>
-                        <td class="text-xs whitespace-nowrap">{% if h.resolved %}<span class="text-ag">says fixed</span> <span class="text-t4 font-mono">{{ h.resolved }}</span>{% else %}<span style="color:#f5a623">open</span>{% endif %}</td>
+                        <td class="text-xs whitespace-nowrap">{% if h.resolved %}<span class="text-ag">says fixed</span> <span class="text-t4 font-mono">{{ h.resolved }}</span>{% else %}<span style="color:#f5a623">open</span>{% if h.reopened %} <span class="text-t4">again · said fixed <span class="font-mono">{{ h.reopened }}</span></span>{% endif %}{% endif %}</td>
                         <td class="font-mono text-xs text-t3">{{ h.version or '—' }}</td>
                         <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ h.first_seen }}</td>
                         <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ h.last_seen }}</td>
@@ -1856,6 +1868,8 @@ function submitExportCsv() {
                 ask = { text: 'Turn the monthly reminder on? From now on, on the 1st of every month, everyone who still has something open gets one mail about all of it. Nothing is sent today unless today is the 1st.', okLabel: 'Turn on' };
             } else if (kind === 'reset') {
                 ask = { text: 'Reset ' + rule + ' to its built-in defaults? Your wording, patch and mail settings for it are dropped; its list of accounts is kept.', okLabel: 'Reset', danger: true };
+            } else if (kind === 'mail-all') {
+                ask = { text: 'Mail ' + form.dataset.count + ' account(s) with something open under any rule? Each gets one mail covering everything it has open.', okLabel: 'Send' };
             } else if (kind === 'mail') {
                 ask = { text: 'Mail ' + form.dataset.count + ' account(s) with a ' + rule + ' violation? Each gets one mail covering everything it has open, not only ' + rule + '.', okLabel: 'Send' };
             } else if (kind === 'save' && form.querySelector('select[name="action"]').value === 'remind'
@@ -1868,11 +1882,11 @@ function submitExportCsv() {
                 if (btn) btn.disabled = true;
                 gwPost(form.getAttribute('action'), formData(form))
                     .then(function(r) {
-                        if (kind === 'mail') gwToast(r.queued > r.batch
+                        if (kind === 'mail' || kind === 'mail-all') gwToast(r.queued > r.batch
                             ? 'Queued ' + r.queued + ' accounts. ' + r.batch + ' go out now, the rest ' + r.batch + ' every ' + r.interval_minutes + ' min.'
                             : 'Sending to ' + r.queued + ' account(s) now.', 'ok');
                         saveAdminScroll();
-                        setTimeout(function() { window.location.reload(); }, kind === 'mail' ? 1500 : 0);
+                        setTimeout(function() { window.location.reload(); }, kind === 'mail' || kind === 'mail-all' ? 1500 : 0);
                     })
                     .catch(function(err) {
                         gwToast('Client rules — ' + err.message, 'error');
