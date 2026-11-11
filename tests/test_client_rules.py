@@ -1206,7 +1206,9 @@ class TestOneMailPerAccount:
     def test_the_other_lists_show_it_queued_then_mailed(self, client, db_session, admin_user, test_user, mail_on):
         self._three(db_session)
         client_rules.request_mail(db_session, OUTDATED)
-        page = lambda: client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        def page() -> str:
+            return client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+
         card = page().split('id="client-rule-CC001"', 1)[1].split('id="client-rule-CC002"', 1)[0]
         assert "queued" in card and "not yet" not in card
         client_rules.send_batch(db_session.get_bind())
