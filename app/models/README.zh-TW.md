@@ -360,6 +360,17 @@ cost_usd = (uncached_input_tokens × input_price_per_1m
 
 對應 `ip_allow_rules` 資料表：API IP 白名單（`app/services/ip_allowlist.py`）。欄位有 `cidr`、`label`、`usernames` / `org_codes`（JSON 清單；兩者皆空 = 所有帳號）、`created_by`（使用者名稱，非外鍵）、可選的 `starts_at` / `expires_at`（naive UTC；沒有結束時間 = 永久）、`created_at`。存的是使用者名稱與部門代碼，不是 user id，所以刪除帳號不會動到這張表。
 
+## Client rule 相關資料表
+
+管理面板 *Clients* 分頁背後的四張表（`app/services/client_rules.py`；詳見 `docs/architecture.md` 的 Client rules）。它們存的是 username 和 check id，不是 foreign key，所以刪除帳號或讓 check 退役都不會動到它們。
+
+| 資料表（model） | 每列代表 | 內容 |
+|---|---|---|
+| `client_rule_settings`（`ClientRuleSetting`） | admin 儲存過的一個內建 check（`rule_id`，例如 `CC001`） | 開關、動作、標題、訊息、給所有人以及 Azure / AWS 帳號的 patch、信件主旨、自動寄信與重複週期。沒有列 = 程式內的預設值。不含任何偵測條件 |
+| `client_violations`（`ClientViolation`） | check × 帳號 | 首次 / 最後看到的時間、Claude Code 版本、最後一次終端機提醒的日期、寄信狀態（`mailed_at`、`mail_attempted_at`、`mail_error`、`mail_requested_at`）、`resolved_at`（帳號表示已套用修正） |
+| `client_versions`（`ClientVersion`） | 帳號 × Claude Code 版本 | 最後看到的時間（來自 User-Agent） |
+| `client_mail_log`（`ClientMailLog`） | 一次寄信嘗試 | 時間、帳號、收件地址、主旨、涵蓋的 check、原因（`requested` / `automatic` / `test`）、成功或失敗與錯誤、測試信是哪位 admin 寄的。只新增不修改；不存信件內容 |
+
 ## AuditLog 模型
 
 對應 `audit_log` 資料表：由 `AuditMiddleware`（`app/services/audit.py`）寫入的 Web UI / admin 操作稽核紀錄。`/admin`、`/dashboard` 底下每一個 POST / PUT / PATCH / DELETE（不論成功與否）、每次顯示完整 API key、每次資料匯出，各記一列。

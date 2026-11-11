@@ -360,6 +360,17 @@ Maps to `scheduled_jobs` table. One row per in-gateway periodic job (anomaly sca
 
 Maps to `ip_allow_rules` table: the API IP allowlist (`app/services/ip_allowlist.py`). `cidr`, `label`, `usernames` / `org_codes` (JSON lists; both empty = every account), `created_by` (a username, not a foreign key), optional `starts_at` / `expires_at` (naive UTC; no end = permanent), `created_at`. Usernames and org codes, never user ids, so deleting an account never touches this table.
 
+## Client rule tables
+
+Four tables behind the admin *Clients* tab (`app/services/client_rules.py`; see Client rules in `docs/architecture.md`). They hold usernames and check ids, never foreign keys, so deleting an account or retiring a check leaves them alone.
+
+| Table (model) | One row per | Holds |
+|---|---|---|
+| `client_rule_settings` (`ClientRuleSetting`) | built-in check an admin has saved (`rule_id`, e.g. `CC001`) | on / off, action, title, message, the patch for everyone and for Azure / AWS accounts, mail subject, automatic mail and its repeat. No row = the defaults in code. Never any part of what the check detects |
+| `client_violations` (`ClientViolation`) | check × account | first / last seen, Claude Code version, the day of the last terminal reminder, mail state (`mailed_at`, `mail_attempted_at`, `mail_error`, `mail_requested_at`), `resolved_at` (the account said it applied the fix) |
+| `client_versions` (`ClientVersion`) | account × Claude Code version | when it was last seen (from the User-Agent) |
+| `client_mail_log` (`ClientMailLog`) | mail attempt | when, account, address, subject, the checks it covered, why (`requested` / `automatic` / `test`), sent or failed with the error, the admin behind a test. Append-only; no mail body |
+
 ## AuditLog Model
 
 Maps to `audit_log` table: the trail of Web UI / admin actions written by `AuditMiddleware` (`app/services/audit.py`). One row per POST / PUT / PATCH / DELETE under `/admin` and `/dashboard` (whatever the outcome), per full API key revealed and per export.

@@ -4,102 +4,48 @@
 
 [English](README.md)
 
-一個同時相容 OpenAI 與 Anthropic API 的入口，統一接上地端 [vLLM](https://github.com/vllm-project/vllm) 伺服器、Azure OpenAI 與 AWS Bedrock，並提供每位使用者的 API key、預算與用量計費。
+一個同時相容 OpenAI 與 Anthropic API 的入口，統一接上地端 [vLLM](https://github.com/vllm-project/vllm) 伺服器、Azure OpenAI 與 AWS Bedrock。每位使用者有自己的 API key、每日預算和用量儀表板。
 
 ```
                                   ┌──▶ vLLM 伺服器    (LLM、VLM、embedding、reranker、System One)
 Clients ──▶ LLM Gateway ──────────┼──▶ Azure OpenAI   (逐使用者授權)
  (OpenAI SDK、Anthropic SDK、      └──▶ AWS Bedrock    (逐使用者授權)
   Claude Code、Roo Code…)
-              │
-              ├── 認證：client 用 API key，Web UI 用 SSO
-              ├── 依模型名稱路由，健康狀態感知的自動備援
-              ├── 每人每日預算與並行上限
-              └── 用量與費用紀錄、Web 儀表板、管理面板
 ```
 
-| 儀表板 | 管理面板 |
+| 儀表板：預算、用量、模型即時狀態 | 管理面板：花費、帳號、限制 |
 |---|---|
-| ![Dashboard](docs/screenshots/dashboard.png) | ![Admin](docs/screenshots/admin.png) |
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Admin panel](docs/screenshots/admin.png) |
 
-## 功能
+## 它能做什麼
 
-- **一個 base URL 接所有後端。** `/v1/*` 同時提供 vLLM、Azure、Bedrock 模型，用模型名稱決定後端。另有 `/azure/v1/*`、`/aws/v1/*`，給只能使用單一後端的 client。
-- **OpenAI 與 Anthropic API。** Chat completions、Responses、Messages（可直接搭配 Claude Code）、embeddings、rerank、token 計算，含串流；各後端支援的部分都能用。
-- **高負載下也穩定。** 每 30 秒健康檢查、自動切換到同類型的其他伺服器，並送出 keepalive ping，長時間推理也不會逾時斷線。
-- **成本控管。** 每人每日預算（雲端 Azure + Bedrock 另有每日上限，可設預設值並逐人調整）、每人並行上限、逐模型計價（含 prompt cache 折扣價）。
-- **存取控制。** 可停用帳號，也可逐人授權 Azure 或 Bedrock。
-- **安全與稽核。** 256 bits 的 API key、對嘗試大量錯誤 key 的位址暫時封鎖、admin 頁面拒絕跨站請求、模型金鑰不會傳到瀏覽器，以及只能新增的稽核紀錄，涵蓋每一個管理操作、每次查看 key 和每次匯出。
-- **Web UI。** 使用者可查看自己的用量、剩餘預算與伺服器即時負載。管理員不用改檔案就能管理使用者、模型、價格與限制，並匯出每月費用報表。
-- **可觀測性。** 可選用 [Langfuse](https://langfuse.com) 記錄每個請求，並提供 `/healthz`、`/readyz` 給負載平衡器檢查。
+- **一個 base URL 接所有後端。** Client 呼叫 `/v1/*`，由模型名稱決定走 vLLM、Azure 或 Bedrock。
+- **OpenAI 與 Anthropic API。** Chat completions、Responses、Messages（可直接搭配 Claude Code）、embeddings、rerank，都支援串流。
+- **穩定不斷線。** 健康檢查、自動切換到同類型的其他伺服器，長時間推理時送 keepalive ping。
+- **成本控管。** 每人每日預算、雲端花費另設上限、並行上限、逐模型計價。
+- **存取與安全。** 逐人授權雲端模型、可選的 IP allowlist、prompt 篩檢（guardrail），以及記錄每個管理操作的稽核紀錄。
+- **幫使用者修好設定。** 偵測設定有問題的 Claude Code，並在儀表板和信件裡給每位使用者一個修正設定的腳本。
+- **人人可用的 Web UI。** 使用者看自己的預算、用量與模型狀態；管理員不用改檔案就能管理帳號、模型與價格。
 
 ## 快速開始
 
-需要 Python 3.11、[uv](https://docs.astral.sh/uv/)，以及 Docker（開發用資料庫）。
+需要 Python 3.11、[uv](https://docs.astral.sh/uv/) 和 Docker（開發用資料庫）。
 
 ```bash
 git clone https://github.com/bwinken/llm-gateway.git && cd llm-gateway
 uv sync
-cp config.toml.example config.toml    # 在這裡設定模型伺服器
-cp .env.example .env                  # 在這裡設定 DATABASE_URL 與 AUTH_*
+cp config.toml.example config.toml    # 你的模型伺服器
+cp .env.example .env                  # DATABASE_URL 與 AUTH_*
 bash scripts/start-pg-dev.sh start    # 以 Docker 啟動開發用 PostgreSQL
 uv run alembic upgrade head           # 建立資料表
 uv run fastapi dev app/main.py
 ```
 
-Web UI 登入需要把 [AuthCenter](https://github.com/bwinken/authcenter) 的 RS256 公鑰放在 `keys/public.pem`（或設定 `AUTH_CENTER_PUBLIC_KEY_PATH`）。Windows 若出現 `UnicodeEncodeError`，請先設定 `PYTHONUTF8=1`。
-
-## 設定
-
-### `config.toml`：模型與價格
-
-最簡單的模型設定：
-
-```toml
-[models.llm."my-model"]                # 類型：llm | vlm | embedding | vision_embedding | reranker | vision_reranker | systemone
-base_url   = "http://vllm-host:8000/v1"
-real_model = "Qwen/Qwen3-32B"          # vLLM 伺服器上的模型名稱
-api_key    = ""                        # vLLM 的 --api-key（有設才填）
-```
-
-| 區段 | 用途 |
-|---|---|
-| `[app]` | 新使用者的預設每日預算等執行期設定，多數可在管理面板調整 |
-| `[models.<type>.<alias>]` | 地端 vLLM 模型。可選：逐模型價格、顯示用 metadata、`hidden`、reasoning effort 規則 |
-| `[azure_models.<alias>]` | Azure OpenAI 部署（`endpoint`、`deployment`、`api_key`） |
-| `[bedrock_models.<alias>]` | AWS Bedrock 模型（`region`、`model_id`，以及長期 Bedrock API key 或 IAM access key + secret；region 與 IAM key 可在 `.env` 設一次，供所有模型共用）。 |
-| `[pricing]`、`[pricing.<type>]` | 預設與各類型價格（USD / 每百萬 token），模型自己的價格欄位優先 |
-| `[fallback]`、`[azure_fallback]`、`[bedrock_fallback]` | 要求的模型不存在或離線時改用哪個模型 |
-
-三個後端的模型名稱不能重複。每個欄位的說明都在 [`config.toml.example`](config.toml.example)。模型、價格與備援也可以在 **管理面板 → Model Config** 編輯，會自動寫回 `config.toml`。
-
-### `.env`：環境變數
-
-| 變數 | 用途 | 預設值 |
-|---|---|---|
-| `DATABASE_URL` | PostgreSQL 連線字串 | `postgresql://llm_gateway:password@localhost:5432/llm_gateway` |
-| `AUTH_BASE_URL`、`AUTH_CENTER_APP_ID`、`AUTH_CENTER_PUBLIC_KEY_PATH` | Web UI 登入用的 JWT issuer、audience 與公鑰 | `auth-center`、`llm_gateway`、`./keys/public.pem` |
-| `APP_TITLE` | UI 與 log 中顯示的服務名稱 | `LLM Gateway` |
-| `AZURE_HTTP_PROXY`、`BEDROCK_HTTP_PROXY` | 只給雲端流量用的 HTTP proxy（vLLM 流量永遠不走 proxy） | 未設定 |
-| `AZURE_INSECURE`、`BEDROCK_INSECURE` | 不驗證該雲端的 TLS 憑證（企業 TLS 檢查 proxy 用） | `false` |
-| `LANGFUSE_HOST`、`LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY` | 啟用 Langfuse（三個都要設） | 未設定 |
-| `LANGFUSE_CAPTURE_IO` | 也把 prompt 與回應**內容**送到 Langfuse。含個人資料，開啟前請先確認告知與同意 | `false` |
-| `LANGFUSE_SAMPLE_RATE` | 記錄到 Langfuse 的比例，`0.0`–`1.0`（計費永遠記錄每一筆） | `1.0` |
-| `AUTH_FAIL_DISTINCT_KEYS`、`AUTH_FAIL_WINDOW_S`、`AUTH_LOCKOUT_S` | 同一位址在時間窗內送出這麼多把不同的錯誤 API key，就在鎖定期間回 429（設 `0` 關閉） | `10`、`600`、`900` |
-| `ENFORCE_DAILY_LIMIT` | 設為 `false` 時，超過預算只記 log、不擋請求 | `true` |
-| `SLOW_REQUEST_WARN_S` | 請求超過這個秒數就記一筆 warning（`0` 為關閉） | `120` |
-| `LOG_DIR`、`LOG_LEVEL`、`LOG_ROTATION`、`LOG_RETENTION` | Log 檔，每個 worker 一個 | `./logs`、`WARNING`、`100 MB`、`14 days` |
-| `LOG_REQUEST_BODIES` | 下游出錯時記錄原始請求內容。內含使用者 prompt，僅限除錯時暫時開啟 | `false` |
-| `DOWNSTREAM_MAX_CONNECTIONS` | HTTP 連線池大小，每條進行中的串流佔一條連線 | `1000` |
-| `USAGE_ROLLUP_INTERVAL_S` | 背景每日用量彙總（報表讀它）的檢查間隔秒數（`0` 為關閉：報表仍正確，只是較慢） | `600` |
-| `ANOMALY_SCAN_INTERVAL_S` | gateway 內建用量異常掃描的間隔秒數（`0` 為關閉） | `3600` |
-| `USAGE_LOG_RETENTION_DAYS` | 每天刪除超過這個天數的 `usage_logs`（只刪已彙總進每日彙總的日子，報表仍保有）。不設定就永久保留 | 未設定 |
-
-SSO 登入本身（OIDC issuer、client secret）是在 `deploy/.env` 為 oauth2-proxy 設定，詳見 [deploy/README.md](deploy/README.md)。
+Web UI 登入需要把 [AuthCenter](https://github.com/bwinken/authcenter) 的 RS256 公鑰放在 `keys/public.pem`。Windows 若出現 `UnicodeEncodeError`，請先設定 `PYTHONUTF8=1`。
 
 ## 使用方式
 
-Client 用自己的 gateway API key 認證（在儀表板上可以看到）。
+每位使用者的 API key 在自己的儀表板上。
 
 ```python
 from openai import OpenAI
@@ -113,46 +59,76 @@ client.chat.completions.create(model="my-model", messages=[{"role": "user", "con
 ANTHROPIC_BASE_URL=https://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key claude
 ```
 
-其他內容請見 **[Client 使用指南](docs/client-guide.zh-TW.md)**：所有端點、Azure 與 Bedrock 的使用方式、Roo Code、Cursor 等 client 的 tool calling 設定、client 需要處理的錯誤回應，以及 System One。
+**[Client 指南](docs/client-guide.zh-TW.md)** 有完整內容：所有端點、Azure 與 Bedrock 的使用方式、Roo Code 與 Cursor 等工具的設定，以及 client 該處理的錯誤回應。
+
+## 設定
+
+設定檔有兩個。日常會調整的項目大多也能在管理面板裡改。
+
+**`config.toml`：模型與價格。** 最簡單的模型設定：
+
+```toml
+[models.llm."my-model"]                # llm | vlm | embedding | reranker | ...
+base_url   = "http://vllm-host:8000/v1"
+real_model = "Qwen/Qwen3-32B"          # vLLM 伺服器上的模型名稱
+```
+
+Azure 與 Bedrock 模型放在 `[azure_models.*]`、`[bedrock_models.*]`；價格在 `[pricing]`；模型不存在或離線時改用哪個模型在 `[fallback]`。模型名稱在所有後端之間不能重複。[`config.toml.example`](config.toml.example) 說明了每個欄位，**Admin → Models** 也能直接編輯這個檔案。
+
+**`.env`：連線與金鑰。** 最常需要設定的幾項：
+
+| 變數 | 用途 |
+|---|---|
+| `DATABASE_URL` | PostgreSQL 連線字串 |
+| `AUTH_BASE_URL`、`AUTH_CENTER_APP_ID`、`AUTH_CENTER_PUBLIC_KEY_PATH` | Web UI 登入：JWT 的 issuer、audience 與公鑰 |
+| `AZURE_HTTP_PROXY`、`BEDROCK_HTTP_PROXY` | 雲端流量用的 HTTP proxy（地端流量不會走 proxy） |
+| `BEDROCK_REGION`、`BEDROCK_AWS_ACCESS_KEY_ID`、`BEDROCK_AWS_SECRET_ACCESS_KEY` | 所有 Bedrock 模型共用的 AWS 設定 |
+| `LANGFUSE_HOST`、`LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY` | 啟用 [Langfuse](https://langfuse.com) 追蹤 |
+| `METRICS_ENABLED` | 在 `/metrics` 提供 Prometheus 指標 |
+| `EXCHANGE_*`、`COMPANY_EMAIL_DOMAIN`、`PUBLIC_BASE_URL` | 寄信通知使用者修正 client 設定 |
+| `USAGE_LOG_RETENTION_DAYS` | 刪除超過這個天數的原始用量紀錄（預設關閉；報表的總計會保留） |
+
+[`.env.example`](.env.example) 列出所有變數與預設值：log、登入失敗封鎖、連線池、背景工作的間隔、寄信節奏。SSO 本身（OIDC issuer、client secret）是在 `deploy/.env` 設定給 oauth2-proxy，見 [deploy/README.zh-TW.md](deploy/README.zh-TW.md)。
 
 ## 管理
 
-開啟 `https://your-gateway` 並透過 SSO 登入。在 AuthCenter 擁有 `admin` scope 的帳號會看到管理面板，可以：
+開啟 `https://your-gateway` 並透過 SSO 登入。在 AuthCenter 擁有 `admin` scope 的帳號會看到管理面板：
 
-- 設定每位使用者的每日預算、開關 Azure 或 AWS 權限，以及雲端每日上限（預設值，可逐人覆寫）；
-- 授權 Azure 或 Bedrock，或停用帳號；
-- 設定每人**並行上限**（Off、Monitor、Enforce），並可個別豁免帳號（App 帳號預設豁免）；
-- 決定雲端上限用完時，是改由地端模型回答，還是回 429；
-- 在 **Model Config** 編輯模型、價格與備援；
-- 匯出每月費用報表（xlsx，或依後端拆分的 CSV），並查看用量異常；
-- 查看**稽核紀錄**（Settings 分頁，可下載 CSV），並在權限審查時列出 90 天以上沒用過或仍是舊格式的 API key（Users 分頁的篩選）。
+| 分頁 | 在這裡做什麼 |
+|---|---|
+| **Overview** | 查看花費、請求數與活躍使用者；檢視用量異常；匯出每月費用報表 |
+| **Users** | 設定預算與雲端上限、授權 Azure 或 AWS、停用帳號、建立 App 帳號、查看或重新產生 key |
+| **Clients** | 選擇要偵測哪些 client 問題、怎麼通知使用者、給他們什麼設定 patch；查看受影響的人和寄出的信 |
+| **Security** | IP allowlist、prompt guardrail、稽核紀錄 |
+| **Settings** | 預設預算、並行上限、雲端上限用完時的處理方式、網站連結 |
+| **Models** | 新增與編輯模型、價格、備援；測試連線 |
 
 ## 部署
 
-正式環境以 user-level systemd 服務執行，前面接 nginx 與 oauth2-proxy，PostgreSQL 跑在 Docker。詳見 [deploy/README.md](deploy/README.md)。
-
-升級時，請先套用資料庫變更再重啟服務：
+正式環境以 user-level systemd 服務執行，前面接 nginx 與 oauth2-proxy，PostgreSQL 跑在 Docker，詳見 [deploy/README.zh-TW.md](deploy/README.zh-TW.md)。每次升級都要先套用資料庫變更再重啟：
 
 ```bash
 uv run alembic upgrade head
 ```
 
-要從舊的 SQLite 資料庫搬過來，請看[搬遷指南](docs/migration-guide.md)。
+從舊的 SQLite 資料庫搬過來？請看[遷移指南](docs/migration-guide.md)。
 
 ## 開發
 
 ```bash
-uv run pytest tests/ -q     # 測試：in-memory SQLite、下游全部 mock，不需要 config.toml
-uv run ruff check .         # lint
+uv run pytest tests/ -q     # in-memory SQLite、模擬下游，不需要 config.toml
+uv run ruff check .
 ```
 
-每次 push 到 `main` 與每個 pull request，CI 都會跑這兩項。另有安全掃描 workflow：對 `uv.lock` 跑 pip-audit、對新的 commit 跑 gitleaks（每週另掃整段歷史）；Dependabot 每週開更新 PR。[CLAUDE.md](CLAUDE.md) 是給開發者的導覽：架構、慣例，以及容易踩到的規則。
+CI 會在每個 pull request 跑這兩項，另外還有相依套件稽核與金鑰掃描。[CLAUDE.md](CLAUDE.md) 是貢獻者的地圖：東西放在哪裡，以及容易踩到的規則。
 
-| 文件 | |
+## 更多文件
+
+| | |
 |---|---|
-| [Client 使用指南](docs/client-guide.zh-TW.md) | 接上 client、端點、錯誤處理 |
-| [Architecture](docs/architecture.md) | 各子系統的詳細行為（英文） |
-| [deploy/](deploy/README.zh-TW.md) | 正式環境部署 |
-| [Langfuse](docs/langfuse-observability.md) | 可觀測性設計（英文） |
-| [alembic/](alembic/README.zh-TW.md) | 資料庫 migration |
-| [app/core](app/core/README.zh-TW.md)、[routers](app/routers/README.zh-TW.md)、[models](app/models/README.zh-TW.md)、[templates](app/templates/README.zh-TW.md)、[tests](tests/README.md) | 各套件說明 |
+| [Client 指南](docs/client-guide.zh-TW.md) | 連接 client、端點、錯誤處理 |
+| [架構](docs/architecture.md) | 每個子系統的詳細行為 |
+| [部署](deploy/README.zh-TW.md) | 正式環境設定、備份、升級 |
+| [Langfuse](docs/langfuse-observability.md) | 可觀測性設計 |
+| [Migrations](alembic/README.zh-TW.md) | 資料庫 schema 變更 |
+| 各套件說明 | [core](app/core/README.zh-TW.md) · [routers](app/routers/README.zh-TW.md) · [models](app/models/README.zh-TW.md) · [templates](app/templates/README.zh-TW.md) · [tests](tests/README.md) |

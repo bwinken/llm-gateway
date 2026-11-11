@@ -49,6 +49,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 |---|---|---|
 | **Header** | — | 「Set up Claude Code」連結（→ `/setup`）與 **My API Key** 按鈕（開啟 key modal） |
 | **Get started** | — | 帳號本月尚無任何請求時才顯示，連到 `/setup` |
+| **Action needed** | — | 這個帳號的 client rule 通知（`_client_notices.html`），有未處理項目時才顯示。最上面只有**一組** patch 下載（`.bat` / `.sh`），修正所有腳本能修的項目，並標明哪些通知不在腳本範圍內；有兩則以上時另有 *I've applied everything*。每一列說明一則通知、列出手動設定用的變數，並有 *I've applied it*；各列沒有自己的下載 |
 | **Please regenerate your API key** | — | 使用者自己的 key，或他擁有的 app 帳號的 key，早於目前的 256 bits 格式時顯示（`schema.is_legacy_api_key`）。請他在方便更新 client 設定時重新產生；不強制，舊 key 照常可用。使用者重新產生自己的 key 後當場移除 |
 | **Spent today（預算主卡）** | — | 今日費用對比 `daily_limit_usd`、Remaining、距重置（當地午夜）時間，以及依比例變色的進度條（ok < 70 % · warn < 90 % · crit < 100 % · over）。`daily_limit_usd = 0` 時顯示 "No daily budget on this account"。使用者可用任一雲端後端時（admin 一律可用），下方多一列 **On-prem / Azure / AWS Bedrock** 分欄，只列出使用者有權使用的後端；另有 **Cloud (Azure + AWS)** 列，顯示今日雲端合計費用對比使用者的雲端上限（`deps.effective_cloud_limit`；無上限時不顯示） |
 | **This month** | — | 本月費用、請求數、Tokens in / out（附今日數字） |
@@ -71,6 +72,9 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | Copy App Key | 按鈕 | 複製 App 帳號的完整 API key |
 | Cost by Model 重新整理 | `GET /dashboard/api/model-breakdown?period=` | Cost by Model 卡片用的 JSON（`month` 或 `day`） |
 | 下載安裝腳本 | `GET /dashboard/install-claude-code.bat` | 個人化的 Claude Code 安裝腳本（由 `/setup` 連結） |
+| 下載設定 patch | `GET /dashboard/client-rules/all/patch.{bat,sh}` | 一個腳本處理帳號所有未處理項目（信件連結指向同一個 URL） |
+| I've applied it / everything | `POST /dashboard/client-rules/{id}/resolved` · `/all/resolved` | 隱藏通知；之後面板由 `GET /dashboard/client-notices` 重新繪製 |
+| 下載 key patch | `GET /dashboard/api-key/patch.{bat,sh}` | 從 key 視窗下載：把 `ANTHROPIC_AUTH_TOKEN` 設成目前的 key 並移除 `ANTHROPIC_API_KEY`。*Regenerate* 之後視窗會提示執行它 |
 
 ---
 
@@ -99,7 +103,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | **Cloud Budget Fallback** | Settings | 勾選框 → `POST /admin/cloud-budget-fallback`。開啟時，超過雲端上限的 `/v1/*` 雲端請求改由地端模型服務，而非回 429（整體每日上限仍然有效；`/azure/v1/*` 與 `/aws/v1/*` 永不 fallback） |
 | **Create App Account** | Users | Username（自動加 `app_` 前綴）、Daily Limit、Owner → `POST /admin/users/create`。App 帳號建立時即免除並行上限 |
 | **Site Links** | Settings | Support Bot URL（每頁右下角的浮動按鈕）與 Install Guide URL（`/setup` 上的卡片）→ `POST /admin/site-links`。只接受 `http(s)://` 或站內相對路徑；留空則隱藏 |
-| **Client rules** | Clients | 內建檢查（`client_checks.py`，CC001…）的設定與違規名單、Claude Code 版本分布、寄信紀錄（每一封嘗試寄出的信：收件地址、規則、原因、成功或失敗；可篩選、搜尋、分頁）、淘汰中／已退役規則；見 `docs/architecture.md` 的 Client rules。 |
+| **Client rules** | Clients | 內建檢查（`client_checks.py`，CC001…）的設定與違規名單、Claude Code 版本分布、*Mail everyone* 與 *Test the combined mail*（所有開啟中的規則列在同一封信、附一份合併 patch）、寄信紀錄（每一封嘗試寄出的信：收件地址、規則、原因、成功或失敗；可篩選、搜尋、分頁）、淘汰中／已退役規則；見 `docs/architecture.md` 的 Client rules。 |
 | **IP Allowlist** | Security | API IP 白名單的模式與規則；見 `docs/architecture.md`。 |
 | **Guardrail** | Security | Qwen3Guard-Gen 提示詞檢查的設定與測試連線；見 `docs/architecture.md`。 |
 | **Audit Log** | Security | `audit_log` 最新 20 筆（Asia/Taipei 時間、誰從哪個位址、method + route、狀態碼、對象與送出欄位的一行摘要），以及 **Download CSV (last 365 days)**（`GET /admin/api/export/audit-log.csv`）。`/admin`、`/dashboard` 的每一個寫入、每次顯示完整 key、每次匯出都會記錄；密鑰一律遮蔽 |
@@ -212,6 +216,14 @@ Admin 在 auth 階段免檢查停用旗標，因此這頁永遠不會擋到 admi
 ### `_admin_tabs.html` — 管理分頁列
 
 由 `admin.html`（`on_admin_page = true`：Overview / Users / Clients / Security / Settings 為 `data-tab` 按鈕）與 `admin_models.html`（`on_admin_page = false`：改為連到 `/admin#<tab>` 的連結）引入。最後一個分頁 **Models** 一律是連到 `/admin/models` 的連結。
+
+### 片段模板（Partials）
+
+| 檔案 | 使用處 | 內容 |
+|---|---|---|
+| `_client_notices.html` | `dashboard.html`；`GET /dashboard/client-notices` 單獨回傳 | *Action needed* 面板。通知要改這裡，不是改 `dashboard.html` |
+| `_admin_user_table.html` | `admin.html`；`GET /admin/user-table` 單獨回傳 | Users / Apps 表格，共用一個 row macro：欄位改這裡，不要改兩份 |
+| `_admin_macros.html` | `admin.html`、`_admin_user_table.html` | 管理頁與其片段共用的 Jinja macro |
 
 ### 認證流程
 
