@@ -191,24 +191,51 @@ scrape_configs:
 ```bash
 bash ~/opt/llm-gateway/deploy/backup-db.sh                  # → ~/backup/llm-gateway
 bash ~/opt/llm-gateway/deploy/backup-db.sh /mnt/nas/llmgw   # 指定其他目錄
-bash ~/opt/llm-gateway/deploy/backup-db.sh --check FILE     # 檢查備份檔能否讀取
+bash ~/opt/llm-gateway/deploy/backup-db.sh --check FILE     # 檢查備份檔能否讀取（.gpg 需要私鑰）
+bash ~/opt/llm-gateway/deploy/restore-drill.sh              # 把最新一份備份還原到一次性容器演練
 ```
 
 腳本會從 `deploy/.env` 讀 `PG_USER` / `PG_DB`，先確認剩餘空間大於資料庫大小，經由暫存檔寫出 `daily/llm-gateway-<日期>_<時間>.dump`（`pg_dump -Fc`），用 `pg_restore --list` 驗證通過才保留；每個月的第一份另存到 `monthly/`，並只保留 `KEEP_DAILY`（30）份每日、`KEEP_MONTHLY`（12）份每月備份。檔案權限 `600`、目錄 `700`：備份裡有所有人的 API key。設 `BACKUP_COPY_TO=user@host:/path/` 會把每份備份 rsync 到主機以外的地方；沒設時腳本會提醒備份只在本機。成功回傳 0；失敗時不會留下不完整的檔案。
 
+### 加密
+
+設定 `BACKUP_GPG_RECIPIENT_FILE` 指向一把 GnuPG **公鑰**，每份備份就會寫成 `llm-gateway-<日期>_<時間>.dump.gpg`。gateway 主機上只放公鑰，私鑰由備份負責人離線保管，所以就算磁碟、NAS 或異地備份被拿走，也讀不到內容。備份會先驗證再加密，未加密的暫存檔驗證完立刻刪除（只在 `700` 的備份目錄裡存在幾秒，和資料庫本身在同一顆磁碟上）；只有加密檔會被保留、另存到 `monthly/`、複製到 `BACKUP_COPY_TO`。公鑰無法加密（檔案錯誤、已過期）時，在開始 dump 之前就會失敗。沒設公鑰時照常備份，但會提醒備份沒有加密。
+
+金鑰在負責人的電腦上產生一次，不要在 gateway 主機上產生：
+
+```bash
+gpg --quick-gen-key "LLM Gateway backup <dba@your-company.com>" default default never   # 設定密碼
+gpg --armor --export dba@your-company.com > llm-gateway-backup.pub.asc                     # → 放到 gateway 主機
+gpg --armor --export-secret-keys dba@your-company.com > llm-gateway-backup.key.asc          # → 離線保存
+```
+
+把 `.pub.asc` 複製到 gateway 主機（例如 `~/opt/llm-gateway/keys/backup.pub.asc`），再加進 cron。公鑰已經匯入該使用者的 keyring 時，也可以改用 `BACKUP_GPG_RECIPIENT=<指紋>`。私鑰遺失等於所有加密備份都無法還原：請在兩個不同地方各存一份。手動解密：`gpg --decrypt FILE.dump.gpg > FILE.dump`。
+
 每次升版前跑一次，平常用 cron 在離峰時段每天跑。資料庫備份是主機層級的工作，不是 gateway 程式內的定期工作（那些不會碰 Docker）：
 
 ```bash
-30 2 * * * BACKUP_COPY_TO=user@nas:/backup/llmgw/ bash $HOME/opt/llm-gateway/deploy/backup-db.sh >> $HOME/backup/llm-gateway/backup.log 2>&1
+30 2 * * * BACKUP_GPG_RECIPIENT_FILE=$HOME/opt/llm-gateway/keys/backup.pub.asc BACKUP_COPY_TO=user@nas:/backup/llmgw/ bash $HOME/opt/llm-gateway/deploy/backup-db.sh >> $HOME/backup/llm-gateway/backup.log 2>&1
 ```
 
-還原演練（每季一次）或資料遺失時，還原到一個暫時的容器或新的資料庫：
+### 還原演練
+
+`pg_restore --list` 只證明檔案讀得出來，不證明還原得回來。`deploy/restore-drill.sh` 會真的還原一次：建議每季跑一次，以及每次改動備份方式之後。它不會連線到正式資料庫。
 
 ```bash
-docker run -d --name pg-restore-test -e POSTGRES_PASSWORD=test postgres:16
-docker exec -i pg-restore-test pg_restore -U postgres --create -d postgres < FILE
-docker exec pg-restore-test psql -U postgres -d <PG_DB> -c "SELECT count(*) FROM users" -c "SELECT * FROM alembic_version"
-docker rm -f pg-restore-test
+bash ~/opt/llm-gateway/deploy/restore-drill.sh                     # <BACKUP_DIR>/daily 裡最新的一份
+bash ~/opt/llm-gateway/deploy/restore-drill.sh FILE                # 指定 .dump 或 .dump.gpg
+DRILL_GPG_KEY=/media/usb/llm-gateway-backup.key.asc \
+    bash ~/opt/llm-gateway/deploy/restore-drill.sh                 # 加密備份：帶私鑰來
+```
+
+它用和 `llm-gateway-pg` **相同的映像**（或 `DRILL_IMAGE`）起一個沒有網路的一次性容器，解密後以 `pg_restore --exit-on-error` 還原，再檢查 schema 版本、`users` / `usage_logs` / `usage_daily` / `audit_log` 的筆數、最新一筆用量時間，以及 `audit_log` 的防竄改觸發器是否一起還原。不論成功或失敗，容器都會連同資料 volume 一起刪除。`DRILL_GPG_KEY` 會匯入一個暫時的 GnuPG 目錄，結束時刪除，私鑰不會留在主機上；沒設時用目前使用者的 keyring。gpg 會在終端機詢問私鑰密碼。
+
+每次演練（成功或失敗）都會在 `<BACKUP_DIR>/restore-drill.log`（`DRILL_LOG`）附加一行：時間、結果、檔案與 SHA-256 前綴、執行者、還原與整體耗時、schema 版本與筆數。這個檔案就是稽核要的證據（ISO 27001 A.8.13），還原耗時也是 RTO 的實測數字。只有還原和每項檢查都通過時才回傳 0。
+
+真的遺失資料時，還原到一個新的資料庫（加密檔先解密：`gpg --decrypt FILE.dump.gpg | ...`）：
+
+```bash
+docker exec -i llm-gateway-pg pg_restore -U "$PG_USER" --create -d postgres < FILE
 ```
 
 ## PostgreSQL 資料遷移（更換 Volume）
@@ -253,7 +280,8 @@ docker compose -f deploy/docker-compose.yml up -d
     ├── .env                  # Docker 服務環境變數（範本：.env.example）
     ├── pgdata/               # PostgreSQL 資料
     ├── setup.sh              # 部署腳本
-    ├── backup-db.sh          # 資料庫線上備份（pg_dump、驗證、保留期）
+    ├── backup-db.sh          # 資料庫線上備份（pg_dump、驗證、加密、保留期）
+    ├── restore-drill.sh      # 把備份還原到一次性容器演練，留下紀錄
     ├── gen-selfsigned-cert.sh               # 產生 :443 用的自簽 TLS 憑證
     ├── llm-gateway.service                  # Gateway systemd unit
     ├── llm-gateway-example.nginx.conf       # Nginx 範本

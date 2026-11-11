@@ -46,7 +46,7 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | `app/templates/` | `dashboard.html`, `_client_notices.html` (the dashboard's client-rule notices, also served alone by `/dashboard/client-notices`), `admin.html`, `_admin_user_table.html` (Users / Apps tables, also served alone by `/admin/user-table`), `admin_models.html` (model-config SPA), `base.html` (`gwTabs`, `gwToast`, `gwConfirm`) |
 | `alembic/versions/` | Migrations (PostgreSQL-only: they do not run on SQLite) |
 | `scripts/` | Manual runs of the in-gateway jobs: `scan_anomalies.py`, `rollup_usage_daily.py` (inspect / `--recompute`), `cleanup_usage_logs.py` (retention preview); plus `azure_latency_probe.py` (per-phase Azure latency, direct vs. via gateway), SQLite → PG migration, legacy `add_owner_id.py`, dev PG helper |
-| `deploy/` | gateway systemd unit (no timers: jobs run in the gateway), nginx example, docker-compose (PG + oauth2-proxy), `setup.sh`, `backup-db.sh` (online `pg_dump` with verify + retention; a host cron task, not a gateway job) |
+| `deploy/` | gateway systemd unit (no timers: jobs run in the gateway), nginx example, docker-compose (PG + oauth2-proxy), `setup.sh`, `backup-db.sh` (online `pg_dump` with verify, optional GnuPG public-key encryption, retention; a host cron task, not a gateway job), `restore-drill.sh` (restores a backup into a throwaway no-network container, checks it, appends to `restore-drill.log`) |
 | `setup/install-claude-code-example.bat` | Windows Claude Code installer, personalized with the user's key by `/dashboard/install-claude-code.bat` |
 
 ## Request flow
@@ -182,6 +182,10 @@ Each of these has broken production or a test before. The parenthesized test pin
 - Render pages with `templates.TemplateResponse(request, "name.html", context)`: starlette ≥ 1.0 (pinned `>=1.3.1` for its security fixes) no longer takes the template name first, and the old call order is a 500.
 - `admin_models.html` writes every input straight into its `config` object through `setField`. There is no DOM re-collection at save time.
 - `GET /admin/api/config` sends model secrets as `<stored:section/alias/field>` references, never values; `PUT` and *Test connection* resolve them. A new secret config key goes in `config.SECRET_FIELDS` (`tests/test_config_secrets.py`).
+
+**Backups**
+- An encrypted backup never leaves plaintext behind: verify the dump, encrypt it, delete the plaintext, and only then `mv` the `.gpg` into place. In-progress files start with `.` so the monthly copy and pruning (which glob `llm-gateway-*`) never take one for a backup. The gateway host holds the public key only; nothing there may need the private key.
+- `restore-drill.sh` removes its container with `docker rm -f -v`: without `-v` the image's data volume survives even a `--rm` container, leaving a full restored copy of the database on the host. Every run, failed ones included, appends to the drill log; that line is the audit evidence.
 
 **Lint and config**
 - Ruff's rule set is deliberately narrow (`E4`, `E7`, `E9`, `F`). Don't widen it: the default set fights intentional patterns such as blind excepts and `Depends()` defaults.

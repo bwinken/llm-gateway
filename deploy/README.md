@@ -192,24 +192,51 @@ With both off, a failed request logs the **shape** of the body — fields presen
 ```bash
 bash ~/opt/llm-gateway/deploy/backup-db.sh                  # → ~/backup/llm-gateway
 bash ~/opt/llm-gateway/deploy/backup-db.sh /mnt/nas/llmgw   # another directory
-bash ~/opt/llm-gateway/deploy/backup-db.sh --check FILE     # is this dump readable?
+bash ~/opt/llm-gateway/deploy/backup-db.sh --check FILE     # is this dump readable? (.gpg needs the private key)
+bash ~/opt/llm-gateway/deploy/restore-drill.sh              # restore the latest backup into a throwaway container
 ```
 
 It reads `PG_USER` / `PG_DB` from `deploy/.env`, checks free space against the database size, writes `daily/llm-gateway-<date>_<time>.dump` (`pg_dump -Fc`) through a temporary file, verifies it with `pg_restore --list` before keeping it, copies the first backup of each month to `monthly/`, and prunes to `KEEP_DAILY` (30) and `KEEP_MONTHLY` (12). Files are `600`, directories `700`: a dump holds every API key. Set `BACKUP_COPY_TO=user@host:/path/` to rsync each backup off the host; without it the script warns that the backup only lives on this machine. Exit code 0 on success; a failure leaves no partial file.
 
+### Encryption
+
+Set `BACKUP_GPG_RECIPIENT_FILE` to a GnuPG **public** key and every backup is written as `llm-gateway-<date>_<time>.dump.gpg`. Only the public key lives on the gateway host; the private key is kept offline by whoever owns the backups, so a stolen disk, NAS or offsite copy yields nothing readable. The dump is verified before it is encrypted, and the plaintext temporary file is deleted right after (it sits for seconds in the `700` backup directory, on the same disk as the database itself); only the encrypted file is kept, copied to `monthly/` and sent to `BACKUP_COPY_TO`. A key that cannot encrypt (wrong file, expired) fails the run before the dump starts. Without a key the script still backs up, and warns that the backup is not encrypted.
+
+Create the key pair once, on the key owner's machine, not on the gateway host:
+
+```bash
+gpg --quick-gen-key "LLM Gateway backup <dba@your-company.com>" default default never   # set a passphrase
+gpg --armor --export dba@your-company.com > llm-gateway-backup.pub.asc                     # → the gateway host
+gpg --armor --export-secret-keys dba@your-company.com > llm-gateway-backup.key.asc          # → offline storage
+```
+
+Copy the `.pub.asc` to the gateway host (for example `~/opt/llm-gateway/keys/backup.pub.asc`) and add it to the cron line. `BACKUP_GPG_RECIPIENT=<fingerprint>` works too when the key is already in that user's keyring. Losing the private key means losing every encrypted backup: keep two copies in separate places. Decrypt by hand with `gpg --decrypt FILE.dump.gpg > FILE.dump`.
+
 Run it before every upgrade, and daily from cron at an off-peak hour. A database backup is a host task, not one of the gateway's in-process jobs (those never touch Docker):
 
 ```bash
-30 2 * * * BACKUP_COPY_TO=user@nas:/backup/llmgw/ bash $HOME/opt/llm-gateway/deploy/backup-db.sh >> $HOME/backup/llm-gateway/backup.log 2>&1
+30 2 * * * BACKUP_GPG_RECIPIENT_FILE=$HOME/opt/llm-gateway/keys/backup.pub.asc BACKUP_COPY_TO=user@nas:/backup/llmgw/ bash $HOME/opt/llm-gateway/deploy/backup-db.sh >> $HOME/backup/llm-gateway/backup.log 2>&1
 ```
 
-Restore into a scratch container to rehearse (quarterly), or into a fresh database after a loss:
+### Restore drill
+
+`pg_restore --list` proves a file is readable, not that it restores. `deploy/restore-drill.sh` does the real thing: run it quarterly and after any change to how backups are taken. It never connects to the production database.
 
 ```bash
-docker run -d --name pg-restore-test -e POSTGRES_PASSWORD=test postgres:16
-docker exec -i pg-restore-test pg_restore -U postgres --create -d postgres < FILE
-docker exec pg-restore-test psql -U postgres -d <PG_DB> -c "SELECT count(*) FROM users" -c "SELECT * FROM alembic_version"
-docker rm -f pg-restore-test
+bash ~/opt/llm-gateway/deploy/restore-drill.sh                     # latest file in <BACKUP_DIR>/daily
+bash ~/opt/llm-gateway/deploy/restore-drill.sh FILE                # a specific .dump or .dump.gpg
+DRILL_GPG_KEY=/media/usb/llm-gateway-backup.key.asc \
+    bash ~/opt/llm-gateway/deploy/restore-drill.sh                 # encrypted: bring the private key
+```
+
+It starts a throwaway container from the **same image** as `llm-gateway-pg` (or `DRILL_IMAGE`) with no network, decrypts and restores with `pg_restore --exit-on-error`, then checks the schema version, the row counts of `users` / `usage_logs` / `usage_daily` / `audit_log`, the newest usage row, and that `audit_log`'s append-only triggers came back. The container is removed with its data volume whatever the outcome. `DRILL_GPG_KEY` is imported into a temporary GnuPG directory that is deleted on exit, so the private key does not stay on the host; without it the user's own keyring is used. gpg asks for the passphrase on the terminal.
+
+Every run, passed or failed, appends one line to `<BACKUP_DIR>/restore-drill.log` (`DRILL_LOG`): time, result, file and its SHA-256 prefix, who ran it, restore and total time, schema version and counts. That file is the evidence an auditor asks for (ISO 27001 A.8.13), and the restore time is a measured figure for your RTO. Exit code 0 only when the restore and every check passed.
+
+To restore after a real loss, into a fresh database (decrypt first: `gpg --decrypt FILE.dump.gpg | ...`):
+
+```bash
+docker exec -i llm-gateway-pg pg_restore -U "$PG_USER" --create -d postgres < FILE
 ```
 
 ## PostgreSQL Data Migration (Volume Change)
@@ -254,7 +281,8 @@ docker compose -f deploy/docker-compose.yml up -d
     ├── .env                  # Docker services env vars (template: .env.example)
     ├── pgdata/               # PostgreSQL data
     ├── setup.sh              # Deployment script
-    ├── backup-db.sh          # Online database backup (pg_dump, verify, retention)
+    ├── backup-db.sh          # Online database backup (pg_dump, verify, encrypt, retention)
+    ├── restore-drill.sh      # Restore a backup into a throwaway container, log the result
     ├── gen-selfsigned-cert.sh               # Self-signed TLS cert for :443
     ├── llm-gateway.service                  # Gateway systemd unit
     ├── llm-gateway-example.nginx.conf       # Nginx template
