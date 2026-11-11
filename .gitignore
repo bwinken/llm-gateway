@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 config.toml
+/config/
 *.db
 pgdata/
 keys/

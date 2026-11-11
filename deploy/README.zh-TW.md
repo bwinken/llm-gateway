@@ -97,11 +97,73 @@ systemctl --user status llm-gateway     # 查看狀態
 systemctl --user restart llm-gateway    # 重啟
 journalctl --user -u llm-gateway -f     # 查看服務輸出（應用程式日誌：~/opt/llm-gateway/logs/）
 
+# Gateway（容器，見「以容器執行 gateway」）
+docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml --profile gateway ps
+docker logs -f llm-gateway
+docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml --profile gateway restart gateway
+
 # PostgreSQL + oauth2-proxy（Docker Compose）
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml logs -f
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml restart
 docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 ```
+
+## 以容器執行 gateway
+
+`setup.sh` 把 gateway 裝成 systemd 服務，這仍是預設做法。同一個 gateway 也可以改用容器執行：用 repo 根目錄的 `Dockerfile`，加上 `deploy/docker-compose.yml` 裡的 `migrate` 和 `gateway` 兩個服務。這兩個服務放在 compose profile `gateway` 後面，所以平常的 `docker compose up -d` 和以前一樣，只啟動 PostgreSQL 與 oauth2-proxy。
+
+**主機網路（host networking）。** gateway 容器使用 `network_mode: host`，看到的網路和 systemd 服務完全一樣：
+- nginx 照舊連 `127.0.0.1:8050`；
+- `.env` 的 `DATABASE_URL`（`localhost:5432`）和 proxy 設定不用改；
+- 請求的來源是 `127.0.0.1`，也就是 uvicorn 唯一信任 `X-Forwarded-For` 的位址。若改用 bridge 網路，所有請求都會看起來來自 Docker 的閘道位址，IP allowlist、登入失敗鎖定（一個壞 client 會鎖住所有人）、audit log 的 client 欄位和 `CC002` 明文 http 檢查都會出錯。
+
+容器只綁 `127.0.0.1`。它沿用主機的 hostname，所以前一個容器留下的並發 lease 會在啟動時清掉。
+
+**留在主機上的東西**（在 `~/opt/llm-gateway/` 底下，掛進容器）：
+
+| 主機路徑 | 容器內 | 說明 |
+|---|---|---|
+| `config/config.toml` | `/app/config`（`CONFIG_DIR`） | admin 頁面用暫存檔加 rename 改寫它，所以掛的是**目錄**；只掛單一檔案會讓 admin 每次存檔都失敗 |
+| `keys/public.pem` | `/app/keys`（唯讀） | |
+| `logs/` | `/app/logs`（`LOG_DIR`） | `docker logs llm-gateway` 也有同樣的內容 |
+| `.env` | 環境變數 | 不用改。compose 會用容器內路徑覆蓋 `CONFIG_DIR`、`LOG_DIR`、`AUTH_CENTER_PUBLIC_KEY_PATH`、`METRICS_DIR`，所以 `.env` 裡寫主機路徑也沒關係 |
+
+容器以 `GATEWAY_UID:GATEWAY_GID`（`deploy/.env`，預設 `1000:1000`）執行，這個使用者必須擁有 `config/` 和 `logs/`。第一次啟動前先建立這兩個目錄：目錄不存在時 Docker 會以 root 身分建立，之後 admin 存檔就會失敗。
+
+**切換步驟：**
+
+```bash
+cd ~/opt/llm-gateway
+bash deploy/backup-db.sh                                   # 1. 先備份
+mkdir -p config && mv config.toml config/                  # 2. config 移進自己的目錄
+echo "CONFIG_DIR=$HOME/opt/llm-gateway/config" >> .env     #    systemd 也從這裡讀（回退時用）
+chown -R "$(id -u):$(id -g)" config logs
+# 3. deploy/.env：GATEWAY_UID / GATEWAY_GID 填 `id -u` / `id -g` 的結果
+docker compose -f deploy/docker-compose.yml build gateway  # 4. 建映像（或用下面的 docker load）
+systemctl --user disable --now llm-gateway                 # 5. 停掉 systemd：兩者都用 :8050
+docker compose -f deploy/docker-compose.yml --profile gateway up -d
+docker compose -f deploy/docker-compose.yml --profile gateway logs migrate   # migration 有跑完？
+docker inspect -f '{{.State.Health.Status}}' llm-gateway                     # healthy？
+```
+
+`migrate` 會先等資料庫就緒，再跑 `alembic upgrade head`；成功後 `gateway` 才會啟動。之後每次 `up -d` 都一樣。健康檢查打的是 `/readyz`。
+
+**回退：** 先 `docker compose -f deploy/docker-compose.yml stop gateway`，再 `systemctl --user enable --now llm-gateway`。`.env` 的 `CONFIG_DIR` 指向同一個 `config/`，所以兩者讀的是同一份設定。已經跑過的 migration 會保留；只要回退到的程式版本不早於那個 migration 就沒問題，和一般升版相同。
+
+**更新：** 建一個新的映像 tag，改 `deploy/.env` 的 `GATEWAY_IMAGE`，跑 `backup-db.sh`，再 `docker compose ... --profile gateway up -d`，compose 會換掉容器。`stop_grace_period` 是 300 秒，和 nginx 的上限一樣，進行中的串流可以跑完。
+
+**建置映像：**
+- 映像只裝 `uv.lock` 鎖定的版本（`uv sync --locked --no-dev`），以非 root 使用者執行，裡面沒有任何密鑰（`.dockerignore` 把 `.env`、`config.toml`、`keys/`、`deploy/`、`tests/` 排除在 build context 之外）。
+- 要經過 proxy 時加 `--build-arg HTTPS_PROXY=...`。基底映像由 build arg 指定，可以改用公司內部的 mirror：`--build-arg PYTHON_IMAGE=registry.internal/python:3.11-slim-bookworm --build-arg UV_IMAGE=registry.internal/astral-sh/uv:0.11.32`。
+- 主機不能連外時，在別台機器建好再帶過去：
+
+```bash
+docker build -t llm-gateway:2026.11.1 .                   # 在能連外的機器上
+docker save llm-gateway:2026.11.1 | gzip > llm-gateway-2026.11.1.tar.gz
+docker load < llm-gateway-2026.11.1.tar.gz                # 在 gateway 主機上；再設 GATEWAY_IMAGE=llm-gateway:2026.11.1
+```
+
+手動執行的腳本在容器內跑：`docker compose -f deploy/docker-compose.yml exec gateway python scripts/rollup_usage_daily.py`。
 
 ## 排程任務與腳本
 
@@ -271,12 +333,13 @@ docker compose -f deploy/docker-compose.yml up -d
 ├── app/                      # 應用程式碼
 ├── scripts/                  # 異常掃描、usage log 清理、一次性工具
 ├── .venv/                    # uv 管理的虛擬環境
-├── config.toml               # 模型路由設定
+├── config.toml               # 模型路由設定（容器：config/config.toml，CONFIG_DIR）
 ├── .env                      # 應用環境變數
 ├── keys/public.pem           # AuthCenter 公鑰
 ├── logs/                     # 應用程式日誌，每個 worker 一個檔（LOG_DIR）
+├── Dockerfile                # Gateway 映像（容器部署）
 └── deploy/
-    ├── docker-compose.yml    # PG + oauth2-proxy
+    ├── docker-compose.yml    # PG + oauth2-proxy；profile "gateway"：migrate + gateway 容器
     ├── .env                  # Docker 服務環境變數（範本：.env.example）
     ├── pgdata/               # PostgreSQL 資料
     ├── setup.sh              # 部署腳本

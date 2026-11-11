@@ -17,6 +17,7 @@ uv run ruff check . [--fix]                # lint (CI runs the same)
 uv run alembic upgrade head                # apply migrations
 uv run alembic revision --autogenerate -m "description"
 uv add <package>                           # add a dependency (commit uv.lock too)
+docker build -t llm-gateway:dev .          # gateway image (deploy/README.md, "Running the gateway in a container")
 ```
 
 ## Repo map
@@ -24,7 +25,7 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | Path | What lives there |
 |---|---|
 | `app/main.py` | App, lifespan (DB init, httpx clients, health loop, concurrency-lease heartbeat, usage rollup loop, scheduled jobs), middleware, `AccountDisabledError` handler |
-| `app/core/config.py` | `config.toml` → `MODEL_ROUTING`, `AZURE_MODELS`, `BEDROCK_MODELS`, pricing and fallback maps; `[app]` getters/setters; `save_config` |
+| `app/core/config.py` | `config.toml` (in `CONFIG_DIR`, default the project root) → `MODEL_ROUTING`, `AZURE_MODELS`, `BEDROCK_MODELS`, pricing and fallback maps; `[app]` getters/setters; `save_config` |
 | `app/core/deps.py` | API-key auth, daily limit and cloud cap, concurrency-limited dependencies |
 | `app/core/auth.py` | Web-UI JWT auth (`get_web_user`, scopes) |
 | `app/core/browser_security.py` | CORS policy (no credentials) and `CrossSiteRequestGuard` for the cookie-authenticated `/admin`, `/dashboard` writes |
@@ -45,8 +46,9 @@ uv add <package>                           # add a dependency (commit uv.lock to
 | `app/models/schema.py` | `User`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AppOwner`, `AnomalyEvent`, `ConcurrencyLease`, `IpAllowRule`, `ClientRuleSetting`, `ClientViolation`, `ClientVersion`, `ClientMailLog`, `AuditLog` |
 | `app/templates/` | `dashboard.html`, `_client_notices.html` (the dashboard's client-rule notices, also served alone by `/dashboard/client-notices`), `admin.html`, `_admin_user_table.html` (Users / Apps tables, also served alone by `/admin/user-table`), `admin_models.html` (model-config SPA), `base.html` (`gwTabs`, `gwToast`, `gwConfirm`) |
 | `alembic/versions/` | Migrations (PostgreSQL-only: they do not run on SQLite) |
-| `scripts/` | Manual runs of the in-gateway jobs: `scan_anomalies.py`, `rollup_usage_daily.py` (inspect / `--recompute`), `cleanup_usage_logs.py` (retention preview); plus `azure_latency_probe.py` (per-phase Azure latency, direct vs. via gateway), SQLite → PG migration, legacy `add_owner_id.py`, dev PG helper |
-| `deploy/` | gateway systemd unit (no timers: jobs run in the gateway), nginx example, docker-compose (PG + oauth2-proxy), `setup.sh`, `backup-db.sh` (online `pg_dump` with verify, optional GnuPG public-key encryption, retention; a host cron task, not a gateway job), `restore-drill.sh` (restores a backup into a throwaway no-network container, checks it, appends to `restore-drill.log`) |
+| `scripts/` | Manual runs of the in-gateway jobs: `scan_anomalies.py`, `rollup_usage_daily.py` (inspect / `--recompute`), `cleanup_usage_logs.py` (retention preview); plus `azure_latency_probe.py` (per-phase Azure latency, direct vs. via gateway), `wait_for_db.py` (the compose `migrate` step), SQLite → PG migration, legacy `add_owner_id.py`, dev PG helper |
+| `Dockerfile`, `.dockerignore` | Gateway image: `uv sync --locked --no-dev`, non-root, no uv at runtime, no secrets in the build context |
+| `deploy/` | gateway systemd unit (no timers: jobs run in the gateway), nginx example, docker-compose (PG + oauth2-proxy; profile `gateway` adds the `migrate` + `gateway` containers), `setup.sh`, `backup-db.sh` (online `pg_dump` with verify, optional GnuPG public-key encryption, retention; a host cron task, not a gateway job), `restore-drill.sh` (restores a backup into a throwaway no-network container, checks it, appends to `restore-drill.log`) |
 | `setup/install-claude-code-example.bat` | Windows Claude Code installer, personalized with the user's key by `/dashboard/install-claude-code.bat` |
 
 ## Request flow
@@ -182,6 +184,12 @@ Each of these has broken production or a test before. The parenthesized test pin
 - Render pages with `templates.TemplateResponse(request, "name.html", context)`: starlette ≥ 1.0 (pinned `>=1.3.1` for its security fixes) no longer takes the template name first, and the old call order is a 500.
 - `admin_models.html` writes every input straight into its `config` object through `setField`. There is no DOM re-collection at save time.
 - `GET /admin/api/config` sends model secrets as `<stored:section/alias/field>` references, never values; `PUT` and *Test connection* resolve them. A new secret config key goes in `config.SECRET_FIELDS` (`tests/test_config_secrets.py`).
+
+**Containers**
+- The gateway container uses `network_mode: host`: requests must keep arriving from `127.0.0.1`, the only address uvicorn trusts for `X-Forwarded-For`. On a bridge network the client address becomes Docker's gateway and the IP allowlist, failed-auth throttle, audit `client` and `CC002` all go wrong. It binds `127.0.0.1` (the image's default `GATEWAY_HOST` too), never `0.0.0.0` on the host network.
+- `config.toml` is read from and written to `CONFIG_DIR`; the container mounts that **directory**. `save_config` writes a temp file in the same directory and `os.replace`s it, which a single-file bind mount refuses (the rename onto a mount point fails).
+- Every container that imports `app` (`gateway` and `migrate`) gets the path overrides in `x-gateway-paths` (`CONFIG_DIR`, `LOG_DIR`, `AUTH_CENTER_PUBLIC_KEY_PATH`, `METRICS_DIR`): `.env` may hold host paths, and `app.core.logger` creates `LOG_DIR` at import, so a host path there kills the container.
+- `migrate` runs before `gateway` on every `up` (`service_completed_successfully`). The gateway services stay behind the `gateway` profile and the `postgres` service is left as it was, so a plain `up -d` on a systemd deployment changes nothing (no added healthcheck: that would recreate the production PG container).
 
 **Backups**
 - An encrypted backup never leaves plaintext behind: verify the dump, encrypt it, delete the plaintext, and only then `mv` the `.gpg` into place. In-progress files start with `.` so the monthly copy and pruning (which glob `llm-gateway-*`) never take one for a backup. The gateway host holds the public key only; nothing there may need the private key.
