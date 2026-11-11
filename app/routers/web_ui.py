@@ -433,6 +433,8 @@ def dashboard(
             client_notices=_client_notices(session, user),
             client_combined=_client_combined(session, user),
             client_notice_days=client_rules.WINDOW_DAYS,
+            api_key_env=client_rules.API_KEY_ENV,
+            api_key_env_retired=client_rules.API_KEY_ENV_RETIRED,
             server_groups=server_groups,
             claude_code_available=claude_code_available,
             azure_access=user.can_use_azure or user.is_admin,
@@ -519,9 +521,8 @@ def _client_notices(session: Session, user: User) -> list[dict]:
     return notices
 
 
-# "all" routes first: FastAPI matches in order, and no check id is "all".
 def _client_combined(session: Session, user: User) -> dict | None:
-    """The "everything at once" block of the notices panel (never takes the page down)."""
+    """The account's one patch for the notices panel (never takes the page down)."""
     try:
         return client_rules.combined_for(session, user)
     except Exception as exc:
@@ -530,27 +531,53 @@ def _client_combined(session: Session, user: User) -> dict | None:
         return None
 
 
-@router.get("/dashboard/client-rules/all/patch.{fmt}")
-def client_rules_patch_all(
-    fmt: str,
+@router.get("/dashboard/client-notices", response_class=HTMLResponse)
+def client_notices_panel(
+    request: Request,
     user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
 ):
-    """One script for everything the account has open: the patches of all
-    its open checks merged (``client_rules.combined_env``), as ``patch.bat``
-    or ``patch.sh``."""
+    """The dashboard's notices panel alone (empty when the account has
+    nothing open): the page swaps it in after *I've applied it*, so the one
+    patch and what it covers always match what is still open."""
+    return templates.TemplateResponse(
+        request,
+        "_client_notices.html",
+        {"client_notices": _client_notices(session, user), "client_combined": _client_combined(session, user)},
+    )
+
+
+def _script_response(content: str, filename: str, secret: bool = False) -> Response:
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    if secret:
+        headers["Cache-Control"] = "no-store"
+    return Response(content=content.encode("utf-8"), media_type="application/octet-stream", headers=headers)
+
+
+# "all" routes first: FastAPI matches in order, and no check id is "all".
+@router.get("/dashboard/client-rules/all/patch.{fmt}")
+def client_rules_patch_all(
+    fmt: str,
+    request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """The account's one patch: the patches of everything it has open
+    merged (``client_rules.combined_for``; the variant for this account:
+    local-only, Azure or AWS), as ``patch.bat`` (Windows) or ``patch.sh``
+    (Linux / macOS). There is no per-check download: one notice or five, it
+    is the same single script. Mail links here too, so a browser arriving
+    with nothing left to apply is sent to the dashboard instead of a 404."""
     if fmt not in client_rules.PATCH_FORMATS:
         raise HTTPException(status_code=404, detail="No such patch format.")
     combined = client_rules.combined_for(session, user)
     if combined is None or not combined["env"]:
-        raise HTTPException(status_code=404, detail="No combined settings patch for this account.")
-    filename = f"claude-code-patch-all.{fmt}"
-    name = f"{combined['count']} settings changes"
-    return Response(
-        content=client_rules.render_patch(fmt, name, combined["env"], filename).encode("utf-8"),
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+        if "text/html" in (request.headers.get("accept") or "").lower():
+            return RedirectResponse(url="/dashboard", status_code=303)
+        raise HTTPException(status_code=404, detail="No settings patch for this account.")
+    filename = f"claude-code-patch.{fmt}"
+    name = "fixes for " + ", ".join(combined["covered"])
+    return _script_response(client_rules.render_patch(fmt, name, combined["env"], filename), filename)
 
 
 @router.post("/dashboard/client-rules/all/resolved")
@@ -566,32 +593,6 @@ def client_rules_resolved_all(
     if "application/json" in (request.headers.get("accept") or "").lower():
         return JSONResponse({"ok": True, "resolved": count})
     return RedirectResponse(url="/dashboard", status_code=303)
-
-
-@router.get("/dashboard/client-rules/{rule_id}/patch.{fmt}")
-def client_rule_patch(
-    rule_id: str,
-    fmt: str,
-    user: User = Security(get_web_user, scopes=["read"]),
-    session: Session = Depends(get_session),
-):
-    """The script that sets a rule's environment variables in the ``env``
-    block of the user's ``~/.claude/settings.json`` (the variant for this
-    account: local-only, Azure or AWS), as ``patch.bat`` (Windows) or
-    ``patch.sh`` (Linux / macOS). Only for an account with a recorded
-    violation of that check."""
-    if fmt not in client_rules.PATCH_FORMATS:
-        raise HTTPException(status_code=404, detail="No such patch format.")
-    found = client_rules.patch_for(session, rule_id, user)
-    if found is None:
-        raise HTTPException(status_code=404, detail="No settings patch for this account.")
-    rule, env = found
-    filename = f"claude-code-patch-{rule.id}.{fmt}"
-    return Response(
-        content=client_rules.render_patch(fmt, f"{rule.id} {rule.name}", env, filename).encode("utf-8"),
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
 
 
 @router.post("/dashboard/client-rules/{rule_id}/resolved")
@@ -611,6 +612,27 @@ def client_rule_resolved(
     if "application/json" in (request.headers.get("accept") or "").lower():
         return JSONResponse({"ok": True, "rule_id": rule_id})
     return RedirectResponse(url="/dashboard", status_code=303)
+
+
+@router.get("/dashboard/api-key/patch.{fmt}")
+def api_key_patch(
+    fmt: str,
+    user: User = Security(get_web_user, scopes=["read"]),
+):
+    """A script that puts the account's current API key into Claude Code
+    (``client_rules.key_env``: ``ANTHROPIC_AUTH_TOKEN`` set in the ``env``
+    block of settings.json, the older ``ANTHROPIC_API_KEY`` removed, nothing
+    else), as ``patch.bat`` or ``patch.sh``: what a user runs on each
+    machine after regenerating the key. Only ever the caller's own key; the
+    download is in the audit log (``audit._AUDITED_READS``) and never cached."""
+    if fmt not in client_rules.PATCH_FORMATS:
+        raise HTTPException(status_code=404, detail="No such patch format.")
+    filename = f"claude-code-key.{fmt}"
+    script = client_rules.render_patch(
+        fmt, f"your API key - {client_rules.API_KEY_ENV}", client_rules.key_env(user.api_key), filename,
+    )
+    logger.info("API key patch downloaded | user={} format={}", user.username, fmt)
+    return _script_response(script, filename, secret=True)
 
 
 @router.get("/dashboard/install-claude-code.bat")

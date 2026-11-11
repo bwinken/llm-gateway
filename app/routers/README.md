@@ -179,6 +179,11 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 | `POST` | `/dashboard/refresh-key` | Regenerate own API key (`schema.issue_api_key`: 256-bit key, resets its issue / last-use dates), returns JSON `{ok, api_key}` |
 | `POST` | `/dashboard/app/{app_id}/refresh-key` | Regenerate owned app account's API key (must be owner, else 403) |
 | `GET` | `/dashboard/install-claude-code.bat` | Windows Claude Code installer download, `setup/install-claude-code.bat` with `__USER_API_KEY__` replaced by the caller's key and line endings normalized to CRLF (404 when the template is absent) |
+| `GET` | `/dashboard/client-notices` | The dashboard's client-rule notices panel alone (`_client_notices.html`; empty when nothing is open). The page swaps it in after *I've applied it* |
+| `GET` | `/dashboard/client-rules/all/patch.{bat,sh}` | The account's one settings patch: everything it has open, merged (`client_rules.combined_for`). There is no download per check. 404 when there is nothing to apply (a browser is redirected to `/dashboard`: mail links here) |
+| `POST` | `/dashboard/client-rules/{rule_id}/resolved` | *I've applied it*: hide this notice until the gateway sees the problem again. JSON with `Accept: application/json` |
+| `POST` | `/dashboard/client-rules/all/resolved` | *I've applied everything*: the same for every open notice |
+| `GET` | `/dashboard/api-key/patch.{bat,sh}` | The caller's own key as a settings patch: sets `ANTHROPIC_AUTH_TOKEN`, removes `ANTHROPIC_API_KEY` (`client_rules.key_env`). What to run after regenerating. `Cache-Control: no-store`, recorded in the audit log |
 | `GET` | `/setup` | Claude Code installer page |
 
 ### Dashboard Data Sources
@@ -224,6 +229,30 @@ Limits are validated by `_limit_usd`: a finite number ≥ 0, where `0` is a $0 b
 | `POST` | `/admin/concurrency-limit` | Form `mode` (`off` / `monitor` / `enforce`) + `limit` (integer ≥ 1). JSON |
 | `POST` | `/admin/site-links` | Form `support_bot_url`, `install_guide_url` → `[app]`; only `http(s)://` or site-relative URLs (else 400); empty hides the element |
 | `GET` | `/admin/models` | Model config page (SPA, loads data via API) |
+
+### Users panel, client rules, IP allowlist, guardrail
+
+Behavior is described in [docs/architecture.md](../../docs/architecture.md) (Admin Users tab, Client rules, API IP allowlist, Guardrail). Form endpoints reply with JSON when sent `Accept: application/json`.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/admin/user-table` | One Users-tab panel (`kind=users\|apps`) as an HTML fragment (`_admin_user_table.html`), with the same `q` / `sort` / `status` / paging parameters as `/admin` |
+| `POST` | `/admin/client-rules/{rule_id}` | Save a check's settings: on / off, action, wording, patch, mail. What it detects is code and not editable |
+| `POST` | `/admin/client-rules/{rule_id}/reset` | Back to the defaults in code; recorded violations are kept |
+| `POST` | `/admin/client-rules/{rule_id}/mail` | Queue a mail to the check's accounts (`only_unmailed=on\|off`); the first batch goes out after the reply, the mail job sends the rest |
+| `POST` | `/admin/client-rules/mail-all` | Queue a mail to every account with anything open under any check |
+| `POST` | `/admin/client-rules/{rule_id}/mail-test` | Send that check's mail as the form stands to one company address (`to`, `audience`) |
+| `POST` | `/admin/client-rules/mail-test-all` | Send the combined mail (every check that is on, one merged patch) to one company address |
+| `POST` | `/admin/client-rules/monthly-mail` | Turn the monthly reminder on or off (`[app].client_rules_monthly_mail`) |
+| `GET` | `/admin/client-rules/mail-log` | One page of the mail log as JSON (`status=sent\|failed\|test`, `q`, `page`) |
+| `GET` | `/admin/client-rules/{rule_id}/patch.{bat,sh}` | Preview the patch script one kind of account downloads (`?audience=local\|azure\|aws`) |
+| `POST` | `/admin/ip-allowlist` | Save the allowlist mode (`off` / `monitor` / `enforce`) |
+| `POST` | `/admin/ip-allowlist/rules` | Add a rule: address or CIDR, who (`usernames`, `org_codes`; both empty = everyone), optional start and end |
+| `POST` | `/admin/ip-allowlist/rules/{rule_id}/who` | Change who a rule admits |
+| `POST` | `/admin/ip-allowlist/rules/{rule_id}/end` | End a rule now |
+| `POST` | `/admin/guardrail` | Save the `[guardrail]` section |
+| `POST` | `/admin/guardrail/test` | Test the connection to the guard model (not audited: a read-only probe) |
+| `POST` | `/admin/api/test-model` | Model Config's *Test connection*: `GET base_url/models` and check `real_model` is served (not audited) |
 
 ### Admin REST API (JWT auth, requires admin scope)
 

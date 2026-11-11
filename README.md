@@ -4,105 +4,48 @@
 
 [中文版](README.zh-TW.md)
 
-One OpenAI- and Anthropic-compatible endpoint in front of your on-prem [vLLM](https://github.com/vllm-project/vllm) servers, Azure OpenAI, and AWS Bedrock, with per-user API keys, budgets, and usage billing.
+One OpenAI- and Anthropic-compatible endpoint in front of your on-prem [vLLM](https://github.com/vllm-project/vllm) servers, Azure OpenAI and AWS Bedrock. Every user gets their own API key, a daily budget and a usage dashboard.
 
 ```
                                   ┌──▶ vLLM servers   (LLM, VLM, embedding, reranker, System One)
 Clients ──▶ LLM Gateway ──────────┼──▶ Azure OpenAI   (per-user access)
  (OpenAI SDK, Anthropic SDK,      └──▶ AWS Bedrock    (per-user access)
   Claude Code, Roo Code, …)
-              │
-              ├── auth: API keys for clients, SSO for the web UI
-              ├── routing by model name, with health-aware fallback
-              ├── per-user daily budgets and concurrency limits
-              └── usage and cost logging, web dashboard, admin panel
 ```
 
-| Dashboard | Admin Panel |
+| Dashboard: budget, usage, live model status | Admin panel: spend, accounts, limits |
 |---|---|
-| ![Dashboard](docs/screenshots/dashboard.png) | ![Admin](docs/screenshots/admin.png) |
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Admin panel](docs/screenshots/admin.png) |
 
-## Features
+## What it does
 
-- **One base URL for every backend.** `/v1/*` serves vLLM, Azure, and Bedrock models side by side; the model name picks the backend. Dedicated `/azure/v1/*` and `/aws/v1/*` surfaces exist for clients that must stay on one backend.
-- **OpenAI and Anthropic APIs.** Chat completions, Responses, Messages (works with Claude Code), embeddings, rerank, and token counting, streaming included, on every backend that supports them.
-- **Reliable under load.** Health checks every 30 seconds, automatic failover to another server of the same model type, and keepalive pings so long reasoning turns don't time out.
-- **Cost control.** Per-user daily budgets with a daily cap on cloud (Azure + Bedrock) spend, per-user concurrency limits, and per-model pricing (including prompt-cache discounts).
-- **Access control.** Disable accounts, and grant Azure or Bedrock access per user.
-- **Security and audit.** 256-bit API keys, a lockout for addresses that try many invalid keys, admin pages that refuse cross-site requests, model secrets that never reach the browser, and an append-only audit log of every admin change, key reveal and export.
-- **Web UI.** Users see their usage, remaining budget, and live server load. Admins manage users, models, pricing, and limits without editing files, and can export monthly cost reports.
-- **Observability.** Optional [Langfuse](https://langfuse.com) tracing per request, plus `/healthz` and `/readyz` probes for load balancers.
+- **One base URL for every backend.** Clients call `/v1/*`; the model name picks vLLM, Azure or Bedrock.
+- **OpenAI and Anthropic APIs.** Chat completions, Responses, Messages (works with Claude Code), embeddings and rerank, with streaming.
+- **Stays up.** Health checks, automatic failover to another server of the same type, and keepalive pings for long reasoning turns.
+- **Cost control.** Daily budget per user, a separate cap on cloud spend, concurrency limits, per-model pricing.
+- **Access and security.** Cloud access per user, an optional IP allowlist, prompt screening (guardrail), and an audit log of every admin action.
+- **Helps users fix their setup.** Detects misconfigured Claude Code clients and gives each user one script that fixes their settings, on the dashboard and by mail.
+- **Web UI for everyone.** Users see their budget, usage and model status. Admins manage accounts, models and prices without editing files.
 
 ## Quick start
 
-Requires Python 3.11, [uv](https://docs.astral.sh/uv/), and Docker (for the dev database).
+You need Python 3.11, [uv](https://docs.astral.sh/uv/) and Docker (for the dev database).
 
 ```bash
 git clone https://github.com/bwinken/llm-gateway.git && cd llm-gateway
 uv sync
-cp config.toml.example config.toml    # set your model servers here
-cp .env.example .env                  # set DATABASE_URL and AUTH_* here
+cp config.toml.example config.toml    # your model servers
+cp .env.example .env                  # DATABASE_URL and AUTH_*
 bash scripts/start-pg-dev.sh start    # dev PostgreSQL in Docker
 uv run alembic upgrade head           # create the schema
 uv run fastapi dev app/main.py
 ```
 
-Put your [AuthCenter](https://github.com/bwinken/authcenter) RS256 public key at `keys/public.pem` (or set `AUTH_CENTER_PUBLIC_KEY_PATH`) for web-UI login. On Windows, set `PYTHONUTF8=1` if you see `UnicodeEncodeError`.
+For web-UI login, put your [AuthCenter](https://github.com/bwinken/authcenter) RS256 public key at `keys/public.pem`. On Windows, set `PYTHONUTF8=1` if you see `UnicodeEncodeError`.
 
-## Configuration
+## Use it
 
-### `config.toml`: models and pricing
-
-A minimal model entry:
-
-```toml
-[models.llm."my-model"]                # type: llm | vlm | embedding | vision_embedding | reranker | vision_reranker | systemone
-base_url   = "http://vllm-host:8000/v1"
-real_model = "Qwen/Qwen3-32B"          # name the vLLM server knows the model by
-api_key    = ""                        # vLLM --api-key, if set
-```
-
-| Section | Purpose |
-|---|---|
-| `[app]` | Default daily budget for new users and other runtime settings. Most are editable from the admin panel. |
-| `[models.<type>.<alias>]` | On-prem vLLM models. Optional: per-model pricing, display metadata, `hidden`, reasoning-effort rules. |
-| `[azure_models.<alias>]` | Azure OpenAI deployments (`endpoint`, `deployment`, `api_key`). |
-| `[bedrock_models.<alias>]` | AWS Bedrock models (`region`, `model_id`, and a long-term Bedrock API key or IAM access key + secret; region and IAM keys can be set once for all models in `.env`). |
-| `[pricing]`, `[pricing.<type>]` | Default and per-type prices in USD per 1M tokens. A model's own price fields override them. |
-| `[fallback]`, `[azure_fallback]`, `[bedrock_fallback]` | Which model to use when a requested one is unknown or down. |
-
-Model names must be unique across all three backends. [`config.toml.example`](config.toml.example) documents every key. Models, pricing, and fallbacks can also be edited from **Admin → Model Config**, which writes `config.toml` for you.
-
-### `.env`: environment
-
-| Variable | Purpose | Default |
-|---|---|---|
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://llm_gateway:password@localhost:5432/llm_gateway` |
-| `AUTH_BASE_URL`, `AUTH_CENTER_APP_ID`, `AUTH_CENTER_PUBLIC_KEY_PATH` | JWT issuer, audience, and public key for web-UI login | `auth-center`, `llm_gateway`, `./keys/public.pem` |
-| `APP_TITLE` | Name shown in the UI and logs | `LLM Gateway` |
-| `AZURE_HTTP_PROXY`, `BEDROCK_HTTP_PROXY` | HTTP proxy for cloud traffic only (vLLM traffic is never proxied) | unset |
-| `AZURE_INSECURE`, `BEDROCK_INSECURE` | Skip TLS verification for that cloud (for TLS-inspecting corporate proxies) | `false` |
-| `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | Enable Langfuse tracing (all three required) | unset |
-| `LANGFUSE_CAPTURE_IO` | Also send prompt and response **content** to Langfuse. Contains personal data, so confirm notice and consent first. | `false` |
-| `LANGFUSE_SAMPLE_RATE` | Fraction of requests traced, `0.0`–`1.0` (billing always records every request) | `1.0` |
-| `AUTH_FAIL_DISTINCT_KEYS`, `AUTH_FAIL_WINDOW_S`, `AUTH_LOCKOUT_S` | An address that sends this many different invalid API keys within the window is refused (429) for the lockout (`0` turns it off) | `10`, `600`, `900` |
-| `ENFORCE_DAILY_LIMIT` | `false` logs budget overruns instead of rejecting them | `true` |
-| `SLOW_REQUEST_WARN_S` | Log a warning for requests slower than this many seconds (`0` turns it off) | `120` |
-| `LOG_DIR`, `LOG_LEVEL`, `LOG_ROTATION`, `LOG_RETENTION` | Log files, one per worker | `./logs`, `WARNING`, `100 MB`, `14 days` |
-| `LOG_REQUEST_BODIES` | Log raw request bodies on downstream errors. Debugging only: these contain user prompts. | `false` |
-| `DOWNSTREAM_MAX_CONNECTIONS` | HTTP connection pool size. Each open stream holds one connection. | `1000` |
-| `USAGE_ROLLUP_INTERVAL_S` | Seconds between checks of the background daily usage rollup that reports read (`0` turns it off: reports stay correct, just slower) | `600` |
-| `ANOMALY_SCAN_INTERVAL_S` | Seconds between the gateway's usage-anomaly scans (`0` turns it off) | `3600` |
-| `EXCHANGE_SERVER`, `EXCHANGE_USER`, `EXCHANGE_PASSWORD`, `EXCHANGE_EMAIL`, `COMPANY_EMAIL_DOMAIN` | Exchange (EWS + NTLM) mail for the admin panel's Client rules; on only when all five are set. Mailboxes are `<username>@<COMPANY_EMAIL_DOMAIN>` | unset (mail off) |
-| `PUBLIC_BASE_URL` | The gateway's browser URL, for the dashboard link in mail and reminders | unset |
-| `CLIENT_RULE_MAIL_BATCH`, `CLIENT_RULE_MAIL_PAUSE_S`, `CLIENT_RULE_MAIL_INTERVAL_S` | Pace of client-rule mail, so it never reaches the mail server as a burst: at most this many mails per run, this many seconds apart, a run every this many seconds (`0` turns the job off) | `20`, `2`, `600` |
-| `USAGE_LOG_RETENTION_DAYS` | Daily, delete `usage_logs` rows older than this many days (only days already in the daily rollup, so reports keep them). Unset keeps them forever | unset |
-
-SSO login itself (OIDC issuer, client secret) is configured for oauth2-proxy in `deploy/.env`; see [deploy/README.md](deploy/README.md).
-
-## Using the gateway
-
-Clients authenticate with their gateway API key (shown on the dashboard).
+Each user's API key is on their dashboard.
 
 ```python
 from openai import OpenAI
@@ -116,46 +59,76 @@ client.chat.completions.create(model="my-model", messages=[{"role": "user", "con
 ANTHROPIC_BASE_URL=https://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key claude
 ```
 
-The **[Client Guide](docs/client-guide.md)** covers the rest: every endpoint, Azure and Bedrock access, tool-calling setup for Roo Code, Cursor and others, the error responses clients should handle, and System One.
+The **[Client Guide](docs/client-guide.md)** has every endpoint, Azure and Bedrock access, setup for Roo Code, Cursor and others, and the errors a client should handle.
 
-## Administration
+## Configure it
 
-Open `https://your-gateway` and sign in through SSO. Accounts with the `admin` scope in AuthCenter see the admin panel, where they can:
+There are two files. Most day-to-day settings can also be changed in the admin panel.
 
-- set each user's daily budget and grant Azure or AWS access, plus a daily cloud cap (a default, overridable per user);
-- grant Azure or Bedrock access, or disable an account;
-- set the per-user **concurrency limit** (Off, Monitor, or Enforce) and waive it for individual accounts (app accounts start out waived);
-- choose whether a spent cloud cap falls back to on-prem models instead of returning 429;
-- edit models, pricing, and fallbacks under **Model Config**;
-- export monthly cost reports (xlsx, or CSV split by backend) and review usage anomalies;
-- review the **audit log** (Security tab, CSV download) and, for access reviews, list API keys unused for 90+ days or still in the older format (Users tab filters).
+**`config.toml`: models and prices.** A minimal model:
 
-## Deployment
+```toml
+[models.llm."my-model"]                # llm | vlm | embedding | reranker | ...
+base_url   = "http://vllm-host:8000/v1"
+real_model = "Qwen/Qwen3-32B"          # the name the vLLM server uses
+```
 
-Production runs as a user-level systemd service behind nginx and oauth2-proxy, with PostgreSQL in Docker. See [deploy/README.md](deploy/README.md).
+Azure and Bedrock models go in `[azure_models.*]` and `[bedrock_models.*]`; prices in `[pricing]`; what to use when a model is unknown or down in `[fallback]`. Model names must be unique across all backends. [`config.toml.example`](config.toml.example) documents every key, and **Admin → Models** edits the file for you.
 
-On upgrade, apply schema changes before restarting:
+**`.env`: connections and secrets.** The ones you are most likely to set:
+
+| Variable | What it is for |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `AUTH_BASE_URL`, `AUTH_CENTER_APP_ID`, `AUTH_CENTER_PUBLIC_KEY_PATH` | Web-UI login: JWT issuer, audience and public key |
+| `AZURE_HTTP_PROXY`, `BEDROCK_HTTP_PROXY` | HTTP proxy for cloud traffic (on-prem traffic is never proxied) |
+| `BEDROCK_REGION`, `BEDROCK_AWS_ACCESS_KEY_ID`, `BEDROCK_AWS_SECRET_ACCESS_KEY` | AWS settings shared by every Bedrock model |
+| `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | Turn on [Langfuse](https://langfuse.com) tracing |
+| `METRICS_ENABLED` | Serve Prometheus metrics at `/metrics` |
+| `EXCHANGE_*`, `COMPANY_EMAIL_DOMAIN`, `PUBLIC_BASE_URL` | Mail to users about their client setup |
+| `USAGE_LOG_RETENTION_DAYS` | Delete raw usage rows older than this (off by default; reports keep their totals) |
+
+[`.env.example`](.env.example) lists every variable with its default: logging, the failed-login lockout, connection pools, job intervals and mail pacing. SSO itself (OIDC issuer, client secret) is configured for oauth2-proxy in `deploy/.env`; see [deploy/README.md](deploy/README.md).
+
+## Run it as an admin
+
+Open `https://your-gateway` and sign in through SSO. Accounts with the `admin` scope in AuthCenter get the admin panel:
+
+| Tab | What you do there |
+|---|---|
+| **Overview** | See spend, requests and active users; review usage anomalies; export monthly cost reports |
+| **Users** | Set budgets and cloud caps, grant Azure or AWS access, disable accounts, create app accounts, view or regenerate keys |
+| **Clients** | Choose which client problems to detect, how users are told, and the settings patch they get; see who is affected and what mail went out |
+| **Security** | IP allowlist, prompt guardrail, audit log |
+| **Settings** | Default budgets, concurrency limit, what happens when the cloud cap is spent, site links |
+| **Models** | Add and edit models, prices and fallbacks; test a connection |
+
+## Deploy it
+
+Production runs as a user-level systemd service behind nginx and oauth2-proxy, with PostgreSQL in Docker: see [deploy/README.md](deploy/README.md). On every upgrade, apply schema changes before restarting:
 
 ```bash
 uv run alembic upgrade head
 ```
 
-Moving from the old SQLite database? See the [migration guide](docs/migration-guide.md).
+Coming from the old SQLite database? See the [migration guide](docs/migration-guide.md).
 
-## Development
+## Develop
 
 ```bash
-uv run pytest tests/ -q     # tests: in-memory SQLite, mocked downstreams, no config.toml needed
-uv run ruff check .         # lint
+uv run pytest tests/ -q     # in-memory SQLite, mocked downstreams, no config.toml needed
+uv run ruff check .
 ```
 
-CI runs both on every push to `main` and every pull request. A security workflow also runs pip-audit on `uv.lock` and gitleaks on new commits (and weekly on the whole history); Dependabot opens weekly update PRs. [CLAUDE.md](CLAUDE.md) is the contributor map: architecture, conventions, and the rules that are easy to break.
+CI runs both on every pull request, plus a dependency audit and a secret scan. [CLAUDE.md](CLAUDE.md) is the contributor map: where things live and the rules that are easy to break.
 
-| Docs | |
+## More documentation
+
+| | |
 |---|---|
 | [Client Guide](docs/client-guide.md) | Connecting clients, endpoints, error handling |
 | [Architecture](docs/architecture.md) | How every subsystem behaves, in detail |
-| [deploy/](deploy/README.md) | Production deployment |
+| [Deployment](deploy/README.md) | Production setup, backups, upgrades |
 | [Langfuse](docs/langfuse-observability.md) | Observability design |
-| [alembic/](alembic/README.md) | Schema migrations |
-| [app/core](app/core/README.md), [routers](app/routers/README.md), [models](app/models/README.md), [templates](app/templates/README.md), [tests](tests/README.md) | Per-package notes |
+| [Migrations](alembic/README.md) | Database schema changes |
+| Package notes | [core](app/core/README.md) · [routers](app/routers/README.md) · [models](app/models/README.md) · [templates](app/templates/README.md) · [tests](tests/README.md) |

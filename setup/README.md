@@ -18,3 +18,4 @@ This directory holds the Claude Code installer template served by the gateway. `
 
 - `install-claude-code.bat` is deployment-specific and lives only on the deployed server; only the example is committed.
 - It is served via `GET /dashboard/install-claude-code.bat` (auth-required), which replaces the `__USER_API_KEY__` placeholder with the requesting user's key. There is no generic file-download route under `/setup/`.
+- The key is written to `ANTHROPIC_AUTH_TOKEN` only, and an `ANTHROPIC_API_KEY` left by an older installer is removed. A deployed `install-claude-code.bat` copied from an earlier example still writes both: change its two lines to match the example. After a user regenerates their key, the dashboard's *My API Key* window offers a script that updates that one variable.

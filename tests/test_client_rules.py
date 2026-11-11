@@ -639,14 +639,12 @@ class TestBaseline:
         headers = web_auth_header(sub=test_user.username)
         body = client.get("/dashboard", headers=headers).text
         assert self.DISCOVERY in body
-        for url in ("/dashboard/client-rules/CC001/patch.bat", "/dashboard/client-rules/CC001/patch.sh",
-                    "/dashboard/client-rules/all/patch.sh"):
+        for url in ("/dashboard/client-rules/all/patch.bat", "/dashboard/client-rules/all/patch.sh"):
             import base64
             import re
             text = client.get(url, headers=headers).text
             env = json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))
             assert env == {"CLAUDE_CODE_AUTO_MODE_SERVER": "0", self.DISCOVERY: "1"}, url
-        assert client.get("/dashboard/client-rules/CC003/patch.bat", headers=headers).status_code == 404
         client_rules.run_auto_mail(db_session)
         assert self.DISCOVERY in mail_on[0][2]
 
@@ -670,7 +668,7 @@ class TestDashboard:
         body = self._page(client, test_user)
         assert 'id="clientNotice-CC001"' in body and client_checks.BY_ID[AUTO].title in body
         assert "CLAUDE_CODE_AUTO_MODE_SERVER" in body
-        assert "/dashboard/client-rules/CC001/patch.bat" in body and "/dashboard/client-rules/CC001/patch.sh" in body
+        assert "/dashboard/client-rules/all/patch.bat" in body and "/dashboard/client-rules/all/patch.sh" in body
         assert 'action="/dashboard/client-rules/CC001/resolved"' in body
 
     def test_the_admins_wording_replaces_the_default(self, client, db_session, test_user):
@@ -683,7 +681,7 @@ class TestDashboard:
         _configure(db_session, AUTO, patch='{"MODEL": "local-m"}', patch_azure='{"MODEL": "azure-m"}', patch_aws='{"MODEL": "claude-m"}')
         _violation(db_session, AUTO, "testuser")
         headers = web_auth_header(sub=test_user.username)
-        url = "/dashboard/client-rules/CC001/patch.bat"
+        url = "/dashboard/client-rules/all/patch.bat"
 
         def script_env() -> dict:
             import base64
@@ -721,27 +719,45 @@ class TestDashboard:
         _violation(db_session, AUTO, "testuser")
         assert "<script>alert(1)</script>" not in self._page(client, test_user)
 
-    def test_patch_download_only_for_an_account_with_the_violation(self, client, db_session, test_user):
-        url = "/dashboard/client-rules/CC001/patch.bat"
+    def test_patch_download_only_for_an_account_with_something_open(self, client, db_session, test_user):
+        url = "/dashboard/client-rules/all/patch.bat"
         headers = web_auth_header(sub=test_user.username)
+        assert client.get(url, headers=headers).status_code == 404
+        _violation(db_session, AUTO, "somebody-else")
         assert client.get(url, headers=headers).status_code == 404
         _violation(db_session, AUTO, "testuser")
         resp = client.get(url, headers=headers)
         assert resp.status_code == 200 and "attachment" in resp.headers["content-disposition"]
         assert b"GW-PATCH-BEGIN" in resp.content and b"\r\n" in resp.content
-        assert client.get("/dashboard/client-rules/CC999/patch.bat", headers=headers).status_code == 404
-        linux = client.get("/dashboard/client-rules/CC001/patch.sh", headers=headers)
+        linux = client.get("/dashboard/client-rules/all/patch.sh", headers=headers)
         assert linux.status_code == 200 and linux.content.startswith(b"#!/bin/sh\n") and b"\r" not in linux.content
-        assert 'filename="claude-code-patch-CC001.sh"' in linux.headers["content-disposition"]
-        assert client.get("/dashboard/client-rules/CC001/patch.exe", headers=headers).status_code == 404
+        assert 'filename="claude-code-patch.sh"' in linux.headers["content-disposition"]
+        assert b"fixes for CC001" in linux.content
+        assert client.get("/dashboard/client-rules/all/patch.exe", headers=headers).status_code == 404
+
+    def test_there_is_no_download_per_check(self, client, db_session, test_user):
+        _violation(db_session, AUTO, "testuser")
+        headers = web_auth_header(sub=test_user.username)
+        for fmt in ("bat", "sh"):
+            assert client.get(f"/dashboard/client-rules/CC001/patch.{fmt}", headers=headers).status_code in (404, 405)
+        assert "/dashboard/client-rules/CC001/patch" not in self._page(client, test_user)
 
     def test_no_download_without_a_patch(self, client, db_session, test_user):
         _violation(db_session, NO_CLOUD_ACCESS, "testuser")           # this check has no default patch
         _configure(db_session, NO_CLOUD_ACCESS)
         headers = web_auth_header(sub=test_user.username)
-        assert client.get(f"/dashboard/client-rules/{NO_CLOUD_ACCESS}/patch.bat", headers=headers).status_code == 404
+        assert client.get("/dashboard/client-rules/all/patch.bat", headers=headers).status_code == 404
         body = self._page(client, test_user)
-        assert f'id="clientNotice-{NO_CLOUD_ACCESS}"' in body and "patch.bat" not in body and "patch.sh" not in body
+        assert f'id="clientNotice-{NO_CLOUD_ACCESS}"' in body and "client-rules/all/patch." not in body
+
+    def test_a_browser_with_nothing_left_to_apply_goes_to_the_dashboard(self, client, db_session, test_user):
+        """The mail links to the download; by the time it is clicked the
+        account may have fixed everything."""
+        headers = {**web_auth_header(sub=test_user.username), "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
+        resp = client.get("/dashboard/client-rules/all/patch.bat", headers=headers, follow_redirects=False)
+        assert resp.status_code == 303 and resp.headers["location"] == "/dashboard"
+        _violation(db_session, AUTO, "testuser")
+        assert client.get("/dashboard/client-rules/all/patch.bat", headers=headers, follow_redirects=False).status_code == 200
 
 
 class TestResolved:
@@ -1032,6 +1048,42 @@ class TestMail:
             assert resp.json()["ok"] and resp.json()["to"] == "someone@example.test"
             assert mail_on[-1][0] == "someone@example.test" and model in mail_on[-1][2]
 
+    def test_the_combined_test_mail_lists_every_rule_that_is_on_with_one_merged_patch(self, client, db_session, admin_user, mail_on):
+        _configure(db_session, AUTO, title="Fix auto mode", patch='{"SERVER": "0", "MODEL": "local-m"}', patch_aws='{"MODEL": "claude-m"}')
+        _configure(db_session, HTTP, title="Use https", patch='{"ANTHROPIC_BASE_URL": "https://gw.example.test"}')
+        _configure(db_session, OUTDATED, title="Update Claude Code")
+        _configure(db_session, UNKNOWN_MODEL, enabled=False, title="Off, so not in it")
+        url = "/admin/client-rules/mail-test-all"
+        resp = client.post(url, data={"to": "someone@example.test", "audience": "aws"}, headers=_admin(admin_user))
+        assert resp.json() == {"ok": True, "to": "someone@example.test", "detail": "", "rules": ["CC001", "CC002", "CC003"]}
+        [(to, subject, body)] = mail_on
+        assert to == "someone@example.test" and subject.startswith("[TEST] ") and "3 things to change" in subject
+        for title in ("1. Fix auto mode", "2. Use https", "3. Update Claude Code"):
+            assert title in body
+        assert "Off, so not in it" not in body
+        assert body.count("<pre") == 1 and "claude-m" in body and "local-m" not in body      # one block, the AWS variant
+        assert "ANTHROPIC_BASE_URL" in body and "One script fixes 2 of them" in body and "CC003 needs something else" in body
+        assert client.post(url, headers=_admin(admin_user)).json()["to"] == "admin@example.test"   # the admin's own by default
+        assert "local-m" in mail_on[1][2]
+        db_session.expire_all()
+        log = db_session.exec(select(ClientMailLog).order_by(ClientMailLog.id)).all()
+        assert [(row.kind, row.rule_ids, row.actor) for row in log] == [("test", "CC001,CC002,CC003", "admin")] * 2
+        assert _violations(db_session, AUTO) == []                    # a test mail touches nobody's violations
+
+    def test_the_combined_test_mail_is_refused_when_it_cannot_be_sent(self, client, db_session, admin_user, test_user, mail_on):
+        url = "/admin/client-rules/mail-test-all"
+        assert client.post(url, data={"to": "x@elsewhere.test"}, headers=_admin(admin_user)).status_code == 400
+        assert client.post(url, data={"audience": "everyone"}, headers=_admin(admin_user)).status_code == 400
+        assert client.post(url, headers={**web_auth_header(sub=test_user.username), "Accept": "application/json"}).status_code == 403
+        _configure(db_session, AUTO, enabled=False)
+        resp = client.post(url, headers=_admin(admin_user))
+        assert resp.status_code == 400 and "No rule is on" in resp.json()["detail"]
+        assert mail_on == []
+
+    def test_the_admin_page_offers_the_combined_test_mail(self, client, admin_user, mail_on):
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        assert 'id="client-rules-mail-test-all"' in body and 'data-cr-test="/admin/client-rules/mail-test-all"' in body
+
     def test_test_mail_stays_inside_the_company_domain(self, client, admin_user, mail_on):
         resp = client.post(self._TEST, data={**_FORM, "to": "x@elsewhere.test"}, headers=_admin(admin_user))
         assert resp.status_code == 400 and mail_on == []
@@ -1084,7 +1136,7 @@ class TestMail:
     def test_the_mail_names_the_platforms_people_here_use(self, mail_on):
         draft = SimpleNamespace(id="CC001", title="t", message="", email_subject="")
         body = client_rules.render_mail(draft, "u", {"A": "1"})[1]
-        assert "(Windows or Linux)" in body and "macOS" not in body
+        assert "Windows (.bat)" in body and "Linux (.sh)" in body and "macOS" not in body
 
     def test_every_mail_says_it_is_automated_and_not_to_reply(self, db_session, test_user, mail_on):
         _configure(db_session, AUTO, auto_email=True)
@@ -1144,6 +1196,40 @@ class TestOneMailPerAccount:
             assert name in body
         assert "claude-m" in body and "local-m" not in body              # the test user has AWS access
         assert "Reference: CC001, CC002, CC003." in body
+
+    def test_the_mail_links_straight_to_the_one_patch(self, db_session, test_user, mail_on, monkeypatch):
+        self._three(db_session)
+        client_rules.run_auto_mail(db_session)
+        body = mail_on[0][2]
+        for fmt in ("bat", "sh"):
+            assert body.count(f'href="https://gw.example.test/dashboard/client-rules/all/patch.{fmt}"') == 1
+        assert "client-rules/CC00" not in body                           # never a download per check
+        assert 'href="https://gw.example.test/dashboard"' in body
+        monkeypatch.delenv("PUBLIC_BASE_URL")                            # no address to link to: the text alone
+        draft = SimpleNamespace(id="CC001", title="t", message="", email_subject="")
+        plain = client_rules.render_mail(draft, "u", {"A": "1"})[1]
+        assert "href=" not in plain and "<pre" in plain
+        assert "href=" not in client_rules.render_mail(draft, "u", {})[1]
+
+    def test_the_mail_says_what_the_script_does_not_fix(self, db_session, test_user, mail_on):
+        self._three(db_session)                                          # CC003 (update Claude Code) has no patch
+        client_rules.run_auto_mail(db_session)
+        body = mail_on[0][2]
+        assert "One script fixes 2 of them" in body and "CC003 needs something else" in body
+        assert "fixes them all" not in body
+        client_rules.resolve(db_session, OUTDATED, "testuser")
+        client_rules.send_rule_mail(AUTO, only_unmailed=False)
+        assert "One script fixes them all" in mail_on[1][2] and "something else" not in mail_on[1][2]
+
+    def test_a_mail_about_nothing_a_script_can_fix_offers_no_script(self, db_session, test_user, mail_on):
+        _configure(db_session, OUTDATED, title="Update Claude Code")
+        _configure(db_session, NO_CLOUD_ACCESS, title="Ask for access")
+        _violation(db_session, OUTDATED, "testuser")
+        _violation(db_session, NO_CLOUD_ACCESS, "testuser")
+        client_rules.send_rule_mail(OUTDATED)
+        body = mail_on[0][2]
+        assert "all/patch" not in body and "One script" not in body and "<pre" not in body
+        assert 'href="https://gw.example.test/dashboard"' in body
 
     def test_the_mail_covers_checks_without_automatic_mail_and_marks_them_all(self, db_session, test_user, mail_on):
         self._three(db_session)                                          # only CC001 has automatic mail
@@ -1268,7 +1354,8 @@ class TestOneMailPerAccount:
 
 
 class TestEverythingAtOnce:
-    """The dashboard's one patch and one button for all open notices."""
+    """The dashboard's one patch for everything the account has open, and
+    one button for all its notices."""
 
     def _two(self, db_session):
         _configure(db_session, AUTO, patch='{"SERVER": "0"}')
@@ -1293,11 +1380,47 @@ class TestEverythingAtOnce:
         want = {"SERVER": "0", "ANTHROPIC_BASE_URL": "https://gw.example.test"}
         assert self._script_env(client, test_user, "bat") == want and self._script_env(client, test_user, "sh") == want
 
-    def test_one_notice_is_its_own_patch(self, client, db_session, test_user):
+    def test_one_notice_gets_the_same_single_download(self, client, db_session, test_user):
+        _configure(db_session, AUTO, patch='{"SERVER": "0"}')
         _violation(db_session, AUTO, "testuser")
-        assert 'id="clientNoticesAll"' not in self._page(client, test_user)
-        resp = client.get("/dashboard/client-rules/all/patch.bat", headers=web_auth_header(sub=test_user.username))
-        assert resp.status_code == 404
+        body = self._page(client, test_user)
+        assert 'id="clientNoticesAll"' in body and "all/resolved" not in body      # its own button is enough
+        assert self._script_env(client, test_user, "bat") == {"SERVER": "0"}
+
+    def test_several_notices_still_offer_one_download(self, client, db_session, test_user):
+        self._two(db_session)
+        body = self._page(client, test_user)
+        assert body.count("/dashboard/client-rules/all/patch.bat") == 1
+        assert body.count("/dashboard/client-rules/all/patch.sh") == 1
+        assert "client-rules/CC001/patch" not in body and "client-rules/CC002/patch" not in body
+        assert "Fix everything with one script" in body
+
+    def test_the_panel_says_what_the_script_does_not_cover(self, client, db_session, test_user):
+        self._two(db_session)
+        _configure(db_session, OUTDATED)                              # fixed by updating, not by a setting
+        _violation(db_session, OUTDATED, "testuser")
+        combined = client_rules.combined_for(db_session, test_user)
+        assert (combined["count"], combined["covered"], combined["manual"]) == (3, ["CC001", "CC002"], ["CC003"])
+        body = self._page(client, test_user)
+        assert "One script fixes 2 of these 3" in body and "Fix everything with one script" not in body
+        note = body.split("data-client-manual", 1)[1][:300]
+        assert "CC003" in note and "CC001" not in note
+        assert b"fixes for CC001, CC002" in client.get(
+            "/dashboard/client-rules/all/patch.sh", headers=web_auth_header(sub=test_user.username)).content
+
+    def test_the_panel_alone_follows_what_is_still_open(self, client, db_session, test_user):
+        """What the page swaps in after "I've applied it"."""
+        self._two(db_session)
+        headers = web_auth_header(sub=test_user.username)
+        panel = client.get("/dashboard/client-notices", headers=headers).text
+        assert panel.lstrip().startswith("<div") and "<html" not in panel
+        assert 'id="clientNotice-CC001"' in panel and 'id="clientNotice-CC002"' in panel
+        client.post("/dashboard/client-rules/CC001/resolved", headers={**headers, "Accept": "application/json"})
+        panel = client.get("/dashboard/client-notices", headers=headers).text
+        assert 'id="clientNotice-CC001"' not in panel and 'id="clientNotice-CC002"' in panel
+        assert self._script_env(client, test_user, "sh") == {"ANTHROPIC_BASE_URL": "https://gw.example.test"}
+        client.post("/dashboard/client-rules/CC002/resolved", headers={**headers, "Accept": "application/json"})
+        assert client.get("/dashboard/client-notices", headers=headers).text.strip() == ""
 
     def test_without_any_patch_there_is_still_one_button(self, client, db_session, test_user):
         _configure(db_session, AUTO, patch="")
@@ -1878,7 +2001,88 @@ class TestMailLog:
         assert [row.username for row in self._log(db_session)] == ["leaver"]
 
 
+class TestKeyPatch:
+    """A regenerated key reaches Claude Code as a patch of its own: the one
+    variable the key lives in is set, the older second one is removed,
+    nothing else."""
+
+    @staticmethod
+    def _want(key: str) -> dict:
+        return {"ANTHROPIC_AUTH_TOKEN": key, "ANTHROPIC_API_KEY": None}
+
+    @staticmethod
+    def _env(text: str) -> dict:
+        import base64
+        import re
+        return json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))
+
+    def test_it_sets_the_accounts_own_key_and_nothing_else(self, client, db_session, test_user, admin_user):
+        assert client_rules.API_KEY_ENV == "ANTHROPIC_AUTH_TOKEN"
+        assert client_rules.API_KEY_ENV_RETIRED == ("ANTHROPIC_API_KEY",)
+        headers = web_auth_header(sub=test_user.username)
+        for fmt in ("bat", "sh"):
+            resp = client.get(f"/dashboard/api-key/patch.{fmt}", headers=headers)
+            assert resp.status_code == 200
+            assert f'filename="claude-code-key.{fmt}"' in resp.headers["content-disposition"]
+            assert resp.headers["cache-control"] == "no-store"
+            assert self._env(resp.text) == self._want(test_user.api_key)
+            assert test_user.api_key not in resp.text                # only inside the encoded patch
+        assert client.get("/dashboard/api-key/patch.exe", headers=headers).status_code == 404
+        other = client.get("/dashboard/api-key/patch.sh", headers=web_auth_header(sub=admin_user.username))
+        assert self._env(other.text) == self._want(admin_user.api_key)
+
+    def test_after_regenerating_it_carries_the_new_key(self, client, db_session, test_user):
+        headers = web_auth_header(sub=test_user.username)
+        old = test_user.api_key
+        new = client.post("/dashboard/refresh-key", headers=headers).json()["api_key"]
+        assert new != old
+        assert self._env(client.get("/dashboard/api-key/patch.sh", headers=headers).text) == self._want(new)
+
+    def test_it_needs_a_login(self, client):
+        assert client.get("/dashboard/api-key/patch.bat").status_code in (401, 403)
+
+    def test_it_is_not_mixed_with_open_notices_or_the_baseline(self, client, db_session, test_user, monkeypatch):
+        monkeypatch.setattr(client_checks, "BASELINE_ENV", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1")
+        _violation(db_session, AUTO, "testuser")
+        headers = web_auth_header(sub=test_user.username)
+        assert self._env(client.get("/dashboard/api-key/patch.bat", headers=headers).text) == self._want(test_user.api_key)
+        fix = self._env(client.get("/dashboard/client-rules/all/patch.bat", headers=headers).text)
+        assert "ANTHROPIC_AUTH_TOKEN" not in fix                     # a notice's patch never carries the key
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="sh not installed")
+    @pytest.mark.parametrize("runtime", ["node", "python3"])
+    def test_the_script_replaces_the_key_drops_the_old_copy_and_leaves_the_rest(self, tmp_path, runtime):
+        before = {"model": "m", "env": {
+            "ANTHROPIC_API_KEY": "sk-old", "ANTHROPIC_AUTH_TOKEN": "sk-old", "ANTHROPIC_BASE_URL": "https://gw", "KEEP": "1"}}
+        result = TestPatch._run_sh(tmp_path, client_rules.key_env("sk-new"), json.dumps(before), runtime)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "sk-new" not in result.stdout + result.stderr          # the script never prints the key
+        got = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        assert got == {"model": "m", "env": {"ANTHROPIC_AUTH_TOKEN": "sk-new", "ANTHROPIC_BASE_URL": "https://gw", "KEEP": "1"}}
+
+    def test_the_dashboard_offers_it_next_to_the_key(self, client, test_user):
+        body = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
+        modal = body.split('id="apiKeyModal"', 1)[1]
+        assert "/dashboard/api-key/patch.bat" in modal and "/dashboard/api-key/patch.sh" in modal
+        assert "ANTHROPIC_AUTH_TOKEN" in modal and "ANTHROPIC_API_KEY" in modal      # set / removed, both named
+
+    def test_the_download_is_in_the_audit_log_without_the_key(self, client, db_session, test_user):
+        from app.models.schema import AuditLog
+        client.get("/dashboard/api-key/patch.sh", headers=web_auth_header(sub=test_user.username))
+        db_session.expire_all()
+        [entry] = db_session.exec(select(AuditLog)).all()
+        assert (entry.actor, entry.method, entry.status) == ("testuser", "GET", 200)
+        assert entry.path == "/dashboard/api-key/patch.sh" and test_user.api_key not in entry.detail
+
+
 class TestInstaller:
+    def test_example_installer_keeps_the_key_in_one_variable(self):
+        """ANTHROPIC_AUTH_TOKEN only: a second copy in ANTHROPIC_API_KEY would
+        go stale on the next regenerate, so an older one is taken out."""
+        text = (Path(__file__).resolve().parent.parent / "setup" / "install-claude-code-example.bat").read_text(encoding="utf-8")
+        assert "$e['ANTHROPIC_AUTH_TOKEN']='%API_KEY%'" in text
+        assert "$e['ANTHROPIC_API_KEY']" not in text and "$e.Remove('ANTHROPIC_API_KEY')" in text
+
     def test_example_installer_writes_the_auto_mode_settings(self):
         text = (Path(__file__).resolve().parent.parent / "setup" / "install-claude-code-example.bat").read_text(encoding="utf-8")
         assert "$e['CLAUDE_CODE_AUTO_MODE_SERVER']='0'" in text

@@ -12,8 +12,8 @@ notice which accounts send requests of a certain kind and reach those people:
   check. For ``WINDOW_DAYS`` after its last one the account sees the notice
   on its dashboard, with the patch (environment variables for the ``env``
   block of ``~/.claude/settings.json``, nothing else; a different set for
-  local-only, Azure and AWS accounts) as text and as a Windows ``.bat``
-  download.
+  local-only, Azure and AWS accounts) as text and as a download
+  (``.bat`` for Windows, ``.sh`` for Linux).
 - **Resolved**: the account can say "I've applied it" on its notice. The
   notice goes away at once and it is no longer mailed; the next violating
   request reopens it (the gateway cannot see a settings file, only requests).
@@ -23,7 +23,14 @@ notice which accounts send requests of a certain kind and reach those people:
 - **Mail**: to ``<username>@<COMPANY_EMAIL_DOMAIN>`` (``mailer``), sent by
   an admin's click or by the ``client_rule_mail`` job for checks with
   ``auto_email``. One mail per account, about everything it has open, with
-  one patch that covers it all (``open_items``, ``combined_env``).
+  one patch that covers it all (``open_items``, ``combined_env``) and a
+  link straight to its download.
+- **One patch per account**: the dashboard and the mail offer a single
+  download, everything the account has open merged (``combined_for``),
+  never one per check.
+- **API key patch** (``key_env``): a script that sets the account's
+  current key (``API_KEY_ENV``) in settings.json, for after a key was
+  regenerated.
 - **Versions** (``client_versions``): the Claude Code version in each
   Messages request's User-Agent, per account.
 
@@ -495,6 +502,26 @@ def render_patch(fmt: str, name: str, env: dict[str, str | None], filename: str)
     raise ValueError(f"Patch format must be one of: {', '.join(PATCH_FORMATS)}.")
 
 
+# ── The account's API key, as a patch ──
+
+# The one variable Claude Code gets the gateway key in (sent as
+# ``Authorization: Bearer``). A regenerated key reaches a user's machine as a
+# patch that sets it.
+API_KEY_ENV = "ANTHROPIC_AUTH_TOKEN"
+# Variables that used to hold the key as well (older installers wrote both).
+# The key patch removes them: a second copy would go stale on the next
+# regenerate and keep being sent as ``x-api-key``.
+API_KEY_ENV_RETIRED = ("ANTHROPIC_API_KEY",)
+
+
+def key_env(api_key: str) -> dict[str, str | None]:
+    """The patch that puts an account's current API key into Claude Code:
+    ``API_KEY_ENV`` set to the key, ``API_KEY_ENV_RETIRED`` removed, nothing
+    else. It is not a check's patch (no violation, no baseline) and is only
+    ever served to the account itself."""
+    return {API_KEY_ENV: api_key, **{name: None for name in API_KEY_ENV_RETIRED}}
+
+
 # ── The checks as configured ──
 
 @dataclass(frozen=True)
@@ -918,21 +945,6 @@ def notices_for(session: Session, user: User, now: datetime | None = None) -> li
     ]
 
 
-def patch_for(session: Session, rule_id: str, user: User) -> tuple[Rule, dict[str, str | None]] | None:
-    """The check and the patch meant for ``user``, if it tripped the check
-    and there is something to apply. None otherwise."""
-    rule = get_rule(session, rule_id)
-    if rule is None:
-        return None
-    hit = session.exec(
-        select(ClientViolation).where(ClientViolation.rule_id == rule_id, ClientViolation.username == user.username)
-    ).first()
-    if hit is None:
-        return None
-    env = effective_env(rule, *audience_of(user))
-    return (rule, env) if env else None
-
-
 def audience_flags(audience: str) -> tuple[bool, bool]:
     """``(azure, aws)`` for an admin's preview of one audience: ``local``,
     ``azure`` (Azure only) or ``aws`` (AWS only)."""
@@ -1020,14 +1032,30 @@ def env_conflicts(rule_list: list[Rule]) -> list[dict[str, Any]]:
     return list(found.values())
 
 
+def split_covered(rule_list: list[Any], azure: bool, aws: bool) -> tuple[list[str], list[str]]:
+    """``(covered, manual)``: the ids of the checks whose fix is in this
+    account's patch, and of those that need something a script cannot do
+    (update Claude Code, ask for access), each in the order given."""
+    covered: list[str] = []
+    manual: list[str] = []
+    for rule in rule_list:
+        (covered if effective_env(rule, azure, aws) else manual).append(rule.id)
+    return covered, manual
+
+
 def combined_for(session: Session, user: User, now: datetime | None = None) -> dict[str, Any] | None:
-    """The dashboard's "everything at once": the merged patch of all the
-    account's open checks. None with fewer than two (one notice is its own)."""
+    """The account's one patch: everything it has open, merged
+    (``combined_env``), whether that is one check or several. ``covered`` /
+    ``manual`` say which checks the patch fixes and which it cannot
+    (``split_covered``). None when nothing is open."""
     items = open_items(session, now, [user.username]).get(user.username, [])
-    if len(items) < 2:
+    if not items:
         return None
-    env = combined_env([rule for rule, _ in items], *audience_of(user))
-    return {"count": len(items), "env": env, "patch": env_snippet(env)}
+    rule_list = [rule for rule, _ in items]
+    azure, aws = audience_of(user)
+    env = combined_env(rule_list, azure, aws)
+    covered, manual = split_covered(rule_list, azure, aws)
+    return {"count": len(items), "env": env, "patch": env_snippet(env), "covered": covered, "manual": manual}
 
 
 def resolve_all(session: Session, username: str, now: datetime | None = None) -> int:
@@ -1044,13 +1072,19 @@ def resolve_all(session: Session, username: str, now: datetime | None = None) ->
 
 # ── Mail: one per account, covering everything it has open ──
 
-def render_digest(username: str, rule_list: list[Any], env: dict[str, str | None]) -> tuple[str, str]:
+def render_digest(
+    username: str, rule_list: list[Any], env: dict[str, str | None], manual: list[str] | None = None,
+) -> tuple[str, str]:
     """``(subject, html)`` of the mail to one account about the checks in
     ``rule_list`` (each needs ``id``, ``title``, ``message``,
-    ``email_subject``), with ``env`` as the one patch that covers them all.
-    Everything an admin wrote is escaped."""
+    ``email_subject``), with ``env`` as the one patch that covers them all
+    and ``manual`` the ids of those it cannot fix (``split_covered``). With
+    ``PUBLIC_BASE_URL`` set the mail links straight to the account's patch
+    download, so the fix is one click from the inbox. Everything an admin
+    wrote is escaped."""
     public_url = mailer.settings()["public_url"]
     count = len(rule_list)
+    manual = list(manual or [])
     if count == 1:
         subject = (rule_list[0].email_subject or f"[{APP_TITLE}] {rule_list[0].title}").strip()
     else:
@@ -1060,17 +1094,36 @@ def render_digest(username: str, rule_list: list[Any], env: dict[str, str | None
         f"<p>Hi {html.escape(username)},</p>",
     ]
     if count > 1:
-        parts.append(
-            f"<p>Requests from your account show {count} things to change in your Claude Code setup. "
-            + ("You can fix them all in one go with the settings at the end of this mail.</p>" if env else "</p>")
-        )
+        intro = f"Requests from your account show {count} things to change in your Claude Code setup."
+        if env and not manual:
+            intro += " One script fixes them all: see the end of this mail."
+        elif env:
+            intro += (
+                f" One script fixes {count - len(manual)} of them (see the end of this mail); "
+                f"{html.escape(', '.join(manual))} need{'s' if len(manual) == 1 else ''} something else, described below."
+            )
+        parts.append(f"<p>{intro}</p>")
     for number, rule in enumerate(rule_list, 1):
         heading = f"{number}. {rule.title}" if count > 1 else rule.title
         parts.append(f'<p style="font-size:16px;font-weight:600;margin-bottom:4px">{html.escape(heading)}</p>')
         if rule.message:
             parts.append("<p>" + html.escape(rule.message).replace("\n", "<br>") + "</p>")
+    notice = "these notices" if count > 1 else "this notice"
     if env:
-        lead = "Everything above in one block, for" if count > 1 else "Environment settings for"
+        if public_url:
+            # One click from the inbox: the same download the dashboard offers
+            # (the account's patch as it stands when the link is opened).
+            base = html.escape(f"{public_url}/dashboard/client-rules/all/patch", quote=True)
+            parts.append(
+                '<p style="font-size:16px;font-weight:600;margin-bottom:4px">The quickest fix: one script</p>'
+                "<p>Download it, run it and restart Claude Code: "
+                f'<a href="{base}.bat">Windows (.bat)</a> &middot; <a href="{base}.sh">Linux (.sh)</a>. '
+                "It sets only the variables listed below, leaves the rest of the file alone and keeps a backup. "
+                "You may be asked to sign in first.</p>"
+            )
+            lead = "Or by hand: everything in one block, for" if count > 1 else "Or by hand: the environment settings for"
+        else:
+            lead = "Everything above in one block, for" if count > 1 else "Environment settings for"
         parts.append(
             f"<p>{lead} <code>~/.claude/settings.json</code>:</p>"
             '<pre style="background:#f4f4f4;padding:10px;border-radius:4px;font-size:13px">'
@@ -1078,10 +1131,8 @@ def render_digest(username: str, rule_list: list[Any], env: dict[str, str | None
         )
     if public_url:
         link = html.escape(f"{public_url}/dashboard", quote=True)
-        notice = "these notices" if count > 1 else "this notice"
-        what = (f"see {notice}, download one script that applies the settings for you (Windows or Linux) "
-                "and mark them as done") if env else f"see {notice} and mark them as done"
-        parts.append(f'<p><a href="{link}">Open your dashboard</a> to {what}.</p>')
+        done = "them" if count > 1 else "it"
+        parts.append(f'<p><a href="{link}">Open your dashboard</a> to see {notice} and mark {done} as done.</p>')
     references = ", ".join(html.escape(rule.id) for rule in rule_list)
     # The sender is a system mailbox nobody reads: say so, and say where
     # help is when the admin has set a support link.
@@ -1115,6 +1166,22 @@ def _support_url(public_url: str) -> str:
 def render_mail(rule: Any, username: str, env: dict[str, str | None]) -> tuple[str, str]:
     """The mail about one check alone (the admin's test mail)."""
     return render_digest(username, [rule], env)
+
+
+def render_digest_preview(session: Session, username: str, audience: str = "local") -> tuple[str, str, list[str]]:
+    """``(subject, html, rule ids)`` of the mail an account of ``audience``
+    would get with every check open that can mail (enabled, not deprecated),
+    as saved: the admin's test of the mail about several things at once,
+    with the one merged patch. Raises ValueError for an unknown audience or
+    when no check is on."""
+    azure, aws = audience_flags(audience)
+    rule_list = [rule for rule in rules(session) if rule.enabled and not rule.deprecated]
+    if not rule_list:
+        raise ValueError("No rule is on, so there is nothing to mail.")
+    subject, body = render_digest(
+        username, rule_list, combined_env(rule_list, azure, aws), split_covered(rule_list, azure, aws)[1],
+    )
+    return subject, body, [rule.id for rule in rule_list]
 
 
 def mailable(session: Session, rows: list[ClientViolation]) -> list[ClientViolation]:
@@ -1221,7 +1288,10 @@ def _send_digests(
         if user is None or not items:
             continue
         rule_list = [rule for rule, _ in items]
-        subject, body = render_digest(username, rule_list, combined_env(rule_list, *audience_of(user)))
+        azure, aws = audience_of(user)
+        subject, body = render_digest(
+            username, rule_list, combined_env(rule_list, azure, aws), split_covered(rule_list, azure, aws)[1],
+        )
         jobs.append((
             username, [row.id for _, row in items], items[0][1].mail_attempted_at, subject, body,
             [rule.id for rule in rule_list],

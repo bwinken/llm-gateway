@@ -179,6 +179,11 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `POST` | `/dashboard/refresh-key` | 重新產生自己的 API key（`schema.issue_api_key`：256 bits 的 key，並重設發放／最後使用時間），回傳 JSON `{ok, api_key}` |
 | `POST` | `/dashboard/app/{app_id}/refresh-key` | 重新產生所屬 App 帳號的 API key（需為 owner，否則 403） |
 | `GET` | `/dashboard/install-claude-code.bat` | 下載 Windows Claude Code 安裝檔：`setup/install-claude-code.bat` 中的 `__USER_API_KEY__` 換成呼叫者的 key，換行統一為 CRLF（範本不存在時回 404） |
+| `GET` | `/dashboard/client-notices` | 只回 dashboard 的 client rule 通知面板（`_client_notices.html`；沒有未處理項目時為空）。按下 *I've applied it* 後頁面會換上這一段 |
+| `GET` | `/dashboard/client-rules/all/patch.{bat,sh}` | 帳號唯一的設定 patch：所有未處理項目合併成一份（`client_rules.combined_for`），沒有各 check 自己的下載。沒有可套用的內容時回 404（瀏覽器會被導回 `/dashboard`：信件連結指向這裡） |
+| `POST` | `/dashboard/client-rules/{rule_id}/resolved` | *I've applied it*：隱藏這則通知，直到 gateway 再次看到同樣問題。帶 `Accept: application/json` 時回 JSON |
+| `POST` | `/dashboard/client-rules/all/resolved` | *I've applied everything*：對所有未處理通知做同樣的事 |
+| `GET` | `/dashboard/api-key/patch.{bat,sh}` | 把呼叫者自己的 key 做成設定 patch：設定 `ANTHROPIC_AUTH_TOKEN`、移除 `ANTHROPIC_API_KEY`（`client_rules.key_env`）。Regenerate 之後執行。`Cache-Control: no-store`，會記入 audit log |
 | `GET` | `/setup` | Claude Code 安裝說明頁 |
 
 ### Dashboard 資料來源
@@ -224,6 +229,30 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `POST` | `/admin/concurrency-limit` | 表單欄位 `mode`（`off` / `monitor` / `enforce`）+ `limit`（≥ 1 的整數）。JSON |
 | `POST` | `/admin/site-links` | 表單 `support_bot_url`、`install_guide_url` → `[app]`；只接受 `http(s)://` 或站內相對路徑（否則 400）；空白則隱藏該元素 |
 | `GET` | `/admin/models` | 模型設定頁面（SPA，透過 API 載入資料） |
+
+### Users 面板、client rules、IP allowlist、guardrail
+
+行為說明見 [docs/architecture.md](../../docs/architecture.md)（Admin Users tab、Client rules、API IP allowlist、Guardrail）。表單端點帶 `Accept: application/json` 時回 JSON。
+
+| Method | Path | 說明 |
+|---|---|---|
+| `GET` | `/admin/user-table` | Users 分頁的單一面板（`kind=users\|apps`），以 HTML 片段回傳（`_admin_user_table.html`），`q` / `sort` / `status` / 分頁參數與 `/admin` 相同 |
+| `POST` | `/admin/client-rules/{rule_id}` | 儲存某個 check 的設定：開關、動作、文案、patch、寄信。偵測條件寫在程式裡，不可編輯 |
+| `POST` | `/admin/client-rules/{rule_id}/reset` | 回到程式內的預設值；已記錄的違規保留 |
+| `POST` | `/admin/client-rules/{rule_id}/mail` | 把該 check 的帳號排入寄信佇列（`only_unmailed=on\|off`）；回應後先寄第一批，其餘由寄信 job 分批寄出 |
+| `POST` | `/admin/client-rules/mail-all` | 把任何 check 下有未處理項目的帳號全部排入佇列 |
+| `POST` | `/admin/client-rules/{rule_id}/mail-test` | 把該 check 目前表單內容的信寄到一個公司信箱（`to`、`audience`） |
+| `POST` | `/admin/client-rules/mail-test-all` | 把合併信（所有開啟中的 check、一份合併 patch）寄到一個公司信箱 |
+| `POST` | `/admin/client-rules/monthly-mail` | 開關每月提醒（`[app].client_rules_monthly_mail`） |
+| `GET` | `/admin/client-rules/mail-log` | 寄信紀錄的一頁，JSON（`status=sent\|failed\|test`、`q`、`page`） |
+| `GET` | `/admin/client-rules/{rule_id}/patch.{bat,sh}` | 預覽某類帳號會下載的 patch 腳本（`?audience=local\|azure\|aws`） |
+| `POST` | `/admin/ip-allowlist` | 儲存 allowlist 模式（`off` / `monitor` / `enforce`） |
+| `POST` | `/admin/ip-allowlist/rules` | 新增規則：位址或 CIDR、對象（`usernames`、`org_codes`；都空 = 所有人）、可選的開始與結束時間 |
+| `POST` | `/admin/ip-allowlist/rules/{rule_id}/who` | 修改規則適用的對象 |
+| `POST` | `/admin/ip-allowlist/rules/{rule_id}/end` | 立即結束規則 |
+| `POST` | `/admin/guardrail` | 儲存 `[guardrail]` 區段 |
+| `POST` | `/admin/guardrail/test` | 測試與 guard 模型的連線（唯讀探測，不記入 audit） |
+| `POST` | `/admin/api/test-model` | Model Config 的 *Test connection*：`GET base_url/models` 並確認有提供 `real_model`（不記入 audit） |
 
 ### Admin REST API（JWT 認證，需 admin scope）
 

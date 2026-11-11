@@ -49,6 +49,7 @@ The budget hero stays at the top; the lower half is split into two tabs (**Model
 |---|---|---|
 | **Header** | — | "Set up Claude Code" link (→ `/setup`) and **My API Key** button (opens the key modal) |
 | **Get started** | — | Shown while the account has no requests this month; links to `/setup` |
+| **Action needed** | — | Client-rule notices for this account (`_client_notices.html`), only while it has something open. Leads with **one** patch download (`.bat` / `.sh`) that fixes everything a script can fix, says which notices it does not cover, and offers *I've applied everything* with two or more notices. Each row explains one notice, shows its variables for doing it by hand and has *I've applied it*; no row has a download of its own |
 | **Please regenerate your API key** | — | Shown when the user's key, or a key of an app they own, predates the current 256-bit format (`schema.is_legacy_api_key`). Asks them to regenerate when they can update their clients; nothing is forced, the old key keeps working. Removed in place once the user regenerates their own key |
 | **Spent today (budget hero)** | — | Today's cost vs `daily_limit_usd`, Remaining, time until the reset (local midnight), and a color-banded progress bar (ok < 70 % · warn < 90 % · crit < 100 % · over). `daily_limit_usd = 0` shows "No daily budget on this account". When the user may use a cloud backend (admins always), a split row shows **On-prem / Azure / AWS Bedrock** columns — only for the backends the user can use — plus a **Cloud (Azure + AWS)** row with today's combined cloud spend against the user's cloud cap (`deps.effective_cloud_limit`; hidden when there is no cap) |
 | **This month** | — | Monthly cost, requests, tokens in / out (with today's figures) |
@@ -71,6 +72,9 @@ The budget hero stays at the top; the lower half is split into two tabs (**Model
 | Copy App Key | Button | Copy app account's full API key |
 | Cost by Model refresh | `GET /dashboard/api/model-breakdown?period=` | JSON for the Cost by Model card (`month` or `day`) |
 | Download installer | `GET /dashboard/install-claude-code.bat` | Personalized Claude Code installer (linked from `/setup`) |
+| Download settings patch | `GET /dashboard/client-rules/all/patch.{bat,sh}` | One script for everything the account has open (the mail links to the same URL) |
+| I've applied it / everything | `POST /dashboard/client-rules/{id}/resolved` · `/all/resolved` | Hides the notice(s); the panel is then re-rendered from `GET /dashboard/client-notices` |
+| Download key patch | `GET /dashboard/api-key/patch.{bat,sh}` | From the key modal: sets `ANTHROPIC_AUTH_TOKEN` to the current key and removes `ANTHROPIC_API_KEY`. The modal points at it after *Regenerate* |
 
 ---
 
@@ -99,7 +103,7 @@ Above the tab bar: only the **Needs attention** strip, a `<details>` that is one
 | **Cloud Budget Fallback** | Settings | Checkbox → `POST /admin/cloud-budget-fallback`. When on, a `/v1/*` cloud request over the cloud cap is served on-prem instead of a 429 (the overall daily limit still applies; `/azure/v1/*` and `/aws/v1/*` never fall back) |
 | **Create App Account** | Users | Username (auto-prefixed with `app_`), Daily Limit, Owner → `POST /admin/users/create`. App accounts are created concurrency-waived |
 | **Site Links** | Settings | Support Bot URL (floating button on every page) and Install Guide URL (card on `/setup`) → `POST /admin/site-links`. Only `http(s)://` or site-relative URLs; empty hides the element |
-| **Client rules** | Clients | Settings and violators of the built-in checks (`client_checks.py`, CC001…), Claude Code versions in use, the mail log (every mail tried: address, rules, why, sent or failed; filter, search, paging), deprecated / retired checks; see Client rules in `docs/architecture.md`. |
+| **Client rules** | Clients | Settings and violators of the built-in checks (`client_checks.py`, CC001…), Claude Code versions in use, *Mail everyone* and *Test the combined mail* (every rule that is on in one mail with one merged patch), the mail log (every mail tried: address, rules, why, sent or failed; filter, search, paging), deprecated / retired checks; see Client rules in `docs/architecture.md`. |
 | **IP Allowlist** | Security | Mode and rules of the API IP allowlist; see `docs/architecture.md`. |
 | **Guardrail** | Security | Qwen3Guard-Gen prompt screening: policy and test connection; see `docs/architecture.md`. |
 | **Audit Log** | Security | The newest 20 entries of `audit_log` (time in Asia/Taipei, who and from which address, method + route, status, a one-line summary of target and submitted fields) and **Download CSV (last 365 days)** (`GET /admin/api/export/audit-log.csv`). Every write under `/admin` and `/dashboard`, every full key shown and every export is recorded; secrets are redacted |
@@ -212,6 +216,14 @@ Shared framework for all pages:
 ### `_admin_tabs.html` — Admin Tab Bar
 
 Included by `admin.html` (`on_admin_page = true`: Overview / Users / Clients / Security / Settings are `data-tab` buttons) and `admin_models.html` (`on_admin_page = false`: they are links to `/admin#<tab>`). The last tab, **Models**, is always a link to `/admin/models`.
+
+### Partials
+
+| File | Used by | What it is |
+|---|---|---|
+| `_client_notices.html` | `dashboard.html`; alone from `GET /dashboard/client-notices` | The *Action needed* panel. Change the notices here, not in `dashboard.html` |
+| `_admin_user_table.html` | `admin.html`; alone from `GET /admin/user-table` | The Users / Apps tables with one row macro: change a column here, not in two copies |
+| `_admin_macros.html` | `admin.html`, `_admin_user_table.html` | Jinja macros shared by the admin page and its partials |
 
 ### Auth Flow
 

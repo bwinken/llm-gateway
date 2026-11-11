@@ -340,8 +340,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "if(-not $s.ContainsKey('env')){$s['env']=@{}};" ^
   "$e=$s['env'];" ^
   "$e['ANTHROPIC_BASE_URL']='%GATEWAY_URL%';" ^
-  "$e['ANTHROPIC_API_KEY']='%API_KEY%';" ^
   "$e['ANTHROPIC_AUTH_TOKEN']='%API_KEY%';" ^
+  "$e.Remove('ANTHROPIC_API_KEY');" ^
   "$e['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1';" ^
   "if('%ENABLE_MODEL_DISCOVERY%' -eq '1'){$e['CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY']='1'}else{$e.Remove('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY')};" ^
   "if('%DISABLE_TELEMETRY%' -eq '1'){$e['DISABLE_TELEMETRY']='1'};" ^
@@ -381,7 +381,7 @@ if defined API_KEY if not "%API_KEY%"=="__USER_API_KEY__" (
 echo.
 echo    Settings written to %USERPROFILE%\.claude\settings.json
 echo      ANTHROPIC_BASE_URL        = %GATEWAY_URL%
-echo      ANTHROPIC_API_KEY         = %API_KEY_MASKED%
+echo      ANTHROPIC_AUTH_TOKEN      = %API_KEY_MASKED%
 if "%ENABLE_MODEL_DISCOVERY%"=="1" (
     echo      GATEWAY_MODEL_DISCOVERY   = enabled
 ) else (

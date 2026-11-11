@@ -632,6 +632,23 @@ function submitExportCsv() {
             <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5" {{ 'disabled' if not cr.mail_all.open }}>Mail all {{ cr.mail_all.open }}</button>
         </form>
     </div>
+    {# The mail about several rules at once, to one address: every rule that is on, one merged patch. #}
+    <form action="/admin/client-rules/mail-test-all" method="POST" onsubmit="return false" id="client-rules-mail-test-all"
+          class="flex flex-wrap items-center gap-2 mb-4 p-3 rounded" style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06)">
+        <span class="text-sm font-semibold text-t2 mr-1">Test the combined mail</span>
+        <span class="text-xs text-t3 gw-tip gw-tip-wide"
+              data-tip="What an account gets when it has several rules open: here, every rule that is on (as saved), listed in one mail with one merged settings patch. A rule's own test mail shows that rule alone.">One mail listing every rule that is on, with the merged patch.</span>
+        <span class="ml-auto flex flex-wrap items-center gap-2">
+            <label class="text-xs text-t4">to</label>
+            <input type="text" name="to" value="{{ cr.my_address }}" aria-label="Combined test mail address" class="gw-input w-56 text-xs font-mono py-1.5 px-2">
+            <label class="text-xs text-t4">as</label>
+            <select name="audience" aria-label="Combined test mail audience" class="gw-input text-xs py-1.5 px-2">
+                <option value="local">local-only account</option><option value="azure">Azure account</option><option value="aws">AWS account</option>
+            </select>
+            <button type="button" data-cr-test="/admin/client-rules/mail-test-all" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5">Send test mail</button>
+            <span data-cr-test-result class="text-xs font-mono text-t4"></span>
+        </span>
+    </form>
     {% endif %}
 
     {% if cr.baseline %}
@@ -1382,6 +1399,10 @@ function submitExportCsv() {
                 <label for="modalKeyValue" class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-2">API Key</label>
                 <input id="modalKeyValue" type="text" readonly class="gw-input w-full px-3 py-2.5 font-mono text-sm select-all">
                 <div id="modalCopyFeedback" class="text-xs text-ag font-medium mt-1.5 h-4" aria-live="polite"></div>
+                <p class="text-xs text-t4 mt-2">
+                    Accounts normally regenerate their own key on their dashboard (<b>My API Key</b>), which then offers a
+                    script that sets the new key in Claude Code. Regenerating here stops the account's clients at once.
+                </p>
             </div>
             <div class="flex items-center justify-between px-6 py-4 bg-n1 rounded-b-2xl" style="border-top:1px solid rgba(255,255,255,0.04)">
                 <button type="button" onclick="refreshKey()" id="modalRefreshBtn" class="gw-btn gw-btn-warn text-sm px-4 py-2">
@@ -1901,10 +1922,11 @@ function submitExportCsv() {
             btn.disabled = true;
             out.className = 'text-xs font-mono text-t4';
             out.textContent = 'Sending…';
-            gwPost(form.getAttribute('action') + '/mail-test', formData(form))
+            // A rule's own button posts its form as it stands; the combined one names its URL.
+            gwPost(btn.getAttribute('data-cr-test') || form.getAttribute('action') + '/mail-test', formData(form))
                 .then(function(r) {
                     out.className = 'text-xs font-mono ' + (r.ok ? 'text-ag' : 'text-ar');
-                    out.textContent = r.ok ? 'Sent to ' + r.to : 'Failed — ' + r.detail;
+                    out.textContent = r.ok ? 'Sent to ' + r.to + (r.rules ? ' (' + r.rules.join(', ') + ')' : '') : 'Failed — ' + r.detail;
                 })
                 .catch(function(err) {
                     out.className = 'text-xs font-mono text-ar';
