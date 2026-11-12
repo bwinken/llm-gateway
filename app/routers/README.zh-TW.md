@@ -39,7 +39,7 @@ graph LR
 
 **認證**：`deps.get_current_user`（API key + daily limit 檢查）。`chat/completions`、`responses`、`messages` 改用 `deps.limited_current_user`（相同檢查，另外佔一個並行名額）；`/v1/me` 用 `deps.get_current_user_unmetered`（不做每日額度 429）。
 
-`v1_api.py` 是主要的公開入口。預設走 vLLM 後端；當請求的 `model` alias 設定在雲端後端、且 caller 有權使用時（admin 兩個旗標都免檢查），會 dispatch 到該雲端後端：
+`v1_api.py` 是主要的公開入口。預設走 vLLM 後端；當請求的 `model` alias 設定在雲端後端、且 caller 有權使用時（看帳號的 `can_use_azure` / `can_use_bedrock` 旗標），會 dispatch 到該雲端後端：
 
 - **Azure**：alias 在 `[azure_models.*]` + `can_use_azure` → chat / responses / messages / count_tokens。
 - **Bedrock**：alias 在 `[bedrock_models.*]` + `can_use_bedrock` → chat / messages / count_tokens。
@@ -50,7 +50,7 @@ graph LR
 
 | 方法 | 路徑 | 說明 | Proxy 方式 | 允許類型 |
 |---|---|---|---|---|
-| `GET` | `/v1/models`、`/models` | 列出模型(僅 LLM/VLM,`hidden` 的不列)。有 `can_use_azure` 的使用者會多看到 Azure 別名,有 `can_use_bedrock` 的會多看到 Bedrock 別名(admin 自動 bypass) | 直接回傳 | `llm`, `vlm` |
+| `GET` | `/v1/models`、`/models` | 列出模型(僅 LLM/VLM,`hidden` 的不列)。有 `can_use_azure` 的使用者會多看到 Azure 別名,有 `can_use_bedrock` 的會多看到 Bedrock 別名 | 直接回傳 | `llm`, `vlm` |
 | `GET` | `/v1/me`、`/me` | 呼叫者的權限(地端 / Azure / AWS)與各後端今日額度。驗證時不做每日額度 429，額度用完也能查 | 直接回傳 | — |
 | `GET` | `/v1/status` | 呼叫者看得到的模型與 `state`(地端 `up` / `down`,雲端 `unchecked`)、負載、計費價格(`model_catalog.visible_models`)。驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
 | `GET` | `/v1/usage` | 呼叫者每個本地日的用量(`?days=`,1 到 90,預設 7)以及今天、本月各模型用量,經 `usage_rollup.aggregate` 讀取。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
@@ -72,8 +72,8 @@ graph LR
 helper `_peek_model_alias` + `_route_to_azure` + `_route_to_bedrock` 決定路由：
 
 ```
-alias 在 AZURE_MODELS   且 (can_use_azure 或 is_admin)   → Azure 路徑   (chat、responses、messages、count_tokens)
-alias 在 BEDROCK_MODELS 且 (can_use_bedrock 或 is_admin) → Bedrock 路徑 (chat、messages、count_tokens)
+alias 在 AZURE_MODELS   且 can_use_azure   → Azure 路徑   (chat、responses、messages、count_tokens)
+alias 在 BEDROCK_MODELS 且 can_use_bedrock → Bedrock 路徑 (chat、messages、count_tokens)
 alias 在 AZURE_MODELS / BEDROCK_MODELS 但無權限          → vLLM 路徑(透過 _resolve_model 靜默 fallback)
 其他                                                     → vLLM 路徑
 ```
@@ -82,7 +82,7 @@ alias 在 AZURE_MODELS / BEDROCK_MODELS 但無權限          → vLLM 路徑(�
 
 要送往雲端的請求（含 count_tokens）接著會經過 `_cloud_budget_gate`（每日雲端上限，Azure + Bedrock 合計）。用完時預設回 429；若開啟 `[app].cloud_budget_fallback = true`（admin panel → Cloud Budget Fallback），請求改走 vLLM 路徑，回應帶 `X-Budget-Fallback` header。整體每日額度仍在認證階段檢查，所以各處額度都用完的使用者無論如何都會收到一般的 429；`/azure/v1/*` 與 `/aws/v1/*` 一律不 fallback。
 
-**並行上限**：`chat_completions`、`responses`、`messages`（以及 `/azure/v1/*`、`/aws/v1/*` 對應的路由）改用 `deps.limited_current_user` / `limited_azure_access` / `limited_bedrock_access` 做認證。這些 dependency 會在 `concurrency_leases` 佔一筆租約，直到回應（含 stream）送完才歸還；模式為 `enforce` 時，已經有 `[app].concurrency_limit` 個 request 在跑的帳號會收到 429（admin panel → Concurrency Limit 設定；admin 與被 waive 的帳號不受限）。`count_tokens`、`tokenize`、`render`、`models`、embeddings、rerank、systemone 不計入。詳見 `app/services/concurrency.py`。
+**並行上限**：`chat_completions`、`responses`、`messages`（以及 `/azure/v1/*`、`/aws/v1/*` 對應的路由）改用 `deps.limited_current_user` / `limited_azure_access` / `limited_bedrock_access` 做認證。這些 dependency 會在 `concurrency_leases` 佔一筆租約，直到回應（含 stream）送完才歸還；模式為 `enforce` 時，已經有 `[app].concurrency_limit` 個 request 在跑的帳號會收到 429（admin panel → Concurrency Limit 設定；被 waive 的帳號不受限）。`count_tokens`、`tokenize`、`render`、`models`、embeddings、rerank、systemone 不計入。詳見 `app/services/concurrency.py`。
 
 「沒旗標的 user 打雲端 alias → fallback 到 vLLM」這個分支沿用 gateway 一向「對未知 alias 寬容」的設計。雲端後端的存在感是透過 per-user `/v1/models` 過濾隱藏，而不是用 404 在請求時擋。`MODEL_ROUTING`、`AZURE_MODELS`、`BEDROCK_MODELS` 不能有同名 alias — `_build_config` 啟動時會 `ValueError`，`PUT /admin/api/config` 也會在寫入前拒絕重複。
 
@@ -116,7 +116,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 ## `azure_api.py` — Azure OpenAI 相容
 
-**認證**：`deps.require_azure_access`（包裝 `get_current_user`，額外檢查 `user.can_use_azure` — admin 免檢查 — 與每日雲端上限）— 與 `/v1/*` 共用同一把 gateway API key 與 daily limit，另外多了使用者層級的 Azure 存取旗標。`chat/completions`、`responses`、`messages` 改走 `deps.limited_azure_access`（相同檢查，另外佔一個並行名額）。
+**認證**：`deps.require_azure_access`（包裝 `get_current_user`，額外檢查 `user.can_use_azure` 與每日雲端上限）— 與 `/v1/*` 共用同一把 gateway API key 與 daily limit，另外多了使用者層級的 Azure 存取旗標。`chat/completions`、`responses`、`messages` 改走 `deps.limited_azure_access`（相同檢查，另外佔一個並行名額）。
 
 使用同一把客戶端 API key、同一份 usage log、同一套觀測。差異只在於下游 URL/Header 慣例，由 `services/azure_proxy.py` 處理。Azure 部署在 `config.toml` 的 `[azure_models.<alias>]` 設定。沒有 `can_use_azure`（且非 admin）的使用者會收到 403 `"Azure access not granted. Contact your administrator."`；雲端上限用完回 429（這個前綴不會 fallback 到地端）。
 
@@ -145,7 +145,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 ## `aws_api.py` — AWS Bedrock 相容
 
-**認證**：`deps.require_bedrock_access`（包裝 `get_current_user`，額外檢查 `user.can_use_bedrock` — admin 免檢查 — 與每日雲端上限）。`chat/completions`、`messages` 改走 `deps.limited_bedrock_access`（相同檢查，另外佔一個並行名額）。
+**認證**：`deps.require_bedrock_access`（包裝 `get_current_user`，額外檢查 `user.can_use_bedrock` 與每日雲端上限）。`chat/completions`、`messages` 改走 `deps.limited_bedrock_access`（相同檢查，另外佔一個並行名額）。
 
 命名分歧：URL 前綴是 **`/aws`**，但設定、旗標與 backend 標籤都叫 **`bedrock`**（`[bedrock_models.<alias>]`、`can_use_bedrock`、`usage_logs.backend = "bedrock"`）。沒有 `can_use_bedrock`（且非 admin）的使用者會收到 403 `"Bedrock access not granted. Contact your administrator."`；雲端上限用完回 429（這個前綴不會 fallback 到地端）。下游處理在 `services/bedrock_proxy.py`。
 
@@ -262,9 +262,9 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 | 方法 | 路徑 | 說明 |
 |---|---|---|
-| `GET` | `/admin/users` | 列出所有使用者（遮罩後的 `api_key`、`daily_limit_usd`、`cloud_daily_limit_usd`、`is_admin`、`concurrency_waived`、`owner_ids`、`display_name`、`org_code`） |
-| `POST` | `/admin/users` | 建立使用者（JSON body：`username`、`daily_limit_usd`、`cloud_daily_limit_usd` — `null` 表示依預設值、`is_admin`、`concurrency_waived` — 必須是 JSON boolean，`app_*` 帳號預設為 true、`owner_ids`）。username 重複回 409；回應含完整 `api_key` |
-| `PATCH` | `/admin/users/{id}` | 更新使用者（`daily_limit_usd`、`cloud_daily_limit_usd`、`is_admin`、`owner_ids` — 整份替換 owner 清單、`concurrency_waived` — 必須是 JSON boolean） |
+| `GET` | `/admin/users` | 列出所有使用者（遮罩後的 `api_key`、`daily_limit_usd`、`cloud_daily_limit_usd`、`concurrency_waived`、`owner_ids`、`display_name`、`org_code`） |
+| `POST` | `/admin/users` | 建立使用者（JSON body：`username`、`daily_limit_usd`、`cloud_daily_limit_usd` — `null` 表示依預設值、`concurrency_waived` — 必須是 JSON boolean，`app_*` 帳號預設為 true、`owner_ids`）。username 重複回 409；回應含完整 `api_key` |
+| `PATCH` | `/admin/users/{id}` | 更新使用者（`daily_limit_usd`、`cloud_daily_limit_usd`、`owner_ids` — 整份替換 owner 清單、`concurrency_waived` — 必須是 JSON boolean） |
 | `GET` | `/admin/api/anomalies` | gateway 每小時異常掃描（`app/services/anomaly_scan.py`）寫入的異常紀錄（`?status=new` 為預設，或 `acknowledged`、`resolved`、`all`；`?limit=50`，上限 200） |
 | `POST` | `/admin/api/anomalies/{id}/ack` | 將異常標為 `acknowledged` |
 | `POST` | `/admin/api/anomalies/{id}/resolve` | 將異常標為 `resolved` |

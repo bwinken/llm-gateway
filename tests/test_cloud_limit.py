@@ -298,8 +298,9 @@ class TestAdmin:
         # Rendered but hidden without cloud access: granting Azure / AWS in
         # place reveals it without a reload.
         assert "hidden" in cloud_form(onprem.id)
-        # Admins reach the cloud regardless of the toggles, so they get the field.
-        assert "hidden" not in cloud_form(admin_user.id)
+        # The stored is_admin is retired: without a cloud flag of its own,
+        # that account's field is hidden like anyone else's.
+        assert "hidden" in cloud_form(admin_user.id)
         assert "30 (default)" in body
         for kind in ("azure", "bedrock"):
             assert f'/admin/users/{test_user.id}/{kind}-limit"' not in body

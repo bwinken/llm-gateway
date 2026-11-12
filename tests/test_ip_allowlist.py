@@ -434,15 +434,16 @@ class TestSpecialAccess:
 
         self._seed(db_session)
         summary = {s["key"]: (s["users"], s["apps"]) for s in _special_access_summary(db_session)}
-        # admin_user (is_admin) and the conftest test_user (Azure + AWS) are users too.
-        assert summary["admin"] == (1, 0)
+        # The conftest test_user (Azure + AWS) is a user too. admin_user's
+        # stored is_admin is retired: no chip, and not "special" by itself.
+        assert "admin" not in summary
         assert summary["azure"] == (2, 0)
         assert summary["bedrock"] == (2, 1)
         assert summary["cloud_cap"] == (1, 0)
         assert summary["waiver_changed"] == (1, 1)  # carol waived; app_limited un-waived
         assert summary["disabled"] == (1, 0)
-        # Any special access: admin, testuser, alice, bob, carol / app_limited. Not dave, plain, app_batch.
-        assert summary["special"] == (5, 1)
+        # Any special access: testuser, alice, bob, carol / app_limited. Not admin, dave, plain, app_batch.
+        assert summary["special"] == (4, 1)
 
     def test_filters_list_the_accounts(self, client, db_session, admin_user):
         self._seed(db_session)
@@ -454,7 +455,9 @@ class TestSpecialAccess:
             return sorted(n for n in everyone if f'data-username="{n}"' in body)
 
         assert names("users", "bedrock") == ["alice", "testuser"]
-        assert names("users", "special") == ["admin", "alice", "bob", "carol", "testuser"]
+        assert names("users", "special") == ["alice", "bob", "carol", "testuser"]
+        # An unknown filter (the retired "admin" included) lists everyone.
+        assert "plain" in names("users", "admin")
         assert names("apps", "special") == ["app_limited"]
         assert names("apps", "waiver_changed") == ["app_limited"]
         assert names("users", "cloud_cap") == ["bob"]

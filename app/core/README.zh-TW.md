@@ -136,7 +136,7 @@ router = APIRouter(dependencies=[Security(get_web_user, scopes=["admin"])])
 **重要行為：**
 - 第一次登入的使用者會自動建立（auto-provision），同時從 JWT 存入 `display_name` 和 `org_code`（JWT 的 `org_id`，否則 `org_code`）
 - 後續登入時若 IdP 的 `display_name` 或 `org_code` 有變更，會自動同步更新到 DB
-- 回傳的 `User` 已從 session 中 **expunge**，`is_admin` 是根據 JWT scope 動態設定，不會寫回 DB
+- 回傳的 `User` 已從 session 中 **expunge**，上面的 `is_admin` 是依這次請求的 JWT scope 設定的。資料庫的 `users.is_admin` 欄位已退役，在任何地方都不再給予權限
 - `"admin"` scope 自動滿足任何 scope 需求（admin 可以存取 read 頁面）
 - 測試時 `_decode_jwt` 會被 patch 為 HS256 驗證
 
@@ -150,9 +150,9 @@ FastAPI dependency：驗證 API key、檢查每日額度與雲端上限，並佔
 
 | 函式 | 回傳 | 說明 |
 |---|---|---|
-| `get_current_user(request, credentials, x_api_key)` | `User` | 驗證 API key（`Authorization: Bearer` 或 `x-api-key`；兩者都送時逐一嘗試）、套用 API IP 白名單（`ip_allowlist.check`）+ 檢查每日額度。若 `user.is_disabled` 則丟出 `AccountDisabledError`（admin 免檢查） |
+| `get_current_user(request, credentials, x_api_key)` | `User` | 驗證 API key（`Authorization: Bearer` 或 `x-api-key`；兩者都送時逐一嘗試）、套用 API IP 白名單（`ip_allowlist.check`）+ 檢查每日額度。若 `user.is_disabled` 則丟出 `AccountDisabledError`（沒有例外：API key 不帶 admin 權限），並清掉 `user.is_admin`（已退役的資料庫旗標） |
 | `get_current_user_unmetered(request, credentials, x_api_key)` | `User` | 相同認證（含 IP 白名單）但不檢查每日額度。供 `GET /v1/me` 使用，額度用完時仍須回應 |
-| `require_azure_access(user)` | `User` | 包裝 `get_current_user`；若 `not user.can_use_azure and not user.is_admin` 則回 403，再呼叫 `ensure_azure_budget`。`/azure/v1/*` 使用 |
+| `require_azure_access(user)` | `User` | 包裝 `get_current_user`；若 `not user.can_use_azure` 則回 403，再呼叫 `ensure_azure_budget`。`/azure/v1/*` 使用 |
 | `require_bedrock_access(user)` | `User` | 同上，檢查 `can_use_bedrock` + `ensure_bedrock_budget`。`/aws/v1/*` 使用 |
 | `limited_current_user` / `limited_azure_access` / `limited_bedrock_access` | `User`（yield） | 以 `_limited` 包裝上面三個 dependency，持有併發 lease 直到回應（含串流）送完。僅用於推論端點（chat / responses / messages） |
 | `_concurrency_slot(user, endpoint)` | async context manager | `off`、admin 與 `concurrency_waived` 使用者：不做事。`monitor`：超量只記錄。`enforce`：回 429 並帶 `Retry-After: 5`。lease 儲存失敗時 **fail open**。釋放時以 shield 防止被取消 |
@@ -303,5 +303,5 @@ SSO cookie 的 `SameSite=lax` 單獨不夠：同網域底下的其他子網站�
 | **查詢對象** | DB `users.api_key` 欄位 | JWT `sub` claim → DB `users.username` |
 | **DB session** | 自己的短期 session | `Depends(get_session)` |
 | **額度檢查** | 每次請求檢查 `daily_limit_usd`（`get_current_user_unmetered` 除外），雲端路由檢查雲端上限，推論端點檢查併發 | 不檢查（Web UI 僅查看） |
-| **Admin 判斷** | DB `users.is_admin`（略過 Azure/Bedrock 權限旗標、併發限制、停用旗標） | `"admin" in scopes`（JWT scope） |
+| **Admin 判斷** | 無：API key 不帶 admin 權限（資料庫的 `users.is_admin` 已退役） | `"admin" in scopes`（JWT scope） |
 | **自動建立帳號** | 否（key 不存在回 401） | 是（首次登入自動 provision） |

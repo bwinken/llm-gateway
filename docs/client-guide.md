@@ -123,6 +123,7 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 - A request is refused only once `used_usd` reaches the limit, so the last request of the day can overshoot it slightly.
 - `enforced: false` means the gateway only logs overages instead of returning 429.
 - `cloud_budget_fallback: true` means a `/v1/*` request for a cloud model whose cap is spent is answered by an on-prem model instead of a 429.
+- `is_admin` is always `false`: an API key carries no admin right (administrators are recognized by their sign-in on the web UI). The field stays for clients built against it.
 - `legacy_key: true` means your key is of an older, weaker format; regenerate it on the dashboard when convenient. The key itself is never returned by any endpoint.
 - `concurrency.limit` is how many requests your key may have in flight at once. With `"mode": "off"` there is no limit and `limit` is left out.
 

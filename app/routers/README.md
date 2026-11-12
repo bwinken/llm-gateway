@@ -40,7 +40,7 @@ graph LR
 
 **Auth**: `deps.get_current_user` (API key + daily limit check). `chat/completions`, `responses` and `messages` use `deps.limited_current_user` (same check plus a concurrency slot); `/v1/me` uses `deps.get_current_user_unmetered` (no daily-limit 429).
 
-`v1_api.py` is the main public entry. It serves the vLLM backend by default, and dispatches to a cloud backend when the requested `model` alias is configured there and the caller may use it (admins bypass both flags):
+`v1_api.py` is the main public entry. It serves the vLLM backend by default, and dispatches to a cloud backend when the requested `model` alias is configured there and the caller may use it (the account's `can_use_azure` / `can_use_bedrock` flag):
 
 - **Azure**: alias under `[azure_models.*]` + `can_use_azure` → chat / responses / messages / count_tokens.
 - **Bedrock**: alias under `[bedrock_models.*]` + `can_use_bedrock` → chat / messages / count_tokens.
@@ -51,7 +51,7 @@ One base URL surfaces every backend to clients like Claude Code's model picker. 
 
 | Method | Path(s) | Description | Proxy Method | Allowed Types |
 |---|---|---|---|---|
-| `GET` | `/v1/models`, `/models` | List models (LLM/VLM only, `hidden` entries left out). Azure aliases merged in for users with `can_use_azure`, Bedrock aliases for `can_use_bedrock` (admins bypass) | Direct response | `llm`, `vlm` |
+| `GET` | `/v1/models`, `/models` | List models (LLM/VLM only, `hidden` entries left out). Azure aliases merged in for users with `can_use_azure`, Bedrock aliases for `can_use_bedrock` | Direct response | `llm`, `vlm` |
 | `GET` | `/v1/me`, `/me` | Caller's access (on-prem / Azure / AWS) and today's budget per backend. Auth skips the daily-limit 429 so it answers when the budget is spent | Direct response | — |
 | `GET` | `/v1/status` | The models the caller can see with `state` (`up` / `down` on-prem, `unchecked` cloud), load and billed prices (`model_catalog.visible_models`). Unmetered auth; no DB read | Direct response | — |
 | `GET` | `/v1/usage` | The caller's usage per local day (`?days=`, 1 to 90, default 7), and today and this month by model, through `usage_rollup.aggregate`. Unmetered auth; plain `def` | Direct response | — |
@@ -73,8 +73,8 @@ One base URL surfaces every backend to clients like Claude Code's model picker. 
 Helpers `_peek_model_alias` + `_route_to_azure` + `_route_to_bedrock` determine routing:
 
 ```
-alias in AZURE_MODELS   AND (can_use_azure or is_admin)   → Azure path   (chat, responses, messages, count_tokens)
-alias in BEDROCK_MODELS AND (can_use_bedrock or is_admin) → Bedrock path (chat, messages, count_tokens)
+alias in AZURE_MODELS   AND can_use_azure   → Azure path   (chat, responses, messages, count_tokens)
+alias in BEDROCK_MODELS AND can_use_bedrock → Bedrock path (chat, messages, count_tokens)
 alias in AZURE_MODELS / BEDROCK_MODELS, no permission     → vLLM path (silent fallback via _resolve_model)
 anything else                                             → vLLM path
 ```
@@ -83,7 +83,7 @@ anything else                                             → vLLM path
 
 A cloud-bound request (count_tokens included) then passes `_cloud_budget_gate` (the daily cloud cap, Azure + Bedrock together). Exhausted → 429 by default; with `[app].cloud_budget_fallback = true` (admin panel → Cloud Budget Fallback) the request drops through to the vLLM path instead and the response carries `X-Budget-Fallback`. The overall daily limit is still enforced at auth, so a user with no budget left anywhere gets the usual 429 either way; `/azure/v1/*` and `/aws/v1/*` never fall back.
 
-**Concurrency limit**: `chat_completions`, `responses` and `messages` (and their `/azure/v1/*` / `/aws/v1/*` counterparts) authenticate through `deps.limited_current_user` / `limited_azure_access` / `limited_bedrock_access` instead of the plain auth dependencies. Those hold a row in `concurrency_leases` until the response — stream included — has been sent, and 429 an account already at `[app].concurrency_limit` in-flight requests when the mode is `enforce` (admin panel → Concurrency Limit; admins and waived accounts exempt). `count_tokens`, `tokenize`, `render`, `models`, embeddings, rerank and systemone are not counted. See `app/services/concurrency.py`.
+**Concurrency limit**: `chat_completions`, `responses` and `messages` (and their `/azure/v1/*` / `/aws/v1/*` counterparts) authenticate through `deps.limited_current_user` / `limited_azure_access` / `limited_bedrock_access` instead of the plain auth dependencies. Those hold a row in `concurrency_leases` until the response — stream included — has been sent, and 429 an account already at `[app].concurrency_limit` in-flight requests when the mode is `enforce` (admin panel → Concurrency Limit; waived accounts exempt). `count_tokens`, `tokenize`, `render`, `models`, embeddings, rerank and systemone are not counted. See `app/services/concurrency.py`.
 
 The "cloud alias from a user without the flag → vLLM fallback" branch matches the gateway's longstanding liberal alias handling. Cloud-backend existence is hidden via the per-user `/v1/models` filter rather than a 404 at request time. `MODEL_ROUTING`, `AZURE_MODELS` and `BEDROCK_MODELS` must not share alias names — `_build_config` raises `ValueError` at startup if they do, and `PUT /admin/api/config` rejects a collision before writing.
 
@@ -117,7 +117,7 @@ When fallback occurs, the response includes an `X-Model-Fallback` header explain
 
 ## `azure_api.py` — Azure OpenAI Compatibility
 
-**Auth**: `deps.require_azure_access` (wraps `get_current_user`, additionally checks `user.can_use_azure` — admins bypass — and the daily cloud cap) — same gateway API key + daily limit as `/v1/*`, plus a per-user Azure access flag. `chat/completions`, `responses` and `messages` go through `deps.limited_azure_access` (same checks plus a concurrency slot).
+**Auth**: `deps.require_azure_access` (wraps `get_current_user`, additionally checks `user.can_use_azure` and the daily cloud cap) — same gateway API key + daily limit as `/v1/*`, plus a per-user Azure access flag. `chat/completions`, `responses` and `messages` go through `deps.limited_azure_access` (same checks plus a concurrency slot).
 
 Same client API key, same usage logging, same observability as the `/v1/*` path. Only the downstream URL/header conventions differ — handled by `services/azure_proxy.py`. Azure deployments are configured under `[azure_models.<alias>]` in `config.toml`. Users without `can_use_azure` (and not admin) get 403 with `"Azure access not granted. Contact your administrator."`; an exhausted cloud cap is a 429 (no on-prem fallback on this prefix).
 
@@ -146,7 +146,7 @@ There is intentionally **no** `/azure/v1/embeddings` — the Responses API doesn
 
 ## `aws_api.py` — AWS Bedrock Compatibility
 
-**Auth**: `deps.require_bedrock_access` (wraps `get_current_user`, additionally checks `user.can_use_bedrock` — admins bypass — and the daily cloud cap). `chat/completions` and `messages` go through `deps.limited_bedrock_access` (same checks plus a concurrency slot).
+**Auth**: `deps.require_bedrock_access` (wraps `get_current_user`, additionally checks `user.can_use_bedrock` and the daily cloud cap). `chat/completions` and `messages` go through `deps.limited_bedrock_access` (same checks plus a concurrency slot).
 
 Naming split: the URL prefix is **`/aws`**, but config, flags and the backend tag all say **`bedrock`** (`[bedrock_models.<alias>]`, `can_use_bedrock`, `usage_logs.backend = "bedrock"`). Users without `can_use_bedrock` (and not admin) get 403 with `"Bedrock access not granted. Contact your administrator."`; an exhausted cloud cap is a 429 (no on-prem fallback on this prefix). Downstream handling lives in `services/bedrock_proxy.py`.
 
@@ -263,9 +263,9 @@ Behavior is described in [docs/architecture.md](../../docs/architecture.md) (Adm
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/admin/users` | List all users (masked `api_key`, `daily_limit_usd`, `cloud_daily_limit_usd`, `is_admin`, `concurrency_waived`, `owner_ids`, `display_name`, `org_code`) |
-| `POST` | `/admin/users` | Create user (JSON body: `username`, `daily_limit_usd`, `cloud_daily_limit_usd` — `null` follows the default, `is_admin`, `concurrency_waived` — a JSON boolean, defaulting to true for `app_*` accounts, `owner_ids`). 409 on a duplicate username; the reply carries the full `api_key` |
-| `PATCH` | `/admin/users/{id}` | Update user (`daily_limit_usd`, `cloud_daily_limit_usd`, `is_admin`, `owner_ids` — replaces the owner list, `concurrency_waived` — a JSON boolean) |
+| `GET` | `/admin/users` | List all users (masked `api_key`, `daily_limit_usd`, `cloud_daily_limit_usd`, `concurrency_waived`, `owner_ids`, `display_name`, `org_code`) |
+| `POST` | `/admin/users` | Create user (JSON body: `username`, `daily_limit_usd`, `cloud_daily_limit_usd` — `null` follows the default, `concurrency_waived` — a JSON boolean, defaulting to true for `app_*` accounts, `owner_ids`). 409 on a duplicate username; the reply carries the full `api_key`. `is_admin` in the body (here and on `PATCH`) is a 400: the stored flag is retired, AuthCenter's `admin` scope decides |
+| `PATCH` | `/admin/users/{id}` | Update user (`daily_limit_usd`, `cloud_daily_limit_usd`, `owner_ids` — replaces the owner list, `concurrency_waived` — a JSON boolean) |
 | `GET` | `/admin/api/anomalies` | Anomaly findings written by the gateway's hourly scan (`app/services/anomaly_scan.py`) (`?status=new` default, `acknowledged`, `resolved` or `all`; `?limit=50`, max 200) |
 | `POST` | `/admin/api/anomalies/{id}/ack` | Mark a finding `acknowledged` |
 | `POST` | `/admin/api/anomalies/{id}/resolve` | Mark a finding `resolved` |

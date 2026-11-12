@@ -353,11 +353,10 @@ def _authenticate(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid API key.",
                 )
-            if user.is_disabled and not user.is_admin:
-                # Admin bypass mirrors get_web_user — if an admin row is somehow
-                # flagged disabled (only possible via direct DB edit; the toggle
-                # endpoint blocks self-disable), they can still call the API to
-                # fix the situation. Non-admins always get rejected.
+            if user.is_disabled:
+                # No admin exception here: an API key carries no admin right
+                # (that is the AuthCenter token's scope, on the web UI and
+                # at the key exchange). A disabled account's key is refused.
                 logger.warning("Auth rejected: user '{}' is disabled", user.username)
                 raise AccountDisabledError(user.username)
             # API IP allowlist: needs the account, so it runs here, before the
@@ -374,6 +373,11 @@ def _authenticate(
             _record_key_use(touch_id)
     # ``user`` is now detached: its columns are loaded (SQLModel does not
     # expire on close) and downstream code only ever reads them.
+    #
+    # The stored ``is_admin`` is retired (see ``schema.User``). Cleared here,
+    # the one place every API-key request passes, so that no code shared with
+    # the web UI (model lists, patches) can grant something from a stale row.
+    user.is_admin = False
     return user
 
 
@@ -463,7 +467,7 @@ def require_azure_access(
     Uses ``ensure_azure_budget`` (short-lived session) rather than a
     request-scoped ``Depends(get_session)`` for the same reason as
     ``get_current_user``: the connection must not outlive the auth step."""
-    if not user.can_use_azure and not user.is_admin:
+    if not user.can_use_azure:
         logger.warning("Azure access denied for user '{}'", user.username)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -479,7 +483,7 @@ def require_bedrock_access(
     """Dependency for /aws/v1/* endpoints — additionally checks the Bedrock
     access flag and the cloud daily cap (short-lived
     session via ``ensure_bedrock_budget``, see ``get_current_user``)."""
-    if not user.can_use_bedrock and not user.is_admin:
+    if not user.can_use_bedrock:
         logger.warning("Bedrock access denied for user '{}'", user.username)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -506,7 +510,7 @@ _CONCURRENCY_RETRY_AFTER_S = 5
 async def _concurrency_slot(user: User, endpoint: str) -> AsyncIterator[None]:
     """Hold one concurrency slot for ``user`` around the request.
 
-    - mode ``off``, admins, and ``concurrency_waived`` users: no-op.
+    - mode ``off`` and ``concurrency_waived`` users: no-op.
     - ``monitor``: the lease is always taken; going over the limit logs a
       WARNING and the request is served.
     - ``enforce``: over the limit → 429 with ``Retry-After``.
@@ -515,7 +519,7 @@ async def _concurrency_slot(user: User, endpoint: str) -> AsyncIterator[None]:
       can't become an outage of its own.
     """
     mode, limit = get_concurrency_settings()
-    if mode == "off" or user.is_admin or user.concurrency_waived:
+    if mode == "off" or user.concurrency_waived:
         yield
         return
 

@@ -123,6 +123,7 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 - 只有在 `used_usd` 已達上限時才會拒絕請求，所以當天最後一個請求可能會稍微超出上限。
 - `enforced: false` 代表超額時 gateway 只記 log，不會回 429。
 - `cloud_budget_fallback: true` 代表雲端每日上限用完時，`/v1/*` 的請求會改由地端模型回答，而不是回 429。
+- `is_admin` 固定是 `false`：API key 不帶管理員權限（管理員身分是在 Web UI 登入時認定的）。這個欄位是為了既有的 client 而保留。
 - `legacy_key: true` 代表你的 key 是較舊、較弱的格式，方便時請到 dashboard 重新產生。任何端點都不會回傳 key 本身。
 - `concurrency.limit` 是你的 key 同時可以進行幾個請求。`"mode": "off"` 代表不限，此時不帶 `limit`。
 

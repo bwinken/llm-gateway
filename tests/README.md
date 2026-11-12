@@ -89,7 +89,7 @@ sequenceDiagram
 Useful helpers exposed from `conftest`:
 
 - `client` — `TestClient` with mocked deps (`get_session` overridden to `db_session`); `client.__httpx_mock__` is the shared `AsyncMock` you set return values on
-- `test_user` (api_key `sk-testkey123`, daily limit `$100`, `can_use_azure=True`, `can_use_bedrock=True`, `is_disabled=False`) and `admin_user` (`sk-adminkey456`, `is_admin=True`, limit `$999`). Web-UI admin rights come from the JWT scope, not `is_admin`: use `web_auth_header(sub="admin", scopes=["admin"])`
+- `test_user` (api_key `sk-testkey123`, daily limit `$100`, `can_use_azure=True`, `can_use_bedrock=True`, `is_disabled=False`) and `admin_user` (`sk-adminkey456`, `is_admin=True`, limit `$999`). That stored `is_admin` is retired and grants nothing (`test_admin_flag_retired.py`); admin rights come from the JWT scope only: use `web_auth_header(sub="admin", scopes=["admin"])`
 - `auth_header(api_key=...)` for `/v1` / `/azure/v1` / `/aws/v1` Bearer auth, `web_auth_header(sub=..., scopes=..., display_name=..., org_code=...)` for JWT-protected web routes
 - `make_httpx_response(status, json_body, text)` for non-stream mocks; `FakeStreamResponse(lines, status_code, body_bytes)` for SSE mocks (`body_bytes` is what a non-200 pre-flight `aread()` returns); `FakeBedrockStreamResponse(events, ...)` for Bedrock ConverseStream — `(event_type, payload)` pairs encoded as binary AWS event-stream frames, `"exception:<type>"` for exception frames
 - `TEST_MODEL_ROUTING` / `TEST_AZURE_MODELS` / `TEST_BEDROCK_MODELS` — the per-test alias maps. Seven vLLM-path aliases (`test-llm`, `test-vlm`, `test-embedding`, `test-reranker`, `test-vision-embedding`, `test-vision-reranker`, and `test-systemone` — a System One decision server, no `api_key`), two Azure aliases (`azure-gpt-4`, `azure-embed`) and two Bedrock aliases (`bedrock-claude`, `bedrock-nova`)
@@ -207,7 +207,7 @@ no Langfuse generation, since a render is a debug query rather than inference.
 
 `/v1/models`, `/v1/chat/completions`, `/v1/responses`, `/v1/messages` and
 `/v1/messages/count_tokens` route an alias configured under `[azure_models.*]`
-to Azure when the user has `can_use_azure` (or is admin); otherwise the alias
+to Azure when the user has `can_use_azure`; otherwise the alias
 silently falls back to the vLLM default — no 404. `/v1/models` lists Azure
 llm/vlm entries only for permitted users (embeddings excluded, `owned_by`
 labelled); Azure `count_tokens` uses the chars/4 estimate. `TestNoV1PrefixAliases`
@@ -423,12 +423,26 @@ tally with invalid keys; one expired token retried never locks.
 the key, garbage is not. `TestWiring`: the only route under `/auth`, no
 API-key dependency, plain `def`, mounted by the production app.
 
+### `test_admin_flag_retired.py` — `users.is_admin` grants nothing
+
+The stored admin flag is retired; AuthCenter's `admin` scope is the only
+admin right. `TestApiKeyHasNoAdminRight`: with the column true, an API key
+gets no cloud backend without the flags, no dispatch, no pass for a
+disabled account; `_authenticate` clears the attribute without writing the
+row; the notice patch is the account's own. `TestAdminApiRefusesTheField`:
+`POST` / `PATCH /admin/users` answer 400 to `is_admin` and apply nothing;
+listings and the table do not show it; every account but your own can be
+disabled. `TestAuthCenterDecides`: the scope opens `/admin` whatever the
+row says, the row opens nothing, an admin by scope still sees every cloud
+model and keeps the web UI when disabled. A last test keeps `is_admin`
+out of the API-path modules.
+
 ### `test_account_info.py` — `GET /v1/me`
 
 The caller's own access and today's budget: limits, spend split by backend
 (today only), cloud `remaining_usd` bounded by the overall limit, `0` limits
-reported as zero, no cloud block without access, admins bypassing the cloud
-flags. `TestOverBudget` pins that it still answers once the budget is spent
+reported as zero, no cloud block without access, the retired stored admin
+flag granting nothing. `TestOverBudget` pins that it still answers once the budget is spent
 (and reports soft mode); `TestAuth` covers missing / invalid / disabled keys
 and `x-api-key`; `TestConcurrency` the reported concurrency mode. Every
 response is checked for `null`s (`_no_nulls`).
@@ -440,7 +454,8 @@ key, refuses a disabled account, answers once the budget is spent and
 writes no `usage_logs` row. `TestStatus`: what the account can see (every
 type, declared metadata and capability flags, billed prices), `up` /
 `down` / load from the health cache, cloud `unchecked`, hidden entries and
-backends without access left out, admins seeing every backend, the one
+backends without access left out, the retired stored admin flag showing
+nothing more, the one
 display order. `TestUsage`: one row per local day with today last and
 quiet days as zeros, the `days` bounds, today and this month by model in
 catalog order, a revoked backend left out of rows and total, the same
@@ -632,7 +647,7 @@ lists / acks / resolves (admin only) and the admin page shows open anomalies.
 ### `test_dashboard_models.py` — dashboard model list
 
 On-prem / Azure / Bedrock sections shown only to users with the matching
-access (admins see all), with status, a subsection per model type and price
+access (an admin by the token's scope sees all), with status, a subsection per model type and price
 columns. The Today's Cost backend split hides a cloud backend the user can't
 use, including stale limits and spend from before access was revoked.
 
@@ -641,8 +656,8 @@ use, including stale limits and spend from before access was revoked.
 `stats.get_model_breakdown` groups the month's (or today's) spend by alias and
 backend, ordered by cost, scoped to the user. The dashboard card and its
 refresh API (`/dashboard/api/model-breakdown`, auth required, period
-validated) render the groups and hide backends the user may not use (admins
-see every backend).
+validated) render the groups and hide backends the user may not use (an admin
+by the token's scope sees every backend).
 
 ### `test_page_highlights.py` — what the dashboard and admin pages lead with
 

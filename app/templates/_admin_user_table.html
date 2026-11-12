@@ -17,10 +17,9 @@
 {% endmacro %}
 
 {% macro user_row(u, is_apps) %}
-{% set cloud = u.can_use_azure or u.can_use_bedrock or u.is_admin %}
+{% set cloud = u.can_use_azure or u.can_use_bedrock %}
 <tr class="um-row {{ 'is-disabled' if u.is_disabled }}" data-uid="{{ u.id }}" data-username="{{ u.username }}"
-    data-azure="{{ 'true' if u.can_use_azure else 'false' }}" data-bedrock="{{ 'true' if u.can_use_bedrock else 'false' }}"
-    data-admin="{{ 'true' if u.is_admin else 'false' }}">
+    data-azure="{{ 'true' if u.can_use_azure else 'false' }}" data-bedrock="{{ 'true' if u.can_use_bedrock else 'false' }}">
     <td class="whitespace-nowrap um-dim">
         <div class="flex items-center gap-2">
             <div class="h-8 w-8 rounded-lg flex items-center justify-center font-bold text-sm {{ 'bg-[rgba(99,152,255,0.1)] text-ab' if is_apps else 'bg-[rgba(167,139,250,0.1)] text-av' }}">
@@ -38,7 +37,6 @@
                 </div>
                 <div class="flex items-center gap-1 mt-0.5">
                     {% if is_apps %}<span class="gw-badge">App</span>
-                    {% elif u.is_admin %}<span class="gw-badge gw-badge-admin">Admin</span>
                     {% else %}<span class="gw-badge gw-badge-muted">User</span>{% endif %}
                     {% if u.is_self %}<span class="gw-badge gw-badge-muted">You</span>{% endif %}
                     <span class="gw-badge gw-badge-off um-disabled-badge {{ '' if u.is_disabled else 'hidden' }}">Disabled</span>
@@ -98,11 +96,9 @@
         <div class="flex flex-wrap items-center justify-end gap-1.5">
             {{ toggle_form(u, 'azure', 'toggle-azure', u.can_use_azure, 'Azure', 'Azure granted', 'No Azure access') }}
             {{ toggle_form(u, 'bedrock', 'toggle-bedrock', u.can_use_bedrock, 'AWS', 'AWS Bedrock granted', 'No AWS Bedrock access') }}
-            {% if not u.is_admin %}
             {{ toggle_form(u, 'waive', 'toggle-concurrency-waive', u.concurrency_waived, 'Waive',
                            'Concurrency limit waived — click to apply it', 'Concurrency limit applies — click to waive') }}
-            {% endif %}
-            {% if not u.is_admin and not u.is_self %}
+            {% if not u.is_self %}
             <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-action="disable"
                   data-granted="{{ 'true' if u.is_disabled else 'false' }}">
                 <button type="submit" class="gw-btn text-xs px-2.5 py-1 {{ 'gw-btn-warn' if u.is_disabled else 'gw-btn-ghost' }}"

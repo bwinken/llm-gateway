@@ -113,6 +113,19 @@ _RETIRED_LIMIT_FIELDS: tuple[str, ...] = (
 )
 
 
+def _reject_retired_admin_flag(body: dict) -> None:
+    """``is_admin`` is no longer a stored permission (see ``schema.User``).
+    Refused rather than ignored, so a caller that still sends it finds out."""
+    if "is_admin" in body:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "is_admin no longer exists: who is an admin is decided by AuthCenter "
+                "(the admin scope of the access token), not stored on the account."
+            ),
+        )
+
+
 def _reject_retired_limits(body: dict) -> None:
     retired = [f for f in _RETIRED_LIMIT_FIELDS if f in body]
     if retired:
@@ -161,7 +174,6 @@ USER_TABLE_SORTS: dict[str, str] = {
 USER_TABLE_STATUSES: dict[str, str] = {
     "all": "All accounts",
     "special": "Any special access",
-    "admin": "Admin",
     "azure": "Azure access",
     "bedrock": "AWS access",
     "cloud": "Cloud access",
@@ -180,7 +192,7 @@ STALE_KEY_DAYS = 90
 # each linking to its filter. The waiver counts only what differs from an
 # account kind's default (users are created limited, app accounts waived).
 SPECIAL_ACCESS_KEYS: tuple[str, ...] = (
-    "admin", "azure", "bedrock", "cloud_cap", "waiver_changed", "disabled",
+    "azure", "bedrock", "cloud_cap", "waiver_changed", "disabled",
 )
 
 
@@ -218,7 +230,6 @@ def _status_clause(status: str, is_apps: bool):
     flipped from what new accounts of that kind get."""
     waived_differs = (User.concurrency_waived == False) if is_apps else (User.concurrency_waived == True)  # noqa: E712
     clauses = {
-        "admin": User.is_admin == True,  # noqa: E712
         "azure": User.can_use_azure == True,  # noqa: E712
         "bedrock": User.can_use_bedrock == True,  # noqa: E712
         "cloud": (User.can_use_azure == True) | (User.can_use_bedrock == True),  # noqa: E712
@@ -230,9 +241,7 @@ def _status_clause(status: str, is_apps: bool):
         "stale_key": _stale_key_clause(),
     }
     if status == "special":
-        return (
-            clauses["admin"] | clauses["cloud"] | clauses["cloud_cap"] | waived_differs
-        )
+        return clauses["cloud"] | clauses["cloud_cap"] | waived_differs
     return clauses.get(status)
 
 
@@ -364,7 +373,6 @@ def _user_table(
             "org_code": u.org_code,
             "daily_limit_usd": u.daily_limit_usd,
             "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
-            "is_admin": u.is_admin,
             "is_self": u.id == admin_user.id,
             "is_disabled": u.is_disabled,
             "can_use_azure": u.can_use_azure,
@@ -1743,7 +1751,6 @@ def list_users_api(
             "api_key": mask_api_key(u.api_key),
             "daily_limit_usd": u.daily_limit_usd,
             "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
-            "is_admin": u.is_admin,
             "concurrency_waived": u.concurrency_waived,
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
@@ -1769,6 +1776,7 @@ def create_user_api(
         raise HTTPException(status_code=409, detail=f"User '{username}' already exists.")
 
     _reject_retired_limits(body)
+    _reject_retired_admin_flag(body)
     # App accounts start waived from the concurrency limit; an explicit
     # "concurrency_waived" in the body (handled below) still wins.
     new_user = User(username=username, concurrency_waived=is_app_account(username))
@@ -1779,8 +1787,6 @@ def create_user_api(
         new_user.cloud_daily_limit_usd = (
             None if raw is None else _limit_usd(raw, "cloud_daily_limit_usd")
         )
-    if "is_admin" in body:
-        new_user.is_admin = bool(body["is_admin"])
     if "concurrency_waived" in body:
         new_user.concurrency_waived = _strict_bool(body["concurrency_waived"], "concurrency_waived")
     session.add(new_user)
@@ -1825,6 +1831,7 @@ def update_user_api(
         raise HTTPException(status_code=404, detail="User not found.")
 
     _reject_retired_limits(body)
+    _reject_retired_admin_flag(body)
     if "daily_limit_usd" in body:
         target.daily_limit_usd = _limit_usd(body["daily_limit_usd"], "daily_limit_usd")
     if "cloud_daily_limit_usd" in body:
@@ -1832,8 +1839,6 @@ def update_user_api(
         target.cloud_daily_limit_usd = (
             None if raw is None else _limit_usd(raw, "cloud_daily_limit_usd")
         )
-    if "is_admin" in body:
-        target.is_admin = bool(body["is_admin"])
     if "concurrency_waived" in body:
         target.concurrency_waived = _strict_bool(body["concurrency_waived"], "concurrency_waived")
     if "owner_ids" in body:
@@ -2590,7 +2595,7 @@ def export_users_csv(session: Session = Depends(get_session)):
     buf.write("﻿")  # UTF-8 BOM so Excel opens CJK correctly
     writer = csv.writer(buf)
     writer.writerow([
-        "username", "display_name", "org_code", "is_admin", "is_disabled",
+        "username", "display_name", "org_code", "is_disabled",
         "can_use_azure", "can_use_bedrock",
         "daily_limit_usd", "created_at",
         "monthly_cost_usd", "monthly_requests", "last_active_at",
@@ -2601,7 +2606,6 @@ def export_users_csv(session: Session = Depends(get_session)):
             u.username,
             u.display_name or "",
             u.org_code or "",
-            "true" if u.is_admin else "false",
             "true" if u.is_disabled else "false",
             "true" if u.can_use_azure else "false",
             "true" if u.can_use_bedrock else "false",

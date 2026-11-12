@@ -136,9 +136,10 @@ class TestStatus:
         backends = {m["backend"] for m in self._status(client)["models"]}
         assert backends == {"onprem"}
 
-    def test_admins_see_every_backend(self, client, admin_user):
+    def test_the_stored_admin_flag_shows_nothing_more(self, client, admin_user):
+        # users.is_admin is retired: an API key sees what its own flags allow.
         body = self._status(client, headers=auth_header(admin_user.api_key))
-        assert {m["backend"] for m in body["models"]} == {"onprem", "azure", "aws"}
+        assert {m["backend"] for m in body["models"]} == {"onprem"}
 
     def test_hidden_models_are_left_out(self, client, test_user):
         routing = {**TEST_MODEL_ROUTING, "staged": {**TEST_MODEL_ROUTING["test-llm"], "hidden": True}}

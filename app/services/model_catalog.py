@@ -37,7 +37,9 @@ def resolve_prices(entry: dict, model_type: str, pricing_map: dict) -> tuple[flo
 def hidden_cloud_backends(user: User) -> frozenset[str]:
     """Cloud backends this user may not use: nothing of them is shown (spend
     columns, Cost by Model rows, model tables), even when spend from before
-    an admin revoked access remains. Admins see everything."""
+    an admin revoked access remains. On the web UI an AuthCenter admin (the
+    token's scope, carried in ``user.is_admin`` by ``get_web_user``) sees
+    everything; an API-key caller is never one."""
     hidden = set()
     if not (user.can_use_azure or user.is_admin):
         hidden.add("azure")

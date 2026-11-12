@@ -309,9 +309,6 @@ function anomalyAction(id, action) {
                                     {% if u.org_code %}
                                     <span class="ml-1 text-[10px] text-t4 bg-n3 px-1 py-0.5 rounded">{{ u.org_code }}</span>
                                     {% endif %}
-                                    {% if u.is_admin %}
-                                    <span class="ml-1 gw-badge" style="background:rgba(167,139,250,0.1);color:#a78bfa;border-color:rgba(167,139,250,0.15)">Admin</span>
-                                    {% endif %}
                                 </div>
                             </div>
                         </td>
@@ -1648,7 +1645,7 @@ function submitExportCsv() {
             if (t.flag) {
                 row.dataset[t.flag] = on ? 'true' : 'false';
                 // The Cloud $ field applies only to accounts that can reach the cloud.
-                var cloud = row.dataset.azure === 'true' || row.dataset.bedrock === 'true' || row.dataset.admin === 'true';
+                var cloud = row.dataset.azure === 'true' || row.dataset.bedrock === 'true';
                 row.querySelector('[data-cloud-form]').classList.toggle('hidden', !cloud);
             }
         }

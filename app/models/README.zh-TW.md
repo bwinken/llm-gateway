@@ -171,11 +171,11 @@ classDiagram
 | `azure_daily_limit_usd` | `FLOAT` | NULLABLE | `None` | **已停用，不再讀取**。舊的每人 Azure 子上限；保留到有 migration 移除為止。Admin API 收到此欄位會回 400 |
 | `bedrock_daily_limit_usd` | `FLOAT` | NULLABLE | `None` | **已停用，不再讀取**。舊的每人 Bedrock 子上限；狀態同上 |
 | `cloud_daily_limit_usd` | `FLOAT` | NULLABLE | `None` | 使用者的雲端上限：Azure + Bedrock 合計的每日花費。**NULL 代表沿用 `[app].cloud_daily_limit_usd`**，不是「無上限」；設定值（含 `0`，即拒絕雲端）則取代預設。只能透過 `deps.effective_cloud_limit` 讀取。僅適用於有 Azure 或 AWS 權限的使用者 |
-| `is_admin` | `BOOLEAN` | — | `False` | 資料庫中的管理員標記。**注意：Web UI 的 admin 權限由 JWT scope 決定，不看此欄位** |
-| `is_disabled` | `BOOLEAN` | — | `False` | `True` 時 API key 與 JWT 認證皆會丟出 `AccountDisabledError`(HTML 頁或 JSON 403)。**Admin 免檢查**。透過 `POST /admin/users/{id}/toggle-disable` 切換(禁止停用自己) |
-| `can_use_azure` | `BOOLEAN` | — | `False` | 控制 `/azure/v1/*`（由 `deps.require_azure_access` 檢查）及統一 `/v1/*` 對 Azure 別名的分派。**Admin 免檢查**。透過 `POST /admin/users/{id}/toggle-azure` 切換 |
-| `can_use_bedrock` | `BOOLEAN` | — | `False` | 控制 `/aws/v1/*`（由 `deps.require_bedrock_access` 檢查）及統一 `/v1/*` 對 Bedrock 別名的分派。**Admin 免檢查**。透過 `POST /admin/users/{id}/toggle-bedrock` 切換 |
-| `concurrency_waived` | `BOOLEAN` | — | `False` | 免除並行上限（`[app].concurrency_limit_*`）。Admin 一律免除。App 帳號建立時即為免除。透過 `POST /admin/users/{id}/toggle-concurrency-waive` 切換 |
+| `is_admin` | `BOOLEAN` | — | `False` | **已退役。** 誰是 admin 由 AuthCenter token 的 `admin` scope 決定。這個欄位不再給予任何權限：API key 驗證時會清掉這個屬性、管理 API 收到此欄位回 400、任何列表都不顯示。`get_web_user` 只在單次請求中借用這個屬性，把 scope 帶給頁面 |
+| `is_disabled` | `BOOLEAN` | — | `False` | `True` 時 API key 與 JWT 認證皆會丟出 `AccountDisabledError`(HTML 頁或 JSON 403)。在 Web UI 上，token 帶 admin scope 的人不受此限；API 上沒有例外。透過 `POST /admin/users/{id}/toggle-disable` 切換(禁止停用自己) |
+| `can_use_azure` | `BOOLEAN` | — | `False` | 控制 `/azure/v1/*`（由 `deps.require_azure_access` 檢查）及統一 `/v1/*` 對 Azure 別名的分派。透過 `POST /admin/users/{id}/toggle-azure` 切換 |
+| `can_use_bedrock` | `BOOLEAN` | — | `False` | 控制 `/aws/v1/*`（由 `deps.require_bedrock_access` 檢查）及統一 `/v1/*` 對 Bedrock 別名的分派。透過 `POST /admin/users/{id}/toggle-bedrock` 切換 |
+| `concurrency_waived` | `BOOLEAN` | — | `False` | 免除並行上限（`[app].concurrency_limit_*`）。這是唯一的免除方式。App 帳號建立時即為免除。透過 `POST /admin/users/{id}/toggle-concurrency-waive` 切換 |
 | `owner_id` | `INTEGER` | FK → `users.id`, INDEX, NULLABLE | `None` | **舊版**單一擁有者欄位，已由 `app_owners` 取代。Migration `d5a2c3e67f04` 複製資料時未清空，舊 App 帳號可能仍指向原擁有者 |
 | `display_name` | `VARCHAR` | — | `""` | 使用者顯示名稱，來自 IdP JWT 的 `display_name` 欄位。每次 Web 登入時自動同步更新 |
 | `org_code` | `VARCHAR` | — | `""` | 組織代碼，來自 IdP JWT 的 `org_code` 欄位。每次 Web 登入時自動同步更新。顯示於 Admin 使用者表格 |

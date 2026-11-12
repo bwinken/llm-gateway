@@ -5,7 +5,7 @@ Routes the OpenAI-compatible and Anthropic-compatible endpoints. Defaults
 to the vLLM backend (via ``vllm_proxy``); chat / responses / messages /
 count_tokens additionally dispatch to Azure OpenAI (via ``azure_proxy``)
 when the requested ``model`` alias is configured under ``[azure_models.*]``
-AND the caller has ``can_use_azure`` (or is admin). One base URL lets clients
+AND the caller has ``can_use_azure``. One base URL lets clients
 like Claude Code's model picker see both backends side-by-side.
 
 Design: each base URL has its own default fallback. ``/v1/*`` serves
@@ -126,7 +126,7 @@ def _route_to_azure(alias: str, user: User) -> bool:
     azure_models = get_azure_models_snapshot()
     if alias not in azure_models:
         return False
-    if user.can_use_azure or user.is_admin:
+    if user.can_use_azure:
         return True
     # Azure alias requested by user without access — fall through to the
     # vLLM handler so its _resolve_model can route to the configured
@@ -151,7 +151,7 @@ def _route_to_bedrock(alias: str, user: User) -> bool:
     bedrock_models = get_bedrock_models_snapshot()
     if alias not in bedrock_models:
         return False
-    if user.can_use_bedrock or user.is_admin:
+    if user.can_use_bedrock:
         return True
     logger.info(
         "Bedrock alias '{}' requested by user '{}' without can_use_bedrock; "
@@ -225,7 +225,7 @@ async def list_models(user: User = Depends(get_current_user)):
     """List chat-capable models available to this user.
 
     vLLM entries are always included. Azure entries are merged in only when
-    the user has ``can_use_azure`` (or is admin) so an Anthropic / OpenAI
+    the user has ``can_use_azure`` so an Anthropic / OpenAI
     client pointed at this single base URL sees exactly the set of aliases
     its API key may actually use.
 
@@ -256,7 +256,7 @@ async def list_models(user: User = Depends(get_current_user)):
                 entry[meta_key] = route[meta_key]
         models.append(entry)
 
-    if user.can_use_azure or user.is_admin:
+    if user.can_use_azure:
         for alias, route in get_azure_models_snapshot().items():
             model_type = route.get("type", "llm")
             if model_type not in ("llm", "vlm") or route.get("hidden"):
@@ -273,7 +273,7 @@ async def list_models(user: User = Depends(get_current_user)):
                     entry[meta_key] = route[meta_key]
             models.append(entry)
 
-    if user.can_use_bedrock or user.is_admin:
+    if user.can_use_bedrock:
         for alias, route in get_bedrock_models_snapshot().items():
             model_type = route.get("type", "llm")
             if model_type not in ("llm", "vlm") or route.get("hidden"):
@@ -313,7 +313,7 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
     null, no "unlimited").
 
     Per backend (``onprem`` = vLLM, ``azure``, ``aws`` = Bedrock):
-      - ``access``: may this key reach it (admins bypass the cloud flags);
+      - ``access``: may this key reach it (the account's Azure / AWS flag);
       - ``used_usd``: today's spend there;
       - ``remaining_usd``: what can still be spent there today — the tighter
         of the cloud cap (azure / aws) and the overall daily limit (cloud
@@ -334,8 +334,8 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
     daily_limit = max(0.0, user.daily_limit_usd)
     daily_remaining = _remaining(daily_limit, today["total_cost_usd"])
 
-    azure_access = user.can_use_azure or user.is_admin
-    bedrock_access = user.can_use_bedrock or user.is_admin
+    azure_access = user.can_use_azure
+    bedrock_access = user.can_use_bedrock
     # The cap only means something to a user who may reach a cloud backend.
     cloud_limit = effective_cloud_limit(user) if (azure_access or bedrock_access) else None
     cloud_used = today["azure_cost_usd"] + today["bedrock_cost_usd"]
@@ -352,14 +352,16 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
         }
 
     mode, limit = get_concurrency_settings()
-    concurrency_applies = mode != "off" and not user.is_admin and not user.concurrency_waived
+    concurrency_applies = mode != "off" and not user.concurrency_waived
     local_now = datetime.now(LOCAL_TZ)
 
     return {
         "object": "account",
         "username": user.username,
         "display_name": user.display_name,
-        "is_admin": user.is_admin,
+        # Kept for clients built against it; always false. An API key has no
+        # admin right: that is the AuthCenter token's scope, on the web UI.
+        "is_admin": False,
         "legacy_key": is_legacy_api_key(user.api_key),
         "daily": {
             "limit_usd": daily_limit,
