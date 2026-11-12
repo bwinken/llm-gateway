@@ -193,6 +193,45 @@ class TestRecordGeneration:
         client_score = next(c for c in gen.score.call_args_list if c.kwargs["name"] == "client")
         assert client_score.kwargs["value"] == "claude-code"
 
+    def test_captured_io_is_also_written_on_the_trace(self):
+        # The Tracing list shows the trace's own input / output, not the
+        # generation's: without this the page is blank with capture on.
+        client = MagicMock()
+        gen = client.start_observation.return_value
+        calls = []
+        gen.set_trace_io.side_effect = lambda **kw: calls.append(("trace_io", kw))
+        gen.end.side_effect = lambda **kw: calls.append(("end", kw))
+        with patch("app.services.observability.get_langfuse", return_value=client), \
+             patch("langfuse.propagate_attributes", lambda **kw: contextlib.nullcontext()):
+            record_generation(_make_record(
+                input_payload=[{"role": "user", "content": "hi"}],
+                output_payload={"role": "assistant", "content": "hello"},
+            ))
+        # Before end(): a finished span takes no attributes.
+        assert [name for name, _ in calls] == ["trace_io", "end"]
+        assert calls[0][1] == {
+            "input": [{"role": "user", "content": "hi"}],
+            "output": {"role": "assistant", "content": "hello"},
+        }
+
+    def test_no_trace_io_without_captured_content(self):
+        client = MagicMock()
+        gen = client.start_observation.return_value
+        with patch("app.services.observability.get_langfuse", return_value=client), \
+             patch("langfuse.propagate_attributes", lambda **kw: contextlib.nullcontext()):
+            record_generation(_make_record())
+        gen.set_trace_io.assert_not_called()
+
+    def test_a_failing_trace_io_still_records_the_generation(self):
+        client = MagicMock()
+        gen = client.start_observation.return_value
+        gen.set_trace_io.side_effect = AttributeError("removed in a later SDK")
+        with patch("app.services.observability.get_langfuse", return_value=client), \
+             patch("langfuse.propagate_attributes", lambda **kw: contextlib.nullcontext()):
+            record_generation(_make_record(input_payload="hi", output_payload="hello"))
+        gen.end.assert_called_once()
+        assert gen.score.call_count == 4
+
     def test_latency_stamps_span_duration(self):
         # With a measured latency the span END is extended so its duration
         # (Langfuse "Latency") equals the latency; metadata carries the raw ms.
