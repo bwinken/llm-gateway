@@ -386,6 +386,20 @@ def get_today_usage(user: User) -> dict:
         return get_user_daily_summary(session, user.id)
 
 
+def get_usage_history(user: User, days: int) -> dict:
+    """``user``'s usage for ``GET /v1/usage``: one row per local day for the
+    last ``days`` days (today included, quiet days as zeros) and this month's
+    rows per model and backend. Both read through ``usage_rollup.aggregate``
+    like the dashboard's. Short-lived session; blocking."""
+    from app.services.stats import get_daily_trends, get_model_breakdown
+
+    with Session(engine) as session:
+        return {
+            "days": get_daily_trends(session, user.id, days=days),
+            "models": get_model_breakdown(session, user.id, period="month"),
+        }
+
+
 def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),

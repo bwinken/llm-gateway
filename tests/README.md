@@ -417,6 +417,25 @@ flags. `TestOverBudget` pins that it still answers once the budget is spent
 and `x-api-key`; `TestConcurrency` the reported concurrency mode. Every
 response is checked for `null`s (`_no_nulls`).
 
+### `test_terminal_views.py` — `/v1/status`, `/v1/usage`, text views, `gw`
+
+The terminal side of the account endpoints. `TestChoosingText`: JSON stays
+the default (curl's `*/*` too), `?format=text` / `Accept: text/plain` pick
+the text, no escape codes or block characters unless asked (`color`,
+`ascii`), every route needs a key and answers when the budget is spent.
+`TestBudgetText`: what a spent budget, soft mode and a spent cloud cap say;
+control characters in a display name never reach the terminal; wide (CJK)
+names keep the columns. `TestStatus`: what the account can see, up / down /
+load from the health cache, cloud `unchecked`, hidden entries and backends
+without access left out, the one display order, no `null`s. `TestUsage`:
+one row per local day with today last, the `days` bounds, this month by
+model, a revoked backend left out, the same numbers once rolled up, plain
+`def`. `TestScriptDownload`: `GET /v1/cli` writes only a plain `Host` into
+the script and never a key. `TestScript` runs `setup/gw` with a stand-in
+`curl`: where the key and address come from, a token for another service
+never sent, the key never on the command line, each view's request,
+refusals, `update`.
+
 ### `test_concurrency_limit.py` — per-user concurrency limit
 
 | Test class | What it covers |

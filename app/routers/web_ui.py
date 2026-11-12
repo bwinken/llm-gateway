@@ -30,11 +30,16 @@ from app.core.logger import logger
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ, seconds_until_local_midnight
 from app.services import client_rules
+from app.services.model_catalog import (
+    catalog_keys,
+    hidden_cloud_backends as _hidden_cloud_backends,
+    resolve_prices as _resolve_prices,
+    usage_row_key,
+)
 from app.services.model_order import (
     catalog_key,
     positions,
     type_rank,
-    unknown_key,
 )
 from app.services.stats import (
     get_daily_trends,
@@ -53,20 +58,6 @@ templates = Jinja2Templates(directory=str(_templates_dir))
 # through every render context.
 templates.env.globals["get_site_links"] = get_site_links
 _SETUP_DIR = Path(__file__).resolve().parent.parent.parent / "setup"
-
-
-def _resolve_prices(entry: dict, model_type: str, pricing_map: dict) -> tuple[float, float]:
-    """(input, output) USD per 1M tokens for a model entry.
-
-    Same priority as billing's ``_calc_cost``: per-model override (both
-    ``input_price_per_1m`` and ``output_price_per_1m`` present) → per-type
-    ``[pricing.<type>]`` → ``_default`` — so what the dashboard shows is
-    exactly what the request will be billed at.
-    """
-    if "input_price_per_1m" in entry and "output_price_per_1m" in entry:
-        return float(entry["input_price_per_1m"]), float(entry["output_price_per_1m"])
-    p = pricing_map.get(model_type) or pricing_map.get("_default") or {}
-    return float(p.get("input_price_per_1m", 0.0)), float(p.get("output_price_per_1m", 0.0))
 
 
 def _usage_percent(spent: float, limit: float) -> float:
@@ -118,35 +109,20 @@ def _by_type(groups: dict[str, list[dict]]) -> dict[str, list[dict]]:
 def _catalog_keys() -> dict[tuple[str, str], tuple]:
     """``(backend, alias) -> catalog_key`` for every configured model, hidden
     ones included (their past usage still has to sort sensibly)."""
-    pricing_map = get_pricing_snapshot()
-    order = _display_positions()
-    keys: dict[tuple[str, str], tuple] = {}
-    for backend, snapshot in (
-        ("vllm", get_model_routing_snapshot()),
-        ("azure", get_azure_models_snapshot()),
-        ("bedrock", get_bedrock_models_snapshot()),
-    ):
-        for alias, entry in snapshot.items():
-            in_price, out_price = _resolve_prices(entry, entry.get("type", "llm"), pricing_map)
-            keys[(backend, alias)] = catalog_key(alias, order[backend].get(alias), in_price + out_price)
-    return keys
+    return catalog_keys(
+        {
+            "vllm": get_model_routing_snapshot(),
+            "azure": get_azure_models_snapshot(),
+            "bedrock": get_bedrock_models_snapshot(),
+        },
+        get_pricing_snapshot(),
+        _display_positions(),
+    )
 
 
 def _display_positions() -> dict[str, dict[str, int]]:
     """``{backend: {alias: index}}`` from ``[display_order]``."""
     return {backend: positions(aliases) for backend, aliases in get_display_order_snapshot().items()}
-
-
-def _hidden_cloud_backends(user: User) -> frozenset[str]:
-    """Cloud backends this user may not use: the dashboard shows nothing of
-    them (spend columns, Cost by Model groups, model tables), even when spend
-    from before an admin revoked access remains. Admins see everything."""
-    hidden = set()
-    if not (user.can_use_azure or user.is_admin):
-        hidden.add("azure")
-    if not (user.can_use_bedrock or user.is_admin):
-        hidden.add("bedrock")
-    return frozenset(hidden)
 
 
 def _build_model_breakdown(
@@ -178,10 +154,7 @@ def _build_model_breakdown(
     catalog = _catalog_keys()
 
     def _row_key(r: dict) -> tuple:
-        return (
-            type_rank(r["type"]),
-            catalog.get((r["backend"], r["model"])) or unknown_key(r["model"]),
-        )
+        return usage_row_key(r, catalog)
 
     groups = []
     for backend_key in backend_order + extra_backends:

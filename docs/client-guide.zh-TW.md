@@ -66,6 +66,9 @@ Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 C
 |---|---|
 | `GET /v1/models` | 你的帳號可以用的模型 |
 | `GET /v1/me`、`/me` | 你的權限（地端 / Azure / AWS）和今日額度：上限、已用、剩餘、重置時間。額度用完時一樣可以查。見[查詢額度](#查詢額度) |
+| `GET /v1/status` | 你可以用的模型，以及每個模型是否正常、目前負載和價格。見[在 terminal 查詢](#在-terminal-查詢) |
+| `GET /v1/usage` | 你每天的用量（`?days=`，預設 7，最多 90）和本月各模型的用量 |
+| `GET /v1/cli` | `gw`：在 terminal 顯示以上三項的 shell 腳本 |
 | `POST /v1/embeddings` | Embeddings（僅 vLLM） |
 | `POST /v1/rerank`、`/v1/score` | Rerank |
 | `POST /v1/messages/count_tokens` | 計算 Anthropic 請求的 token 數（不計費） |
@@ -118,6 +121,57 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 - `enforced: false` 代表超額時 gateway 只記 log，不會回 429。
 - `cloud_budget_fallback: true` 代表雲端每日上限用完時，`/v1/*` 的請求會改由地端模型回答，而不是回 429。
 - `concurrency.limit` 是你的 key 同時可以進行幾個請求。`"mode": "off"` 代表不限，此時不帶 `limit`。
+
+## 在 terminal 查詢
+
+`gw` 是一支小的 shell 腳本（需要 `curl`），不用開 dashboard 就能看額度、模型狀態和用量。從 gateway 下載一次即可：
+
+```bash
+mkdir -p ~/.local/bin
+curl -fsS https://your-gateway/v1/cli -H "Authorization: Bearer sk-your-api-key" -o ~/.local/bin/gw
+chmod +x ~/.local/bin/gw
+```
+
+| 指令 | 顯示 |
+|---|---|
+| `gw` | 今日額度，接著是模型狀態 |
+| `gw me` | 今日額度：已用、剩餘、何時重置、各後端花費 |
+| `gw models` | 你可以用的模型：正常或離線、執行中 / 排隊中的請求數、context window、價格 |
+| `gw usage [N]` | 最近 N 天（預設 7）和本月各模型的用量 |
+| `gw update` | 把腳本換成 gateway 上目前的版本 |
+
+```
+alice · Alice
+
+Budget today
+  total  [███████░░░░░░░░░░░░░]  33%  $3.25 of $10.00  $6.75 left
+  cloud  [████████████████░░░░]  80%   $2.00 of $2.50  $0.50 left
+  resets in 9h 28m (midnight, Asia/Taipei)
+
+Spent today
+  on-prem      $1.25
+  Azure        $2.00
+  AWS      no access
+  42 requests, 120.0K tokens in, 18.0K out
+
+Up to 8 requests at a time.
+```
+
+- **腳本裡沒有 key。** 有設 `LLM_GATEWAY_API_KEY` 就用它；否則用 Claude Code 已經有的 key（`ANTHROPIC_AUTH_TOKEN`，先看環境變數，再看 `~/.claude/settings.json`），而且只有在同一處的 `ANTHROPIC_BASE_URL` 指向這台 gateway 時才會用。重新產生 key 之後，更新 Claude Code 的設定（dashboard *My API Key* 視窗裡的腳本），`gw` 就跟著更新。
+- key 是從標準輸入交給 `curl` 的，不會出現在指令列上，共用機器上的其他人無法從 `ps` 看到。
+- `gw --json me|models|usage` 改印 JSON，給腳本用。`watch -n 60 --color gw --color` 可以讓它一直留在畫面上。
+- 輸出到 terminal 時才會上色（`--no-color` 或 `NO_COLOR` 可關閉）；locale 不是 UTF-8 時，長條改用 ASCII 字元（`--ascii`）。
+- 管理員也可以替所有人裝好：把 repository 裡的 `setup/gw` 複製到 `/usr/local/bin/gw`，並設定 `LLM_GATEWAY_URL=https://your-gateway`（從 gateway 下載的版本已經帶有位址）。
+
+不用腳本也可以直接用 `curl` 看到同樣的畫面：在 `/v1/me`、`/v1/status`、`/v1/usage` 加上 `?format=text`（或送 `Accept: text/plain`）；`&color=1` 上色，`&ascii=1` 只用 ASCII。不加的話回 JSON：
+
+```bash
+curl "https://your-gateway/v1/status?format=text" -H "Authorization: Bearer sk-your-api-key"
+```
+
+- `/v1/status`：`models` 列出你的 key 看得到的每個模型，包含 `backend`（`onprem` / `azure` / `aws`）、`type`、計費價格 `input_price_per_1m` / `output_price_per_1m`，以及 `state`：地端模型是 `up` 或 `down`（伺服器有回報時另有 `running` / `waiting` 請求數），雲端模型是 `unchecked`（gateway 不探測雲端）。`onprem` 是地端模型的統計（`total`、`up`、以及 `down` 的名稱）。指定的模型離線時，只要同類型還有模型正常，請求會由那個模型回答。
+- `/v1/usage`：`days` 每個 `Asia/Taipei` 日一筆，由舊到新，最後一筆是今天（仍在累計）：`date`、`requests`、`input_tokens`、`output_tokens`、`cost_usd`；`month` 是本月到目前為止的合計，`models` 依模型和後端分列。
+- 三個端點在額度用完時一樣可以查，而且都不計費。
 
 ## Tool calling：選對 client 模式
 

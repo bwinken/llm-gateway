@@ -28,9 +28,13 @@ misconfiguration that previously surfaced as a silent 404.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import (
@@ -48,10 +52,16 @@ from app.core.deps import (
     get_current_user,
     get_current_user_unmetered,
     get_today_usage,
+    get_usage_history,
     limited_current_user,
 )
 from app.core.logger import logger
-from app.core.timeutil import LOCAL_TZ, next_local_midnight, seconds_until_local_midnight
+from app.core.timeutil import (
+    LOCAL_TZ,
+    local_month_start,
+    next_local_midnight,
+    seconds_until_local_midnight,
+)
 from app.models.schema import User
 from app.services.azure_proxy import (
     azure_forward_chat_completions,
@@ -59,7 +69,7 @@ from app.services.azure_proxy import (
     azure_forward_messages,
     azure_forward_responses,
 )
-from app.services import client_rules, guardrail
+from app.services import client_rules, guardrail, model_catalog, terminal
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
     bedrock_forward_count_tokens,
@@ -292,10 +302,49 @@ def _remaining(limit: float, used: float) -> float:
     return _usd(max(0.0, limit - used))
 
 
+class _Output:
+    """How an account endpoint should answer: JSON (the default) or the
+    plain-text view for a terminal (``app/services/terminal.py``).
+
+    Text is chosen with ``?format=text`` or an ``Accept`` header that names
+    ``text/plain`` (curl's default ``*/*`` stays JSON, so nothing that reads
+    these endpoints today changes). ``color=1`` adds ANSI colours and
+    ``ascii=1`` keeps the drawing to ASCII: the caller decides both, since
+    only it knows whether it is writing to a terminal and in which locale.
+    """
+
+    def __init__(
+        self,
+        request: Request,
+        fmt: str | None = Query(
+            None, alias="format", pattern="^(json|text)$",
+            description="`json` (default) or `text`: a plain-text view for a terminal.",
+        ),
+        color: bool = Query(False, description="With `format=text`: ANSI colours."),
+        ascii_only: bool = Query(False, alias="ascii", description="With `format=text`: ASCII only."),
+    ):
+        if fmt is None:
+            fmt = "text" if "text/plain" in request.headers.get("accept", "").lower() else "json"
+        self.text = fmt == "text"
+        self.style = terminal.Style(color=color, ascii=ascii_only)
+
+    def reply(self, data: dict, render) -> Response | dict:
+        if not self.text:
+            return data
+        return PlainTextResponse(render(data, self.style), headers={"Cache-Control": "no-store"})
+
+
 @router.get("/v1/me")
 @router.get("/me")
-async def account_info(user: User = Depends(get_current_user_unmetered)):
+async def account_info(
+    user: User = Depends(get_current_user_unmetered),
+    output: _Output = Depends(),
+):
     """The caller's own access and today's budget, for clients and scripts.
+
+    ``?format=text`` (or ``Accept: text/plain``) answers with the same
+    figures laid out for a terminal; see ``GET /v1/cli`` for a script that
+    asks without typing the key.
 
     Answers even once the daily limit is spent (no 429 at auth), since
     "how much is left / when does it reset" is what a client asks then.
@@ -342,7 +391,7 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
     concurrency_applies = mode != "off" and not user.is_admin and not user.concurrency_waived
     local_now = datetime.now(LOCAL_TZ)
 
-    return {
+    return output.reply({
         "object": "account",
         "username": user.username,
         "display_name": user.display_name,
@@ -381,7 +430,130 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
         "concurrency": (
             {"mode": mode, "limit": limit} if concurrency_applies else {"mode": "off"}
         ),
-    }
+    }, terminal.render_me)
+
+
+@router.get("/v1/status")
+async def model_status(
+    user: User = Depends(get_current_user_unmetered),
+    output: _Output = Depends(),
+):
+    """The models this key can use and whether they are up, for a terminal
+    or a script: what the dashboard's model tables show.
+
+    ``models`` lists every model the account can see (hidden entries and
+    cloud backends without access left out), in the dashboard's order, each
+    with its billed prices per 1M tokens. On-prem models carry ``state``
+    ``up`` / ``down`` from the gateway's health loop, and ``running`` /
+    ``waiting`` request counts when the server reports them; cloud models
+    are ``unchecked`` (the gateway does not probe them). ``onprem`` sums
+    the on-prem ones up. A key is never omitted as null: it is left out.
+
+    Like ``/v1/me`` it answers once the daily limit is spent, and
+    ``?format=text`` gives the terminal view. No database read.
+    """
+    models = model_catalog.visible_models(user)
+    onprem = [m for m in models if m["backend"] == "onprem"]
+    return output.reply({
+        "object": "status",
+        "onprem": {
+            "total": len(onprem),
+            "up": sum(1 for m in onprem if m["state"] == "up"),
+            "down": [m["id"] for m in onprem if m["state"] == "down"],
+        },
+        "models": models,
+    }, terminal.render_status)
+
+
+USAGE_MAX_DAYS = 90
+
+
+@router.get("/v1/usage")
+def usage_history(
+    days: int = Query(7, ge=1, le=USAGE_MAX_DAYS, description="How many days back, today included."),
+    user: User = Depends(get_current_user_unmetered),
+    output: _Output = Depends(),
+):
+    """The caller's own usage: one row per day and this month by model,
+    the figures behind the dashboard's trend chart and Cost by Model card.
+
+    ``days`` are Asia/Taipei calendar days, oldest first, today last and
+    still running; quiet days are present as zeros. ``month`` is the local
+    month so far, with one ``models`` row per model and backend in the
+    dashboard's order. Like the dashboard, the month leaves out a cloud
+    backend the account no longer has access to; the days count everything
+    (as the daily budget does).
+
+    Answers once the daily limit is spent; ``?format=text`` gives the
+    terminal view. Plain ``def``: it reads the database and awaits nothing.
+    """
+    history = get_usage_history(user, days)
+    hidden = model_catalog.hidden_cloud_backends(user)
+    catalog = model_catalog.current_catalog_keys()
+    rows = [r for r in history["models"] if r["backend"] not in hidden]
+    extra = sorted({r["backend"] for r in rows} - set(model_catalog.BACKEND_ORDER))
+    backend_rank = {name: i for i, name in enumerate((*model_catalog.BACKEND_ORDER, *extra))}
+    rows.sort(key=lambda r: (backend_rank[r["backend"]], model_catalog.usage_row_key(r, catalog)))
+    return output.reply({
+        "object": "usage",
+        "timezone": str(LOCAL_TZ),
+        "days": [
+            {
+                "date": day["date"],
+                "requests": day["reqs"],
+                "input_tokens": day["input_tokens"],
+                "output_tokens": day["output_tokens"],
+                "cost_usd": day["cost"],
+            }
+            for day in history["days"]
+        ],
+        "month": {
+            "month": local_month_start().strftime("%Y-%m"),
+            "requests": sum(r["requests"] for r in rows),
+            "input_tokens": sum(r["input_tokens"] for r in rows),
+            "output_tokens": sum(r["output_tokens"] for r in rows),
+            "cost_usd": _usd(sum(r["cost_usd"] for r in rows)),
+            "models": [
+                {
+                    "model": r["model"],
+                    "backend": model_catalog.BACKEND_NAMES.get(r["backend"], r["backend"]),
+                    "type": r["type"],
+                    "requests": r["requests"],
+                    "input_tokens": r["input_tokens"],
+                    "output_tokens": r["output_tokens"],
+                    "cost_usd": r["cost_usd"],
+                }
+                for r in rows
+            ],
+        },
+    }, terminal.render_usage)
+
+
+_CLI_SCRIPT = Path(__file__).resolve().parent.parent.parent / "setup" / "gw"
+_CLI_URL_PLACEHOLDER = "__GATEWAY_URL__"
+# Only a plain host[:port] is ever written into the script: the value comes
+# from the Host header.
+_CLI_HOST = re.compile(r"^(?:[A-Za-z0-9-]+\.)*[A-Za-z0-9-]+(?::\d{1,5})?$")
+
+
+@router.get("/v1/cli")
+def cli_script(request: Request, user: User = Depends(get_current_user_unmetered)):
+    """``gw``, the shell script that shows ``/v1/me``, ``/v1/status`` and
+    ``/v1/usage`` in a terminal (``setup/gw``), with this gateway's address
+    filled in. Save it somewhere on ``PATH`` and make it executable.
+
+    The script holds no key: it reads the one Claude Code already has
+    (``ANTHROPIC_AUTH_TOKEN`` in ``~/.claude/settings.json``) or
+    ``LLM_GATEWAY_API_KEY``. It is the same for every account, and still
+    asks for a key like every API route, so the IP allowlist covers it.
+    """
+    if not _CLI_SCRIPT.is_file():
+        raise HTTPException(status_code=404, detail="The gw script is not installed on this gateway.")
+    host = request.headers.get("host", "")
+    scheme = request.url.scheme if request.url.scheme in ("http", "https") else "https"
+    base = f"{scheme}://{host}" if _CLI_HOST.match(host) else ""
+    script = _CLI_SCRIPT.read_text(encoding="utf-8").replace(_CLI_URL_PLACEHOLDER, base)
+    return PlainTextResponse(script, headers={"Content-Disposition": 'inline; filename="gw"'})
 
 
 @router.post("/v1/chat/completions")

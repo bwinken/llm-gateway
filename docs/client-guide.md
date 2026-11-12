@@ -66,6 +66,9 @@ Windows users can get a pre-configured Claude Code installer from the **Setup** 
 |---|---|
 | `GET /v1/models` | Models your account can use |
 | `GET /v1/me`, `/me` | Your access (on-prem / Azure / AWS) and today's budget: limit, spent, remaining, reset time. Answers even when the budget is spent. See [Checking your quota](#checking-your-quota) |
+| `GET /v1/status` | The models you can use and whether each is up, with load and price. See [From a terminal](#from-a-terminal) |
+| `GET /v1/usage` | Your usage per day (`?days=`, default 7, up to 90) and this month by model |
+| `GET /v1/cli` | `gw`, a shell script that shows the three above in a terminal |
 | `POST /v1/embeddings` | Embeddings (vLLM only) |
 | `POST /v1/rerank`, `/v1/score` | Reranking |
 | `POST /v1/messages/count_tokens` | Token count for an Anthropic request (not billed) |
@@ -118,6 +121,57 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 - `enforced: false` means the gateway only logs overages instead of returning 429.
 - `cloud_budget_fallback: true` means a `/v1/*` request for a cloud model whose cap is spent is answered by an on-prem model instead of a 429.
 - `concurrency.limit` is how many requests your key may have in flight at once. With `"mode": "off"` there is no limit and `limit` is left out.
+
+## From a terminal
+
+`gw` is a small shell script (it needs `curl`) that shows your budget, the models and your usage without opening the dashboard. Get it once, from the gateway:
+
+```bash
+mkdir -p ~/.local/bin
+curl -fsS https://your-gateway/v1/cli -H "Authorization: Bearer sk-your-api-key" -o ~/.local/bin/gw
+chmod +x ~/.local/bin/gw
+```
+
+| Command | Shows |
+|---|---|
+| `gw` | Today's budget, then the models |
+| `gw me` | Today's budget: spent, left, when it resets, spend per backend |
+| `gw models` | The models you can use: up or down, running / waiting requests, context window, price |
+| `gw usage [N]` | The last N days (default 7) and this month by model |
+| `gw update` | Replaces the script with the gateway's current one |
+
+```
+alice · Alice
+
+Budget today
+  total  [███████░░░░░░░░░░░░░]  33%  $3.25 of $10.00  $6.75 left
+  cloud  [████████████████░░░░]  80%   $2.00 of $2.50  $0.50 left
+  resets in 9h 28m (midnight, Asia/Taipei)
+
+Spent today
+  on-prem      $1.25
+  Azure        $2.00
+  AWS      no access
+  42 requests, 120.0K tokens in, 18.0K out
+
+Up to 8 requests at a time.
+```
+
+- **No key in the script.** `gw` uses `LLM_GATEWAY_API_KEY` when set; otherwise the key Claude Code already has (`ANTHROPIC_AUTH_TOKEN`, from the environment or `~/.claude/settings.json`), and only while `ANTHROPIC_BASE_URL` there points at this gateway. After you regenerate your key, updating Claude Code (the dashboard's *My API Key* script) updates `gw` too.
+- The key is handed to `curl` on its standard input, not on the command line, so other users of a shared machine cannot read it from `ps`.
+- `gw --json me|models|usage` prints the JSON instead, for scripts. `watch -n 60 --color gw --color` keeps it on screen.
+- Colours are used when writing to a terminal (`--no-color` or `NO_COLOR` turns them off); outside a UTF-8 locale the bars are drawn in ASCII (`--ascii`).
+- An administrator can install it for everyone instead: copy `setup/gw` from the repository to `/usr/local/bin/gw` and set `LLM_GATEWAY_URL=https://your-gateway` (the downloaded copy already knows the address).
+
+Without the script, the same views come from `curl`: add `?format=text` (or send `Accept: text/plain`) to `/v1/me`, `/v1/status` or `/v1/usage`; `&color=1` adds colours, `&ascii=1` keeps to ASCII. Without it they answer in JSON:
+
+```bash
+curl "https://your-gateway/v1/status?format=text" -H "Authorization: Bearer sk-your-api-key"
+```
+
+- `/v1/status`: `models` lists every model your key can see, each with `backend` (`onprem` / `azure` / `aws`), `type`, the billed `input_price_per_1m` / `output_price_per_1m`, and `state`: `up` or `down` for on-prem models (with `running` / `waiting` request counts when the server reports them), `unchecked` for cloud models, which the gateway does not probe. `onprem` counts the on-prem ones (`total`, `up`, and the names that are `down`). A request for a model that is down is answered by another model of its type when one is up.
+- `/v1/usage`: `days` has one entry per `Asia/Taipei` day, oldest first, today last and still running (`date`, `requests`, `input_tokens`, `output_tokens`, `cost_usd`); `month` is this month so far, with a `models` list per model and backend.
+- All three answer when your budget is spent, and none of them is billed.
 
 ## Tool calling: pick the right client mode
 

@@ -241,7 +241,10 @@ class TestApiCheck:
             assert client_at(OUTSIDE).get("/v1/models").status_code == 401
             assert _status(client_at, OUTSIDE, key="sk-wrong") == 401
 
-    @pytest.mark.parametrize("path", ["/v1/models", "/models", "/azure/v1/models", "/aws/v1/models", "/v1/me"])
+    @pytest.mark.parametrize("path", [
+        "/v1/models", "/models", "/azure/v1/models", "/aws/v1/models",
+        "/v1/me", "/v1/status", "/v1/usage", "/v1/cli",
+    ])
     def test_every_api_router_is_gated(self, client_at, path):
         with _settings("enforce"):
             assert _status(client_at, OUTSIDE, path=path) == 403

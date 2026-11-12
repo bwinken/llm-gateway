@@ -52,6 +52,9 @@ One base URL surfaces every backend to clients like Claude Code's model picker. 
 |---|---|---|---|---|
 | `GET` | `/v1/models`, `/models` | List models (LLM/VLM only, `hidden` entries left out). Azure aliases merged in for users with `can_use_azure`, Bedrock aliases for `can_use_bedrock` (admins bypass) | Direct response | `llm`, `vlm` |
 | `GET` | `/v1/me`, `/me` | Caller's access (on-prem / Azure / AWS) and today's budget per backend. Auth skips the daily-limit 429 so it answers when the budget is spent | Direct response | — |
+| `GET` | `/v1/status` | The models the caller can see with `state` (`up` / `down` on-prem, `unchecked` cloud), load and billed prices (`model_catalog.visible_models`). Unmetered auth; no DB read | Direct response | — |
+| `GET` | `/v1/usage` | The caller's usage per local day (`?days=`, 1 to 90, default 7) and this month by model, through `usage_rollup.aggregate`. Unmetered auth; plain `def` | Direct response | — |
+| `GET` | `/v1/cli` | `gw` (`setup/gw`), the shell script that shows the three above in a terminal, with the gateway's address written in. Unmetered auth; holds no key | Direct response | — |
 | `POST` | `/v1/chat/completions`, `/chat/completions` | Chat completion generation | `vllm_forward_chat_completions` (vLLM) / `azure_forward_chat_completions` (Azure) / `bedrock_forward_chat_completions` (Bedrock) | `llm`, `vlm` |
 | `POST` | `/v1/responses`, `/responses` | Responses API (no Bedrock dispatch: a Bedrock alias falls back to vLLM) | `vllm_forward_responses` (vLLM) / `azure_forward_responses` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`, `/embeddings` | Text embeddings | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
