@@ -414,7 +414,8 @@ out. `TestExchange`: the existing key is returned and never replaced, it
 then works on the API, a first sign-in creates the account as the
 dashboard does, names from the token are synced, POST only.
 `TestRefusals`: no token, what is not an AuthCenter token (an API key
-included), no `read` scope (nothing created), a disabled account, and the
+included), no `read` scope (nothing created), a disabled account (let in only by
+the token's `admin` scope, never by the `is_admin` column), and the
 token opening no API route. `TestIpAllowlist`: an unlisted address is
 refused at sign-in. `TestThrottle`: invalid tokens share the per-address
 tally with invalid keys; one expired token retried never locks.

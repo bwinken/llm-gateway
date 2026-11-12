@@ -277,7 +277,7 @@ curl -X POST https://your-gateway/auth/api-key -H "Authorization: Bearer $AUTHCE
 - 拿到的永遠是你現有的 key。在第二台機器登入，不會讓第一台的 key 失效。
 - 第一次登入會建立帳號，和第一次開 dashboard 一樣。
 - 之後如果 API 回 401，代表 key 被重新產生過：重新登入、再換一次即可。
-- `401`：token 沒帶、過期，或不是 AuthCenter 發的。`403`：token 沒有 `read` scope、帳號被停用，或你的位址不允許使用 API（訊息會說明是哪一種）。`429`：你的位址送出太多錯誤的 token 或 key，請等 `Retry-After` 之後再試。
+- `401`：token 沒帶、過期，或不是 AuthCenter 發的。`403`：token 沒有 `read` scope、帳號被停用（且 token 沒有 `admin` scope），或你的位址不允許使用 API（訊息會說明是哪一種）。`429`：你的位址送出太多錯誤的 token 或 key，請等 `Retry-After` 之後再試。
 - 每一次這樣交出 key，都會記在 gateway 的稽核紀錄裡。
 
 ## Tool calling：選對 client 模式

@@ -118,6 +118,20 @@ class TestRefusals:
         assert resp.status_code == 403
         assert "sk-testkey123" not in resp.text
 
+    def test_who_is_an_admin_is_authcenters_call(self, client, db_session, test_user):
+        # As on the web UI: the token's scope decides, not the account's
+        # is_admin column.
+        test_user.is_disabled = True
+        test_user.is_admin = True
+        db_session.add(test_user)
+        db_session.commit()
+        assert _exchange(client, sub="testuser", scopes=["read"]).status_code == 403
+        test_user.is_admin = False
+        db_session.add(test_user)
+        db_session.commit()
+        resp = _exchange(client, sub="testuser", scopes=["admin"])
+        assert resp.status_code == 200 and resp.json()["api_key"] == "sk-testkey123"
+
     def test_the_token_opens_nothing_else(self, client, test_user):
         # On the API a bearer value is an API key, and this is not one.
         jwt_header = web_auth_header(sub="testuser", scopes=["admin"])

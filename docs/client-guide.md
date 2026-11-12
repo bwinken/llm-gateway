@@ -277,7 +277,7 @@ curl -X POST https://your-gateway/auth/api-key -H "Authorization: Bearer $AUTHCE
 - You always get your existing key. Signing in on a second machine does not change the key on the first.
 - A first sign-in creates your account, as a first visit to the dashboard does.
 - If the API later answers 401, the key was regenerated: sign in and trade again.
-- `401`: the token is missing, expired or not AuthCenter's. `403`: the token has no `read` scope, the account is disabled, or your address is not allowed to use the API (the message says which). `429`: too many bad tokens or keys came from your address; wait for `Retry-After`.
+- `401`: the token is missing, expired or not AuthCenter's. `403`: the token has no `read` scope, the account is disabled (and the token has no `admin` scope), or your address is not allowed to use the API (the message says which). `429`: too many bad tokens or keys came from your address; wait for `Retry-After`.
 - Every key handed out this way is in the gateway's audit log.
 
 ## Tool calling: pick the right client mode

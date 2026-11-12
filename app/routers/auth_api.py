@@ -32,8 +32,10 @@ It hands out a credential, so:
   user's other machines out);
 - the failed-auth throttle counts invalid tokens like invalid keys, and a
   locked address is refused before the token is looked at;
-- a disabled account and the API IP allowlist refuse here as they would
-  refuse the key (better told at sign-in than on every later request);
+- a disabled account is refused, except an admin by the token's scope:
+  permissions are AuthCenter's to define, as on the web UI;
+- the API IP allowlist refuses here as it would refuse the key (better told
+  at sign-in than on every later request);
 - every call by an identified account is in the audit log
   (``audit._AUDITED_TOKEN_ROUTES``), the key itself redacted.
 """
@@ -68,8 +70,9 @@ def api_key_for_token(
     ``Authorization: Bearer <access token>``; no body. Replies
     ``{"object": "api_key", "username", "api_key", "legacy_key"}``.
     401 for a missing, expired or foreign token, 403 for a token without
-    the ``read`` scope, a disabled account or an address the IP allowlist
-    refuses, 429 while the address is locked after too many bad credentials.
+    the ``read`` scope, a disabled account (unless the token has the
+    ``admin`` scope) or an address the IP allowlist refuses, 429 while the
+    address is locked after too many bad credentials.
 
     A plain ``def``: it reads and may write the database and awaits nothing.
     """
@@ -109,8 +112,10 @@ def api_key_for_token(
             str(payload.get("display_name") or ""),
             str(payload.get("org_id") or payload.get("org_code") or ""),
         )
-    # The same two refusals the key itself would meet on the API.
-    if user.is_disabled and not user.is_admin:
+    # A disabled account gets no key, unless AuthCenter says it is an admin:
+    # who is an admin is decided there (the token's scope), as on the web UI
+    # (``get_web_user``), not by the ``is_admin`` column of the account.
+    if user.is_disabled and "admin" not in scopes:
         logger.warning("Key exchange rejected: user '{}' is disabled", user.username)
         raise auth.AccountDisabledError(user.username)
     ip_allowlist.check(request, user)
