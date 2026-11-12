@@ -24,6 +24,7 @@ from app.core.config import (
     get_model_routing_snapshot,
     get_pricing_snapshot,
     get_site_links,
+    setup_page_enabled,
 )
 from app.core.database import get_session
 from app.core.logger import logger
@@ -57,6 +58,9 @@ templates = Jinja2Templates(directory=str(_templates_dir))
 # every page, so expose them as a template global instead of threading them
 # through every render context.
 templates.env.globals["get_site_links"] = get_site_links
+# Same for the Setup page switch (SETUP_PAGE_ENABLED): the navbar link is on
+# every page.
+templates.env.globals["setup_page_enabled"] = setup_page_enabled
 _SETUP_DIR = Path(__file__).resolve().parent.parent.parent / "setup"
 
 
@@ -615,8 +619,11 @@ def personalized_claude_installer(
     """Serve install-claude-code.bat with the user's API key inlined.
 
     Auth'd so the key is never exposed publicly; oauth2-proxy redirects
-    unauthenticated users through SSO first.
+    unauthenticated users through SSO first. 404 with the Setup page off
+    (``SETUP_PAGE_ENABLED=false``).
     """
+    if not setup_page_enabled():
+        raise HTTPException(status_code=404, detail="Not found.")
     template_path = _SETUP_DIR / "install-claude-code.bat"
     if not template_path.is_file():
         raise HTTPException(status_code=404, detail="Installer not available.")
@@ -644,7 +651,10 @@ def setup_page(
     request: Request,
     user: User = Security(get_web_user, scopes=["read"]),
 ):
-    """Setup page for the Claude Code installer. Requires login."""
+    """Setup page for the Claude Code installer (Windows). Requires login.
+    404 when a site turned it off (``SETUP_PAGE_ENABLED=false``)."""
+    if not setup_page_enabled():
+        raise HTTPException(status_code=404, detail="Not found.")
     claude_code_available = (_SETUP_DIR / "install-claude-code.bat").is_file()
     return templates.TemplateResponse(
         request,

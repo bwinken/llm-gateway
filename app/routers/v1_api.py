@@ -28,7 +28,7 @@ misconfiguration that previously surfaced as a silent 404.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
@@ -45,8 +45,10 @@ from app.core.deps import (
     _enforce_daily_limit,
     check_cloud_budget,
     effective_cloud_limit,
+    get_client_notices,
     get_current_user,
     get_current_user_unmetered,
+    get_owned_apps,
     get_today_usage,
     get_usage_history,
     limited_current_user,
@@ -55,10 +57,11 @@ from app.core.logger import logger
 from app.core.timeutil import (
     LOCAL_TZ,
     local_month_start,
+    local_today,
     next_local_midnight,
     seconds_until_local_midnight,
 )
-from app.models.schema import User
+from app.models.schema import User, is_legacy_api_key
 from app.services.azure_proxy import (
     azure_forward_chat_completions,
     azure_forward_count_tokens,
@@ -66,6 +69,7 @@ from app.services.azure_proxy import (
     azure_forward_responses,
 )
 from app.services import client_rules, guardrail, model_catalog
+from app.services.model_order import natural_key
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
     bedrock_forward_count_tokens,
@@ -321,6 +325,9 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
 
     Limits are those the gateway enforces; with ``ENFORCE_DAILY_LIMIT=false``
     they are only logged (``daily.enforced`` = false).
+
+    ``legacy_key``: the key is of the older, weaker format and the dashboard
+    asks its holder to regenerate it. The key itself is never returned.
     """
     today = await run_in_threadpool(get_today_usage, user)
 
@@ -353,6 +360,7 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
         "username": user.username,
         "display_name": user.display_name,
         "is_admin": user.is_admin,
+        "legacy_key": is_legacy_api_key(user.api_key),
         "daily": {
             "limit_usd": daily_limit,
             "used_usd": _usd(today["total_cost_usd"]),
@@ -443,25 +451,15 @@ def usage_history(
     history = get_usage_history(user, days)
     hidden = model_catalog.hidden_cloud_backends(user)
     catalog = model_catalog.current_catalog_keys()
-    rows = [r for r in history["models"] if r["backend"] not in hidden]
-    extra = sorted({r["backend"] for r in rows} - set(model_catalog.BACKEND_ORDER))
-    backend_rank = {name: i for i, name in enumerate((*model_catalog.BACKEND_ORDER, *extra))}
-    rows.sort(key=lambda r: (backend_rank[r["backend"]], model_catalog.usage_row_key(r, catalog)))
-    return {
-        "object": "usage",
-        "timezone": str(LOCAL_TZ),
-        "days": [
-            {
-                "date": day["date"],
-                "requests": day["reqs"],
-                "input_tokens": day["input_tokens"],
-                "output_tokens": day["output_tokens"],
-                "cost_usd": day["cost"],
-            }
-            for day in history["days"]
-        ],
-        "month": {
-            "month": local_month_start().strftime("%Y-%m"),
+
+    def by_model(rows: list[dict]) -> dict:
+        """Totals and one row per model and backend, in the dashboard's
+        order, without the cloud backends the account may not use."""
+        rows = [r for r in rows if r["backend"] not in hidden]
+        extra = sorted({r["backend"] for r in rows} - set(model_catalog.BACKEND_ORDER))
+        backend_rank = {name: i for i, name in enumerate((*model_catalog.BACKEND_ORDER, *extra))}
+        rows.sort(key=lambda r: (backend_rank[r["backend"]], model_catalog.usage_row_key(r, catalog)))
+        return {
             "requests": sum(r["requests"] for r in rows),
             "input_tokens": sum(r["input_tokens"] for r in rows),
             "output_tokens": sum(r["output_tokens"] for r in rows),
@@ -478,8 +476,109 @@ def usage_history(
                 }
                 for r in rows
             ],
-        },
+        }
+
+    return {
+        "object": "usage",
+        "timezone": str(LOCAL_TZ),
+        "days": [
+            {
+                "date": day["date"],
+                "requests": day["reqs"],
+                "input_tokens": day["input_tokens"],
+                "output_tokens": day["output_tokens"],
+                "cost_usd": day["cost"],
+            }
+            for day in history["days"]
+        ],
+        "today": {"date": local_today().isoformat(), **by_model(history["today_models"])},
+        "month": {"month": local_month_start().strftime("%Y-%m"), **by_model(history["models"])},
     }
+
+
+@router.get("/v1/apps")
+def owned_apps(user: User = Depends(get_current_user_unmetered)):
+    """The app accounts the caller owns, with each one's daily limit and
+    this month's usage: the dashboard's *My App Accounts* table.
+
+    An app's API key is **not** part of it, and no API-key endpoint returns
+    one: a leaked personal key must not open every app account its holder
+    owns. Showing and regenerating an app's key stays on the dashboard,
+    behind SSO. ``legacy_key`` says an app's key is of the older format.
+
+    Answers once the daily limit is spent. Plain ``def`` (database read).
+    """
+    apps = sorted(get_owned_apps(user), key=lambda app: natural_key(app["username"]))
+    return {
+        "object": "apps",
+        "month": local_month_start().strftime("%Y-%m"),
+        "apps": [
+            {
+                "username": app["username"],
+                "daily_limit_usd": max(0.0, float(app["daily_limit_usd"])),
+                "legacy_key": app["legacy_key"],
+                "month": {
+                    "requests": app["monthly_reqs"],
+                    "input_tokens": app["monthly_input"],
+                    "output_tokens": app["monthly_output"],
+                    "cost_usd": _usd(app["monthly_cost"]),
+                },
+            }
+            for app in apps
+        ],
+    }
+
+
+def _patch(env: dict[str, str | None]) -> dict:
+    """A settings patch as data: the variables to set in the ``env`` block
+    of Claude Code's settings.json and the ones to take out of it."""
+    return {
+        "set": {name: value for name, value in env.items() if value is not None},
+        "unset": [name for name, value in env.items() if value is None],
+    }
+
+
+@router.get("/v1/notices")
+def client_notices(user: User = Depends(get_current_user_unmetered)):
+    """What the dashboard's notices panel tells the caller: the client
+    checks (``CC001``...) this account tripped in the last ``window_days``
+    days and has not reported as fixed.
+
+    Each notice has the check's ``id``, the admin's ``title`` and
+    ``message``, when it was last seen and, when the fix is a setting, its
+    ``patch``. The top-level ``patch`` is the account's one patch for
+    everything open (what the dashboard offers as a download): ``covers``
+    lists the checks it fixes and ``manual`` those no setting can fix
+    (update Claude Code, ask for access). It is absent when nothing is
+    open. A patch only ever sets or removes variables in the ``env`` block
+    of settings.json, and never holds a key.
+
+    Read-only: reporting a notice as fixed (*I've applied it*) stays on the
+    dashboard. Answers once the daily limit is spent. Plain ``def``.
+    """
+    found = get_client_notices(user)
+    notices = []
+    for notice in found["notices"]:
+        entry: dict[str, object] = {"id": notice["rule_id"], "title": notice["title"]}
+        if notice["message"]:
+            entry["message"] = notice["message"]
+        entry["last_seen_at"] = (
+            notice["seen_at"].replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).isoformat(timespec="seconds")
+        )
+        if notice["client_version"]:
+            entry["client_version"] = notice["client_version"]
+        if notice["env"]:
+            entry["patch"] = _patch(notice["env"])
+        notices.append(entry)
+    body: dict[str, object] = {
+        "object": "notices",
+        "window_days": client_rules.WINDOW_DAYS,
+        "notices": notices,
+    }
+    combined = found["combined"]
+    if combined:
+        body["patch"] = {**_patch(combined["env"]), "covers": combined["covered"], "manual": combined["manual"]}
+    return body
 
 
 @router.post("/v1/chat/completions")

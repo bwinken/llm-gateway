@@ -27,7 +27,9 @@
         <p class="mt-1 text-sm text-t3">Your budget, usage and the models available to you.</p>
     </div>
     <div class="flex items-center gap-2 self-start">
+        {% if setup_page_enabled() %}
         <a href="/setup" class="gw-btn gw-btn-ghost px-4 py-2.5 text-sm">Set up Claude Code</a>
+        {% endif %}
         <button onclick="document.getElementById('apiKeyModal').classList.remove('hidden')"
                 class="gw-btn gw-btn-primary px-4 py-2.5 text-sm">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
@@ -54,8 +56,9 @@
 {# ── Client-rule notices for this account: the shared partial, also served alone ── #}
 {% include "_client_notices.html" %}
 
-{# ── First-time setup: only until the account has made its first request ── #}
-{% if total_reqs == 0 and today_reqs == 0 %}
+{# ── First-time setup: only until the account has made its first request,
+   and only where the Setup page is offered (SETUP_PAGE_ENABLED) ── #}
+{% if total_reqs == 0 and today_reqs == 0 and setup_page_enabled() %}
 <div class="gw-card p-5 mb-6 gw-anim gw-d1 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
      style="background:rgba(99,152,255,0.06);border-color:rgba(99,152,255,0.25)">
     <div class="text-sm">

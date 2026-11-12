@@ -937,12 +937,19 @@ def notices_for(session: Session, user: User, now: datetime | None = None) -> li
     if not rows:
         return []
     azure, aws = audience_of(user)
-    return [
-        {"rule_id": rule.id, "title": rule.title, "message": rule.message,
-         "patch": env_snippet(effective_env(rule, azure, aws)),
-         "seen_at": rows[rule.id].last_seen_at, "client_version": rows[rule.id].client_version}
-        for rule in rules(session) if rule.enabled and rule.id in rows
-    ]
+    found = []
+    for rule in rules(session):
+        if not rule.enabled or rule.id not in rows:
+            continue
+        env = effective_env(rule, azure, aws)
+        found.append({
+            "rule_id": rule.id, "title": rule.title, "message": rule.message,
+            # ``patch`` is the text a person reads; ``env`` the same patch as
+            # data (``GET /v1/notices``).
+            "patch": env_snippet(env), "env": env,
+            "seen_at": rows[rule.id].last_seen_at, "client_version": rows[rule.id].client_version,
+        })
+    return found
 
 
 def audience_flags(audience: str) -> tuple[bool, bool]:

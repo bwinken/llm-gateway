@@ -417,18 +417,24 @@ flags. `TestOverBudget` pins that it still answers once the budget is spent
 and `x-api-key`; `TestConcurrency` the reported concurrency mode. Every
 response is checked for `null`s (`_no_nulls`).
 
-### `test_status_usage.py` — `GET /v1/status`, `GET /v1/usage`
+### `test_status_usage.py` — `GET /v1/status`, `/v1/usage`, `/v1/apps`, `/v1/notices`
 
-The dashboard's model and usage figures by API key. `TestAuth`: both need
-a key, refuse a disabled account, answer once the budget is spent and
-write no `usage_logs` row. `TestStatus`: what the account can see (every
-type, declared metadata, billed prices), `up` / `down` / load from the
-health cache, cloud `unchecked`, hidden entries and backends without
-access left out, admins seeing every backend, the one display order.
-`TestUsage`: one row per local day with today last and quiet days as
-zeros, the `days` bounds, this month by model in catalog order, a revoked
-backend left out of rows and total, the same numbers once rolled up, and
-the handler being a plain `def`. Every response is checked for `null`s.
+What the dashboard shows an account, by API key. `TestAuth`: each needs a
+key, refuses a disabled account, answers once the budget is spent and
+writes no `usage_logs` row. `TestStatus`: what the account can see (every
+type, declared metadata and capability flags, billed prices), `up` /
+`down` / load from the health cache, cloud `unchecked`, hidden entries and
+backends without access left out, admins seeing every backend, the one
+display order. `TestUsage`: one row per local day with today last and
+quiet days as zeros, the `days` bounds, today and this month by model in
+catalog order, a revoked backend left out of rows and total, the same
+numbers once rolled up, plain `def`. `TestMe`: `legacy_key`. `TestApps`:
+the caller's own app accounts with this month's usage, never an app's
+key. `TestNotices`: the dashboard panel's notices with patches as
+`{set, unset}`, the one combined patch and what it cannot fix, the patch
+following the account's access, resolved / old / other accounts'
+violations left out, never a key, read-only, a broken store reading as
+nothing open. Every response is checked for `null`s.
 
 ### `test_concurrency_limit.py` — per-user concurrency limit
 
@@ -673,6 +679,11 @@ set, and the admin panel shows the current values.
 
 Renders the Claude Code section with no CA-certificate tab, requires login, and
 the old `/setup/files/...` route is gone (404).
+`TestSetupPageSwitch`: `SETUP_PAGE_ENABLED=false` makes the page and the
+installer 404 and takes every link to them off the welcome page, the
+dashboard and the admin page, while the key patch stays; the admin's install
+guide then shows in the top bar; every template environment registers the
+switch.
 
 ### `test_client_rules.py` — client checks, violations, settings patch, mail, Claude Code versions
 - Registry: violation ids are unique and never renumbered; every check has wording; only `CC001` is on before an admin decides; a retired check is no longer evaluated or shown.

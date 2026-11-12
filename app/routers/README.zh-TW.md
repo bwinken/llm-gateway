@@ -53,7 +53,9 @@ graph LR
 | `GET` | `/v1/models`、`/models` | 列出模型(僅 LLM/VLM,`hidden` 的不列)。有 `can_use_azure` 的使用者會多看到 Azure 別名,有 `can_use_bedrock` 的會多看到 Bedrock 別名(admin 自動 bypass) | 直接回傳 | `llm`, `vlm` |
 | `GET` | `/v1/me`、`/me` | 呼叫者的權限(地端 / Azure / AWS)與各後端今日額度。驗證時不做每日額度 429，額度用完也能查 | 直接回傳 | — |
 | `GET` | `/v1/status` | 呼叫者看得到的模型與 `state`(地端 `up` / `down`,雲端 `unchecked`)、負載、計費價格(`model_catalog.visible_models`)。驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
-| `GET` | `/v1/usage` | 呼叫者每個本地日的用量(`?days=`,1 到 90,預設 7)與本月各模型用量,經 `usage_rollup.aggregate` 讀取。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
+| `GET` | `/v1/usage` | 呼叫者每個本地日的用量(`?days=`,1 到 90,預設 7)以及今天、本月各模型用量,經 `usage_rollup.aggregate` 讀取。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
+| `GET` | `/v1/apps` | 呼叫者名下的 app 帳號、每日上限與本月用量(`stats.get_owned_apps_summary`),不含 key。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
+| `GET` | `/v1/notices` | 呼叫者尚未處理的 client 通知,以及以 `{set, unset}` 表示的 patch(`client_rules.notices_for` / `combined_for`)。唯讀;驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
 | `POST` | `/v1/chat/completions`、`/chat/completions` | Chat 對話生成 | `vllm_forward_chat_completions`(vLLM) / `azure_forward_chat_completions`(Azure) / `bedrock_forward_chat_completions`(Bedrock) | `llm`, `vlm` |
 | `POST` | `/v1/responses`、`/responses` | Responses API(沒有 Bedrock dispatch:Bedrock alias 會 fallback 到 vLLM) | `vllm_forward_responses`(vLLM) / `azure_forward_responses`(Azure) | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`、`/embeddings` | 文字向量嵌入 | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |

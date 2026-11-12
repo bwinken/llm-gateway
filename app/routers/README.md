@@ -53,7 +53,9 @@ One base URL surfaces every backend to clients like Claude Code's model picker. 
 | `GET` | `/v1/models`, `/models` | List models (LLM/VLM only, `hidden` entries left out). Azure aliases merged in for users with `can_use_azure`, Bedrock aliases for `can_use_bedrock` (admins bypass) | Direct response | `llm`, `vlm` |
 | `GET` | `/v1/me`, `/me` | Caller's access (on-prem / Azure / AWS) and today's budget per backend. Auth skips the daily-limit 429 so it answers when the budget is spent | Direct response | — |
 | `GET` | `/v1/status` | The models the caller can see with `state` (`up` / `down` on-prem, `unchecked` cloud), load and billed prices (`model_catalog.visible_models`). Unmetered auth; no DB read | Direct response | — |
-| `GET` | `/v1/usage` | The caller's usage per local day (`?days=`, 1 to 90, default 7) and this month by model, through `usage_rollup.aggregate`. Unmetered auth; plain `def` | Direct response | — |
+| `GET` | `/v1/usage` | The caller's usage per local day (`?days=`, 1 to 90, default 7), and today and this month by model, through `usage_rollup.aggregate`. Unmetered auth; plain `def` | Direct response | — |
+| `GET` | `/v1/apps` | The app accounts the caller owns with their daily limit and this month's usage (`stats.get_owned_apps_summary`), never their keys. Unmetered auth; plain `def` | Direct response | — |
+| `GET` | `/v1/notices` | The caller's open client-rule notices and their patches as `{set, unset}` (`client_rules.notices_for` / `combined_for`). Read-only; unmetered auth; plain `def` | Direct response | — |
 | `POST` | `/v1/chat/completions`, `/chat/completions` | Chat completion generation | `vllm_forward_chat_completions` (vLLM) / `azure_forward_chat_completions` (Azure) / `bedrock_forward_chat_completions` (Bedrock) | `llm`, `vlm` |
 | `POST` | `/v1/responses`, `/responses` | Responses API (no Bedrock dispatch: a Bedrock alias falls back to vLLM) | `vllm_forward_responses` (vLLM) / `azure_forward_responses` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`, `/embeddings` | Text embeddings | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
@@ -186,7 +188,7 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 | `POST` | `/dashboard/client-rules/{rule_id}/resolved` | *I've applied it*: hide this notice until the gateway sees the problem again. JSON with `Accept: application/json` |
 | `POST` | `/dashboard/client-rules/all/resolved` | *I've applied everything*: the same for every open notice |
 | `GET` | `/dashboard/api-key/patch.{bat,sh}` | The caller's own key as a settings patch: sets `ANTHROPIC_AUTH_TOKEN`, removes `ANTHROPIC_API_KEY` (`client_rules.key_env`). What to run after regenerating. `Cache-Control: no-store`, recorded in the audit log |
-| `GET` | `/setup` | Claude Code installer page |
+| `GET` | `/setup` | Claude Code installer page (Windows). 404, like the installer download, with `SETUP_PAGE_ENABLED=false` |
 
 ### Dashboard Data Sources
 

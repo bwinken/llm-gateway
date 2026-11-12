@@ -49,6 +49,7 @@ from app.core.config import (
     get_guardrail_settings,
     get_model_routing_snapshot,
     get_site_links,
+    setup_page_enabled,
     save_config,
     set_client_monthly_mail,
     set_cloud_budget_fallback,
@@ -96,6 +97,7 @@ templates = Jinja2Templates(directory=str(_templates_dir))
 # base.html reads the admin-editable links (support bot / install guide) on
 # every page — same global as web_ui's template environment.
 templates.env.globals["get_site_links"] = get_site_links
+templates.env.globals["setup_page_enabled"] = setup_page_enabled
 
 
 # ── Web UI ──

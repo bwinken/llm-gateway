@@ -58,7 +58,7 @@ claude
 
 `/v1/messages` 適用所有後端：vLLM 模型會轉成 OpenAI chat completions，Azure 模型走 Responses API，Bedrock 模型走 Converse。串流、tool use、圖片、推理內容（`thinking` block）在每個後端都支援。下游長時間沒有輸出時，gateway 每 10 秒送一次 `ping`，Claude Code 不會因此斷線。串流若在生成途中被切斷，會以可重試的 `overloaded_error` 結束，不會假裝這一輪已經完成。
 
-Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 Claude Code 安裝程式。
+Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 Claude Code 安裝程式（使用者不在 Windows 上的站台可能已關閉這個頁面）。
 
 ## 其他端點
 
@@ -67,7 +67,9 @@ Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 C
 | `GET /v1/models` | 你的帳號可以用的模型 |
 | `GET /v1/me`、`/me` | 你的權限（地端 / Azure / AWS）和今日額度：上限、已用、剩餘、重置時間。額度用完時一樣可以查。見[查詢額度](#查詢額度) |
 | `GET /v1/status` | 你可以用的模型，以及每個模型是否正常、目前負載和價格。見[模型狀態](#模型狀態) |
-| `GET /v1/usage` | 你每天的用量和本月各模型的用量。見[用量紀錄](#用量紀錄) |
+| `GET /v1/usage` | 你每天的用量，以及今天和本月各模型的用量。見[用量紀錄](#用量紀錄) |
+| `GET /v1/apps` | 你名下的 app 帳號，以及各自的上限和本月用量。見[App 帳號](#app-帳號) |
+| `GET /v1/notices` | dashboard 要你修正的 client 設定。見[通知](#通知) |
 | `POST /v1/embeddings` | Embeddings（僅 vLLM） |
 | `POST /v1/rerank`、`/v1/score` | Rerank |
 | `POST /v1/messages/count_tokens` | 計算 Anthropic 請求的 token 數（不計費） |
@@ -95,6 +97,7 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
   "username": "alice",
   "display_name": "Alice",
   "is_admin": false,
+  "legacy_key": false,
   "daily": {
     "limit_usd": 10.0, "used_usd": 3.25, "remaining_usd": 6.75,
     "requests": 42, "input_tokens": 120000, "output_tokens": 18000,
@@ -119,6 +122,7 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 - 只有在 `used_usd` 已達上限時才會拒絕請求，所以當天最後一個請求可能會稍微超出上限。
 - `enforced: false` 代表超額時 gateway 只記 log，不會回 429。
 - `cloud_budget_fallback: true` 代表雲端每日上限用完時，`/v1/*` 的請求會改由地端模型回答，而不是回 429。
+- `legacy_key: true` 代表你的 key 是較舊、較弱的格式，方便時請到 dashboard 重新產生。任何端點都不會回傳 key 本身。
 - `concurrency.limit` 是你的 key 同時可以進行幾個請求。`"mode": "off"` 代表不限，此時不帶 `limit`。
 
 ## 模型狀態
@@ -150,7 +154,7 @@ curl https://your-gateway/v1/status -H "Authorization: Bearer sk-your-api-key"
 - `state`：地端模型是 `up` 或 `down`，也就是 gateway 健康檢查最近一次看到的狀態；雲端模型是 `unchecked`，因為 gateway 不探測雲端。
 - `running` / `waiting` 是地端伺服器正在處理和排隊中的請求數，只有伺服器有回報時才會出現。
 - `input_price_per_1m` / `output_price_per_1m` 是實際計費的價格，單位是每 100 萬 token 的美元。
-- `display_name`、`context_window`、`max_output_tokens` 在管理員有設定時才會出現。欄位不會是 `null`：沒有值時就沒有這個 key。
+- `display_name`、`context_window`、`max_output_tokens` 和能力旗標（`supports_tools`、`supports_vision`、`supports_prompt_caching`、`is_reasoning`）在管理員有設定時才會出現，和 `/v1/models` 相同。欄位不會是 `null`：沒有值時就沒有這個 key。
 - `onprem` 是地端模型的統計：總數、正常的數量、以及離線模型的名稱。
 - 指定的模型離線時，只要同類型還有模型正常，請求會由那個模型回答（回應會帶 `X-Model-Fallback`）。
 
@@ -169,6 +173,16 @@ curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-ap
     {"date": "2026-10-12", "requests": 31, "input_tokens": 98000,  "output_tokens": 12500, "cost_usd": 4.1},
     {"date": "2026-10-13", "requests": 42, "input_tokens": 120000, "output_tokens": 18000, "cost_usd": 3.25}
   ],
+  "today": {
+    "date": "2026-10-13",
+    "requests": 42, "input_tokens": 120000, "output_tokens": 18000, "cost_usd": 3.25,
+    "models": [
+      {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
+       "requests": 30, "input_tokens": 90000, "output_tokens": 13000, "cost_usd": 1.25},
+      {"model": "gpt-5", "backend": "azure", "type": "llm",
+       "requests": 12, "input_tokens": 30000, "output_tokens": 5000, "cost_usd": 2.0}
+    ]
+  },
   "month": {
     "month": "2026-10",
     "requests": 412, "input_tokens": 1310000, "output_tokens": 164000, "cost_usd": 42.1,
@@ -183,10 +197,64 @@ curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-ap
 ```
 
 - `days` 每個 `Asia/Taipei` 日曆日一筆，由舊到新，最後一筆是今天（仍在累計）。沒有用量的日子也會出現，數值為 0。`?days=` 決定回傳幾天：1 到 90，預設 7。
-- `month` 是本月到目前為止的合計，`models` 依模型和後端分列，順序和 dashboard 一樣。
-- 和 dashboard 一樣，`month` 不包含你已經沒有權限的雲端後端；`days` 則全部都算，和每日額度的算法一致。
+- `today` 和 `month` 分別是今天和本月到目前為止的合計，`models` 依模型和後端分列，順序和 dashboard 一樣。
+- 和 dashboard 一樣，`today` 和 `month` 不包含你已經沒有權限的雲端後端；`days` 則全部都算，和每日額度的算法一致。
 
-狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage` 這三個端點。三個在額度用完時一樣可以查，而且都不計費。
+## App 帳號
+
+```bash
+curl https://your-gateway/v1/apps -H "Authorization: Bearer sk-your-api-key"
+```
+
+```json
+{
+  "object": "apps",
+  "month": "2026-10",
+  "apps": [
+    {"username": "app_batch", "daily_limit_usd": 50.0, "legacy_key": false,
+     "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5}}
+  ]
+}
+```
+
+- `apps` 列出你名下的 app 帳號（沒有的話是空陣列），各自有自己的每日上限和本月用量。
+- 不包含 app 的 API key，任何端點都不會回傳 key。要查看或重新產生 app 的 key，請到 dashboard。
+
+## 通知
+
+```bash
+curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
+```
+
+```json
+{
+  "object": "notices",
+  "window_days": 15,
+  "notices": [
+    {"id": "CC001", "title": "Auto mode needs a setting on this gateway",
+     "message": "Claude Code is waiting for a server-side check this gateway does not provide.",
+     "last_seen_at": "2026-10-13T09:12:00+08:00", "client_version": "2.1.280",
+     "patch": {"set": {"CLAUDE_CODE_AUTO_MODE_SERVER": "0", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"},
+               "unset": []}},
+    {"id": "CC003", "title": "Update Claude Code",
+     "message": "Your Claude Code is older than this gateway supports.",
+     "last_seen_at": "2026-10-12T17:40:00+08:00", "client_version": "2.1.280"}
+  ],
+  "patch": {
+    "set": {"CLAUDE_CODE_AUTO_MODE_SERVER": "0", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"},
+    "unset": [],
+    "covers": ["CC001"],
+    "manual": ["CC003"]
+  }
+}
+```
+
+- `notices` 就是 dashboard 通知區塊顯示的內容：最近 `window_days` 天內 gateway 在你的 client 請求裡看到、而你還沒回報已修正的問題。沒有待辦時是空陣列。
+- 通知的 `patch` 是它的修正方式（前提是能靠設定修正）：要在 `~/.claude/settings.json` 的 `env` 區塊裡設定的變數（`set`），和要從裡面移除的變數（`unset`）。沒有 `patch` 的通知要用別的方式處理（更新 Claude Code、申請權限）。
+- 最上層的 `patch` 是實際要套用的那一份：把所有未處理的項目合併，再加上每個帳號都該有的設定。`covers` 是它能修正的通知，`manual` 是它修不了的。沒有待辦時不會出現。patch 裡不會有 key。
+- 這個端點只能讀。套用修正後，請到 dashboard 按 *I've applied it*；gateway 連續 `window_days` 天沒再看到同樣的問題時，通知也會自己消失。
+
+狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/apps`、`/v1/notices`，合起來就是 dashboard 上看得到的資訊。它們在額度用完時一樣可以查，都不計費，也都不會回傳 API key。
 
 ## Tool calling：選對 client 模式
 

@@ -18,7 +18,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.core.auth import AccountDisabledError
 from app.core.browser_security import add_browser_security
-from app.core.config import APP_TITLE, get_site_links
+from app.core.config import APP_TITLE, get_site_links, setup_page_enabled
 from app.core.database import init_db
 from app.core.logger import logger
 from app.core.server_state import close_client, init_client
@@ -30,6 +30,7 @@ _templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "te
 # disabled.html extends base.html, which renders the admin-editable site
 # links (support bot / install guide) — same global as the router templates.
 _templates.env.globals["get_site_links"] = get_site_links
+_templates.env.globals["setup_page_enabled"] = setup_page_enabled
 
 
 @asynccontextmanager

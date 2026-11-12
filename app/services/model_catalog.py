@@ -18,8 +18,6 @@ from app.services.model_order import catalog_key, positions, type_rank, unknown_
 BACKEND_NAMES: dict[str, str] = {"vllm": "onprem", "azure": "azure", "bedrock": "aws"}
 BACKEND_ORDER: tuple[str, ...] = ("vllm", "azure", "bedrock")
 
-# Optional per-model metadata passed through to ``/v1/status`` when declared.
-_STATUS_METADATA = ("display_name", "context_window", "max_output_tokens")
 
 
 def resolve_prices(entry: dict, model_type: str, pricing_map: dict) -> tuple[float, float]:
@@ -98,7 +96,9 @@ def visible_models(user: User) -> list[dict[str, Any]]:
     the cloud backends the account may use; hidden entries left out.
 
     Each row has ``id``, ``backend`` (``onprem`` / ``azure`` / ``aws``),
-    ``type``, ``state`` and the billed prices, plus the declared metadata.
+    ``type``, ``state`` and the billed prices, plus the metadata the config
+    declares (``config._MODEL_METADATA_KEYS``, as ``/v1/models`` passes it:
+    display name, context window, capability flags).
     ``state`` is ``up`` / ``down`` for on-prem servers (the health loop's
     view, per worker), with ``running`` / ``waiting`` when the server's
     ``/metrics`` answered, and ``unchecked`` for cloud models, which the
@@ -131,7 +131,7 @@ def visible_models(user: User) -> list[dict[str, Any]]:
                         row[key] = int(load[key])
             else:
                 row["state"] = "unchecked"
-            for key in _STATUS_METADATA:
+            for key in config._MODEL_METADATA_KEYS:
                 if entry.get(key) not in (None, ""):
                     row[key] = entry[key]
             row["input_price_per_1m"] = in_price

@@ -11,7 +11,7 @@ All pages are protected by oauth2-proxy + nginx `auth_request` — users must co
 /dashboard           → User Dashboard (requires read or admin scope)
 /admin               → Admin Panel (requires admin scope)
 /admin/models        → Model Config (requires admin scope)
-/setup               → Claude Code installer page (requires read or admin scope; SSO-protected)
+/setup               → Claude Code installer page (requires read or admin scope; SSO-protected; off with SETUP_PAGE_ENABLED=false)
 disabled.html        → Rendered by AccountDisabledError handler when a disabled user hits any HTML route
 /oauth2/sign_out     → Logout (handled by oauth2-proxy)
 ```

@@ -457,7 +457,15 @@
                 <div class="flex items-center gap-3">
                     {% if user %}
                         <div class="flex items-center gap-3">
+                            {# The Setup page is for Windows users. Where a site turned it off
+                               (SETUP_PAGE_ENABLED=false), the admin's install guide, which is
+                               otherwise a card on that page, is linked here instead. #}
+                            {% if setup_page_enabled is not defined or setup_page_enabled() %}
                             <a href="/setup" class="text-sm text-t4 hover:text-t2 transition-colors">Setup</a>
+                            {% elif site_links.get("install_guide_url") %}
+                            <a href="{{ site_links['install_guide_url'] }}" target="_blank" rel="noopener noreferrer"
+                               class="text-sm text-t4 hover:text-t2 transition-colors">Install Guide</a>
+                            {% endif %}
                             {% if user.is_admin %}
                             <a href="/admin" class="gw-badge text-xs">Admin</a>
                             {% endif %}

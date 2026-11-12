@@ -397,7 +397,39 @@ def get_usage_history(user: User, days: int) -> dict:
         return {
             "days": get_daily_trends(session, user.id, days=days),
             "models": get_model_breakdown(session, user.id, period="month"),
+            "today_models": get_model_breakdown(session, user.id, period="day"),
         }
+
+
+def get_owned_apps(user: User) -> list[dict]:
+    """The app accounts ``user`` owns with this month's usage
+    (``stats.get_owned_apps_summary``), for ``GET /v1/apps``. The apps' API
+    keys are taken out here: no API-key endpoint hands out a key. Short-lived
+    session; blocking."""
+    from app.services.stats import get_owned_apps_summary
+
+    with Session(engine) as session:
+        apps = get_owned_apps_summary(session, user.id)
+    return [{key: value for key, value in app.items() if key != "api_key"} for app in apps]
+
+
+def get_client_notices(user: User) -> dict:
+    """What the dashboard's notices panel shows ``user``, for
+    ``GET /v1/notices``: ``notices`` (``client_rules.notices_for``) and
+    ``combined``, the account's one patch (``client_rules.combined_for``,
+    None when nothing is open). Like the panel it never fails the caller: a
+    broken store reads as nothing open. Short-lived session; blocking."""
+    from app.services import client_rules
+
+    try:
+        with Session(engine) as session:
+            return {
+                "notices": client_rules.notices_for(session, user),
+                "combined": client_rules.combined_for(session, user),
+            }
+    except Exception as exc:  # e.g. before `alembic upgrade`
+        logger.warning("Client notices failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
+        return {"notices": [], "combined": None}
 
 
 def get_current_user(
