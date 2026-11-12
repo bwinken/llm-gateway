@@ -901,13 +901,27 @@ def set_cloud_daily_limit(value: float | None) -> None:
 _SITE_LINK_KEYS: tuple[str, ...] = ("support_bot_url", "install_guide_url")
 
 
+def setup_page_enabled() -> bool:
+    """Whether the web UI offers the Setup page (``/setup``) and the Claude
+    Code installer download behind it.
+
+    Both are for Windows users (the installer is a ``.bat``). On a site whose
+    users work on Linux, ``SETUP_PAGE_ENABLED=false`` takes them out: the two
+    routes answer 404 and every link to the page is left off (navbar,
+    welcome page, dashboard). Default on. Read at call time, like
+    ``ENFORCE_DAILY_LIMIT``.
+    """
+    return os.getenv("SETUP_PAGE_ENABLED", "true").strip().lower() not in ("false", "0", "no", "off")
+
+
 def get_site_links() -> dict[str, str]:
     """Return admin-editable site link URLs.
 
     - ``support_bot_url``: target of the floating support-bot button shown
       bottom-right on every web page (opens in a new tab).
-    - ``install_guide_url``: target of the navbar "Install Guide" link — the
-      step-by-step Claude Code tools installation page.
+    - ``install_guide_url``: the site's step-by-step installation guide. A
+      card at the top of the Setup page; with the Setup page off
+      (``setup_page_enabled``), an "Install Guide" link in the navbar.
     """
     _check_auto_reload()
     return {key: str(APP_CONFIG.get(key) or "").strip() for key in _SITE_LINK_KEYS}

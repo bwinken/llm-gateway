@@ -99,6 +99,13 @@ class User(SQLModel, table=True):
     # "no cap": it follows [app].cloud_daily_limit_usd, the gateway-wide
     # default (deps.effective_cloud_limit).
     cloud_daily_limit_usd: float | None = Field(default=None)
+    # Retired as a stored permission: who is an admin is AuthCenter's to say
+    # (the ``admin`` scope of the access token). The column stays, but nothing
+    # grants anything from its value: API-key auth clears the attribute
+    # (``deps._authenticate``), the admin API refuses the field and no listing
+    # shows it. ``get_web_user`` reuses the attribute, for one request, to
+    # carry the token's scope to the pages; that may still write the column
+    # as a by-product, which changes nothing.
     is_admin: bool = Field(default=False)
     is_disabled: bool = Field(default=False)
     can_use_azure: bool = Field(default=False)

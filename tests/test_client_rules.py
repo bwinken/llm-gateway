@@ -1118,13 +1118,17 @@ class TestMail:
         test_user.can_use_azure = test_user.can_use_bedrock = False
         db_session.add(test_user)
         db_session.commit()
+        db_session.add(User(username="awsuser", api_key="sk-aws", can_use_bedrock=True))
+        db_session.commit()
         _configure(db_session, AUTO, patch='{"MODEL": "local-m"}', patch_aws='{"MODEL": "claude-m"}')
         _violation(db_session, AUTO, "testuser")     # local-only
-        _violation(db_session, AUTO, "admin")        # admins have every backend
-        assert client_rules.send_rule_mail(AUTO) == {"sent": 2, "failed": 0}
+        _violation(db_session, AUTO, "awsuser")      # AWS access
+        _violation(db_session, AUTO, "admin")        # only the retired stored is_admin: grants nothing
+        assert client_rules.send_rule_mail(AUTO) == {"sent": 3, "failed": 0}
         bodies = {to: body for to, _, body in mail_on}
         assert "local-m" in bodies["testuser@example.test"] and "claude-m" not in bodies["testuser@example.test"]
-        assert "claude-m" in bodies["admin@example.test"]
+        assert "claude-m" in bodies["awsuser@example.test"]
+        assert "local-m" in bodies["admin@example.test"] and "claude-m" not in bodies["admin@example.test"]
 
     def test_a_failed_send_is_recorded_on_the_account(self, db_session, test_user, mail_on):
         _violation(db_session, AUTO, "testuser")

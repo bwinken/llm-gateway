@@ -51,11 +51,11 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | **Get started** | — | 帳號本月尚無任何請求時才顯示，連到 `/setup` |
 | **Action needed** | — | 這個帳號的 client rule 通知（`_client_notices.html`），有未處理項目時才顯示。最上面只有**一組** patch 下載（`.bat` / `.sh`），修正所有腳本能修的項目，並標明哪些通知不在腳本範圍內；有兩則以上時另有 *I've applied everything*。每一列說明一則通知、列出手動設定用的變數，並有 *I've applied it*；各列沒有自己的下載 |
 | **Please regenerate your API key** | — | 使用者自己的 key，或他擁有的 app 帳號的 key，早於目前的 256 bits 格式時顯示（`schema.is_legacy_api_key`）。請他在方便更新 client 設定時重新產生；不強制，舊 key 照常可用。使用者重新產生自己的 key 後當場移除 |
-| **Spent today（預算主卡）** | — | 今日費用對比 `daily_limit_usd`、Remaining、距重置（當地午夜）時間，以及依比例變色的進度條（ok < 70 % · warn < 90 % · crit < 100 % · over）。`daily_limit_usd = 0` 時顯示 "No daily budget on this account"。使用者可用任一雲端後端時（admin 一律可用），下方多一列 **On-prem / Azure / AWS Bedrock** 分欄，只列出使用者有權使用的後端；另有 **Cloud (Azure + AWS)** 列，顯示今日雲端合計費用對比使用者的雲端上限（`deps.effective_cloud_limit`；無上限時不顯示） |
+| **Spent today（預算主卡）** | — | 今日費用對比 `daily_limit_usd`、Remaining、距重置（當地午夜）時間，以及依比例變色的進度條（ok < 70 % · warn < 90 % · crit < 100 % · over）。`daily_limit_usd = 0` 時顯示 "No daily budget on this account"。使用者可用任一雲端後端時（token 帶 admin scope 的人一律可用），下方多一列 **On-prem / Azure / AWS Bedrock** 分欄，只列出使用者有權使用的後端；另有 **Cloud (Azure + AWS)** 列，顯示今日雲端合計費用對比使用者的雲端上限（`deps.effective_cloud_limit`；無上限時不顯示） |
 | **This month** | — | 本月費用、請求數、Tokens in / out（附今日數字） |
 | **On-Prem Models** | Models | 所有未隱藏的 vLLM 模型，依類型分組、依價格排序：ONLINE / DOWN、即時負載（來自 `/metrics` 的 running / queued）、Context、Max Out、實際計費的 In / Out $/1M（per-model → per-type → default，與計費一致）、能力 badge（`reasoning`、`tools`、`vision`、`cache`）。標題列顯示 online / queueing / down 數量與 base URL |
-| **Azure OpenAI Models** | Models | 僅當 `can_use_azure or is_admin` 時顯示。未隱藏的 `[azure_models.*]` 依類型分組、依價格排序（Context、In / Out $/1M、能力 badge），base URL 為 `/azure/v1`。有權限但尚未設定任何模型時顯示 "Contact your administrator" |
-| **AWS Bedrock Models** | Models | 同 Azure，條件為 `can_use_bedrock or is_admin`、來源為 `[bedrock_models.*]`，base URL 為 `/aws/v1` |
+| **Azure OpenAI Models** | Models | 僅當 `can_use_azure`，或 token 帶 admin scope 時顯示。未隱藏的 `[azure_models.*]` 依類型分組、依價格排序（Context、In / Out $/1M、能力 badge），base URL 為 `/azure/v1`。有權限但尚未設定任何模型時顯示 "Contact your administrator" |
+| **AWS Bedrock Models** | Models | 同 Azure，條件為 `can_use_bedrock`（或 token 帶 admin scope）、來源為 `[bedrock_models.*]`，base URL 為 `/aws/v1` |
 | **API examples** | Models | 預設收合的 `<details>`：Chat Completions、Embeddings、Rerank、Score 範例，含使用者的 API key 和 host；有設定 `systemone` 模型時才顯示 System One（TypeSafe SDK） |
 | **Usage Trend** | Usage | Chart.js 圖表，近 30 天趨勢，可切換 Requests / Cost (USD) |
 | **Cost by Model** | Usage | 依後端（On-Prem / Azure / AWS Bedrock）分組的各模型費用，含占比條與甜甜圈圖；This Month / Today 切換與 Refresh 按鈕都會呼叫 `GET /dashboard/api/model-breakdown?period=month\|day` 並原地重繪。使用者無權使用的後端不列入 |

@@ -219,9 +219,18 @@ def env_snippet(env: dict[str, str | None]) -> str:
 
 
 def audience_of(user: User) -> tuple[bool, bool]:
-    """``(azure, aws)``: which cloud backends the account may use. Admins
-    bypass the flags, as on the dashboard."""
+    """``(azure, aws)``: which cloud backends the account may use, for the
+    person looking at their own dashboard or API: an AuthCenter admin on the
+    web UI (``user.is_admin`` as ``get_web_user`` set it from the token)
+    sees both, as on the rest of the dashboard."""
     return bool(user.can_use_azure or user.is_admin), bool(user.can_use_bedrock or user.is_admin)
+
+
+def stored_audience(user: User) -> tuple[bool, bool]:
+    """``(azure, aws)`` for an account read from the database with nobody
+    signed in (mail): its flags and nothing else. The stored ``is_admin`` is
+    retired and grants nothing."""
+    return bool(user.can_use_azure), bool(user.can_use_bedrock)
 
 
 def baseline_env() -> dict[str, str | None]:
@@ -937,12 +946,19 @@ def notices_for(session: Session, user: User, now: datetime | None = None) -> li
     if not rows:
         return []
     azure, aws = audience_of(user)
-    return [
-        {"rule_id": rule.id, "title": rule.title, "message": rule.message,
-         "patch": env_snippet(effective_env(rule, azure, aws)),
-         "seen_at": rows[rule.id].last_seen_at, "client_version": rows[rule.id].client_version}
-        for rule in rules(session) if rule.enabled and rule.id in rows
-    ]
+    found = []
+    for rule in rules(session):
+        if not rule.enabled or rule.id not in rows:
+            continue
+        env = effective_env(rule, azure, aws)
+        found.append({
+            "rule_id": rule.id, "title": rule.title, "message": rule.message,
+            # ``patch`` is the text a person reads; ``env`` the same patch as
+            # data (``GET /v1/notices``).
+            "patch": env_snippet(env), "env": env,
+            "seen_at": rows[rule.id].last_seen_at, "client_version": rows[rule.id].client_version,
+        })
+    return found
 
 
 def audience_flags(audience: str) -> tuple[bool, bool]:
@@ -1288,7 +1304,7 @@ def _send_digests(
         if user is None or not items:
             continue
         rule_list = [rule for rule, _ in items]
-        azure, aws = audience_of(user)
+        azure, aws = stored_audience(user)
         subject, body = render_digest(
             username, rule_list, combined_env(rule_list, azure, aws), split_covered(rule_list, azure, aws)[1],
         )

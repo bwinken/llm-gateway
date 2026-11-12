@@ -88,8 +88,12 @@ class TestCreateUserAPI:
         # alice has the Azure flag, carol doesn't — spot-check both values
         alice_row = next(line for line in body.splitlines() if line.startswith("alice,"))
         carol_row = next(line for line in body.splitlines() if line.startswith("carol,"))
-        assert alice_row.split(",")[5] == "true"   # can_use_azure column
-        assert carol_row.split(",")[5] == "false"
+        columns = header.split(",")
+        azure = columns.index("can_use_azure")
+        assert alice_row.split(",")[azure] == "true"
+        assert carol_row.split(",")[azure] == "false"
+        # The retired stored flag is not exported as if it meant something.
+        assert "is_admin" not in columns
         # app_* accounts excluded
         assert "app_billing" not in body
 

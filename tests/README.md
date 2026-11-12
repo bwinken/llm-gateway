@@ -89,7 +89,7 @@ sequenceDiagram
 Useful helpers exposed from `conftest`:
 
 - `client` — `TestClient` with mocked deps (`get_session` overridden to `db_session`); `client.__httpx_mock__` is the shared `AsyncMock` you set return values on
-- `test_user` (api_key `sk-testkey123`, daily limit `$100`, `can_use_azure=True`, `can_use_bedrock=True`, `is_disabled=False`) and `admin_user` (`sk-adminkey456`, `is_admin=True`, limit `$999`). Web-UI admin rights come from the JWT scope, not `is_admin`: use `web_auth_header(sub="admin", scopes=["admin"])`
+- `test_user` (api_key `sk-testkey123`, daily limit `$100`, `can_use_azure=True`, `can_use_bedrock=True`, `is_disabled=False`) and `admin_user` (`sk-adminkey456`, `is_admin=True`, limit `$999`). That stored `is_admin` is retired and grants nothing (`test_admin_flag_retired.py`); admin rights come from the JWT scope only: use `web_auth_header(sub="admin", scopes=["admin"])`
 - `auth_header(api_key=...)` for `/v1` / `/azure/v1` / `/aws/v1` Bearer auth, `web_auth_header(sub=..., scopes=..., display_name=..., org_code=...)` for JWT-protected web routes
 - `make_httpx_response(status, json_body, text)` for non-stream mocks; `FakeStreamResponse(lines, status_code, body_bytes)` for SSE mocks (`body_bytes` is what a non-200 pre-flight `aread()` returns); `FakeBedrockStreamResponse(events, ...)` for Bedrock ConverseStream — `(event_type, payload)` pairs encoded as binary AWS event-stream frames, `"exception:<type>"` for exception frames
 - `TEST_MODEL_ROUTING` / `TEST_AZURE_MODELS` / `TEST_BEDROCK_MODELS` — the per-test alias maps. Seven vLLM-path aliases (`test-llm`, `test-vlm`, `test-embedding`, `test-reranker`, `test-vision-embedding`, `test-vision-reranker`, and `test-systemone` — a System One decision server, no `api_key`), two Azure aliases (`azure-gpt-4`, `azure-embed`) and two Bedrock aliases (`bedrock-claude`, `bedrock-nova`)
@@ -207,7 +207,7 @@ no Langfuse generation, since a render is a debug query rather than inference.
 
 `/v1/models`, `/v1/chat/completions`, `/v1/responses`, `/v1/messages` and
 `/v1/messages/count_tokens` route an alias configured under `[azure_models.*]`
-to Azure when the user has `can_use_azure` (or is admin); otherwise the alias
+to Azure when the user has `can_use_azure`; otherwise the alias
 silently falls back to the vLLM default — no 404. `/v1/models` lists Azure
 llm/vlm entries only for permitted users (embeddings excluded, `owned_by`
 labelled); Azure `count_tokens` uses the chars/4 estimate. `TestNoV1PrefixAliases`
@@ -407,15 +407,65 @@ stays on cloud. Also config parsing, `POST /admin/cloud-budget-fallback`
 (explicit `enabled=on|off`, JSON reply for the in-place toggle), and the
 Azure / AWS grant toggles answering JSON under `Accept: application/json`.
 
+### `test_auth_exchange.py` — `POST /auth/api-key`
+
+A terminal tool's sign-in: an AuthCenter token in, the account's API key
+out. `TestExchange`: the existing key is returned and never replaced, it
+then works on the API, a first sign-in creates the account as the
+dashboard does, names from the token are synced, POST only.
+`TestRefusals`: no token, what is not an AuthCenter token (an API key
+included), no `read` scope (nothing created), a disabled account (let in only by
+the token's `admin` scope, never by the `is_admin` column), and the
+token opening no API route. `TestIpAllowlist`: an unlisted address is
+refused at sign-in. `TestThrottle`: invalid tokens share the per-address
+tally with invalid keys; one expired token retried never locks.
+`TestAudit`: a key handed out and a refused account are recorded without
+the key, garbage is not. `TestWiring`: the only route under `/auth`, no
+API-key dependency, plain `def`, mounted by the production app.
+
+### `test_admin_flag_retired.py` — `users.is_admin` grants nothing
+
+The stored admin flag is retired; AuthCenter's `admin` scope is the only
+admin right. `TestApiKeyHasNoAdminRight`: with the column true, an API key
+gets no cloud backend without the flags, no dispatch, no pass for a
+disabled account; `_authenticate` clears the attribute without writing the
+row; the notice patch is the account's own. `TestAdminApiRefusesTheField`:
+`POST` / `PATCH /admin/users` answer 400 to `is_admin` and apply nothing;
+listings and the table do not show it; every account but your own can be
+disabled. `TestAuthCenterDecides`: the scope opens `/admin` whatever the
+row says, the row opens nothing, an admin by scope still sees every cloud
+model and keeps the web UI when disabled. A last test keeps `is_admin`
+out of the API-path modules.
+
 ### `test_account_info.py` — `GET /v1/me`
 
 The caller's own access and today's budget: limits, spend split by backend
 (today only), cloud `remaining_usd` bounded by the overall limit, `0` limits
-reported as zero, no cloud block without access, admins bypassing the cloud
-flags. `TestOverBudget` pins that it still answers once the budget is spent
+reported as zero, no cloud block without access, the retired stored admin
+flag granting nothing. `TestOverBudget` pins that it still answers once the budget is spent
 (and reports soft mode); `TestAuth` covers missing / invalid / disabled keys
 and `x-api-key`; `TestConcurrency` the reported concurrency mode. Every
 response is checked for `null`s (`_no_nulls`).
+
+### `test_status_usage.py` — `GET /v1/status`, `/v1/usage`, `/v1/apps`, `/v1/notices`
+
+What the dashboard shows an account, by API key. `TestAuth`: each needs a
+key, refuses a disabled account, answers once the budget is spent and
+writes no `usage_logs` row. `TestStatus`: what the account can see (every
+type, declared metadata and capability flags, billed prices), `up` /
+`down` / load from the health cache, cloud `unchecked`, hidden entries and
+backends without access left out, the retired stored admin flag showing
+nothing more, the one
+display order. `TestUsage`: one row per local day with today last and
+quiet days as zeros, the `days` bounds, today and this month by model in
+catalog order, a revoked backend left out of rows and total, the same
+numbers once rolled up, plain `def`. `TestMe`: `legacy_key`. `TestApps`:
+the caller's own app accounts with this month's usage, never an app's
+key. `TestNotices`: the dashboard panel's notices with patches as
+`{set, unset}`, the one combined patch and what it cannot fix, the patch
+following the account's access, resolved / old / other accounts'
+violations left out, never a key, read-only, a broken store reading as
+nothing open. Every response is checked for `null`s.
 
 ### `test_concurrency_limit.py` — per-user concurrency limit
 
@@ -597,7 +647,7 @@ lists / acks / resolves (admin only) and the admin page shows open anomalies.
 ### `test_dashboard_models.py` — dashboard model list
 
 On-prem / Azure / Bedrock sections shown only to users with the matching
-access (admins see all), with status, a subsection per model type and price
+access (an admin by the token's scope sees all), with status, a subsection per model type and price
 columns. The Today's Cost backend split hides a cloud backend the user can't
 use, including stale limits and spend from before access was revoked.
 
@@ -606,8 +656,8 @@ use, including stale limits and spend from before access was revoked.
 `stats.get_model_breakdown` groups the month's (or today's) spend by alias and
 backend, ordered by cost, scoped to the user. The dashboard card and its
 refresh API (`/dashboard/api/model-breakdown`, auth required, period
-validated) render the groups and hide backends the user may not use (admins
-see every backend).
+validated) render the groups and hide backends the user may not use (an admin
+by the token's scope sees every backend).
 
 ### `test_page_highlights.py` — what the dashboard and admin pages lead with
 
@@ -660,6 +710,11 @@ set, and the admin panel shows the current values.
 
 Renders the Claude Code section with no CA-certificate tab, requires login, and
 the old `/setup/files/...` route is gone (404).
+`TestSetupPageSwitch`: `SETUP_PAGE_ENABLED=false` makes the page and the
+installer 404 and takes every link to them off the welcome page, the
+dashboard and the admin page, while the key patch stays; the admin's install
+guide then shows in the top bar; every template environment registers the
+switch.
 
 ### `test_client_rules.py` — client checks, violations, settings patch, mail, Claude Code versions
 - Registry: violation ids are unique and never renumbered; every check has wording; only `CC001` is on before an admin decides; a retired check is no longer evaluated or shown.

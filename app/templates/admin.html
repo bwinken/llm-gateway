@@ -309,9 +309,6 @@ function anomalyAction(id, action) {
                                     {% if u.org_code %}
                                     <span class="ml-1 text-[10px] text-t4 bg-n3 px-1 py-0.5 rounded">{{ u.org_code }}</span>
                                     {% endif %}
-                                    {% if u.is_admin %}
-                                    <span class="ml-1 gw-badge" style="background:rgba(167,139,250,0.1);color:#a78bfa;border-color:rgba(167,139,250,0.15)">Admin</span>
-                                    {% endif %}
                                 </div>
                             </div>
                         </td>
@@ -1368,7 +1365,7 @@ function submitExportCsv() {
         </div>
         <div>
             <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
-                   data-tip="Step-by-step Claude Code tools installation guide. Shown as a highlighted card at the top of the Setup page, opens in a new tab. Empty = card hidden.">
+                   data-tip="Step-by-step installation guide for your users' tools. Shown as a highlighted card at the top of the Setup page, or, where the Setup page is turned off (SETUP_PAGE_ENABLED=false), as an Install Guide link in the top bar. Opens in a new tab. Empty = not shown.">
                 Install Guide URL
             </label>
             <input type="text" name="install_guide_url" value="{{ site_links.install_guide_url }}"
@@ -1648,7 +1645,7 @@ function submitExportCsv() {
             if (t.flag) {
                 row.dataset[t.flag] = on ? 'true' : 'false';
                 // The Cloud $ field applies only to accounts that can reach the cloud.
-                var cloud = row.dataset.azure === 'true' || row.dataset.bedrock === 'true' || row.dataset.admin === 'true';
+                var cloud = row.dataset.azure === 'true' || row.dataset.bedrock === 'true';
                 row.querySelector('[data-cloud-form]').classList.toggle('hidden', !cloud);
             }
         }

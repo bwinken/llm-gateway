@@ -139,11 +139,14 @@ class TestAccountInfo:
             assert backends[name]["access"] is False
             assert backends[name]["remaining_usd"] == 0.0
 
-    def test_admin_bypasses_cloud_flags(self, client, admin_user):
+    def test_the_stored_admin_flag_grants_nothing(self, client, admin_user):
+        # users.is_admin is retired: who is an admin is AuthCenter's to say,
+        # and an API key carries no admin right. The key stays in the reply
+        # for clients built against it, always false.
         body = _me(client, headers=auth_header(admin_user.api_key))
-        assert body["is_admin"] is True
-        assert body["backends"]["azure"]["access"] is True
-        assert body["backends"]["aws"]["access"] is True
+        assert body["is_admin"] is False
+        assert body["backends"]["azure"]["access"] is False
+        assert body["backends"]["aws"]["access"] is False
 
 
 class TestOverBudget:

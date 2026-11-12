@@ -21,13 +21,14 @@ Browser / API client → Nginx (:443, TLS)
                ├─ /v1/*, = /me         → Gateway               ← API key auth (unified dispatch: vLLM / Azure / Bedrock)
                ├─ /azure/*             → Gateway               ← API key auth (Azure OpenAI backend)
                ├─ /aws/*               → Gateway               ← API key auth (AWS Bedrock backend)
+               ├─ /auth/*              → Gateway               ← AuthCenter token in, API key out (terminal tools)
                ├─ /healthz, /readyz    → Gateway               ← no auth (probes)
                ├─ /static/             → files on disk
                └─ /*                   → auth_request → oauth2-proxy validation
                                        → Gateway               ← JWT header auth
 ```
 
-Everything is served over HTTPS. The example nginx config (`deploy/llm-gateway-example.nginx.conf`) puts every location in the `:443` server; the `:80` server only redirects with **308**, which keeps the method and body (a 301 makes many clients turn a POST into a GET). The API locations (`/v1/`, `/azure/`, `/aws/`, `= /me`) bypass oauth2-proxy and forward the client's `Authorization: Bearer <api_key>` header as is. The login cookie is `Secure` (`OAUTH2_PROXY_COOKIE_SECURE`, default `true` in `docker-compose.yml`), so it is never sent over plain HTTP.
+Everything is served over HTTPS. The example nginx config (`deploy/llm-gateway-example.nginx.conf`) puts every location in the `:443` server; the `:80` server only redirects with **308**, which keeps the method and body (a 301 makes many clients turn a POST into a GET). The API locations (`/v1/`, `/azure/`, `/aws/`, `= /me`) bypass oauth2-proxy and forward the client's `Authorization: Bearer <api_key>` header as is. So does `/auth/`, where a terminal tool posts its AuthCenter access token to get the account's API key (`POST /auth/api-key`); an nginx config from before this location existed needs the `location /auth/` block added from the example, or those requests land on the browser sign-in. The login cookie is `Secure` (`OAUTH2_PROXY_COOKIE_SECURE`, default `true` in `docker-compose.yml`), so it is never sent over plain HTTP.
 
 - **Gateway**: user-level systemd service (Python/FastAPI, `127.0.0.1:8050`, 2 workers). Its periodic jobs (usage rollup, anomaly scan, optional usage-log retention) run inside it: no timers
 - **PostgreSQL + oauth2-proxy**: Docker Compose (`deploy/docker-compose.yml`, both bound to `127.0.0.1`)

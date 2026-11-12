@@ -5,7 +5,7 @@ Routes the OpenAI-compatible and Anthropic-compatible endpoints. Defaults
 to the vLLM backend (via ``vllm_proxy``); chat / responses / messages /
 count_tokens additionally dispatch to Azure OpenAI (via ``azure_proxy``)
 when the requested ``model`` alias is configured under ``[azure_models.*]``
-AND the caller has ``can_use_azure`` (or is admin). One base URL lets clients
+AND the caller has ``can_use_azure``. One base URL lets clients
 like Claude Code's model picker see both backends side-by-side.
 
 Design: each base URL has its own default fallback. ``/v1/*`` serves
@@ -28,7 +28,7 @@ misconfiguration that previously surfaced as a silent 404.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
@@ -45,21 +45,31 @@ from app.core.deps import (
     _enforce_daily_limit,
     check_cloud_budget,
     effective_cloud_limit,
+    get_client_notices,
     get_current_user,
     get_current_user_unmetered,
+    get_owned_apps,
     get_today_usage,
+    get_usage_history,
     limited_current_user,
 )
 from app.core.logger import logger
-from app.core.timeutil import LOCAL_TZ, next_local_midnight, seconds_until_local_midnight
-from app.models.schema import User
+from app.core.timeutil import (
+    LOCAL_TZ,
+    local_month_start,
+    local_today,
+    next_local_midnight,
+    seconds_until_local_midnight,
+)
+from app.models.schema import User, is_legacy_api_key
 from app.services.azure_proxy import (
     azure_forward_chat_completions,
     azure_forward_count_tokens,
     azure_forward_messages,
     azure_forward_responses,
 )
-from app.services import client_rules, guardrail
+from app.services import client_rules, guardrail, model_catalog
+from app.services.model_order import natural_key
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
     bedrock_forward_count_tokens,
@@ -116,7 +126,7 @@ def _route_to_azure(alias: str, user: User) -> bool:
     azure_models = get_azure_models_snapshot()
     if alias not in azure_models:
         return False
-    if user.can_use_azure or user.is_admin:
+    if user.can_use_azure:
         return True
     # Azure alias requested by user without access — fall through to the
     # vLLM handler so its _resolve_model can route to the configured
@@ -141,7 +151,7 @@ def _route_to_bedrock(alias: str, user: User) -> bool:
     bedrock_models = get_bedrock_models_snapshot()
     if alias not in bedrock_models:
         return False
-    if user.can_use_bedrock or user.is_admin:
+    if user.can_use_bedrock:
         return True
     logger.info(
         "Bedrock alias '{}' requested by user '{}' without can_use_bedrock; "
@@ -215,7 +225,7 @@ async def list_models(user: User = Depends(get_current_user)):
     """List chat-capable models available to this user.
 
     vLLM entries are always included. Azure entries are merged in only when
-    the user has ``can_use_azure`` (or is admin) so an Anthropic / OpenAI
+    the user has ``can_use_azure`` so an Anthropic / OpenAI
     client pointed at this single base URL sees exactly the set of aliases
     its API key may actually use.
 
@@ -246,7 +256,7 @@ async def list_models(user: User = Depends(get_current_user)):
                 entry[meta_key] = route[meta_key]
         models.append(entry)
 
-    if user.can_use_azure or user.is_admin:
+    if user.can_use_azure:
         for alias, route in get_azure_models_snapshot().items():
             model_type = route.get("type", "llm")
             if model_type not in ("llm", "vlm") or route.get("hidden"):
@@ -263,7 +273,7 @@ async def list_models(user: User = Depends(get_current_user)):
                     entry[meta_key] = route[meta_key]
             models.append(entry)
 
-    if user.can_use_bedrock or user.is_admin:
+    if user.can_use_bedrock:
         for alias, route in get_bedrock_models_snapshot().items():
             model_type = route.get("type", "llm")
             if model_type not in ("llm", "vlm") or route.get("hidden"):
@@ -303,7 +313,7 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
     null, no "unlimited").
 
     Per backend (``onprem`` = vLLM, ``azure``, ``aws`` = Bedrock):
-      - ``access``: may this key reach it (admins bypass the cloud flags);
+      - ``access``: may this key reach it (the account's Azure / AWS flag);
       - ``used_usd``: today's spend there;
       - ``remaining_usd``: what can still be spent there today — the tighter
         of the cloud cap (azure / aws) and the overall daily limit (cloud
@@ -315,14 +325,17 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
 
     Limits are those the gateway enforces; with ``ENFORCE_DAILY_LIMIT=false``
     they are only logged (``daily.enforced`` = false).
+
+    ``legacy_key``: the key is of the older, weaker format and the dashboard
+    asks its holder to regenerate it. The key itself is never returned.
     """
     today = await run_in_threadpool(get_today_usage, user)
 
     daily_limit = max(0.0, user.daily_limit_usd)
     daily_remaining = _remaining(daily_limit, today["total_cost_usd"])
 
-    azure_access = user.can_use_azure or user.is_admin
-    bedrock_access = user.can_use_bedrock or user.is_admin
+    azure_access = user.can_use_azure
+    bedrock_access = user.can_use_bedrock
     # The cap only means something to a user who may reach a cloud backend.
     cloud_limit = effective_cloud_limit(user) if (azure_access or bedrock_access) else None
     cloud_used = today["azure_cost_usd"] + today["bedrock_cost_usd"]
@@ -339,14 +352,17 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
         }
 
     mode, limit = get_concurrency_settings()
-    concurrency_applies = mode != "off" and not user.is_admin and not user.concurrency_waived
+    concurrency_applies = mode != "off" and not user.concurrency_waived
     local_now = datetime.now(LOCAL_TZ)
 
     return {
         "object": "account",
         "username": user.username,
         "display_name": user.display_name,
-        "is_admin": user.is_admin,
+        # Kept for clients built against it; always false. An API key has no
+        # admin right: that is the AuthCenter token's scope, on the web UI.
+        "is_admin": False,
+        "legacy_key": is_legacy_api_key(user.api_key),
         "daily": {
             "limit_usd": daily_limit,
             "used_usd": _usd(today["total_cost_usd"]),
@@ -382,6 +398,189 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
             {"mode": mode, "limit": limit} if concurrency_applies else {"mode": "off"}
         ),
     }
+
+
+@router.get("/v1/status")
+async def model_status(user: User = Depends(get_current_user_unmetered)):
+    """The models this key can use and whether they are up, for clients and
+    scripts: what the dashboard's model tables show.
+
+    ``models`` lists every model the account can see (hidden entries and
+    cloud backends without access left out), in the dashboard's order, each
+    with its billed prices per 1M tokens. On-prem models carry ``state``
+    ``up`` / ``down`` from the gateway's health loop, and ``running`` /
+    ``waiting`` request counts when the server reports them; cloud models
+    are ``unchecked`` (the gateway does not probe them). ``onprem`` sums
+    the on-prem ones up. A key is never omitted as null: it is left out.
+
+    Like ``/v1/me`` it answers once the daily limit is spent. No database
+    read.
+    """
+    models = model_catalog.visible_models(user)
+    onprem = [m for m in models if m["backend"] == "onprem"]
+    return {
+        "object": "status",
+        "onprem": {
+            "total": len(onprem),
+            "up": sum(1 for m in onprem if m["state"] == "up"),
+            "down": [m["id"] for m in onprem if m["state"] == "down"],
+        },
+        "models": models,
+    }
+
+
+USAGE_MAX_DAYS = 90
+
+
+@router.get("/v1/usage")
+def usage_history(
+    days: int = Query(7, ge=1, le=USAGE_MAX_DAYS, description="How many days back, today included."),
+    user: User = Depends(get_current_user_unmetered),
+):
+    """The caller's own usage: one row per day and this month by model,
+    the figures behind the dashboard's trend chart and Cost by Model card.
+
+    ``days`` are Asia/Taipei calendar days, oldest first, today last and
+    still running; quiet days are present as zeros. ``month`` is the local
+    month so far, with one ``models`` row per model and backend in the
+    dashboard's order. Like the dashboard, the month leaves out a cloud
+    backend the account no longer has access to; the days count everything
+    (as the daily budget does).
+
+    Answers once the daily limit is spent. Plain ``def``: it reads the
+    database and awaits nothing.
+    """
+    history = get_usage_history(user, days)
+    hidden = model_catalog.hidden_cloud_backends(user)
+    catalog = model_catalog.current_catalog_keys()
+
+    def by_model(rows: list[dict]) -> dict:
+        """Totals and one row per model and backend, in the dashboard's
+        order, without the cloud backends the account may not use."""
+        rows = [r for r in rows if r["backend"] not in hidden]
+        extra = sorted({r["backend"] for r in rows} - set(model_catalog.BACKEND_ORDER))
+        backend_rank = {name: i for i, name in enumerate((*model_catalog.BACKEND_ORDER, *extra))}
+        rows.sort(key=lambda r: (backend_rank[r["backend"]], model_catalog.usage_row_key(r, catalog)))
+        return {
+            "requests": sum(r["requests"] for r in rows),
+            "input_tokens": sum(r["input_tokens"] for r in rows),
+            "output_tokens": sum(r["output_tokens"] for r in rows),
+            "cost_usd": _usd(sum(r["cost_usd"] for r in rows)),
+            "models": [
+                {
+                    "model": r["model"],
+                    "backend": model_catalog.BACKEND_NAMES.get(r["backend"], r["backend"]),
+                    "type": r["type"],
+                    "requests": r["requests"],
+                    "input_tokens": r["input_tokens"],
+                    "output_tokens": r["output_tokens"],
+                    "cost_usd": r["cost_usd"],
+                }
+                for r in rows
+            ],
+        }
+
+    return {
+        "object": "usage",
+        "timezone": str(LOCAL_TZ),
+        "days": [
+            {
+                "date": day["date"],
+                "requests": day["reqs"],
+                "input_tokens": day["input_tokens"],
+                "output_tokens": day["output_tokens"],
+                "cost_usd": day["cost"],
+            }
+            for day in history["days"]
+        ],
+        "today": {"date": local_today().isoformat(), **by_model(history["today_models"])},
+        "month": {"month": local_month_start().strftime("%Y-%m"), **by_model(history["models"])},
+    }
+
+
+@router.get("/v1/apps")
+def owned_apps(user: User = Depends(get_current_user_unmetered)):
+    """The app accounts the caller owns, with each one's daily limit and
+    this month's usage: the dashboard's *My App Accounts* table.
+
+    An app's API key is **not** part of it, and no API-key endpoint returns
+    one: a leaked personal key must not open every app account its holder
+    owns. Showing and regenerating an app's key stays on the dashboard,
+    behind SSO. ``legacy_key`` says an app's key is of the older format.
+
+    Answers once the daily limit is spent. Plain ``def`` (database read).
+    """
+    apps = sorted(get_owned_apps(user), key=lambda app: natural_key(app["username"]))
+    return {
+        "object": "apps",
+        "month": local_month_start().strftime("%Y-%m"),
+        "apps": [
+            {
+                "username": app["username"],
+                "daily_limit_usd": max(0.0, float(app["daily_limit_usd"])),
+                "legacy_key": app["legacy_key"],
+                "month": {
+                    "requests": app["monthly_reqs"],
+                    "input_tokens": app["monthly_input"],
+                    "output_tokens": app["monthly_output"],
+                    "cost_usd": _usd(app["monthly_cost"]),
+                },
+            }
+            for app in apps
+        ],
+    }
+
+
+def _patch(env: dict[str, str | None]) -> dict:
+    """A settings patch as data: the variables to set in the ``env`` block
+    of Claude Code's settings.json and the ones to take out of it."""
+    return {
+        "set": {name: value for name, value in env.items() if value is not None},
+        "unset": [name for name, value in env.items() if value is None],
+    }
+
+
+@router.get("/v1/notices")
+def client_notices(user: User = Depends(get_current_user_unmetered)):
+    """What the dashboard's notices panel tells the caller: the client
+    checks (``CC001``...) this account tripped in the last ``window_days``
+    days and has not reported as fixed.
+
+    Each notice has the check's ``id``, the admin's ``title`` and
+    ``message``, when it was last seen and, when the fix is a setting, its
+    ``patch``. The top-level ``patch`` is the account's one patch for
+    everything open (what the dashboard offers as a download): ``covers``
+    lists the checks it fixes and ``manual`` those no setting can fix
+    (update Claude Code, ask for access). It is absent when nothing is
+    open. A patch only ever sets or removes variables in the ``env`` block
+    of settings.json, and never holds a key.
+
+    Read-only: reporting a notice as fixed (*I've applied it*) stays on the
+    dashboard. Answers once the daily limit is spent. Plain ``def``.
+    """
+    found = get_client_notices(user)
+    notices = []
+    for notice in found["notices"]:
+        entry: dict[str, object] = {"id": notice["rule_id"], "title": notice["title"]}
+        if notice["message"]:
+            entry["message"] = notice["message"]
+        entry["last_seen_at"] = (
+            notice["seen_at"].replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).isoformat(timespec="seconds")
+        )
+        if notice["client_version"]:
+            entry["client_version"] = notice["client_version"]
+        if notice["env"]:
+            entry["patch"] = _patch(notice["env"])
+        notices.append(entry)
+    body: dict[str, object] = {
+        "object": "notices",
+        "window_days": client_rules.WINDOW_DAYS,
+        "notices": notices,
+    }
+    combined = found["combined"]
+    if combined:
+        body["patch"] = {**_patch(combined["env"]), "covers": combined["covered"], "manual": combined["manual"]}
+    return body
 
 
 @router.post("/v1/chat/completions")

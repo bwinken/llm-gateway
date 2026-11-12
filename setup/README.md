@@ -14,6 +14,10 @@ This directory holds the Claude Code installer template served by the gateway. `
 1. Copy `install-claude-code-example.bat` to `install-claude-code.bat` and adjust it for your environment (gateway URL, proxy, Node.js source).
 2. Users visit `https://your-gateway/setup` (after SSO login) and download their personalized installer.
 
+## Turning it off
+
+The page and the installer are for Windows users. A site whose users work on Linux sets `SETUP_PAGE_ENABLED=false` in `.env`: `/setup` and the installer download answer 404, and every link to them disappears (navbar, welcome page, dashboard). The Install Guide URL an admin sets under Admin → Settings → Site Links is then linked in the navbar, so it can point at that site's own guide.
+
 ## Notes
 
 - `install-claude-code.bat` is deployment-specific and lives only on the deployed server; only the example is committed.

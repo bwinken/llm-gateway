@@ -166,14 +166,15 @@ class TestExemptions:
         assert resp.status_code == 200
         assert len(_leases(test_user.id)) == 1  # no lease taken for a waived user
 
-    def test_admin_is_not_limited(self, client, admin_user):
+    def test_the_stored_admin_flag_does_not_exempt(self, client, admin_user):
+        # users.is_admin is retired; the exemption is concurrency_waived.
         client.__httpx_mock__.post.return_value = make_httpx_response(200, _OK_CHAT)
         _add_lease(admin_user.id)
         with _mode("enforce", 1):
             resp = client.post(
                 "/v1/chat/completions", json=_CHAT, headers=auth_header("sk-adminkey456")
             )
-        assert resp.status_code == 200
+        assert resp.status_code == 429
 
     def test_store_failure_fails_open(self, client, test_user):
         client.__httpx_mock__.post.return_value = make_httpx_response(200, _OK_CHAT)

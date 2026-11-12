@@ -58,7 +58,7 @@ claude
 
 `/v1/messages` works against every backend: requests to vLLM models are translated to OpenAI chat completions, Azure models go through the Responses API, and Bedrock models through Converse. Streaming, tool use, images, and reasoning (`thinking` blocks) work on all of them. During long silences the gateway sends a `ping` every 10 seconds so Claude Code doesn't drop the connection. A stream cut off mid-generation ends with a retryable `overloaded_error`, never a falsely complete turn.
 
-Windows users can get a pre-configured Claude Code installer from the **Setup** page of the web UI.
+Windows users can get a pre-configured Claude Code installer from the **Setup** page of the web UI (a site whose users are not on Windows may have turned that page off).
 
 ## Other endpoints
 
@@ -66,6 +66,11 @@ Windows users can get a pre-configured Claude Code installer from the **Setup** 
 |---|---|
 | `GET /v1/models` | Models your account can use |
 | `GET /v1/me`, `/me` | Your access (on-prem / Azure / AWS) and today's budget: limit, spent, remaining, reset time. Answers even when the budget is spent. See [Checking your quota](#checking-your-quota) |
+| `GET /v1/status` | The models you can use and whether each is up, with load and price. See [Model status](#model-status) |
+| `GET /v1/usage` | Your usage per day, and today and this month by model. See [Usage history](#usage-history) |
+| `GET /v1/apps` | The app accounts you own, with their limits and this month's usage. See [App accounts](#app-accounts) |
+| `GET /v1/notices` | What the dashboard asks you to fix in your client's settings. See [Notices](#notices) |
+| `POST /auth/api-key` | Your API key for an AuthCenter access token: how a terminal tool signs in. See [Signing in from a terminal tool](#signing-in-from-a-terminal-tool) |
 | `POST /v1/embeddings` | Embeddings (vLLM only) |
 | `POST /v1/rerank`, `/v1/score` | Reranking |
 | `POST /v1/messages/count_tokens` | Token count for an Anthropic request (not billed) |
@@ -93,6 +98,7 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
   "username": "alice",
   "display_name": "Alice",
   "is_admin": false,
+  "legacy_key": false,
   "daily": {
     "limit_usd": 10.0, "used_usd": 3.25, "remaining_usd": 6.75,
     "requests": 42, "input_tokens": 120000, "output_tokens": 18000,
@@ -117,7 +123,163 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 - A request is refused only once `used_usd` reaches the limit, so the last request of the day can overshoot it slightly.
 - `enforced: false` means the gateway only logs overages instead of returning 429.
 - `cloud_budget_fallback: true` means a `/v1/*` request for a cloud model whose cap is spent is answered by an on-prem model instead of a 429.
+- `is_admin` is always `false`: an API key carries no admin right (administrators are recognized by their sign-in on the web UI). The field stays for clients built against it.
+- `legacy_key: true` means your key is of an older, weaker format; regenerate it on the dashboard when convenient. The key itself is never returned by any endpoint.
 - `concurrency.limit` is how many requests your key may have in flight at once. With `"mode": "off"` there is no limit and `limit` is left out.
+
+## Model status
+
+```bash
+curl https://your-gateway/v1/status -H "Authorization: Bearer sk-your-api-key"
+```
+
+```json
+{
+  "object": "status",
+  "onprem": {"total": 3, "up": 2, "down": ["glm-4.6"]},
+  "models": [
+    {"id": "qwen3-coder", "backend": "onprem", "type": "llm", "state": "up",
+     "running": 2, "waiting": 0, "display_name": "Qwen3 Coder", "context_window": 131072,
+     "input_price_per_1m": 0.5, "output_price_per_1m": 1.5},
+    {"id": "glm-4.6", "backend": "onprem", "type": "llm", "state": "down",
+     "input_price_per_1m": 0.5, "output_price_per_1m": 1.5},
+    {"id": "bge-m3", "backend": "onprem", "type": "embedding", "state": "up",
+     "input_price_per_1m": 0.02, "output_price_per_1m": 0.0},
+    {"id": "gpt-5", "backend": "azure", "type": "llm", "state": "unchecked",
+     "context_window": 400000, "input_price_per_1m": 1.25, "output_price_per_1m": 10.0}
+  ]
+}
+```
+
+- `models` lists every model your key can see, of every type (`/v1/models` lists only the chat models): on-prem first, then the cloud backends you have access to, in the order the dashboard shows them.
+- `backend` is `onprem`, `azure` or `aws`, the same names as in `/v1/me`.
+- `state` is `up` or `down` for on-prem models, as the gateway's health check last saw them, and `unchecked` for cloud models, which the gateway does not probe.
+- `running` / `waiting` are the requests an on-prem server is working on and has queued. They are present only when the server reports them.
+- `input_price_per_1m` / `output_price_per_1m` are what a request is billed at, in USD per 1M tokens.
+- `display_name`, `context_window`, `max_output_tokens` and the capability flags (`supports_tools`, `supports_vision`, `supports_prompt_caching`, `is_reasoning`) appear when the administrator declared them, as in `/v1/models`. A field is never `null`: when there is no value, the key is absent.
+- `onprem` sums the on-prem models up: how many, how many are up, and the names of those that are down.
+- A request for a model that is down is answered by another model of its type when one is up (the response then carries `X-Model-Fallback`).
+
+## Usage history
+
+```bash
+curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-api-key"
+```
+
+```json
+{
+  "object": "usage",
+  "timezone": "Asia/Taipei",
+  "days": [
+    {"date": "2026-10-11", "requests": 0,  "input_tokens": 0,      "output_tokens": 0,     "cost_usd": 0.0},
+    {"date": "2026-10-12", "requests": 31, "input_tokens": 98000,  "output_tokens": 12500, "cost_usd": 4.1},
+    {"date": "2026-10-13", "requests": 42, "input_tokens": 120000, "output_tokens": 18000, "cost_usd": 3.25}
+  ],
+  "today": {
+    "date": "2026-10-13",
+    "requests": 42, "input_tokens": 120000, "output_tokens": 18000, "cost_usd": 3.25,
+    "models": [
+      {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
+       "requests": 30, "input_tokens": 90000, "output_tokens": 13000, "cost_usd": 1.25},
+      {"model": "gpt-5", "backend": "azure", "type": "llm",
+       "requests": 12, "input_tokens": 30000, "output_tokens": 5000, "cost_usd": 2.0}
+    ]
+  },
+  "month": {
+    "month": "2026-10",
+    "requests": 412, "input_tokens": 1310000, "output_tokens": 164000, "cost_usd": 42.1,
+    "models": [
+      {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
+       "requests": 380, "input_tokens": 1200000, "output_tokens": 150000, "cost_usd": 30.0},
+      {"model": "gpt-5", "backend": "azure", "type": "llm",
+       "requests": 32, "input_tokens": 110000, "output_tokens": 14000, "cost_usd": 12.1}
+    ]
+  }
+}
+```
+
+- `days` has one entry per `Asia/Taipei` calendar day, oldest first. The last one is today and still running. Days without usage are present as zeros. `?days=` is how many to return: 1 to 90, default 7.
+- `today` and `month` are today and the current month so far, each with one `models` entry per model and backend, in the dashboard's order.
+- `today` and `month` leave out a cloud backend you no longer have access to, as the dashboard does; `days` counts everything, as your daily budget does.
+
+## App accounts
+
+```bash
+curl https://your-gateway/v1/apps -H "Authorization: Bearer sk-your-api-key"
+```
+
+```json
+{
+  "object": "apps",
+  "month": "2026-10",
+  "apps": [
+    {"username": "app_batch", "daily_limit_usd": 50.0, "legacy_key": false,
+     "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5}}
+  ]
+}
+```
+
+- `apps` lists the app accounts you own (empty when you own none), each with its own daily limit and its usage this month.
+- An app's API key is not included, and no endpoint returns a key. See or regenerate an app's key on the dashboard.
+
+## Notices
+
+```bash
+curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
+```
+
+```json
+{
+  "object": "notices",
+  "window_days": 15,
+  "notices": [
+    {"id": "CC001", "title": "Auto mode needs a setting on this gateway",
+     "message": "Claude Code is waiting for a server-side check this gateway does not provide.",
+     "last_seen_at": "2026-10-13T09:12:00+08:00", "client_version": "2.1.280",
+     "patch": {"set": {"CLAUDE_CODE_AUTO_MODE_SERVER": "0", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"},
+               "unset": []}},
+    {"id": "CC003", "title": "Update Claude Code",
+     "message": "Your Claude Code is older than this gateway supports.",
+     "last_seen_at": "2026-10-12T17:40:00+08:00", "client_version": "2.1.280"}
+  ],
+  "patch": {
+    "set": {"CLAUDE_CODE_AUTO_MODE_SERVER": "0", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"},
+    "unset": [],
+    "covers": ["CC001"],
+    "manual": ["CC003"]
+  }
+}
+```
+
+- `notices` is what the dashboard's notices panel shows you: the problems the gateway saw in your client's requests during the last `window_days` days that you have not reported as fixed. It is empty when there is nothing to do.
+- A notice's `patch` is its fix, when the fix is a setting: variables to `set` in the `env` block of `~/.claude/settings.json` and variables to remove from it (`unset`). A notice without `patch` needs something else (update Claude Code, ask for access).
+- The top-level `patch` is the one to apply: everything open, merged, with the settings every account should have. `covers` lists the notices it fixes, `manual` those it cannot. It is absent when nothing is open. A patch never holds a key.
+- This endpoint only reads. After applying a fix, press *I've applied it* on the dashboard; the notice also goes away by itself once the gateway has not seen the problem for `window_days` days.
+
+`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps` and `/v1/notices` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows. All of them answer when your budget is spent, none is billed, and none returns an API key: a key is only ever handed out for a sign-in (next section, or the dashboard).
+
+## Signing in from a terminal tool
+
+A program that is not a browser (a terminal tool, a TUI) can get your API key without you copying it from the dashboard:
+
+1. It signs you in with AuthCenter, using AuthCenter's own flow for command-line programs, and receives an access token for the gateway: the same kind of token the web UI gets when you sign in there.
+2. It trades that token for your API key, once:
+
+```bash
+curl -X POST https://your-gateway/auth/api-key -H "Authorization: Bearer $AUTHCENTER_ACCESS_TOKEN"
+```
+
+```json
+{"object": "api_key", "username": "alice", "api_key": "sk-your-api-key", "legacy_key": false}
+```
+
+3. From then on it uses the API key, like every other client: for the models, and for `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps` and `/v1/notices`. The access token is not needed again and nothing else accepts it; throw it away.
+
+- You always get your existing key. Signing in on a second machine does not change the key on the first.
+- A first sign-in creates your account, as a first visit to the dashboard does.
+- If the API later answers 401, the key was regenerated: sign in and trade again.
+- `401`: the token is missing, expired or not AuthCenter's. `403`: the token has no `read` scope, the account is disabled (and the token has no `admin` scope), or your address is not allowed to use the API (the message says which). `429`: too many bad tokens or keys came from your address; wait for `Retry-After`.
+- Every key handed out this way is in the gateway's audit log.
 
 ## Tool calling: pick the right client mode
 

@@ -187,9 +187,9 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
     # Every user, unfiltered: ``users`` is small next to ``usage_logs``, and an
     # IN list of every active id would hit bind-parameter limits.
     users = {
-        int(uid): (username, display_name, org_code, is_admin)
-        for uid, username, display_name, org_code, is_admin in session.exec(
-            select(User.id, User.username, User.display_name, User.org_code, User.is_admin)
+        int(uid): (username, display_name, org_code)
+        for uid, username, display_name, org_code in session.exec(
+            select(User.id, User.username, User.display_name, User.org_code)
         ).all()
     } if per_user else {}
 
@@ -204,13 +204,12 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
         totals["requests"] += u["requests"]
         if uid not in users:
             continue  # rows of a since-deleted account count only in the totals
-        username, display_name, org_code, is_admin = users[uid]
+        username, display_name, org_code = users[uid]
         row = {
             "id": uid,
             "username": username,
             "display_name": display_name,
             "org_code": org_code,
-            "is_admin": is_admin,
             "monthly_cost": u["cost"],
             "monthly_input": u["input_tokens"],
             "monthly_output": u["output_tokens"],

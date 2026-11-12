@@ -353,11 +353,10 @@ def _authenticate(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid API key.",
                 )
-            if user.is_disabled and not user.is_admin:
-                # Admin bypass mirrors get_web_user — if an admin row is somehow
-                # flagged disabled (only possible via direct DB edit; the toggle
-                # endpoint blocks self-disable), they can still call the API to
-                # fix the situation. Non-admins always get rejected.
+            if user.is_disabled:
+                # No admin exception here: an API key carries no admin right
+                # (that is the AuthCenter token's scope, on the web UI and
+                # at the key exchange). A disabled account's key is refused.
                 logger.warning("Auth rejected: user '{}' is disabled", user.username)
                 raise AccountDisabledError(user.username)
             # API IP allowlist: needs the account, so it runs here, before the
@@ -374,6 +373,11 @@ def _authenticate(
             _record_key_use(touch_id)
     # ``user`` is now detached: its columns are loaded (SQLModel does not
     # expire on close) and downstream code only ever reads them.
+    #
+    # The stored ``is_admin`` is retired (see ``schema.User``). Cleared here,
+    # the one place every API-key request passes, so that no code shared with
+    # the web UI (model lists, patches) can grant something from a stale row.
+    user.is_admin = False
     return user
 
 
@@ -384,6 +388,52 @@ def get_today_usage(user: User) -> dict:
 
     with Session(engine) as session:
         return get_user_daily_summary(session, user.id)
+
+
+def get_usage_history(user: User, days: int) -> dict:
+    """``user``'s usage for ``GET /v1/usage``: one row per local day for the
+    last ``days`` days (today included, quiet days as zeros) and this month's
+    rows per model and backend. Both read through ``usage_rollup.aggregate``
+    like the dashboard's. Short-lived session; blocking."""
+    from app.services.stats import get_daily_trends, get_model_breakdown
+
+    with Session(engine) as session:
+        return {
+            "days": get_daily_trends(session, user.id, days=days),
+            "models": get_model_breakdown(session, user.id, period="month"),
+            "today_models": get_model_breakdown(session, user.id, period="day"),
+        }
+
+
+def get_owned_apps(user: User) -> list[dict]:
+    """The app accounts ``user`` owns with this month's usage
+    (``stats.get_owned_apps_summary``), for ``GET /v1/apps``. The apps' API
+    keys are taken out here: no API-key endpoint hands out a key. Short-lived
+    session; blocking."""
+    from app.services.stats import get_owned_apps_summary
+
+    with Session(engine) as session:
+        apps = get_owned_apps_summary(session, user.id)
+    return [{key: value for key, value in app.items() if key != "api_key"} for app in apps]
+
+
+def get_client_notices(user: User) -> dict:
+    """What the dashboard's notices panel shows ``user``, for
+    ``GET /v1/notices``: ``notices`` (``client_rules.notices_for``) and
+    ``combined``, the account's one patch (``client_rules.combined_for``,
+    None when nothing is open). Like the panel it never fails the caller: a
+    broken store reads as nothing open. Short-lived session; blocking."""
+    from app.services import client_rules
+
+    try:
+        with Session(engine) as session:
+            return {
+                "notices": client_rules.notices_for(session, user),
+                "combined": client_rules.combined_for(session, user),
+            }
+    except Exception as exc:  # e.g. before `alembic upgrade`
+        logger.warning("Client notices failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
+        return {"notices": [], "combined": None}
 
 
 def get_current_user(
@@ -417,7 +467,7 @@ def require_azure_access(
     Uses ``ensure_azure_budget`` (short-lived session) rather than a
     request-scoped ``Depends(get_session)`` for the same reason as
     ``get_current_user``: the connection must not outlive the auth step."""
-    if not user.can_use_azure and not user.is_admin:
+    if not user.can_use_azure:
         logger.warning("Azure access denied for user '{}'", user.username)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -433,7 +483,7 @@ def require_bedrock_access(
     """Dependency for /aws/v1/* endpoints — additionally checks the Bedrock
     access flag and the cloud daily cap (short-lived
     session via ``ensure_bedrock_budget``, see ``get_current_user``)."""
-    if not user.can_use_bedrock and not user.is_admin:
+    if not user.can_use_bedrock:
         logger.warning("Bedrock access denied for user '{}'", user.username)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -460,7 +510,7 @@ _CONCURRENCY_RETRY_AFTER_S = 5
 async def _concurrency_slot(user: User, endpoint: str) -> AsyncIterator[None]:
     """Hold one concurrency slot for ``user`` around the request.
 
-    - mode ``off``, admins, and ``concurrency_waived`` users: no-op.
+    - mode ``off`` and ``concurrency_waived`` users: no-op.
     - ``monitor``: the lease is always taken; going over the limit logs a
       WARNING and the request is served.
     - ``enforce``: over the limit → 429 with ``Retry-After``.
@@ -469,7 +519,7 @@ async def _concurrency_slot(user: User, endpoint: str) -> AsyncIterator[None]:
       can't become an outage of its own.
     """
     mode, limit = get_concurrency_settings()
-    if mode == "off" or user.is_admin or user.concurrency_waived:
+    if mode == "off" or user.concurrency_waived:
         yield
         return
 

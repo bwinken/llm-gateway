@@ -136,7 +136,7 @@ router = APIRouter(dependencies=[Security(get_web_user, scopes=["admin"])])
 **Key behaviors:**
 - First-time login users are auto-provisioned, with `display_name` and `org_code` (JWT `org_id`, else `org_code`) saved from JWT
 - On subsequent logins, `display_name` and `org_code` are auto-synced if changed in IdP
-- Returned `User` is **expunged** from session; `is_admin` is set dynamically from JWT scope, not written to DB
+- Returned `User` is **expunged** from session; `is_admin` on it is set from the JWT scope for this request. The stored `users.is_admin` column is retired and grants nothing anywhere
 - `"admin"` scope automatically satisfies any scope requirement (admin can access read pages)
 - In tests, `_decode_jwt` is patched to use HS256 validation
 
@@ -150,12 +150,12 @@ The auth dependencies open their **own short-lived `Session(engine)`** and close
 
 | Function | Returns | Description |
 |---|---|---|
-| `get_current_user(request, credentials, x_api_key)` | `User` | Validates the API key (`Authorization: Bearer` or `x-api-key`; each candidate is tried when both are sent), applies the API IP allowlist (`ip_allowlist.check`) + checks the daily limit. Raises `AccountDisabledError` if `user.is_disabled` (admins bypass) |
+| `get_current_user(request, credentials, x_api_key)` | `User` | Validates the API key (`Authorization: Bearer` or `x-api-key`; each candidate is tried when both are sent), applies the API IP allowlist (`ip_allowlist.check`) + checks the daily limit. Raises `AccountDisabledError` if `user.is_disabled` (no exception: an API key has no admin right), and clears `user.is_admin`, the retired stored flag |
 | `get_current_user_unmetered(request, credentials, x_api_key)` | `User` | Same auth (IP allowlist included) without the daily-limit check. Used by `GET /v1/me`, which must answer when the budget is spent |
-| `require_azure_access(user)` | `User` | Wraps `get_current_user`; 403 if `not user.can_use_azure and not user.is_admin`, then `ensure_azure_budget`. Used by `/azure/v1/*` |
+| `require_azure_access(user)` | `User` | Wraps `get_current_user`; 403 if `not user.can_use_azure`, then `ensure_azure_budget`. Used by `/azure/v1/*` |
 | `require_bedrock_access(user)` | `User` | Same for `can_use_bedrock` + `ensure_bedrock_budget`. Used by `/aws/v1/*` |
 | `limited_current_user` / `limited_azure_access` / `limited_bedrock_access` | `User` (yield) | The three dependencies above wrapped by `_limited`, holding a concurrency lease until the response (stream included) has been sent. Inference endpoints only (chat / responses / messages) |
-| `_concurrency_slot(user, endpoint)` | async ctx manager | `off`, admins and `concurrency_waived` users: no-op. `monitor`: logs over-limit. `enforce`: 429 with `Retry-After: 5`. Store failure fails **open**. Release is shielded from cancellation |
+| `_concurrency_slot(user, endpoint)` | async ctx manager | `off` and `concurrency_waived` users: no-op. `monitor`: logs over-limit. `enforce`: 429 with `Retry-After: 5`. Store failure fails **open**. Release is shielded from cancellation |
 | `effective_cloud_limit(user)` | `float \| None` | The user's `cloud_daily_limit_usd` when set (0 included), else `get_cloud_daily_limit()`. The only place to read the cloud cap |
 | `check_cloud_budget(user, backend, *, allow_fallback=False)` | `bool` | Cloud-cap check with its own short-lived session, for the unified `/v1/*` handlers. Returns `False` only with `allow_fallback` (serve on-prem); otherwise raises 429. Blocking: call via `run_in_threadpool` |
 | `ensure_azure_budget(user)` / `ensure_bedrock_budget(user)` | — | `check_cloud_budget(user, "azure" \| "bedrock")` without fallback |
@@ -164,6 +164,9 @@ The auth dependencies open their **own short-lived `Session(engine)`** and close
 | `_enforce_daily_limit()` | `bool` | Reads `ENFORCE_DAILY_LIMIT` at call time; `False` turns both checks into WARNING-only |
 | `_key_use_due(user_id)` / `_record_key_use(user_id)` | `bool` / — | Stamp `users.api_key_last_used_at` at most once per `KEY_USE_RESOLUTION_S` (1 h) per user per worker, after the auth session has closed, with a conditional UPDATE. Never fails the request |
 | `get_today_usage(user)` | `dict` | Today's spend and tokens split by backend (`stats.get_user_daily_summary`); short-lived session |
+| `get_usage_history(user, days)` | `dict` | For `GET /v1/usage`: one row per local day for the last `days` days (`stats.get_daily_trends`) and today's and this month's rows per model and backend (`stats.get_model_breakdown`); short-lived session |
+| `get_owned_apps(user)` | `list[dict]` | For `GET /v1/apps`: the app accounts the user owns with this month's usage (`stats.get_owned_apps_summary`), their API keys removed; short-lived session |
+| `get_client_notices(user)` | `dict` | For `GET /v1/notices`: `notices` (`client_rules.notices_for`) and `combined` (`client_rules.combined_for`); a broken store reads as nothing open; short-lived session |
 
 All daily-limit 429s carry `Retry-After` until the next local midnight (`timeutil`).
 
@@ -300,5 +303,5 @@ This project has two independent authentication mechanisms for different use cas
 | **Lookup** | DB `users.api_key` field | JWT `sub` claim → DB `users.username` |
 | **DB session** | Own short-lived session | `Depends(get_session)` |
 | **Limit check** | `daily_limit_usd` per request (not `get_current_user_unmetered`), cloud cap on cloud routes, concurrency on inference endpoints | None (Web UI is read-only) |
-| **Admin check** | DB `users.is_admin` (bypasses Azure/Bedrock flags, concurrency limit, disabled flag) | `"admin" in scopes` (JWT scope) |
+| **Admin check** | None: an API key has no admin right (the stored `users.is_admin` is retired) | `"admin" in scopes` (JWT scope) |
 | **Auto-provision** | No (unknown key → 401) | Yes (first login auto-creates user) |

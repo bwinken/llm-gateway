@@ -18,11 +18,11 @@ from fastapi.templating import Jinja2Templates
 
 from app.core.auth import AccountDisabledError
 from app.core.browser_security import add_browser_security
-from app.core.config import APP_TITLE, get_site_links
+from app.core.config import APP_TITLE, get_site_links, setup_page_enabled
 from app.core.database import init_db
 from app.core.logger import logger
 from app.core.server_state import close_client, init_client
-from app.routers import admin, aws_api, azure_api, health_api, v1_api, web_ui
+from app.routers import admin, auth_api, aws_api, azure_api, health_api, v1_api, web_ui
 from app.services import metrics
 from app.services.health import health_check_loop
 
@@ -30,6 +30,7 @@ _templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "te
 # disabled.html extends base.html, which renders the admin-editable site
 # links (support bot / install guide) — same global as the router templates.
 _templates.env.globals["get_site_links"] = get_site_links
+_templates.env.globals["setup_page_enabled"] = setup_page_enabled
 
 
 @asynccontextmanager
@@ -157,6 +158,7 @@ async def account_disabled_handler(request: Request, exc: AccountDisabledError):
 # --- Routers ---
 app.include_router(health_api.router)
 app.include_router(web_ui.router)
+app.include_router(auth_api.router)
 app.include_router(v1_api.router)
 app.include_router(azure_api.router)
 app.include_router(aws_api.router)

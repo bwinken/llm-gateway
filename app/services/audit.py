@@ -7,7 +7,12 @@
   the read-only probes in ``_NOT_AUDITED``;
 - the reads that hand out credentials or bulk data: a full API key
   (``GET /admin/users/{id}/api-key``), every ``/admin/api/export/*`` and an
-  account's own key as a settings patch (``GET /dashboard/api-key/patch.*``).
+  account's own key as a settings patch (``GET /dashboard/api-key/patch.*``);
+- a key handed to a terminal tool for an SSO token (``POST /auth/api-key``),
+  whenever the token named an account: also when the account was then
+  refused, but not for a token that was no token at all. That route has no
+  oauth2-proxy in front, so anyone can post garbage to it, and garbage must
+  not be able to fill an append-only table.
 
 Being a middleware, it covers a new endpoint without anyone remembering to.
 Each row has the actor (JWT ``sub``), method, route template, path, status
@@ -59,6 +64,11 @@ _NOT_AUDITED: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/admin/guardrail/test"),
 })
 _AUDITED_READS = re.compile(r"^/(admin/(users/\d+/api-key|api/export/.+)|dashboard/api-key/patch\.(bat|sh))$")
+# Authenticated by an SSO token the client sends itself, outside the cookie
+# paths (``app/routers/auth_api.py``). Recorded only for an identified actor.
+_AUDITED_TOKEN_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("POST", "/auth/api-key"),
+})
 # The whole model config: its handler notes a diff instead of the body.
 _BODY_NOT_RECORDED = frozenset({"/admin/api/config"})
 _TARGET_RE = re.compile(r"^/(?:admin/users|dashboard/app)/(\d+)(?:/|$)")
@@ -73,6 +83,8 @@ _current: ContextVar[dict | None] = ContextVar("audit_note", default=None)
 
 def is_audited(method: str, path: str) -> bool:
     method = method.upper()
+    if (method, path) in _AUDITED_TOKEN_ROUTES:
+        return True
     if method in _UNSAFE:
         return is_cookie_auth_path(path) and (method, path) not in _NOT_AUDITED
     return method == "GET" and bool(_AUDITED_READS.match(path))
@@ -263,8 +275,9 @@ class AuditMiddleware:
             detail.update(redact(holder))
             client = scope.get("client") or ("", 0)
             route = scope.get("route")
+            actor = _actor(headers)
             record = {
-                "actor": _actor(headers),
+                "actor": actor,
                 "method": method,
                 "route": getattr(route, "path", "") or path,
                 "path": path,
@@ -272,8 +285,12 @@ class AuditMiddleware:
                 "client": str(client[0] or ""),
                 "detail": detail,
             }
-            with anyio.CancelScope(shield=True):
-                try:
-                    await anyio.to_thread.run_sync(_write, record)
-                except Exception as exc:
-                    logger.error("Audit write failed | error={}: {} | record={}", type(exc).__name__, exc, record)
+            # A token route with nobody identified is not recorded (the
+            # refusal is in the log). No early return here: this is a
+            # ``finally`` and a return would swallow the handler's exception.
+            if actor or (method.upper(), path) not in _AUDITED_TOKEN_ROUTES:
+                with anyio.CancelScope(shield=True):
+                    try:
+                        await anyio.to_thread.run_sync(_write, record)
+                    except Exception as exc:
+                        logger.error("Audit write failed | error={}: {} | record={}", type(exc).__name__, exc, record)
