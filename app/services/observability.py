@@ -711,6 +711,16 @@ def record_generation(rec: GenerationRecord) -> None:
                 input=rec.input_payload,
                 output=rec.output_payload,
             )
+            # The Tracing list and a trace's top node show the TRACE's own
+            # input / output, which the Langfuse server does not reliably
+            # copy from the generation: write them explicitly (before end():
+            # a finished span takes no attributes). Its own try, so an SDK
+            # that drops this legacy call still records the generation.
+            if rec.input_payload is not None or rec.output_payload is not None:
+                try:
+                    gen.set_trace_io(input=rec.input_payload, output=rec.output_payload)
+                except Exception as exc:
+                    logger.warning("Langfuse trace input/output not set: {}", exc)
             # Stamp the span's duration with the real request latency so
             # Langfuse's "Latency" column is correct. `start_observation` stamps
             # the span start at "now" — but this seam runs AFTER the request

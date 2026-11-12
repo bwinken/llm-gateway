@@ -288,7 +288,7 @@ Status: Phase 2 I/O capture wired for all conversational paths on both backends 
 5. Langfuse Metrics API can group `sum(totalCost)` by model alias and by day.
 6. An `empty_turn` score is attached when `output_tokens <= 1` on a clean finish, queryable as an empty-turn rate per model.
 7. A Langfuse error (e.g. server down) never fails or delays a proxied request.
-8. Phase 2: with `LANGFUSE_CAPTURE_IO=true`, prompt+completion appear on the generation; base64 images are shown as `[image]`; no auth headers leak.
+8. Phase 2: with `LANGFUSE_CAPTURE_IO=true`, prompt+completion appear on the generation and on its trace (the Tracing list shows the trace's own fields); base64 images are shown as `[image]`; no auth headers leak.
 9. Phase 3: `monitor.py` and its endpoints are gone; no references remain; suite green.
 
 ### Per-user observation (the primary goal — must be answerable)
