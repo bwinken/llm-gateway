@@ -66,9 +66,8 @@ Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 C
 |---|---|
 | `GET /v1/models` | 你的帳號可以用的模型 |
 | `GET /v1/me`、`/me` | 你的權限（地端 / Azure / AWS）和今日額度：上限、已用、剩餘、重置時間。額度用完時一樣可以查。見[查詢額度](#查詢額度) |
-| `GET /v1/status` | 你可以用的模型，以及每個模型是否正常、目前負載和價格。見[在 terminal 查詢](#在-terminal-查詢) |
-| `GET /v1/usage` | 你每天的用量（`?days=`，預設 7，最多 90）和本月各模型的用量 |
-| `GET /v1/cli` | `gw`：在 terminal 顯示以上三項的 shell 腳本 |
+| `GET /v1/status` | 你可以用的模型，以及每個模型是否正常、目前負載和價格。見[模型狀態](#模型狀態) |
+| `GET /v1/usage` | 你每天的用量和本月各模型的用量。見[用量紀錄](#用量紀錄) |
 | `POST /v1/embeddings` | Embeddings（僅 vLLM） |
 | `POST /v1/rerank`、`/v1/score` | Rerank |
 | `POST /v1/messages/count_tokens` | 計算 Anthropic 請求的 token 數（不計費） |
@@ -122,56 +121,72 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 - `cloud_budget_fallback: true` 代表雲端每日上限用完時，`/v1/*` 的請求會改由地端模型回答，而不是回 429。
 - `concurrency.limit` 是你的 key 同時可以進行幾個請求。`"mode": "off"` 代表不限，此時不帶 `limit`。
 
-## 在 terminal 查詢
-
-`gw` 是一支小的 shell 腳本（需要 `curl`），不用開 dashboard 就能看額度、模型狀態和用量。從 gateway 下載一次即可：
+## 模型狀態
 
 ```bash
-mkdir -p ~/.local/bin
-curl -fsS https://your-gateway/v1/cli -H "Authorization: Bearer sk-your-api-key" -o ~/.local/bin/gw
-chmod +x ~/.local/bin/gw
+curl https://your-gateway/v1/status -H "Authorization: Bearer sk-your-api-key"
 ```
 
-| 指令 | 顯示 |
-|---|---|
-| `gw` | 今日額度，接著是模型狀態 |
-| `gw me` | 今日額度：已用、剩餘、何時重置、各後端花費 |
-| `gw models` | 你可以用的模型：正常或離線、執行中 / 排隊中的請求數、context window、價格 |
-| `gw usage [N]` | 最近 N 天（預設 7）和本月各模型的用量 |
-| `gw update` | 把腳本換成 gateway 上目前的版本 |
-
-```
-alice · Alice
-
-Budget today
-  total  [███████░░░░░░░░░░░░░]  33%  $3.25 of $10.00  $6.75 left
-  cloud  [████████████████░░░░]  80%   $2.00 of $2.50  $0.50 left
-  resets in 9h 28m (midnight, Asia/Taipei)
-
-Spent today
-  on-prem      $1.25
-  Azure        $2.00
-  AWS      no access
-  42 requests, 120.0K tokens in, 18.0K out
-
-Up to 8 requests at a time.
+```json
+{
+  "object": "status",
+  "onprem": {"total": 3, "up": 2, "down": ["glm-4.6"]},
+  "models": [
+    {"id": "qwen3-coder", "backend": "onprem", "type": "llm", "state": "up",
+     "running": 2, "waiting": 0, "display_name": "Qwen3 Coder", "context_window": 131072,
+     "input_price_per_1m": 0.5, "output_price_per_1m": 1.5},
+    {"id": "glm-4.6", "backend": "onprem", "type": "llm", "state": "down",
+     "input_price_per_1m": 0.5, "output_price_per_1m": 1.5},
+    {"id": "bge-m3", "backend": "onprem", "type": "embedding", "state": "up",
+     "input_price_per_1m": 0.02, "output_price_per_1m": 0.0},
+    {"id": "gpt-5", "backend": "azure", "type": "llm", "state": "unchecked",
+     "context_window": 400000, "input_price_per_1m": 1.25, "output_price_per_1m": 10.0}
+  ]
+}
 ```
 
-- **腳本裡沒有 key。** 有設 `LLM_GATEWAY_API_KEY` 就用它；否則用 Claude Code 已經有的 key（`ANTHROPIC_AUTH_TOKEN`，先看環境變數，再看 `~/.claude/settings.json`），而且只有在同一處的 `ANTHROPIC_BASE_URL` 指向這台 gateway 時才會用。重新產生 key 之後，更新 Claude Code 的設定（dashboard *My API Key* 視窗裡的腳本），`gw` 就跟著更新。
-- key 是從標準輸入交給 `curl` 的，不會出現在指令列上，共用機器上的其他人無法從 `ps` 看到。
-- `gw --json me|models|usage` 改印 JSON，給腳本用。`watch -n 60 --color gw --color` 可以讓它一直留在畫面上。
-- 輸出到 terminal 時才會上色（`--no-color` 或 `NO_COLOR` 可關閉）；locale 不是 UTF-8 時，長條改用 ASCII 字元（`--ascii`）。
-- 管理員也可以替所有人裝好：把 repository 裡的 `setup/gw` 複製到 `/usr/local/bin/gw`，並設定 `LLM_GATEWAY_URL=https://your-gateway`（從 gateway 下載的版本已經帶有位址）。
+- `models` 列出你的 key 看得到的每個模型，所有類型都有（`/v1/models` 只列對話模型）：先是地端，再來是你有權限的雲端後端，順序和 dashboard 一樣。
+- `backend` 是 `onprem`、`azure` 或 `aws`，和 `/v1/me` 用的名稱相同。
+- `state`：地端模型是 `up` 或 `down`，也就是 gateway 健康檢查最近一次看到的狀態；雲端模型是 `unchecked`，因為 gateway 不探測雲端。
+- `running` / `waiting` 是地端伺服器正在處理和排隊中的請求數，只有伺服器有回報時才會出現。
+- `input_price_per_1m` / `output_price_per_1m` 是實際計費的價格，單位是每 100 萬 token 的美元。
+- `display_name`、`context_window`、`max_output_tokens` 在管理員有設定時才會出現。欄位不會是 `null`：沒有值時就沒有這個 key。
+- `onprem` 是地端模型的統計：總數、正常的數量、以及離線模型的名稱。
+- 指定的模型離線時，只要同類型還有模型正常，請求會由那個模型回答（回應會帶 `X-Model-Fallback`）。
 
-不用腳本也可以直接用 `curl` 看到同樣的畫面：在 `/v1/me`、`/v1/status`、`/v1/usage` 加上 `?format=text`（或送 `Accept: text/plain`）；`&color=1` 上色，`&ascii=1` 只用 ASCII。不加的話回 JSON：
+## 用量紀錄
 
 ```bash
-curl "https://your-gateway/v1/status?format=text" -H "Authorization: Bearer sk-your-api-key"
+curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-api-key"
 ```
 
-- `/v1/status`：`models` 列出你的 key 看得到的每個模型，包含 `backend`（`onprem` / `azure` / `aws`）、`type`、計費價格 `input_price_per_1m` / `output_price_per_1m`，以及 `state`：地端模型是 `up` 或 `down`（伺服器有回報時另有 `running` / `waiting` 請求數），雲端模型是 `unchecked`（gateway 不探測雲端）。`onprem` 是地端模型的統計（`total`、`up`、以及 `down` 的名稱）。指定的模型離線時，只要同類型還有模型正常，請求會由那個模型回答。
-- `/v1/usage`：`days` 每個 `Asia/Taipei` 日一筆，由舊到新，最後一筆是今天（仍在累計）：`date`、`requests`、`input_tokens`、`output_tokens`、`cost_usd`；`month` 是本月到目前為止的合計，`models` 依模型和後端分列。
-- 三個端點在額度用完時一樣可以查，而且都不計費。
+```json
+{
+  "object": "usage",
+  "timezone": "Asia/Taipei",
+  "days": [
+    {"date": "2026-10-11", "requests": 0,  "input_tokens": 0,      "output_tokens": 0,     "cost_usd": 0.0},
+    {"date": "2026-10-12", "requests": 31, "input_tokens": 98000,  "output_tokens": 12500, "cost_usd": 4.1},
+    {"date": "2026-10-13", "requests": 42, "input_tokens": 120000, "output_tokens": 18000, "cost_usd": 3.25}
+  ],
+  "month": {
+    "month": "2026-10",
+    "requests": 412, "input_tokens": 1310000, "output_tokens": 164000, "cost_usd": 42.1,
+    "models": [
+      {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
+       "requests": 380, "input_tokens": 1200000, "output_tokens": 150000, "cost_usd": 30.0},
+      {"model": "gpt-5", "backend": "azure", "type": "llm",
+       "requests": 32, "input_tokens": 110000, "output_tokens": 14000, "cost_usd": 12.1}
+    ]
+  }
+}
+```
+
+- `days` 每個 `Asia/Taipei` 日曆日一筆，由舊到新，最後一筆是今天（仍在累計）。沒有用量的日子也會出現，數值為 0。`?days=` 決定回傳幾天：1 到 90，預設 7。
+- `month` 是本月到目前為止的合計，`models` 依模型和後端分列，順序和 dashboard 一樣。
+- 和 dashboard 一樣，`month` 不包含你已經沒有權限的雲端後端；`days` 則全部都算，和每日額度的算法一致。
+
+狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage` 這三個端點。三個在額度用完時一樣可以查，而且都不計費。
 
 ## Tool calling：選對 client 模式
 

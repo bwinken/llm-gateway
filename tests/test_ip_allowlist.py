@@ -243,7 +243,7 @@ class TestApiCheck:
 
     @pytest.mark.parametrize("path", [
         "/v1/models", "/models", "/azure/v1/models", "/aws/v1/models",
-        "/v1/me", "/v1/status", "/v1/usage", "/v1/cli",
+        "/v1/me", "/v1/status", "/v1/usage",
     ])
     def test_every_api_router_is_gated(self, client_at, path):
         with _settings("enforce"):

@@ -15,13 +15,6 @@ class TestSetupPage:
         assert "tab-panel-cert" not in resp.text
         assert "/setup/files/" not in resp.text
 
-    def test_shows_how_to_get_the_terminal_script(self, client, db_session, test_user):
-        resp = client.get("/setup", headers=web_auth_header(sub="testuser"))
-        assert 'id="setup-terminal"' in resp.text
-        assert "/v1/cli" in resp.text
-        # The page never prints the account's key (it lives in one place).
-        assert test_user.api_key not in resp.text
-
     def test_requires_login(self, client, db_session):
         resp = client.get("/setup")
         assert resp.status_code in (401, 403)

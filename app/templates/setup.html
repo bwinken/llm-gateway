@@ -195,35 +195,6 @@
             </div>
         </div>
 
-        {# Step 4 — budget, models and usage from a terminal (gw) #}
-        <div class="gw-card p-6 gw-anim gw-d3" id="setup-terminal">
-            <div class="flex items-start gap-4">
-                <div class="flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center font-bold text-sm"
-                     style="background:rgba(167,139,250,0.1);color:#a78bfa">4</div>
-                <div class="flex-1 min-w-0">
-                    <h3 class="text-base font-semibold text-t1 mb-2">Budget and model status in your terminal</h3>
-                    <p class="text-sm text-t3 mb-3">
-                        On Linux or macOS, <code class="font-mono text-xs text-t2 bg-n1 px-1.5 py-0.5 rounded">gw</code>
-                        shows what the dashboard shows: today's budget, which models are up, and your usage.
-                        Download it once (it needs <code class="font-mono text-xs text-t2 bg-n1 px-1.5 py-0.5 rounded">curl</code>):
-                    </p>
-                    <pre class="gw-code p-3 text-xs font-mono overflow-x-auto mb-3">mkdir -p ~/.local/bin
-curl -fsS {{ gateway_base }}/cli -H "Authorization: Bearer sk-your-api-key" -o ~/.local/bin/gw
-chmod +x ~/.local/bin/gw</pre>
-                    <pre class="gw-code p-3 text-xs font-mono overflow-x-auto mb-3">gw            <span class="text-t4"># today's budget, then the models</span>
-gw models     <span class="text-t4"># up or down, load, price</span>
-gw usage 30   <span class="text-t4"># the last 30 days and this month by model</span>
-gw help</pre>
-                    <p class="text-sm text-t3">
-                        The script holds no key. It uses the one Claude Code already has in
-                        <code class="font-mono text-xs text-t2 bg-n1 px-1.5 py-0.5 rounded">~/.claude/settings.json</code>
-                        (or <code class="font-mono text-xs text-t2 bg-n1 px-1.5 py-0.5 rounded">LLM_GATEWAY_API_KEY</code>),
-                        so after you regenerate your key there is nothing else to change.
-                    </p>
-                </div>
-            </div>
-        </div>
-
     </div>
 
     {# ── Troubleshooting (Claude Code) ── #}
