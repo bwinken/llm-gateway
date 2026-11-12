@@ -292,6 +292,14 @@ CSV 開頭帶 UTF-8 BOM，Excel 開啟中文才不會亂碼。
 
 ---
 
+## `auth_api.py` — 非瀏覽器 client 的登入
+
+| Method | Path | 說明 | 認證 |
+|--------|------|------|------|
+| `POST` | `/auth/api-key` | 回傳 AuthCenter access token 所屬帳號的 API key:`{object, username, api_key, legacy_key}`。回傳的是既有的 key,不會產生新的。和 Web UI 一樣會找到或自動建立帳號 | client 自己帶的 AuthCenter JWT(`read` 或 `admin` scope) |
+
+Terminal 工具用 AuthCenter 的命令列流程登入,把 token 送到這裡一次,之後就是一般的 API key client。驗證用的是 `core/auth._decode_jwt`,和 Web UI 相同。納入錯誤憑證鎖定,停用帳號和 API IP 白名單都會拒絕,token 能指出帳號時一律寫入稽核紀錄(`audit._AUDITED_TOKEN_ROUTES`)。由 nginx 的 `location /auth/` 轉送,前面沒有 oauth2-proxy。細節見 `docs/architecture.md` 的 *Authentication*。
+
 ## `health_api.py` — Liveness 與 Readiness 探針
 
 **認證**：刻意沒有。探針來自 nginx、外部負載平衡器或容器 runtime，它們都不會帶

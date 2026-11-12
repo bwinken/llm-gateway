@@ -70,6 +70,7 @@ Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 C
 | `GET /v1/usage` | 你每天的用量，以及今天和本月各模型的用量。見[用量紀錄](#用量紀錄) |
 | `GET /v1/apps` | 你名下的 app 帳號，以及各自的上限和本月用量。見[App 帳號](#app-帳號) |
 | `GET /v1/notices` | dashboard 要你修正的 client 設定。見[通知](#通知) |
+| `POST /auth/api-key` | 用 AuthCenter 的 access token 換你的 API key，terminal 工具的登入方式。見[從 terminal 工具登入](#從-terminal-工具登入) |
 | `POST /v1/embeddings` | Embeddings（僅 vLLM） |
 | `POST /v1/rerank`、`/v1/score` | Rerank |
 | `POST /v1/messages/count_tokens` | 計算 Anthropic 請求的 token 數（不計費） |
@@ -254,7 +255,30 @@ curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
 - 最上層的 `patch` 是實際要套用的那一份：把所有未處理的項目合併，再加上每個帳號都該有的設定。`covers` 是它能修正的通知，`manual` 是它修不了的。沒有待辦時不會出現。patch 裡不會有 key。
 - 這個端點只能讀。套用修正後，請到 dashboard 按 *I've applied it*；gateway 連續 `window_days` 天沒再看到同樣的問題時，通知也會自己消失。
 
-狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/apps`、`/v1/notices`，合起來就是 dashboard 上看得到的資訊。它們在額度用完時一樣可以查，都不計費，也都不會回傳 API key。
+狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/apps`、`/v1/notices`，合起來就是 dashboard 上看得到的資訊。它們在額度用完時一樣可以查，都不計費，也都不會回傳 API key：key 只會在登入之後交出（見下一節，或 dashboard）。
+
+## 從 terminal 工具登入
+
+不是瀏覽器的程式（terminal 工具、TUI）可以直接取得你的 API key，不用你到 dashboard 複製：
+
+1. 它用 AuthCenter 給命令列程式的登入流程讓你登入，拿到給 gateway 的 access token，也就是你在網頁登入時 Web UI 拿到的那一種 token。
+2. 它拿這個 token 換你的 API key，只換一次：
+
+```bash
+curl -X POST https://your-gateway/auth/api-key -H "Authorization: Bearer $AUTHCENTER_ACCESS_TOKEN"
+```
+
+```json
+{"object": "api_key", "username": "alice", "api_key": "sk-your-api-key", "legacy_key": false}
+```
+
+3. 之後它就和其他 client 一樣用 API key：呼叫模型，以及讀 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/apps`、`/v1/notices`。access token 不會再用到，其他端點也不接受它，用完就丟。
+
+- 拿到的永遠是你現有的 key。在第二台機器登入，不會讓第一台的 key 失效。
+- 第一次登入會建立帳號，和第一次開 dashboard 一樣。
+- 之後如果 API 回 401，代表 key 被重新產生過：重新登入、再換一次即可。
+- `401`：token 沒帶、過期，或不是 AuthCenter 發的。`403`：token 沒有 `read` scope、帳號被停用，或你的位址不允許使用 API（訊息會說明是哪一種）。`429`：你的位址送出太多錯誤的 token 或 key，請等 `Retry-After` 之後再試。
+- 每一次這樣交出 key，都會記在 gateway 的稽核紀錄裡。
 
 ## Tool calling：選對 client 模式
 

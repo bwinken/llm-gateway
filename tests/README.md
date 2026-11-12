@@ -407,6 +407,21 @@ stays on cloud. Also config parsing, `POST /admin/cloud-budget-fallback`
 (explicit `enabled=on|off`, JSON reply for the in-place toggle), and the
 Azure / AWS grant toggles answering JSON under `Accept: application/json`.
 
+### `test_auth_exchange.py` — `POST /auth/api-key`
+
+A terminal tool's sign-in: an AuthCenter token in, the account's API key
+out. `TestExchange`: the existing key is returned and never replaced, it
+then works on the API, a first sign-in creates the account as the
+dashboard does, names from the token are synced, POST only.
+`TestRefusals`: no token, what is not an AuthCenter token (an API key
+included), no `read` scope (nothing created), a disabled account, and the
+token opening no API route. `TestIpAllowlist`: an unlisted address is
+refused at sign-in. `TestThrottle`: invalid tokens share the per-address
+tally with invalid keys; one expired token retried never locks.
+`TestAudit`: a key handed out and a refused account are recorded without
+the key, garbage is not. `TestWiring`: the only route under `/auth`, no
+API-key dependency, plain `def`, mounted by the production app.
+
 ### `test_account_info.py` — `GET /v1/me`
 
 The caller's own access and today's budget: limits, spend split by backend

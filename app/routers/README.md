@@ -20,6 +20,7 @@ graph LR
         aws_api["aws_api.py<br/>/aws/v1/*<br/>(Bedrock-only)"]
         web_ui["web_ui.py<br/>/ • /dashboard • /setup"]
         health_api["health_api.py<br/>/healthz • /readyz<br/>(no auth)"]
+        auth_api["auth_api.py<br/>POST /auth/api-key<br/>(AuthCenter token → API key)"]
         admin["admin.py<br/>/admin"]
     end
 
@@ -291,6 +292,14 @@ CSV exports start with a UTF-8 BOM so Excel opens CJK text correctly.
 | `PUT` | `/admin/api/config` | Validate (alias uniqueness across backends, field types, reasoning-effort keys, `rate_limit_fallback` targets), save to `config.toml` and reload immediately. References are swapped back for the stored secrets first (400 if one points at nothing); the audit log records which fields changed, not their values |
 
 ---
+
+## `auth_api.py` — Sign-in for Clients That Are Not a Browser
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/auth/api-key` | The API key of the account an AuthCenter access token belongs to: `{object, username, api_key, legacy_key}`. The existing key, never a new one. Finds or auto-provisions the account like the web UI | AuthCenter JWT sent by the client itself (`read` or `admin` scope) |
+
+A terminal tool signs in with AuthCenter (its command-line flow), posts the token here once, and is an ordinary API-key client from then on. Validation is `core/auth._decode_jwt`, the web UI's. Throttled with the failed-auth throttle, refused for a disabled account or by the API IP allowlist, and audited (`audit._AUDITED_TOKEN_ROUTES`) whenever the token names an account. Served by nginx's `location /auth/`, without oauth2-proxy in front. Details: `docs/architecture.md` → *Authentication*.
 
 ## `health_api.py` — Liveness & Readiness Probes
 

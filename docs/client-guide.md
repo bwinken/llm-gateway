@@ -70,6 +70,7 @@ Windows users can get a pre-configured Claude Code installer from the **Setup** 
 | `GET /v1/usage` | Your usage per day, and today and this month by model. See [Usage history](#usage-history) |
 | `GET /v1/apps` | The app accounts you own, with their limits and this month's usage. See [App accounts](#app-accounts) |
 | `GET /v1/notices` | What the dashboard asks you to fix in your client's settings. See [Notices](#notices) |
+| `POST /auth/api-key` | Your API key for an AuthCenter access token: how a terminal tool signs in. See [Signing in from a terminal tool](#signing-in-from-a-terminal-tool) |
 | `POST /v1/embeddings` | Embeddings (vLLM only) |
 | `POST /v1/rerank`, `/v1/score` | Reranking |
 | `POST /v1/messages/count_tokens` | Token count for an Anthropic request (not billed) |
@@ -254,7 +255,30 @@ curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
 - The top-level `patch` is the one to apply: everything open, merged, with the settings every account should have. `covers` lists the notices it fixes, `manual` those it cannot. It is absent when nothing is open. A patch never holds a key.
 - This endpoint only reads. After applying a fix, press *I've applied it* on the dashboard; the notice also goes away by itself once the gateway has not seen the problem for `window_days` days.
 
-`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps` and `/v1/notices` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows. All of them answer when your budget is spent, none is billed, and none returns an API key.
+`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps` and `/v1/notices` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows. All of them answer when your budget is spent, none is billed, and none returns an API key: a key is only ever handed out for a sign-in (next section, or the dashboard).
+
+## Signing in from a terminal tool
+
+A program that is not a browser (a terminal tool, a TUI) can get your API key without you copying it from the dashboard:
+
+1. It signs you in with AuthCenter, using AuthCenter's own flow for command-line programs, and receives an access token for the gateway: the same kind of token the web UI gets when you sign in there.
+2. It trades that token for your API key, once:
+
+```bash
+curl -X POST https://your-gateway/auth/api-key -H "Authorization: Bearer $AUTHCENTER_ACCESS_TOKEN"
+```
+
+```json
+{"object": "api_key", "username": "alice", "api_key": "sk-your-api-key", "legacy_key": false}
+```
+
+3. From then on it uses the API key, like every other client: for the models, and for `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps` and `/v1/notices`. The access token is not needed again and nothing else accepts it; throw it away.
+
+- You always get your existing key. Signing in on a second machine does not change the key on the first.
+- A first sign-in creates your account, as a first visit to the dashboard does.
+- If the API later answers 401, the key was regenerated: sign in and trade again.
+- `401`: the token is missing, expired or not AuthCenter's. `403`: the token has no `read` scope, the account is disabled, or your address is not allowed to use the API (the message says which). `429`: too many bad tokens or keys came from your address; wait for `Retry-After`.
+- Every key handed out this way is in the gateway's audit log.
 
 ## Tool calling: pick the right client mode
 

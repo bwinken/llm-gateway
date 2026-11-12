@@ -22,7 +22,7 @@ from app.core.config import APP_TITLE, get_site_links, setup_page_enabled
 from app.core.database import init_db
 from app.core.logger import logger
 from app.core.server_state import close_client, init_client
-from app.routers import admin, aws_api, azure_api, health_api, v1_api, web_ui
+from app.routers import admin, auth_api, aws_api, azure_api, health_api, v1_api, web_ui
 from app.services import metrics
 from app.services.health import health_check_loop
 
@@ -158,6 +158,7 @@ async def account_disabled_handler(request: Request, exc: AccountDisabledError):
 # --- Routers ---
 app.include_router(health_api.router)
 app.include_router(web_ui.router)
+app.include_router(auth_api.router)
 app.include_router(v1_api.router)
 app.include_router(azure_api.router)
 app.include_router(aws_api.router)
