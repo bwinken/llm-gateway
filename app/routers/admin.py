@@ -4,6 +4,7 @@ Admin panel: web UI + API endpoints for user management and model configuration.
 
 from __future__ import annotations
 
+import html as _html
 import math
 import re
 from datetime import datetime, timedelta, timezone
@@ -68,6 +69,7 @@ from app.models.schema import (
     AnomalyEvent,
     AppOwner,
     IpAllowRule,
+    ReportSchedule,
     User,
     UsageLog,
     service_account_clause,
@@ -76,6 +78,7 @@ from app.models.schema import (
     mask_api_key,
 )
 from app.services import audit, client_checks, client_rules, client_settings, concurrency, guardrail, ip_allowlist, mailer
+from app.services import langfuse_reader, weekly_reports
 from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
@@ -505,6 +508,13 @@ def admin_page(
         logger.warning("IP allowlist view failed | error={}: {}", type(exc).__name__, exc)
         ip_allowlist_view = None
 
+    try:
+        weekly_reports_view = _weekly_reports_view(session)
+    except Exception as exc:  # before `alembic upgrade`: the card says so
+        session.rollback()
+        logger.warning("Weekly reports view failed | error={}: {}", type(exc).__name__, exc)
+        weekly_reports_view = None
+
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -557,6 +567,7 @@ def admin_page(
             "audit_recent": _audit_rows(session, limit=20),
             "guardrail": _guardrail_view(),
             "ip_allowlist": ip_allowlist_view,
+            "weekly_reports": weekly_reports_view,
             "special_access": _special_access_summary(session),
             "guardrail_categories": guardrail.QWEN3GUARD_CATEGORIES,
             "guardrail_model_family": guardrail.GUARD_MODEL_FAMILY,
@@ -867,6 +878,116 @@ async def update_cloud_limit(request: Request):
     set_cloud_daily_limit(value)
     logger.info("Cloud daily limit set to {}", "none" if value is None else f"${value}")
     return RedirectResponse(url="/admin", status_code=303)
+
+
+# ── Weekly reports ──
+
+def _weekly_reports_view(session: Session) -> dict:
+    return {
+        "reports": weekly_reports.schedules(session),
+        "mail": mailer.status(),
+        "langfuse": langfuse_reader.is_configured(),
+        "weekdays": weekly_reports.WEEKDAY_NAMES,
+        "max_recipients": weekly_reports.MAX_RECIPIENTS,
+    }
+
+
+def _report_or_404(name: str) -> weekly_reports.Report:
+    report = weekly_reports.REPORTS.get(name)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Unknown report.")
+    return report
+
+
+@router.post("/reports/{name}")
+def save_report_schedule(
+    name: str,
+    request: Request,
+    enabled: str = Form("off"),
+    weekday: str = Form("0"),
+    send_time: str = Form(weekly_reports.DEFAULT_TIME),
+    recipients: str = Form(""),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Save one weekly report's schedule: on / off, the day and time
+    (Asia/Taipei) and who gets it. Recipients are usernames or addresses of
+    the company domain. Saving never sends: when this week's time has
+    already passed, the first automatic mail is next week's."""
+    report = _report_or_404(name)
+    try:
+        row = weekly_reports.save_schedule(
+            session, report.name, enabled=enabled.strip().lower() == "on",
+            weekday=weekly_reports.parse_weekday(weekday), send_time=weekly_reports.parse_time(send_time),
+            recipients=weekly_reports.parse_recipients(recipients), updated_by=admin_user.username,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Weekly report schedule saved | report={} enabled={} weekday={} time={} recipients={} admin={}",
+        row.name, row.enabled, row.weekday, row.send_time, row.recipients, admin_user.username,
+    )
+    if _wants_json(request):
+        view = next(r for r in weekly_reports.schedules(session) if r["name"] == report.name)
+        return JSONResponse({"ok": True, **view})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.get("/reports/{name}/preview", response_class=HTMLResponse)
+def preview_report(
+    name: str,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """The report about last week as the mail would show it, built now from
+    live data (its charts inlined). Nothing is sent."""
+    report = _report_or_404(name)
+    rendered = weekly_reports.render(session, report.name)
+    problems = "".join(f"<li>{_html.escape(problem)}</li>" for problem in rendered.problems)
+    banner = (
+        '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:13px;background:#f4f3ef;color:#52514e;'
+        'padding:10px 14px;margin-bottom:18px">'
+        f"<b>Preview.</b> Subject: {_html.escape(rendered.subject)}"
+        + (f'<ul style="margin:6px 0 0 18px;padding:0;color:#d03b3b">{problems}</ul>' if problems else "")
+        + "</div>"
+    )
+    return HTMLResponse(
+        '<!doctype html><html><head><meta charset="utf-8">'
+        f"<title>{_html.escape(report.title)} preview</title></head>"
+        f'<body style="background:#ffffff;margin:24px">{banner}{weekly_reports.preview_html(rendered)}</body></html>'
+    )
+
+
+@router.post("/reports/{name}/send")
+def send_report_now(
+    name: str,
+    to: str = Form("me"),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Send the report about last week now: to the admin's own mailbox
+    (``to=me``, marked [TEST]) or to the report's saved recipients
+    (``to=recipients``). The schedule is left as it is."""
+    report = _report_or_404(name)
+    if not mailer.is_enabled():
+        raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
+    to = to.strip().lower()
+    if to == "recipients":
+        addresses = weekly_reports.recipients_of(session.get(ReportSchedule, report.name))
+        if not addresses:
+            raise HTTPException(status_code=400, detail="This report has no saved recipients.")
+        kind, prefix = "requested", ""
+    else:
+        addresses = [mailer.address_for(admin_user.username)]
+        if not mailer.in_company_domain(addresses[0]):
+            raise HTTPException(status_code=400, detail=f"Mail goes to @{mailer.settings()['domain']} addresses only.")
+        kind, prefix = "test", "[TEST] "
+    ok, detail, _rendered = weekly_reports.send(
+        session, report.name, addresses, kind=kind, actor=admin_user.username, subject_prefix=prefix,
+    )
+    audit.note(report=report.name, report_to=", ".join(addresses), report_ok=ok)
+    return JSONResponse({"ok": ok, "to": addresses, "detail": detail})
+
 
 
 @router.post("/site-links")
