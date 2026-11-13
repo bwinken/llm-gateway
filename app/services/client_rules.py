@@ -1029,6 +1029,17 @@ def combined_env(rule_list: list[Any], azure: bool, aws: bool) -> dict[str, str 
     return env
 
 
+def recommended_env(azure: bool, aws: bool) -> dict[str, str | None]:
+    """What an account with this access should have in its settings, whether
+    or not it has tripped anything: the settings every account should have
+    (``baseline_env``), then the patch of every check that is on and not on
+    its way out, merged as for a notice (``combined_env``). It is what
+    ``GET /v1/settings`` suggests. From this worker's snapshot: no database
+    read."""
+    rule_list = [rule for rule in _snapshot if not rule.deprecated]
+    return {**baseline_env(), **combined_env(rule_list, azure, aws)}
+
+
 def env_conflicts(rule_list: list[Rule]) -> list[dict[str, Any]]:
     """Variables that enabled checks set to different values for the same
     kind of account, with the check that wins in a combined patch."""

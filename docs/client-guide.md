@@ -70,6 +70,7 @@ Windows users can get a pre-configured Claude Code installer from the **Setup** 
 | `GET /v1/usage` | Your usage per day, and today and this month by model. See [Usage history](#usage-history) |
 | `GET /v1/apps` | The app accounts you own, with their limits and this month's usage. See [App accounts](#app-accounts) |
 | `GET /v1/notices` | What the dashboard asks you to fix in your client's settings. See [Notices](#notices) |
+| `GET /v1/settings` | The client settings a tool can ask you about, each with the suggested value and the other options for your account. See [Settings](#settings) |
 | `POST /auth/api-key` | Your API key for an AuthCenter access token: how a terminal tool signs in. See [Signing in from a terminal tool](#signing-in-from-a-terminal-tool) |
 | `POST /v1/embeddings` | Embeddings (vLLM only) |
 | `POST /v1/rerank`, `/v1/score` | Reranking |
@@ -256,7 +257,45 @@ curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
 - The top-level `patch` is the one to apply: everything open, merged, with the settings every account should have. `covers` lists the notices it fixes, `manual` those it cannot. It is absent when nothing is open. A patch never holds a key.
 - This endpoint only reads. After applying a fix, press *I've applied it* on the dashboard; the notice also goes away by itself once the gateway has not seen the problem for `window_days` days.
 
-`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps` and `/v1/notices` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows. All of them answer when your budget is spent, none is billed, and none returns an API key: a key is only ever handed out for a sign-in (next section, or the dashboard).
+## Settings
+
+```bash
+curl https://your-gateway/v1/settings -H "Authorization: Bearer sk-your-api-key"
+```
+
+```json
+{
+  "object": "settings",
+  "client": "claude-code",
+  "fields": [
+    {"name": "ANTHROPIC_MODEL", "label": "Default model",
+     "description": "The model Claude Code starts a session with.",
+     "type": "model", "default": "qwen3-coder",
+     "options": [
+       {"value": "qwen3-coder", "label": "Qwen3 Coder", "backend": "onprem"},
+       {"value": "qwen3-small", "label": "qwen3-small", "backend": "onprem"},
+       {"value": "gpt-5", "label": "GPT-5", "backend": "azure"}
+     ]},
+    {"name": "CLAUDE_CODE_AUTO_MODE_SERVER", "label": "Auto mode safety check",
+     "description": "No model behind this gateway reviews auto mode's actions, so Claude Code has to run that check itself, as ordinary requests.",
+     "type": "choice", "default": "0",
+     "options": [{"value": "0", "label": "Run by Claude Code"}]},
+    {"name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "label": "Model list from the gateway",
+     "description": "Fill Claude Code's /model picker with this gateway's models at startup.",
+     "type": "choice", "default": "1",
+     "options": [{"value": "1", "label": "On"}, {"value": "0", "label": "Off"}]}
+  ]
+}
+```
+
+- This is for a tool that asks "do you want to change this setting?": which settings there are, the value the gateway suggests for **your** account, and what else you may pick. Each field is one variable of the `env` block of `~/.claude/settings.json` (`client` names the client the fields are for).
+- `default` is the suggested value. It is never empty and is always the `value` of one of the `options`, so it can be preselected. It is the value the gateway's notices would tell your account to set ([Notices](#notices)), whether or not you have one open, so it differs between accounts with and without cloud access.
+- `options` is everything you may pick. For a `model` field they are the chat models your account can use, in the order of [Model status](#model-status), each with its `backend`; for a `choice` field they are fixed values. A field with a single option has nothing else to pick: the only question is whether to apply it.
+- `label` is always there; `description` only when the gateway has one. A variable the gateway has no wording for has its own name as `label`.
+- The gateway does not know what you have set now: compare with your own settings.json. A value that is already one of the `options` is fine and needs no question; ask when the variable is missing or holds something else.
+- The fields change with the gateway's configuration and your access, so read them when you need them rather than keeping a copy. Never a key, and read-only: applying a value is up to the tool.
+
+`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps`, `/v1/notices` and `/v1/settings` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows, and what a tool needs to set a client up. All of them answer when your budget is spent, none is billed, and none returns an API key: a key is only ever handed out for a sign-in (next section, or the dashboard).
 
 ## Signing in from a terminal tool
 
@@ -273,7 +312,7 @@ curl -X POST https://your-gateway/auth/api-key -H "Authorization: Bearer $AUTHCE
 {"object": "api_key", "username": "alice", "api_key": "sk-your-api-key", "legacy_key": false}
 ```
 
-3. From then on it uses the API key, like every other client: for the models, and for `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps` and `/v1/notices`. The access token is not needed again and nothing else accepts it; throw it away.
+3. From then on it uses the API key, like every other client: for the models, and for `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps`, `/v1/notices` and `/v1/settings`. The access token is not needed again and nothing else accepts it; throw it away.
 
 - You always get your existing key. Signing in on a second machine does not change the key on the first.
 - A first sign-in creates your account, as a first visit to the dashboard does.

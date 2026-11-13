@@ -69,7 +69,7 @@ from app.services.azure_proxy import (
     azure_forward_messages,
     azure_forward_responses,
 )
-from app.services import client_rules, guardrail, model_catalog
+from app.services import client_rules, client_settings, guardrail, model_catalog
 from app.services.model_order import natural_key
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
@@ -627,6 +627,36 @@ def client_notices(user: User = Depends(get_current_user_unmetered)):
     if combined:
         body["patch"] = {**_patch(combined["env"]), "covers": combined["covered"], "manual": combined["manual"]}
     return body
+
+
+@router.get("/v1/settings")
+async def client_settings_fields(user: User = Depends(get_current_user_unmetered)):
+    """The client settings this account can be asked about, for a tool that
+    offers to change them: each one with the value the gateway suggests and
+    what else may be picked.
+
+    A field is one variable of the ``env`` block of Claude Code's
+    settings.json (``client`` names the client): ``name``, a ``label`` and
+    sometimes a ``description`` to show, ``type`` (``model``: its options
+    are the account's models; ``choice``: fixed values), ``default`` and
+    ``options``. ``default`` is never empty and is always the ``value`` of
+    one of the ``options``; a field with one option has nothing else to
+    pick. A model option also names its ``backend``.
+
+    Both depend on the account: ``default`` is what the client checks tell
+    an account with its cloud access to set (the patches of
+    ``/v1/notices``, whether or not anything is open), and the model
+    options are the models of ``/v1/status``, in the same order. What the
+    account has now is on its machine; the gateway does not know it.
+
+    Read-only and never a key. Answers once the daily limit is spent. No
+    database read.
+    """
+    return {
+        "object": "settings",
+        "client": client_rules.CLIENT,
+        "fields": client_settings.fields_for(user),
+    }
 
 
 @router.post("/v1/chat/completions")

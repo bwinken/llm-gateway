@@ -447,7 +447,7 @@ flag granting nothing. `TestOverBudget` pins that it still answers once the budg
 and `x-api-key`; `TestConcurrency` the reported concurrency mode. Every
 response is checked for `null`s (`_no_nulls`).
 
-### `test_status_usage.py` — `GET /v1/status`, `/v1/usage`, `/v1/apps`, `/v1/notices`
+### `test_status_usage.py` — `GET /v1/status`, `/v1/usage`, `/v1/apps`, `/v1/notices`, `/v1/settings`
 
 What the dashboard shows an account, by API key. `TestAuth`: each needs a
 key, refuses a disabled account, answers once the budget is spent and
@@ -465,7 +465,14 @@ key. `TestNotices`: the dashboard panel's notices with patches as
 `{set, unset}`, the one combined patch and what it cannot fix, the patch
 following the account's access, resolved / old / other accounts'
 violations left out, never a key, read-only, a broken store reading as
-nothing open. Every response is checked for `null`s.
+nothing open. `TestSettings`: every field has a default that is one of
+its options, the default is what the checks tell the account to set (the
+same values as its notice patch), model options are the account's chat
+models in the display order, both follow the account's access, a model no
+check names defaults to the gateway's fallback, a suggested model outside
+the list is still an option, other patch variables are offered as they
+are, a check that is off suggests nothing, never a key, read-only, no
+database read. Every response is checked for `null`s.
 
 ### `test_concurrency_limit.py` — per-user concurrency limit
 

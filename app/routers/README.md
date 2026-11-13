@@ -57,6 +57,7 @@ One base URL surfaces every backend to clients like Claude Code's model picker. 
 | `GET` | `/v1/usage` | The caller's usage per local day (`?days=`, 1 to 90, default 7), and today and this month by model, through `usage_rollup.aggregate`. Unmetered auth; plain `def` | Direct response | — |
 | `GET` | `/v1/apps` | The app accounts the caller owns with their daily limit and this month's usage (`stats.get_owned_apps_summary`), never their keys. Unmetered auth; plain `def` | Direct response | — |
 | `GET` | `/v1/notices` | The caller's open client-rule notices and their patches as `{set, unset}` (`client_rules.notices_for` / `combined_for`). Read-only; unmetered auth; plain `def` | Direct response | — |
+| `GET` | `/v1/settings` | The client settings the caller can be asked about: per variable a `default` (what the client checks tell this account to set) and its `options` (for a model, the account's models) (`client_settings.fields_for`). Read-only; unmetered auth; no DB read | Direct response | — |
 | `POST` | `/v1/chat/completions`, `/chat/completions` | Chat completion generation | `vllm_forward_chat_completions` (vLLM) / `azure_forward_chat_completions` (Azure) / `bedrock_forward_chat_completions` (Bedrock) | `llm`, `vlm` |
 | `POST` | `/v1/responses`, `/responses` | Responses API (no Bedrock dispatch: a Bedrock alias falls back to vLLM) | `vllm_forward_responses` (vLLM) / `azure_forward_responses` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`, `/embeddings` | Text embeddings | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |

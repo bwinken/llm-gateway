@@ -1,8 +1,9 @@
 """The dashboard's figures by API key, for clients such as a terminal tool:
 ``GET /v1/status`` (the models an account can use and whether they are up),
 ``GET /v1/usage`` (its usage per day, today and this month by model),
-``GET /v1/apps`` (the app accounts it owns) and ``GET /v1/notices`` (its
-client-rule notices)."""
+``GET /v1/apps`` (the app accounts it owns), ``GET /v1/notices`` (its
+client-rule notices) and ``GET /v1/settings`` (the client settings it can be
+asked about, each with a default and its options)."""
 
 from __future__ import annotations
 
@@ -47,7 +48,7 @@ def _no_nulls(value) -> bool:
     return value is not None
 
 
-PATHS = ["/v1/status", "/v1/usage", "/v1/apps", "/v1/notices"]
+PATHS = ["/v1/status", "/v1/usage", "/v1/apps", "/v1/notices", "/v1/settings"]
 
 
 class TestAuth:
@@ -447,6 +448,160 @@ class TestNotices:
     def test_a_broken_store_reads_as_nothing_open(self, client, test_user):
         with patch("app.services.client_rules.notices_for", side_effect=RuntimeError("no table")):
             assert self._notices(client)["notices"] == []
+
+
+MODEL_FIELDS = ["ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_AUTO_MODE_MODEL"]
+DISCOVERY = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
+
+
+class TestSettings:
+    """``GET /v1/settings``: which client settings an account can be asked
+    about, the value the gateway suggests and what else may be picked."""
+
+    _configure = TestNotices._configure
+
+    def _body(self, client, headers=None) -> dict:
+        from app.services import client_rules
+
+        client_rules.refresh()  # the per-worker snapshot the endpoint reads
+        resp = client.get("/v1/settings", headers=headers or auth_header())
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert _no_nulls(body), body
+        return body
+
+    def _fields(self, client, headers=None) -> dict[str, dict]:
+        return {field["name"]: field for field in self._body(client, headers)["fields"]}
+
+    def _values(self, field: dict) -> list[str]:
+        return [option["value"] for option in field["options"]]
+
+    def test_fields_with_a_default_and_options(self, client, test_user):
+        body = self._body(client)
+        assert body["object"] == "settings" and body["client"] == "claude-code"
+        names = [field["name"] for field in body["fields"]]
+        # The code's order: the models first, then what the checks set.
+        assert names == [*MODEL_FIELDS, "CLAUDE_CODE_AUTO_MODE_SERVER", DISCOVERY]
+        for field in body["fields"]:
+            assert field["label"] and field["type"] in ("model", "choice")
+            # A client can always preselect the default.
+            assert field["default"] and field["default"] in self._values(field)
+            assert all(option["label"] for option in field["options"])
+
+    def test_the_default_is_what_the_checks_tell_the_account_to_set(self, client, db_session, test_user):
+        fields = self._fields(client)
+        # CC001 is on by default; the baseline is what every patch carries.
+        assert fields["CLAUDE_CODE_AUTO_MODE_SERVER"]["default"] == "0"
+        assert self._values(fields["CLAUDE_CODE_AUTO_MODE_SERVER"]) == ["0"]
+        assert fields[DISCOVERY]["default"] == "1"
+        assert self._values(fields[DISCOVERY]) == ["1", "0"]
+        self._configure(db_session, AUTO, patch='{"CLAUDE_CODE_AUTO_MODE_SERVER": "0", "ANTHROPIC_MODEL": "test-vlm"}')
+        assert self._fields(client)["ANTHROPIC_MODEL"]["default"] == "test-vlm"
+
+    def test_same_values_as_the_notice_patch(self, client, db_session, test_user):
+        # Asked before or after tripping the check, the account is told the
+        # same thing.
+        TestNotices._violation(self, db_session, AUTO)
+        patch_ = client.get("/v1/notices", headers=auth_header()).json()["patch"]["set"]
+        fields = self._fields(client)
+        assert patch_ and all(fields[name]["default"] == value for name, value in patch_.items())
+
+    def _now(self) -> datetime:
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+
+    def test_model_options_are_the_accounts_chat_models(self, client, test_user):
+        fields = self._fields(client)
+        status = client.get("/v1/status", headers=auth_header()).json()["models"]
+        chat = [m["id"] for m in status if m["type"] in ("llm", "vlm")]
+        for name in MODEL_FIELDS:
+            assert fields[name]["type"] == "model"
+            assert self._values(fields[name]) == chat  # the one display order
+        options = {option["value"]: option for option in fields["ANTHROPIC_MODEL"]["options"]}
+        assert "test-embedding" not in options
+        assert options["test-llm"] == {"value": "test-llm", "label": "test-llm", "backend": "onprem"}
+        assert options["test-vlm"]["label"] == "Test VLM"
+        assert options["azure-gpt-4"]["backend"] == "azure"
+        assert options["bedrock-claude"]["backend"] == "aws"
+
+    def test_options_and_defaults_follow_the_accounts_access(self, client, db_session, test_user):
+        self._configure(
+            db_session, AUTO,
+            patch='{"ANTHROPIC_MODEL": "test-llm"}', patch_azure='{"ANTHROPIC_MODEL": "azure-gpt-4"}',
+        )
+        field = self._fields(client)["ANTHROPIC_MODEL"]
+        assert field["default"] == "azure-gpt-4"
+        assert {option.get("backend") for option in field["options"]} == {"onprem", "azure", "aws"}
+        _update(db_session, test_user, can_use_azure=False, can_use_bedrock=False)
+        field = self._fields(client)["ANTHROPIC_MODEL"]
+        assert field["default"] == "test-llm"
+        assert {option.get("backend") for option in field["options"]} == {"onprem"}
+
+    def test_the_stored_admin_flag_shows_nothing_more(self, client, admin_user):
+        field = self._fields(client, headers=auth_header(admin_user.api_key))["ANTHROPIC_MODEL"]
+        assert {option.get("backend") for option in field["options"]} == {"onprem"}
+
+    def test_a_model_no_check_names_defaults_to_the_gateways_fallback(self, client, test_user):
+        # Without one, the first model of the account's list.
+        assert self._fields(client)["ANTHROPIC_SMALL_FAST_MODEL"]["default"] == "test-llm"
+        with patch("app.core.config.FALLBACK_MAP", {"llm": "test-vlm"}):
+            assert self._fields(client)["ANTHROPIC_SMALL_FAST_MODEL"]["default"] == "test-vlm"
+        with patch("app.core.config.FALLBACK_MAP", {"llm": "not-configured"}):
+            assert self._fields(client)["ANTHROPIC_SMALL_FAST_MODEL"]["default"] == "test-llm"
+
+    def test_a_suggested_model_outside_the_list_is_still_an_option(self, client, db_session, test_user):
+        # e.g. a hidden model kept for background tasks.
+        self._configure(db_session, AUTO, patch='{"ANTHROPIC_SMALL_FAST_MODEL": "small-hidden"}')
+        field = self._fields(client)["ANTHROPIC_SMALL_FAST_MODEL"]
+        assert field["default"] == "small-hidden"
+        assert field["options"][0] == {"value": "small-hidden", "label": "small-hidden"}
+        assert "test-llm" in self._values(field)
+
+    def test_other_variables_a_patch_sets_are_offered_as_they_are(self, client, db_session, test_user):
+        self._configure(db_session, AUTO, patch='{"API_TIMEOUT_MS": "600000", "OLD_SETTING": null, "EMPTY": ""}')
+        fields = self._fields(client)
+        assert fields["API_TIMEOUT_MS"] == {
+            "name": "API_TIMEOUT_MS", "label": "API_TIMEOUT_MS", "type": "choice",
+            "default": "600000", "options": [{"value": "600000", "label": "600000"}],
+        }
+        # Nothing to choose: a variable to remove, or one set to nothing.
+        assert "OLD_SETTING" not in fields and "EMPTY" not in fields
+        # After the fields the code knows.
+        assert list(fields)[-1] == "API_TIMEOUT_MS"
+
+    def test_a_check_that_is_off_suggests_nothing(self, client, db_session, test_user):
+        self._configure(db_session, AUTO, enabled=False)
+        fields = self._fields(client)
+        assert "CLAUDE_CODE_AUTO_MODE_SERVER" not in fields
+        # What every account should have, and the models, are still there.
+        assert fields[DISCOVERY]["default"] == "1"
+        assert all(name in fields for name in MODEL_FIELDS)
+
+    def test_a_key_is_never_offered(self, client, db_session, test_user):
+        self._configure(
+            db_session, AUTO,
+            patch='{"ANTHROPIC_AUTH_TOKEN": "sk-shared", "ANTHROPIC_API_KEY": "sk-shared", "A": "b"}',
+        )
+        text = client.get("/v1/settings", headers=auth_header()).text
+        fields = self._fields(client)
+        assert "A" in fields
+        assert "ANTHROPIC_AUTH_TOKEN" not in fields and "ANTHROPIC_API_KEY" not in fields
+        assert test_user.api_key not in text
+
+    def test_no_models_no_model_fields(self, client, db_session, test_user):
+        _update(db_session, test_user, can_use_azure=False, can_use_bedrock=False)
+        with patch("app.core.config.get_model_routing_snapshot", return_value={}):
+            fields = self._fields(client)
+        assert not any(name in fields for name in MODEL_FIELDS)
+        assert DISCOVERY in fields
+
+    def test_read_only_and_no_database_read(self, client, test_user):
+        for method in ("post", "put", "delete"):
+            assert getattr(client, method)("/v1/settings", headers=auth_header()).status_code == 405
+        from app.services import client_settings
+
+        self._body(client)
+        with patch("app.services.client_rules.engine", None):
+            assert client_settings.fields_for(test_user)
 
 
 def _jwt() -> str:
