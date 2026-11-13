@@ -57,7 +57,7 @@ One base URL surfaces every backend to clients like Claude Code's model picker. 
 | `GET` | `/v1/usage` | The caller's usage per local day (`?days=`, 1 to 90, default 7), and today and this month by model, through `usage_rollup.aggregate`. Unmetered auth; plain `def` | Direct response | — |
 | `GET` | `/v1/apps` | The app accounts the caller owns with their daily limit and this month's usage (`stats.get_owned_apps_summary`), never their keys. Unmetered auth; plain `def` | Direct response | — |
 | `GET` | `/v1/notices` | The caller's open client-rule notices and their patches as `{set, unset}` (`client_rules.notices_for` / `combined_for`). Read-only; unmetered auth; plain `def` | Direct response | — |
-| `GET` | `/v1/settings` | The client settings the caller can be asked about: per variable a `default` (what the client checks tell this account to set) and its `options` (for a model, the account's models) (`client_settings.fields_for`). Read-only; unmetered auth; no DB read | Direct response | — |
+| `GET` | `/v1/settings` | The client settings a tool can offer the caller when it sets a client up: per variable a description, a `default` and its `options`, by tier (the account's cloud access), from the admin's `client_settings.json` (`client_settings.fields_for`). Read-only; unmetered auth; no DB read | Direct response | — |
 | `POST` | `/v1/chat/completions`, `/chat/completions` | Chat completion generation | `vllm_forward_chat_completions` (vLLM) / `azure_forward_chat_completions` (Azure) / `bedrock_forward_chat_completions` (Bedrock) | `llm`, `vlm` |
 | `POST` | `/v1/responses`, `/responses` | Responses API (no Bedrock dispatch: a Bedrock alias falls back to vLLM) | `vllm_forward_responses` (vLLM) / `azure_forward_responses` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`, `/embeddings` | Text embeddings | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
@@ -245,6 +245,8 @@ Behavior is described in [docs/architecture.md](../../docs/architecture.md) (Adm
 | `GET` | `/admin/user-table` | One Users-tab panel (`kind=users\|apps`) as an HTML fragment (`_admin_user_table.html`), with the same `q` / `sort` / `status` / paging parameters as `/admin` |
 | `POST` | `/admin/client-rules/{rule_id}` | Save a check's settings: on / off, action, wording, patch, mail. What it detects is code and not editable |
 | `POST` | `/admin/client-rules/{rule_id}/reset` | Back to the defaults in code; recorded violations are kept |
+| `POST` | `/admin/client-settings` | Save `client_settings.json` (form field `settings`, the JSON text): the fields `GET /v1/settings` offers. Validated first; an invalid text is a 400 and nothing is written |
+| `POST` | `/admin/client-settings/reset` | Remove `client_settings.json`: the shipped example is offered again |
 | `POST` | `/admin/client-rules/{rule_id}/mail` | Queue a mail to the check's accounts (`only_unmailed=on\|off`); the first batch goes out after the reply, the mail job sends the rest |
 | `POST` | `/admin/client-rules/mail-all` | Queue a mail to every account with anything open under any check |
 | `POST` | `/admin/client-rules/{rule_id}/mail-test` | Send that check's mail as the form stands to one company address (`to`, `audience`) |

@@ -80,7 +80,7 @@ What the dashboard shows an account, by API key and as JSON, for clients that ar
 | `GET /v1/usage?days=N` | `v1_api.usage_history` | `deps.get_usage_history` (short-lived session): `stats.get_daily_trends` for the last `N` local days (1 to 90, default 7; zeros for quiet days, today last) and `stats.get_model_breakdown` for the local day (`today`) and the local month (`month`), the two periods of the dashboard's Cost by Model card. All read through `usage_rollup.aggregate`, so the numbers are the dashboard's, rollup or not. `today` and `month` leave out a cloud backend the account may no longer use (`model_catalog.hidden_cloud_backends`, as the dashboard does) and their rows are sorted with `model_catalog.usage_row_key`, the Cost by Model order. A plain `def`: it reads usage and awaits nothing |
 | `GET /v1/apps` | `v1_api.owned_apps` | `deps.get_owned_apps` → `stats.get_owned_apps_summary`: the app accounts the caller owns (`app_owners`), each with its daily limit, `legacy_key` and this month's usage, by name in natural order: the dashboard's *My App Accounts* table without the keys. A plain `def` |
 | `GET /v1/notices` | `v1_api.client_notices` | `deps.get_client_notices` → `client_rules.notices_for` and `combined_for`, the two calls behind the dashboard's notices panel: the enabled checks the account tripped inside the window and has not reported as fixed (`is_resolved`), each with its patch for this account (`effective_env`), and the account's one combined patch with `covers` / `manual` (`split_covered`). A patch is data, `{set: {NAME: value}, unset: [NAME]}`, since a variable to remove is `None` in `effective_env` and no response carries a `null`. Like the panel, a broken store reads as nothing open. A plain `def` |
-| `GET /v1/settings` | `v1_api.client_settings_fields` | `client_settings.fields_for(user)`: the client settings the account can be asked about, for a tool that offers to change them. See [Settings fields](#settings-fields-v1settings). No database read |
+| `GET /v1/settings` | `v1_api.client_settings_fields` | `client_settings.fields_for(user)`: the client settings a tool can offer the account when it sets a client up, from the admin's `client_settings.json`. See [Settings fields](#settings-fields-v1settings). No database read |
 
 All six authenticate with `get_current_user_unmetered`: they answer once the budget is spent (that is when people look), go through the IP allowlist like every API route, and are never billed. They live under `/v1/`, which the nginx example already routes to the gateway without oauth2-proxy. Only `/v1/me` has an alias without `/v1`: those aliases exist for SDK clients whose base URL omits it, and no SDK asks for the others.
 
@@ -94,24 +94,39 @@ All six authenticate with `get_current_user_unmetered`: they answer once the bud
 
 ### Settings fields (`/v1/settings`)
 
-A terminal tool that asks its user "do you want to change this setting?" needs three things per setting: that it exists, the value the gateway suggests, and what else may be picked. `GET /v1/settings` answers `{object: "settings", client: "claude-code", fields: [...]}`; a field is one variable of the `env` block of Claude Code's settings.json:
+A terminal tool that sets Claude Code up for its user either applies the suggested value of every setting or lets the user pick. `GET /v1/settings` answers `{object: "settings", client: "claude-code", fields: [...]}`; a field is one variable of the `env` block of Claude Code's settings.json:
 
 | Key | Meaning |
 |---|---|
 | `name` | The variable (`ANTHROPIC_MODEL`, ...) |
-| `label`, `description` | What to show; `label` is always there (the variable's name when the code has no wording), `description` only when there is one |
-| `type` | `model` (the options are the account's models) or `choice` (fixed values) |
-| `default` | The suggested value: never empty, and always the `value` of one of `options`, so a client can preselect it |
-| `options` | `[{value, label}]`, a model option also with `backend` (`onprem` / `azure` / `aws`). A field with one option has nothing else to pick: the question is only whether to apply it |
+| `label`, `description` | What to show. Both are always there: a field without a description is refused when the file is saved |
+| `type` | `model` (the options are models) or `choice` (fixed values) |
+| `default` | The suggested value: never empty, and always the `value` of one of `options`, so a client can apply or preselect it |
+| `options` | `[{value, label}]`, sometimes with a `description`, a model option also with `backend` (`onprem` / `azure` / `aws`). A field with one option has nothing else to pick: the question is only whether to apply it |
 
-Both `default` and `options` depend on the account, and neither has a source of its own (`app/services/client_settings.py`):
+**The fields are a file an admin owns** (`app/services/client_settings.py`): `client_settings.json` in `CONFIG_DIR`, beside `config.toml`. It is written by hand or from the admin's *Clients* tab, *Client setup* card (a JSON editor: `POST /admin/client-settings` validates and writes it, `POST /admin/client-settings/reset` removes it; the card shows what each tier is offered and points out a model alias the gateway does not have). While the file does not exist the shipped `client_settings.json.example` is read. Nothing here reads the client checks or their patches: what a notice tells an account to set and what setup offers it are two separate things, and keeping them from contradicting each other is the admin's.
 
-- **`default`** is what the client checks already tell this kind of account to set: `client_rules.recommended_env(azure, aws)`, the settings every account should have (`client_checks.BASELINE_ENV`), then the patch of every check that is on and not deprecated, merged through `combined_env` / `effective_env` (base, then the Azure and AWS variants the account's access adds). So the admin's *Clients* tab stays the one place a value is decided, and an account is told the same value before it trips a check (`/v1/settings`) as after (`/v1/notices`). A variable a patch removes, or sets to nothing, is not a field.
-- **`options`** of a `model` field are `model_catalog.visible_models(user)` of type `llm` / `vlm` (what a Messages request can be served by), in the one display order: the models of `/v1/status`.
+```json
+{"fields": [
+  {"name": "ANTHROPIC_MODEL", "label": "Default model",
+   "description": "The model Claude Code starts a session with.",
+   "type": "model",
+   "default": {"everyone": "local-llm", "azure": "gpt-5"},
+   "options": {"azure": ["local-llm", "gpt-5"]}},
+  {"name": "SOME_SWITCH", "label": "A switch", "description": "What it does.",
+   "type": "choice", "default": "1",
+   "options": [{"value": "1", "label": "On"}, {"value": "0", "label": "Off"}]}
+]}
+```
 
-What is code (`client_settings.SETTINGS`): which variables take a model, the other values of a switch, and the wording. Listed first and in that order: the three model fields (`ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_AUTO_MODE_MODEL`), then `CLAUDE_CODE_AUTO_MODE_SERVER`, `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` and `ANTHROPIC_BASE_URL`. A `model` field is listed even when no check names it, because Claude Code's own default is a model the gateway does not have: its default is then the gateway's fallback LLM (`[fallback].llm`, what answers such a request today) when the account can see it, else the first model of its list; with no model to pick the field is left out. A `choice` field is listed only when a value is suggested. Any other variable a patch sets follows, as a `choice` whose only option is the patch's value. A suggested model the account does not see in its list (a hidden one kept for background tasks) is put first among the options.
+- **Tiers.** A tier is the account's cloud access: none, Azure, AWS, or both. `default` and `options` are either a plain value (everyone) or an object keyed by `everyone` / `azure` / `aws` / `both`; `client_settings.pick` takes the most specific key that applies to the account: `both` (Azure and AWS), else `aws`, else `azure`, else `everyone`. A field whose options come out empty for an account is not offered to it, which is how a field is kept to some tiers.
+- **`model` fields.** Without `options` they offer the chat models (`llm` / `vlm`) the account sees, `model_catalog.visible_models`, in the one display order: the models of `/v1/status`. With `options`, the listed aliases in the file's order, but only those the account may use (`model_catalog.usable_models`: a cloud model needs the access, an alias the gateway does not have is skipped), so one list can serve every tier. Without a usable `default` the gateway's fallback LLM (`[fallback].llm`, what answers a request for a model it lacks) is suggested when it is among the options, else the first option. A default that is usable but not listed (a hidden model kept for background tasks) is put first among the options. With no model to offer the field is left out.
+- **`choice` fields.** `options` (a value, or `{value, label, description}`) and `default` are required, and for every kind of account that is offered the field its default must be one of its options: `parse` checks all four (`ACCOUNTS`).
+- **Refused** (`parse`, on load and on save): a field without a description, an unknown key (a typo such as `defualt`), a variable listed twice, a tier key that is not one of the four, and the variables that hold the API key (`API_KEY_ENV`, `API_KEY_ENV_RETIRED`): a client gets the key by signing in. Keys starting with `_` are ignored, for notes.
 
-No database read: the checks come from the per-worker snapshot the request path uses (at most `REFRESH_S` behind an admin's change). The variables that hold the API key (`API_KEY_ENV`, `API_KEY_ENV_RETIRED`) are never fields, whatever a patch says. What the account has set now is on its machine and the gateway does not know it; a client compares locally (a current value that is among `options` needs no question). Applying a value is the client's business too: the gateway serves the data and ships no script for it. `tests/test_status_usage.py::TestSettings`.
+The file is cached per worker and re-read when its mtime or size changes (one `stat` per request), so an edit by hand, or a save handled by another worker, applies at the next request. A file that cannot be read or does not validate changes nothing: the last good fields stay in force, a warning is logged, and the admin card shows the error. `save` replaces the file atomically (temp file in the same directory, then `os.replace`), like `save_config`, which is why the container mounts the directory. The file is per host, as `config.toml` is. No database read. What the account has set now is on its machine and the gateway does not know it; applying a value is the client's business too: the gateway serves the data and ships no script for it.
+
+`tests/test_status_usage.py::TestSettings`, `TestClientSetupAdmin`.
 
 <!-- Backends -->
 

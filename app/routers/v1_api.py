@@ -631,30 +631,30 @@ def client_notices(user: User = Depends(get_current_user_unmetered)):
 
 @router.get("/v1/settings")
 async def client_settings_fields(user: User = Depends(get_current_user_unmetered)):
-    """The client settings this account can be asked about, for a tool that
-    offers to change them: each one with the value the gateway suggests and
-    what else may be picked.
+    """The client settings this account can be offered, for a tool that
+    sets a client up: apply every ``default``, or let the user pick.
 
     A field is one variable of the ``env`` block of Claude Code's
     settings.json (``client`` names the client): ``name``, a ``label`` and
-    sometimes a ``description`` to show, ``type`` (``model``: its options
-    are the account's models; ``choice``: fixed values), ``default`` and
-    ``options``. ``default`` is never empty and is always the ``value`` of
-    one of the ``options``; a field with one option has nothing else to
-    pick. A model option also names its ``backend``.
+    a ``description`` to show, ``type`` (``model``: its options are models;
+    ``choice``: fixed values), ``default`` and ``options``. ``default`` is
+    never empty and is always the ``value`` of one of the ``options``; a
+    field with one option has nothing else to pick. An option has a
+    ``value`` and a ``label``, sometimes a ``description``, and a model
+    option its ``backend``.
 
-    Both depend on the account: ``default`` is what the client checks tell
-    an account with its cloud access to set (the patches of
-    ``/v1/notices``, whether or not anything is open), and the model
-    options are the models of ``/v1/status``, in the same order. What the
-    account has now is on its machine; the gateway does not know it.
+    The fields are the admin's (``client_settings.json``, the admin panel's
+    *Client setup* card), and both ``default`` and ``options`` follow the
+    account's tier, its cloud access: none, Azure, AWS or both. A model the
+    account cannot use is never offered. What the account has set now is on
+    its machine; the gateway does not know it.
 
     Read-only and never a key. Answers once the daily limit is spent. No
     database read.
     """
     return {
         "object": "settings",
-        "client": client_rules.CLIENT,
+        "client": client_settings.CLIENT,
         "fields": client_settings.fields_for(user),
     }
 

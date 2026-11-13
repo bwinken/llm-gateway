@@ -911,6 +911,40 @@ function submitExportCsv() {
     {% endif %}
 </div>
 
+{# ── Client setup: the fields GET /v1/settings offers a terminal tool (app/services/client_settings.py) ── #}
+{% set cs = client_setup %}
+<div id="client-setup" class="gw-card p-5 mb-6" style="border-left:3px solid #4da3ff">
+    <div class="mb-4 max-w-3xl">
+        <h2 class="text-sm font-bold text-t2 mb-1">Client setup</h2>
+        <p class="text-xs text-t4">
+            What a terminal tool offers when it sets Claude Code up for a user (<span class="font-mono">GET /v1/settings</span>): one field per environment variable,
+            each with a description, a default the tool can apply as it is, and the options the user may pick instead.
+            <span class="font-mono">default</span> and <span class="font-mono">options</span> can differ per tier, the account's cloud access: write an object keyed by
+            <span class="font-mono">everyone</span> / <span class="font-mono">azure</span> / <span class="font-mono">aws</span> / <span class="font-mono">both</span> instead of a plain value
+            (the most specific key that applies wins). A <span class="font-mono">model</span> field without options offers every chat model the account can see.
+            This is separate from the client rules above and their patches.
+        </p>
+    </div>
+    <p class="text-xs text-t4 mb-3" id="cs-source" data-path="{{ cs.path }}">
+        {% if cs.customized %}Stored in <span class="font-mono text-t2">{{ cs.path }}</span>; editing that file by hand works too and applies at the next request.
+        {% else %}Showing the shipped example. Saving creates <span class="font-mono text-t2">{{ cs.path }}</span>, which you can also edit by hand.{% endif %}
+    </p>
+    <p class="text-xs text-ar mb-3{{ '' if cs.error else ' hidden' }}" id="cs-error">{% if cs.error %}The file on disk is not in force (the last good one is): {{ cs.error }}{% endif %}</p>
+    <p class="text-xs mb-3{{ '' if cs.unknown_models else ' hidden' }}" id="cs-unknown" style="color:#f5a623">{% if cs.unknown_models %}Not a chat model of this gateway, so skipped for every account: {{ cs.unknown_models | join(', ') }}{% endif %}</p>
+    <form action="/admin/client-settings" method="POST" id="cs-form">
+        <textarea name="settings" rows="22" spellcheck="false" aria-label="Client settings (JSON)" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ cs.text }}</textarea>
+        <div class="flex flex-wrap items-center gap-3 mt-3">
+            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
+            <button type="button" id="cs-reset" class="gw-btn gw-btn-ghost text-sm px-3 py-2{{ '' if cs.customized else ' hidden' }}">Reset to the shipped example</button>
+        </div>
+    </form>
+    <div class="mt-5 pt-3" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">What each tier is offered</div>
+        <div class="overflow-x-auto"><table class="gw-table" id="cs-preview"></table></div>
+        <p class="text-[11px] text-t4 mt-2">The default, then how many options there are. A dash: the field is not offered to that tier.</p>
+    </div>
+</div>
+
 </div>
 
 <div data-panel="security">
@@ -2066,6 +2100,84 @@ function submitExportCsv() {
         // 30 s freshness window: a stale save must not yank the viewport
         // when the admin comes back to this page later.
         if (saved && typeof saved.y === 'number' && Date.now() - saved.t < 30000) window.scrollTo(0, saved.y);
+    })();
+    /* ── Client setup: save / reset the settings file in place, repaint the per-tier preview ── */
+    (function() {
+        var card = document.getElementById('client-setup');
+        if (!card) return;
+        var form = document.getElementById('cs-form'), box = form.querySelector('textarea');
+        var resetBtn = document.getElementById('cs-reset'), table = document.getElementById('cs-preview');
+        var TIER = { local: 'Local only', azure: 'Azure', aws: 'AWS', both: 'Azure + AWS' };
+
+        function cell(tag, text, cls) {
+            var el = document.createElement(tag);
+            el.textContent = text;
+            if (cls) el.className = cls;
+            return el;
+        }
+        function paintPreview(preview, names) {
+            var byTier = {};
+            preview.forEach(function(p) {
+                byTier[p.account] = {};
+                p.fields.forEach(function(f) { byTier[p.account][f.name] = f; });
+            });
+            table.textContent = '';
+            var head = document.createElement('tr');
+            head.appendChild(cell('th', 'Variable'));
+            preview.forEach(function(p) { head.appendChild(cell('th', TIER[p.account] || p.account)); });
+            table.appendChild(document.createElement('thead')).appendChild(head);
+            var body = table.appendChild(document.createElement('tbody'));
+            if (!names.length) {
+                var empty = cell('td', 'The file has no fields.', 'text-xs text-t4');
+                empty.colSpan = preview.length + 1;
+                body.appendChild(document.createElement('tr')).appendChild(empty);
+            }
+            names.forEach(function(name) {
+                var row = body.appendChild(document.createElement('tr'));
+                row.appendChild(cell('td', name, 'font-mono text-xs text-t2'));
+                preview.forEach(function(p) {
+                    var f = byTier[p.account][name];
+                    var td = cell('td', f ? f['default'] : '—', 'font-mono text-xs ' + (f ? 'text-t2' : 'text-t4'));
+                    if (f) {
+                        td.appendChild(cell('span', '  ' + f.options.length + (f.options.length === 1 ? ' option' : ' options'), 'text-t4'));
+                        td.title = f.options.map(function(o) { return o.value; }).join(', ');
+                    }
+                    row.appendChild(td);
+                });
+            });
+        }
+        function paint(data) {
+            paintPreview(data.preview, data.names);
+            box.value = data.text;
+            resetBtn.classList.toggle('hidden', !data.customized);
+            document.getElementById('cs-error').classList.add('hidden');
+            var unknown = document.getElementById('cs-unknown');
+            unknown.textContent = data.unknown_models.length
+                ? 'Not a chat model of this gateway, so skipped for every account: ' + data.unknown_models.join(', ') : '';
+            unknown.classList.toggle('hidden', !data.unknown_models.length);
+            var source = document.getElementById('cs-source');
+            source.textContent = data.customized
+                ? 'Stored in ' + source.dataset.path + '; editing that file by hand works too and applies at the next request.'
+                : 'Showing the shipped example. Saving creates ' + source.dataset.path + ', which you can also edit by hand.';
+        }
+
+        paintPreview({{ cs.preview | tojson }}, {{ cs.names | tojson }});
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            gwPost(form.action, new FormData(form)).then(function(data) {
+                paint(data);
+                gwToast('Client setup saved: ' + data.fields + (data.fields === 1 ? ' field.' : ' fields.'), 'ok');
+            }).catch(function(err) { gwToast(err.message, 'error'); });
+        });
+        resetBtn.addEventListener('click', function() {
+            gwConfirm('Remove your client settings file and offer the shipped example again?', { okLabel: 'Reset', danger: true }).then(function(yes) {
+                if (!yes) return;
+                gwPost('/admin/client-settings/reset', new FormData()).then(function(data) {
+                    paint(data);
+                    gwToast('Client setup reset to the shipped example.', 'ok');
+                }).catch(function(err) { gwToast(err.message, 'error'); });
+            });
+        });
     })();
 </script>
 {% endblock %}

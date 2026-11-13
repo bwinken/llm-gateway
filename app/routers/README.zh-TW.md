@@ -56,7 +56,7 @@ graph LR
 | `GET` | `/v1/usage` | 呼叫者每個本地日的用量(`?days=`,1 到 90,預設 7)以及今天、本月各模型用量,經 `usage_rollup.aggregate` 讀取。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
 | `GET` | `/v1/apps` | 呼叫者名下的 app 帳號、每日上限與本月用量(`stats.get_owned_apps_summary`),不含 key。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
 | `GET` | `/v1/notices` | 呼叫者尚未處理的 client 通知,以及以 `{set, unset}` 表示的 patch(`client_rules.notices_for` / `combined_for`)。唯讀;驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `GET` | `/v1/settings` | 可以詢問呼叫者的 client 設定:每個變數的 `default`(client 檢查要這個帳號設定的值)與 `options`(model 類是該帳號看得到的模型)(`client_settings.fields_for`)。唯讀;驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
+| `GET` | `/v1/settings` | 工具幫呼叫者設定 client 時可以提供的設定:每個變數的說明、`default` 與 `options`,依 tier(帳號的雲端權限)而不同,來自 admin 的 `client_settings.json`(`client_settings.fields_for`)。唯讀;驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
 | `POST` | `/v1/chat/completions`、`/chat/completions` | Chat 對話生成 | `vllm_forward_chat_completions`(vLLM) / `azure_forward_chat_completions`(Azure) / `bedrock_forward_chat_completions`(Bedrock) | `llm`, `vlm` |
 | `POST` | `/v1/responses`、`/responses` | Responses API(沒有 Bedrock dispatch:Bedrock alias 會 fallback 到 vLLM) | `vllm_forward_responses`(vLLM) / `azure_forward_responses`(Azure) | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`、`/embeddings` | 文字向量嵌入 | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
@@ -244,6 +244,8 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `GET` | `/admin/user-table` | Users 分頁的單一面板（`kind=users\|apps`），以 HTML 片段回傳（`_admin_user_table.html`），`q` / `sort` / `status` / 分頁參數與 `/admin` 相同 |
 | `POST` | `/admin/client-rules/{rule_id}` | 儲存某個 check 的設定：開關、動作、文案、patch、寄信。偵測條件寫在程式裡，不可編輯 |
 | `POST` | `/admin/client-rules/{rule_id}/reset` | 回到程式內的預設值；已記錄的違規保留 |
+| `POST` | `/admin/client-settings` | 儲存 `client_settings.json`（表單欄位 `settings`，JSON 文字）：`GET /v1/settings` 提供的欄位。先驗證；不合格回 400，不寫入任何東西 |
+| `POST` | `/admin/client-settings/reset` | 移除 `client_settings.json`：改回提供內建的範例 |
 | `POST` | `/admin/client-rules/{rule_id}/mail` | 把該 check 的帳號排入寄信佇列（`only_unmailed=on\|off`）；回應後先寄第一批，其餘由寄信 job 分批寄出 |
 | `POST` | `/admin/client-rules/mail-all` | 把任何 check 下有未處理項目的帳號全部排入佇列 |
 | `POST` | `/admin/client-rules/{rule_id}/mail-test` | 把該 check 目前表單內容的信寄到一個公司信箱（`to`、`audience`） |

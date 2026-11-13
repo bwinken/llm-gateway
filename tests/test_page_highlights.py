@@ -217,7 +217,7 @@ class TestTabs:
             return [name for name in order if starts[name] < at][-1]
 
         assert panel_of("User Management") == "users" and panel_of('id="create-app"') == "users"
-        assert panel_of('id="client-rules"') == "clients"
+        assert panel_of('id="client-rules"') == "clients" and panel_of('id="client-setup"') == "clients"
         for card in ('id="ip-allowlist"', ">Guardrail</h2>", ">Audit Log</h2>"):
             assert panel_of(card) == "security", card
         for card in (">Concurrency Limit</h2>", ">Default Daily Limit</h2>", ">Cloud Daily Limit</h2>", ">Cloud Budget Fallback</h2>", ">Site Links</h2>"):

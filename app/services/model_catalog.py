@@ -93,6 +93,25 @@ def current_catalog_keys() -> dict[tuple[str, str], tuple]:
     return catalog_keys(_snapshots(), config.get_pricing_snapshot(), _positions())
 
 
+def usable_models(user: User) -> list[dict[str, Any]]:
+    """Every configured model ``user`` may ask for, hidden entries included
+    (a hidden model is left out of the lists but answers by name): ``id``,
+    ``backend``, ``type`` and ``display_name`` when declared. Cloud backends
+    without access are left out, as a request for them is served elsewhere.
+    No order; for what to show, use ``visible_models``."""
+    hidden = hidden_cloud_backends(user)
+    rows: list[dict[str, Any]] = []
+    for backend, snapshot in _snapshots().items():
+        if backend in hidden:
+            continue
+        for alias, entry in snapshot.items():
+            row: dict[str, Any] = {"id": alias, "backend": BACKEND_NAMES[backend], "type": entry.get("type", "llm")}
+            if entry.get("display_name"):
+                row["display_name"] = entry["display_name"]
+            rows.append(row)
+    return rows
+
+
 def visible_models(user: User) -> list[dict[str, Any]]:
     """Every model ``user`` can see, in display order: on-prem first, then
     the cloud backends the account may use; hidden entries left out.

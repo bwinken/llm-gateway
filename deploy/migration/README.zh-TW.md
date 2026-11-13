@@ -16,7 +16,7 @@
 
 這個資料夾以外有兩處相關的修改，預設行為都不變：
 
-- `CONFIG_DIR`（程式）：指定 `config.toml` 所在的目錄。沒設時和以前一樣在專案根目錄。
+- `CONFIG_DIR`（程式）：指定 `config.toml` 所在的目錄（admin 存過 *Client setup* 卡片後，`client_settings.json` 也在這裡）。沒設時和以前一樣在專案根目錄。
 - `deploy/backup-db.sh`：設了公鑰才會加密備份。沒設時和以前一樣（見 [deploy/README](../README.zh-TW.md#加密)）。
 
 ## 檔案
@@ -111,7 +111,8 @@ bash deploy/migration/compose.sh up -d
 # 舊主機
 systemctl --user stop llm-gateway            # 1. 從這裡開始請求失敗；不再有新的寫入
 bash deploy/backup-db.sh                     # 2. 最後一次備份
-# 把最新的備份檔和 config.toml（admin 可能改過）複製到新主機
+# 把最新的備份檔和 config.toml（admin 可能改過）複製到新主機；
+# 同一個目錄裡若有 client_settings.json 也一起複製（沒有的話會提供內建的範例）
 
 # 新主機
 BACKUP_GPG_KEY=/media/usb/llm-gateway-backup.key.asc \

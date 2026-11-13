@@ -70,7 +70,7 @@ Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 C
 | `GET /v1/usage` | 你每天的用量，以及今天和本月各模型的用量。見[用量紀錄](#用量紀錄) |
 | `GET /v1/apps` | 你名下的 app 帳號，以及各自的上限和本月用量。見[App 帳號](#app-帳號) |
 | `GET /v1/notices` | dashboard 要你修正的 client 設定。見[通知](#通知) |
-| `GET /v1/settings` | 工具可以詢問你的 client 設定，每項都帶有對你的帳號的建議值和其他選項。見[設定](#設定) |
+| `GET /v1/settings` | 工具可以幫你設定的 client 設定，每項都帶有說明、對你的帳號的建議值和其他選項。見[設定](#設定) |
 | `POST /auth/api-key` | 用 AuthCenter 的 access token 換你的 API key，terminal 工具的登入方式。見[從 terminal 工具登入](#從-terminal-工具登入) |
 | `POST /v1/embeddings` | Embeddings（僅 vLLM） |
 | `POST /v1/rerank`、`/v1/score` | Rerank |
@@ -277,7 +277,7 @@ curl https://your-gateway/v1/settings -H "Authorization: Bearer sk-your-api-key"
        {"value": "gpt-5", "label": "GPT-5", "backend": "azure"}
      ]},
     {"name": "CLAUDE_CODE_AUTO_MODE_SERVER", "label": "Auto mode safety check",
-     "description": "No model behind this gateway reviews auto mode's actions, so Claude Code has to run that check itself, as ordinary requests.",
+     "description": "No model behind this gateway reviews auto mode's actions, so Claude Code has to run that check itself.",
      "type": "choice", "default": "0",
      "options": [{"value": "0", "label": "Run by Claude Code"}]},
     {"name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "label": "Model list from the gateway",
@@ -288,11 +288,12 @@ curl https://your-gateway/v1/settings -H "Authorization: Bearer sk-your-api-key"
 }
 ```
 
-- 這是給會詢問「要不要修改這項設定？」的工具用的：有哪些設定、gateway 對**你的**帳號建議的值，以及還能選什麼。每個 field 是 `~/.claude/settings.json` 的 `env` 區塊裡的一個變數（`client` 說明這些欄位是給哪個 client 的）。
-- `default` 是建議值。它不會是空的，而且一定是 `options` 其中一項的 `value`，所以可以直接當預選項。它就是 gateway 的通知會要你的帳號設定的值（見[通知](#通知)），不論你目前有沒有未處理的通知；因此有沒有雲端權限的帳號，拿到的值可能不同。
-- `options` 是所有可選的值。`model` 類欄位的選項是你的帳號能用的對話模型，順序和[模型狀態](#模型狀態)相同，各自帶有 `backend`；`choice` 類欄位則是固定的幾個值。只有一個選項的欄位沒有別的可選：要問的只有「要不要套用」。
-- `label` 一定有；`description` 只有在 gateway 有說明時才出現。gateway 沒有文字說明的變數，`label` 就是變數名稱本身。
-- gateway 不知道你目前設了什麼：請和自己的 settings.json 比對。現有的值已經是 `options` 之一就沒問題，不需要詢問；變數不存在或是別的值時才問。
+- 這是給幫你設定 Claude Code 的工具用的：它可以直接套用每一項的 `default`，也可以讓你自己選。每個 field 是 `~/.claude/settings.json` 的 `env` 區塊裡的一個變數（`client` 說明這些欄位是給哪個 client 的）。有哪些欄位由 gateway 的管理員決定。
+- `description` 說明這個變數的用途。它和 `label` 一定都有。
+- `default` 是對**你的**帳號的建議值。它不會是空的，而且一定是 `options` 其中一項的 `value`，所以可以直接套用或當預選項。
+- `options` 是所有可選的值。`model` 類欄位的選項是你的帳號能用的對話模型，各自帶有 `backend`；`choice` 類欄位則是固定的幾個值。選項本身也可能有 `description`。只有一個選項的欄位沒有別的可選：要問的只有「要不要套用」。
+- 兩者都依你的 tier 而定，也就是你的雲端權限（沒有、Azure、AWS、兩者都有）：別的帳號可能拿到不同的預設值、不同的選項，或是你沒有的欄位。你不能用的模型不會出現在選項裡。
+- gateway 不知道你目前設了什麼：請和自己的 settings.json 比對。
 - 欄位會隨 gateway 的設定和你的權限改變，需要時再讀，不要留副本。回應裡不會有 key，而且這個端點只能讀：要不要套用、怎麼套用由工具決定。
 
 狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/apps`、`/v1/notices`、`/v1/settings`，合起來就是 dashboard 上看得到的資訊，加上工具設定 client 所需要的資料。它們在額度用完時一樣可以查，都不計費，也都不會回傳 API key：key 只會在登入之後交出（見下一節，或 dashboard）。

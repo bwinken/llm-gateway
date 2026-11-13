@@ -70,7 +70,7 @@ Windows users can get a pre-configured Claude Code installer from the **Setup** 
 | `GET /v1/usage` | Your usage per day, and today and this month by model. See [Usage history](#usage-history) |
 | `GET /v1/apps` | The app accounts you own, with their limits and this month's usage. See [App accounts](#app-accounts) |
 | `GET /v1/notices` | What the dashboard asks you to fix in your client's settings. See [Notices](#notices) |
-| `GET /v1/settings` | The client settings a tool can ask you about, each with the suggested value and the other options for your account. See [Settings](#settings) |
+| `GET /v1/settings` | The client settings a tool can set up for you, each with a description, the suggested value and the other options for your account. See [Settings](#settings) |
 | `POST /auth/api-key` | Your API key for an AuthCenter access token: how a terminal tool signs in. See [Signing in from a terminal tool](#signing-in-from-a-terminal-tool) |
 | `POST /v1/embeddings` | Embeddings (vLLM only) |
 | `POST /v1/rerank`, `/v1/score` | Reranking |
@@ -277,7 +277,7 @@ curl https://your-gateway/v1/settings -H "Authorization: Bearer sk-your-api-key"
        {"value": "gpt-5", "label": "GPT-5", "backend": "azure"}
      ]},
     {"name": "CLAUDE_CODE_AUTO_MODE_SERVER", "label": "Auto mode safety check",
-     "description": "No model behind this gateway reviews auto mode's actions, so Claude Code has to run that check itself, as ordinary requests.",
+     "description": "No model behind this gateway reviews auto mode's actions, so Claude Code has to run that check itself.",
      "type": "choice", "default": "0",
      "options": [{"value": "0", "label": "Run by Claude Code"}]},
     {"name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "label": "Model list from the gateway",
@@ -288,11 +288,12 @@ curl https://your-gateway/v1/settings -H "Authorization: Bearer sk-your-api-key"
 }
 ```
 
-- This is for a tool that asks "do you want to change this setting?": which settings there are, the value the gateway suggests for **your** account, and what else you may pick. Each field is one variable of the `env` block of `~/.claude/settings.json` (`client` names the client the fields are for).
-- `default` is the suggested value. It is never empty and is always the `value` of one of the `options`, so it can be preselected. It is the value the gateway's notices would tell your account to set ([Notices](#notices)), whether or not you have one open, so it differs between accounts with and without cloud access.
-- `options` is everything you may pick. For a `model` field they are the chat models your account can use, in the order of [Model status](#model-status), each with its `backend`; for a `choice` field they are fixed values. A field with a single option has nothing else to pick: the only question is whether to apply it.
-- `label` is always there; `description` only when the gateway has one. A variable the gateway has no wording for has its own name as `label`.
-- The gateway does not know what you have set now: compare with your own settings.json. A value that is already one of the `options` is fine and needs no question; ask when the variable is missing or holds something else.
+- This is for a tool that sets Claude Code up for you: it can apply every `default` as it is, or let you pick. Each field is one variable of the `env` block of `~/.claude/settings.json` (`client` names the client the fields are for). Your gateway's administrator decides which fields there are.
+- `description` says what the variable is for. It and `label` are always there.
+- `default` is the suggested value for **your** account. It is never empty and is always the `value` of one of the `options`, so it can be applied or preselected.
+- `options` is everything you may pick. For a `model` field they are chat models your account can use, each with its `backend`; for a `choice` field they are fixed values. An option may have its own `description`. A field with a single option has nothing else to pick: the only question is whether to apply it.
+- Both follow your tier, which is your cloud access (none, Azure, AWS, or both): another account may get a different default, different options, or a field you do not have. A model you cannot use is never offered.
+- The gateway does not know what you have set now: compare with your own settings.json.
 - The fields change with the gateway's configuration and your access, so read them when you need them rather than keeping a copy. Never a key, and read-only: applying a value is up to the tool.
 
 `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps`, `/v1/notices` and `/v1/settings` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows, and what a tool needs to set a client up. All of them answer when your budget is spent, none is billed, and none returns an API key: a key is only ever handed out for a sign-in (next section, or the dashboard).

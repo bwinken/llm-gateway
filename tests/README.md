@@ -465,14 +465,18 @@ key. `TestNotices`: the dashboard panel's notices with patches as
 `{set, unset}`, the one combined patch and what it cannot fix, the patch
 following the account's access, resolved / old / other accounts'
 violations left out, never a key, read-only, a broken store reading as
-nothing open. `TestSettings`: every field has a default that is one of
-its options, the default is what the checks tell the account to set (the
-same values as its notice patch), model options are the account's chat
-models in the display order, both follow the account's access, a model no
-check names defaults to the gateway's fallback, a suggested model outside
-the list is still an option, other patch variables are offered as they
-are, a check that is off suggests nothing, never a key, read-only, no
-database read. Every response is checked for `null`s.
+nothing open. `TestSettings`: every field has a description and a default
+that is one of its options, the shipped example validates, model options
+are the account's chat models in the display order, the site's
+`client_settings.json` replaces the example and applies when edited by
+hand, a broken file changes nothing, default and options follow the tier
+(the most specific key wins), a field can be for some tiers only, a model
+the account cannot use is never offered, a hidden model can be the
+default, what a file is refused for, never a key, read-only, no database
+read, independent of the client checks. `TestClientSetupAdmin`: the admin
+card saves the file the API reads, refuses an invalid one without
+writing, points out unknown models, resets to the example, admins only,
+audited. Every response is checked for `null`s.
 
 ### `test_concurrency_limit.py` — per-user concurrency limit
 

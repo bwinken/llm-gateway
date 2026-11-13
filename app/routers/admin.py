@@ -75,7 +75,7 @@ from app.models.schema import (
     legacy_api_key_clause,
     mask_api_key,
 )
-from app.services import audit, client_checks, client_rules, concurrency, guardrail, ip_allowlist, mailer
+from app.services import audit, client_checks, client_rules, client_settings, concurrency, guardrail, ip_allowlist, mailer
 from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
@@ -541,6 +541,7 @@ def admin_page(
             "today_totals": today_totals,
             "budget_pressure": budget_pressure,
             "client_rules": client_rules_view,
+            "client_setup": client_settings.status(),
             "client_rule_attention": [
                 {"id": r["id"], "name": r["name"], "count": r["open"]}
                 for r in (client_rules_view or {}).get("rules", []) if r["enabled"] and r["open"]
@@ -1484,6 +1485,55 @@ def reset_client_rule(
     logger.info("Client rule reset to defaults | id={} admin={}", rule.id, admin_user.username)
     if _wants_json(request):
         return JSONResponse({"ok": True, "id": rule.id})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+# ── Client setup (app/services/client_settings.py): what GET /v1/settings offers ──
+
+def _client_setup_reply() -> dict:
+    state = client_settings.status()
+    return {
+        "ok": True, "fields": state["fields"], "names": state["names"], "customized": state["customized"],
+        "unknown_models": state["unknown_models"], "preview": state["preview"], "text": state["text"],
+    }
+
+
+@router.post("/client-settings")
+def save_client_settings(
+    request: Request,
+    settings: str = Form(""),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+):
+    """Save the client settings file (``client_settings.json`` in
+    ``CONFIG_DIR``): the fields ``GET /v1/settings`` offers, with their
+    default and options per tier. The text is validated first; an invalid
+    one is refused and nothing is written. Every worker reads the new file
+    at its next request. Plain ``def``: file I/O, no await."""
+    try:
+        fields = client_settings.save(settings)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    audit.note(client_settings_fields=[field.name for field in fields])
+    logger.info("Client settings saved | fields={} admin={}", len(fields), admin_user.username)
+    if _wants_json(request):
+        return JSONResponse(_client_setup_reply())
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/client-settings/reset")
+def reset_client_settings(
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+):
+    """Remove the client settings file: the shipped
+    ``client_settings.json.example`` is offered again."""
+    try:
+        client_settings.reset()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info("Client settings reset to the shipped example | admin={}", admin_user.username)
+    if _wants_json(request):
+        return JSONResponse(_client_setup_reply())
     return RedirectResponse(url="/admin", status_code=303)
 
 

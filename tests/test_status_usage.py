@@ -20,6 +20,7 @@ from tests.conftest import (
     TEST_MODEL_ROUTING,
     auth_header,
     earlier_today,
+    web_auth_header,
 )
 
 
@@ -454,16 +455,38 @@ MODEL_FIELDS = ["ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_AU
 DISCOVERY = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
 
 
-class TestSettings:
-    """``GET /v1/settings``: which client settings an account can be asked
-    about, the value the gateway suggests and what else may be picked."""
+def _model_field(**extra) -> dict:
+    return {"name": "ANTHROPIC_MODEL", "label": "Default model", "description": "Main model.", "type": "model", **extra}
 
-    _configure = TestNotices._configure
+
+def _choice_field(name: str = "SWITCH", **extra) -> dict:
+    field = {
+        "name": name, "label": "A switch", "description": "What the switch does.", "type": "choice",
+        "default": "1", "options": [{"value": "1", "label": "On"}, {"value": "0", "label": "Off"}],
+    }
+    field.update(extra)
+    return field
+
+
+@pytest.fixture
+def settings_file(tmp_path):
+    """Write the site's ``client_settings.json`` (in a temp ``CONFIG_DIR``)."""
+    import json
+
+    path = tmp_path / "client_settings.json"
+    with patch("app.services.client_settings.SETTINGS_PATH", path):
+        def write(*fields: dict) -> None:
+            path.write_text(json.dumps({"fields": list(fields)}), encoding="utf-8")
+        write.path = path
+        yield write
+
+
+class TestSettings:
+    """``GET /v1/settings``: the client settings a tool can offer an account,
+    each with a description, a default and its options, from the admin's
+    ``client_settings.json``."""
 
     def _body(self, client, headers=None) -> dict:
-        from app.services import client_rules
-
-        client_rules.refresh()  # the per-worker snapshot the endpoint reads
         resp = client.get("/v1/settings", headers=headers or auth_header())
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -476,38 +499,30 @@ class TestSettings:
     def _values(self, field: dict) -> list[str]:
         return [option["value"] for option in field["options"]]
 
-    def test_fields_with_a_default_and_options(self, client, test_user):
+    def _tier(self, db_session, user, azure: bool, aws: bool) -> None:
+        _update(db_session, user, can_use_azure=azure, can_use_bedrock=aws)
+
+    # ── The shape, with the shipped example ──
+
+    def test_fields_with_a_description_a_default_and_options(self, client, test_user):
         body = self._body(client)
         assert body["object"] == "settings" and body["client"] == "claude-code"
-        names = [field["name"] for field in body["fields"]]
-        # The code's order: the models first, then what the checks set.
-        assert names == [*MODEL_FIELDS, "CLAUDE_CODE_AUTO_MODE_SERVER", DISCOVERY]
+        assert [field["name"] for field in body["fields"]] == [*MODEL_FIELDS, "CLAUDE_CODE_AUTO_MODE_SERVER", DISCOVERY]
         for field in body["fields"]:
-            assert field["label"] and field["type"] in ("model", "choice")
-            # A client can always preselect the default.
+            assert set(field) == {"name", "label", "description", "type", "default", "options"}
+            assert field["label"] and field["description"] and field["type"] in ("model", "choice")
+            # A client can always apply or preselect the default.
             assert field["default"] and field["default"] in self._values(field)
             assert all(option["label"] for option in field["options"])
-
-    def test_the_default_is_what_the_checks_tell_the_account_to_set(self, client, db_session, test_user):
-        fields = self._fields(client)
-        # CC001 is on by default; the baseline is what every patch carries.
-        assert fields["CLAUDE_CODE_AUTO_MODE_SERVER"]["default"] == "0"
+        fields = {field["name"]: field for field in body["fields"]}
+        assert self._values(fields[DISCOVERY]) == ["1", "0"] and fields[DISCOVERY]["default"] == "1"
         assert self._values(fields["CLAUDE_CODE_AUTO_MODE_SERVER"]) == ["0"]
-        assert fields[DISCOVERY]["default"] == "1"
-        assert self._values(fields[DISCOVERY]) == ["1", "0"]
-        self._configure(db_session, AUTO, patch='{"CLAUDE_CODE_AUTO_MODE_SERVER": "0", "ANTHROPIC_MODEL": "test-vlm"}')
-        assert self._fields(client)["ANTHROPIC_MODEL"]["default"] == "test-vlm"
 
-    def test_same_values_as_the_notice_patch(self, client, db_session, test_user):
-        # Asked before or after tripping the check, the account is told the
-        # same thing.
-        TestNotices._violation(self, db_session, AUTO)
-        patch_ = client.get("/v1/notices", headers=auth_header()).json()["patch"]["set"]
-        fields = self._fields(client)
-        assert patch_ and all(fields[name]["default"] == value for name, value in patch_.items())
+    def test_the_shipped_example_is_a_valid_file(self):
+        from app.services import client_settings
 
-    def _now(self) -> datetime:
-        return datetime.now(timezone.utc).replace(tzinfo=None)
+        fields = client_settings.parse(client_settings.EXAMPLE_PATH.read_text(encoding="utf-8"))
+        assert [field.name for field in fields][:3] == MODEL_FIELDS
 
     def test_model_options_are_the_accounts_chat_models(self, client, test_user):
         fields = self._fields(client)
@@ -523,85 +538,237 @@ class TestSettings:
         assert options["azure-gpt-4"]["backend"] == "azure"
         assert options["bedrock-claude"]["backend"] == "aws"
 
-    def test_options_and_defaults_follow_the_accounts_access(self, client, db_session, test_user):
-        self._configure(
-            db_session, AUTO,
-            patch='{"ANTHROPIC_MODEL": "test-llm"}', patch_azure='{"ANTHROPIC_MODEL": "azure-gpt-4"}',
+    def test_a_model_field_without_a_default_suggests_the_gateways_fallback(self, client, test_user):
+        # Without one, the first model of the account's list.
+        assert self._fields(client)["ANTHROPIC_MODEL"]["default"] == "test-llm"
+        with patch("app.core.config.FALLBACK_MAP", {"llm": "test-vlm"}):
+            assert self._fields(client)["ANTHROPIC_MODEL"]["default"] == "test-vlm"
+        with patch("app.core.config.FALLBACK_MAP", {"llm": "not-configured"}):
+            assert self._fields(client)["ANTHROPIC_MODEL"]["default"] == "test-llm"
+
+    # ── The admin's file ──
+
+    def test_the_sites_file_replaces_the_example(self, client, test_user, settings_file):
+        settings_file(_choice_field(options=[{"value": "1", "label": "On", "description": "Recommended."}, "0"]))
+        assert self._body(client)["fields"] == [{
+            "name": "SWITCH", "label": "A switch", "description": "What the switch does.", "type": "choice",
+            "default": "1",
+            "options": [{"value": "1", "label": "On", "description": "Recommended."}, {"value": "0", "label": "0"}],
+        }]
+
+    def test_a_file_edited_by_hand_applies_at_the_next_request(self, client, test_user, settings_file):
+        import os
+
+        settings_file(_choice_field())
+        assert list(self._fields(client)) == ["SWITCH"]
+        settings_file(_choice_field("OTHER_SWITCH"))
+        os.utime(settings_file.path, ns=(1, 1))  # whatever the clock's resolution
+        assert list(self._fields(client)) == ["OTHER_SWITCH"]
+
+    def test_a_broken_file_changes_nothing(self, client, test_user, settings_file):
+        from app.services import client_settings
+
+        settings_file(_choice_field())
+        assert list(self._fields(client)) == ["SWITCH"]
+        settings_file.path.write_text("{not json", encoding="utf-8")
+        assert list(self._fields(client)) == ["SWITCH"]  # the last good one
+        assert "Not valid JSON" in client_settings.status()["error"]
+
+    # ── Tiers: the account's cloud access ──
+
+    def test_the_default_follows_the_tier(self, client, db_session, test_user, settings_file):
+        settings_file(_model_field(default={"everyone": "test-llm", "azure": "azure-gpt-4", "both": "bedrock-claude"}))
+        expected = {(False, False): "test-llm", (True, False): "azure-gpt-4",
+                    (False, True): "test-llm", (True, True): "bedrock-claude"}
+        for (azure, aws), default in expected.items():
+            self._tier(db_session, test_user, azure, aws)
+            assert self._fields(client)["ANTHROPIC_MODEL"]["default"] == default, (azure, aws)
+
+    def test_the_most_specific_tier_wins(self):
+        from app.services.client_settings import pick
+
+        tiered = {"everyone": "e", "azure": "az", "aws": "aw"}
+        assert pick(tiered, False, False) == "e"
+        assert pick(tiered, True, False) == "az"
+        assert pick(tiered, False, True) == "aw"
+        assert pick(tiered, True, True) == "aw"  # no "both": aws over azure
+        assert pick({**tiered, "both": "b"}, True, True) == "b"
+        assert pick({"azure": "az"}, False, False) is None
+
+    def test_the_options_follow_the_tier(self, client, db_session, test_user, settings_file):
+        settings_file(
+            _model_field(options={"everyone": ["test-llm"], "azure": ["azure-gpt-4", "test-llm"]}),
+            _choice_field(default={"everyone": "0", "both": "2"},
+                          options={"everyone": ["0", "1"], "both": ["0", "1", "2"]}),
         )
+        self._tier(db_session, test_user, False, False)
+        fields = self._fields(client)
+        assert self._values(fields["ANTHROPIC_MODEL"]) == ["test-llm"]
+        assert self._values(fields["SWITCH"]) == ["0", "1"] and fields["SWITCH"]["default"] == "0"
+        self._tier(db_session, test_user, True, False)
+        assert self._values(self._fields(client)["ANTHROPIC_MODEL"]) == ["azure-gpt-4", "test-llm"]  # the file's order
+        self._tier(db_session, test_user, True, True)
+        fields = self._fields(client)
+        assert self._values(fields["SWITCH"]) == ["0", "1", "2"] and fields["SWITCH"]["default"] == "2"
+
+    def test_a_field_can_be_for_some_tiers_only(self, client, db_session, test_user, settings_file):
+        settings_file(_choice_field(default={"azure": "1"}, options={"azure": ["1", "0"]}))
+        self._tier(db_session, test_user, False, False)
+        assert self._body(client)["fields"] == []
+        self._tier(db_session, test_user, True, False)
+        assert list(self._fields(client)) == ["SWITCH"]
+
+    def test_a_model_the_account_cannot_use_is_never_offered(self, client, db_session, test_user, settings_file):
+        # Listed for everyone, but a cloud model needs the access.
+        settings_file(_model_field(default="azure-gpt-4", options=["test-llm", "azure-gpt-4", "no-such-model"]))
+        self._tier(db_session, test_user, False, False)
         field = self._fields(client)["ANTHROPIC_MODEL"]
-        assert field["default"] == "azure-gpt-4"
-        assert {option.get("backend") for option in field["options"]} == {"onprem", "azure", "aws"}
-        _update(db_session, test_user, can_use_azure=False, can_use_bedrock=False)
+        assert self._values(field) == ["test-llm"] and field["default"] == "test-llm"
+        self._tier(db_session, test_user, True, False)
         field = self._fields(client)["ANTHROPIC_MODEL"]
-        assert field["default"] == "test-llm"
-        assert {option.get("backend") for option in field["options"]} == {"onprem"}
+        assert self._values(field) == ["test-llm", "azure-gpt-4"] and field["default"] == "azure-gpt-4"
 
     def test_the_stored_admin_flag_shows_nothing_more(self, client, admin_user):
         field = self._fields(client, headers=auth_header(admin_user.api_key))["ANTHROPIC_MODEL"]
-        assert {option.get("backend") for option in field["options"]} == {"onprem"}
+        assert {option["backend"] for option in field["options"]} == {"onprem"}
 
-    def test_a_model_no_check_names_defaults_to_the_gateways_fallback(self, client, test_user):
-        # Without one, the first model of the account's list.
-        assert self._fields(client)["ANTHROPIC_SMALL_FAST_MODEL"]["default"] == "test-llm"
-        with patch("app.core.config.FALLBACK_MAP", {"llm": "test-vlm"}):
-            assert self._fields(client)["ANTHROPIC_SMALL_FAST_MODEL"]["default"] == "test-vlm"
-        with patch("app.core.config.FALLBACK_MAP", {"llm": "not-configured"}):
-            assert self._fields(client)["ANTHROPIC_SMALL_FAST_MODEL"]["default"] == "test-llm"
-
-    def test_a_suggested_model_outside_the_list_is_still_an_option(self, client, db_session, test_user):
-        # e.g. a hidden model kept for background tasks.
-        self._configure(db_session, AUTO, patch='{"ANTHROPIC_SMALL_FAST_MODEL": "small-hidden"}')
-        field = self._fields(client)["ANTHROPIC_SMALL_FAST_MODEL"]
+    def test_a_hidden_model_can_be_the_default(self, client, test_user, settings_file):
+        # e.g. a small model kept for background tasks: not in the lists,
+        # but it answers by name.
+        settings_file(_model_field(default="small-hidden"))
+        routing = {**TEST_MODEL_ROUTING, "small-hidden": {**TEST_MODEL_ROUTING["test-llm"], "hidden": True}}
+        with patch("app.core.config.get_model_routing_snapshot", return_value=routing):
+            field = self._fields(client)["ANTHROPIC_MODEL"]
         assert field["default"] == "small-hidden"
-        assert field["options"][0] == {"value": "small-hidden", "label": "small-hidden"}
+        assert field["options"][0] == {"value": "small-hidden", "label": "small-hidden", "backend": "onprem"}
         assert "test-llm" in self._values(field)
 
-    def test_other_variables_a_patch_sets_are_offered_as_they_are(self, client, db_session, test_user):
-        self._configure(db_session, AUTO, patch='{"API_TIMEOUT_MS": "600000", "OLD_SETTING": null, "EMPTY": ""}')
-        fields = self._fields(client)
-        assert fields["API_TIMEOUT_MS"] == {
-            "name": "API_TIMEOUT_MS", "label": "API_TIMEOUT_MS", "type": "choice",
-            "default": "600000", "options": [{"value": "600000", "label": "600000"}],
-        }
-        # Nothing to choose: a variable to remove, or one set to nothing.
-        assert "OLD_SETTING" not in fields and "EMPTY" not in fields
-        # After the fields the code knows.
-        assert list(fields)[-1] == "API_TIMEOUT_MS"
-
-    def test_a_check_that_is_off_suggests_nothing(self, client, db_session, test_user):
-        self._configure(db_session, AUTO, enabled=False)
-        fields = self._fields(client)
-        assert "CLAUDE_CODE_AUTO_MODE_SERVER" not in fields
-        # What every account should have, and the models, are still there.
-        assert fields[DISCOVERY]["default"] == "1"
-        assert all(name in fields for name in MODEL_FIELDS)
-
-    def test_a_key_is_never_offered(self, client, db_session, test_user):
-        self._configure(
-            db_session, AUTO,
-            patch='{"ANTHROPIC_AUTH_TOKEN": "sk-shared", "ANTHROPIC_API_KEY": "sk-shared", "A": "b"}',
-        )
-        text = client.get("/v1/settings", headers=auth_header()).text
-        fields = self._fields(client)
-        assert "A" in fields
-        assert "ANTHROPIC_AUTH_TOKEN" not in fields and "ANTHROPIC_API_KEY" not in fields
-        assert test_user.api_key not in text
-
     def test_no_models_no_model_fields(self, client, db_session, test_user):
-        _update(db_session, test_user, can_use_azure=False, can_use_bedrock=False)
+        self._tier(db_session, test_user, False, False)
         with patch("app.core.config.get_model_routing_snapshot", return_value={}):
             fields = self._fields(client)
         assert not any(name in fields for name in MODEL_FIELDS)
         assert DISCOVERY in fields
+
+    # ── What a file may say ──
+
+    @pytest.mark.parametrize("field, message", [
+        ({**_choice_field(), "description": ""}, "description"),
+        ({k: v for k, v in _choice_field().items() if k != "description"}, "description"),
+        (_choice_field("ANTHROPIC_AUTH_TOKEN"), "API key"),
+        (_choice_field("ANTHROPIC_API_KEY"), "API key"),
+        (_choice_field("not a name"), "environment variable name"),
+        (_choice_field(type="text"), "type"),
+        (_choice_field(default="9"), "not one of their options"),
+        (_choice_field(default={"azure": "1"}), "no \"default\" for local accounts"),
+        (_choice_field(default={"vip": "1"}), "keyed by"),
+        (_choice_field(options=["1", "1"]), "twice"),
+        ({k: v for k, v in _choice_field().items() if k != "options"}, "needs \"options\""),
+        (_choice_field(defualt="1"), "unknown key"),
+    ])
+    def test_what_is_refused(self, field, message):
+        import json
+
+        from app.services import client_settings
+
+        with pytest.raises(ValueError, match=message):
+            client_settings.parse(json.dumps({"fields": [field]}))
+
+    def test_a_variable_is_listed_once(self):
+        import json
+
+        from app.services import client_settings
+
+        with pytest.raises(ValueError, match="listed twice"):
+            client_settings.parse(json.dumps({"fields": [_choice_field(), _choice_field()]}))
+
+    def test_a_key_is_never_offered(self, client, test_user):
+        assert test_user.api_key not in client.get("/v1/settings", headers=auth_header()).text
 
     def test_read_only_and_no_database_read(self, client, test_user):
         for method in ("post", "put", "delete"):
             assert getattr(client, method)("/v1/settings", headers=auth_header()).status_code == 405
         from app.services import client_settings
 
-        self._body(client)
-        with patch("app.services.client_rules.engine", None):
+        with patch("app.core.deps.engine", None), patch("app.services.client_rules.engine", None):
             assert client_settings.fields_for(test_user)
+
+    def test_it_does_not_follow_the_client_checks(self, client, db_session, test_user):
+        # A check's patch is what a notice says; setup has its own file.
+        TestNotices._configure(self, db_session, AUTO, patch='{"ANTHROPIC_MODEL": "test-vlm", "EXTRA": "1"}')
+        fields = self._fields(client)
+        assert fields["ANTHROPIC_MODEL"]["default"] == "test-llm" and "EXTRA" not in fields
+
+
+class TestClientSetupAdmin:
+    """The admin panel's *Client setup* card: the same file, edited from the
+    browser."""
+
+    def _admin(self, admin_user) -> dict:
+        return {**web_auth_header(sub=admin_user.username, scopes=["admin"]), "Accept": "application/json"}
+
+    def _text(self, *fields: dict) -> str:
+        import json
+
+        return json.dumps({"fields": list(fields)}, indent=2)
+
+    def test_saving_writes_the_file_the_api_reads(self, client, admin_user, test_user, settings_file):
+        text = self._text(_choice_field(), _model_field(default={"azure": "azure-gpt-4"}))
+        resp = client.post("/admin/client-settings", data={"settings": text}, headers=self._admin(admin_user))
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] and body["fields"] == 2 and body["customized"] and body["unknown_models"] == []
+        assert settings_file.path.read_text(encoding="utf-8") == text + "\n"
+        fields = client.get("/v1/settings", headers=auth_header()).json()["fields"]
+        assert [field["name"] for field in fields] == ["SWITCH", "ANTHROPIC_MODEL"]
+        # What each tier is offered, for the card.
+        preview = {p["account"]: {f["name"]: f["default"] for f in p["fields"]} for p in body["preview"]}
+        assert list(preview) == ["local", "azure", "aws", "both"]
+        assert preview["local"]["ANTHROPIC_MODEL"] == "test-llm"
+        assert preview["azure"]["ANTHROPIC_MODEL"] == "azure-gpt-4"
+
+    def test_an_invalid_file_is_refused_and_nothing_is_written(self, client, admin_user, settings_file):
+        settings_file(_choice_field())
+        before = settings_file.path.read_text(encoding="utf-8")
+        for text in ("{not json", self._text({**_choice_field(), "description": ""})):
+            resp = client.post("/admin/client-settings", data={"settings": text}, headers=self._admin(admin_user))
+            assert resp.status_code == 400 and resp.json()["detail"]
+        assert settings_file.path.read_text(encoding="utf-8") == before
+
+    def test_a_model_the_gateway_does_not_have_is_pointed_out(self, client, admin_user, settings_file):
+        text = self._text(_model_field(default="typo-model", options=["test-llm", "gone-model"]))
+        body = client.post("/admin/client-settings", data={"settings": text}, headers=self._admin(admin_user)).json()
+        assert body["unknown_models"] == ["gone-model", "typo-model"]
+
+    def test_reset_goes_back_to_the_shipped_example(self, client, admin_user, test_user, settings_file):
+        settings_file(_choice_field())
+        body = client.post("/admin/client-settings/reset", headers=self._admin(admin_user)).json()
+        assert body["ok"] and not body["customized"]
+        assert not settings_file.path.exists()
+        names = [f["name"] for f in client.get("/v1/settings", headers=auth_header()).json()["fields"]]
+        assert names[:3] == MODEL_FIELDS
+
+    def test_only_an_admin(self, client, test_user, settings_file):
+        headers = {**web_auth_header(sub=test_user.username), "Accept": "application/json"}
+        for path in ("/admin/client-settings", "/admin/client-settings/reset"):
+            assert client.post(path, data={"settings": self._text(_choice_field())}, headers=headers).status_code == 403
+        assert not settings_file.path.exists()
+
+    def test_the_card_shows_the_file_in_force(self, client, admin_user, settings_file):
+        settings_file(_choice_field("MY_OWN_SWITCH"))
+        page = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        card = page[page.index('id="client-setup"'):]
+        assert "MY_OWN_SWITCH" in card[:card.index("</form>")]
+        assert str(settings_file.path) in card
+
+    def test_a_save_is_in_the_audit_log(self, client, db_session, admin_user, settings_file):
+        from app.models.schema import AuditLog
+
+        client.post("/admin/client-settings", data={"settings": self._text(_choice_field())},
+                    headers=self._admin(admin_user))
+        rows = [r for r in db_session.exec(select(AuditLog)).all() if r.route == "/admin/client-settings"]
+        assert len(rows) == 1 and rows[0].actor == admin_user.username and rows[0].status == 200
+        assert "SWITCH" in (rows[0].detail or "")
 
 
 def _jwt() -> str:

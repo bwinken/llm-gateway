@@ -1,0 +1,44 @@
+{
+  "_readme": "What GET /v1/settings offers a terminal tool that sets Claude Code up. Copy to client_settings.json (in CONFIG_DIR, beside config.toml) and edit, or edit it in the admin panel: Clients > Client setup. Keys starting with _ are ignored. \"default\" and \"options\" may be a plain value for everyone, or an object keyed by tier: everyone / azure / aws / both (the most specific that applies to the account wins). A model field without \"options\" offers every chat model the account can see; without \"default\" it suggests the gateway's fallback LLM.",
+  "fields": [
+    {
+      "name": "ANTHROPIC_MODEL",
+      "label": "Default model",
+      "description": "The model Claude Code starts a session with.",
+      "type": "model"
+    },
+    {
+      "name": "ANTHROPIC_SMALL_FAST_MODEL",
+      "label": "Background model",
+      "description": "The model for Claude Code's background tasks (titles, summaries). A small, cheap one is enough.",
+      "type": "model"
+    },
+    {
+      "name": "CLAUDE_CODE_AUTO_MODE_MODEL",
+      "label": "Auto mode model",
+      "description": "The model that decides which actions auto mode may run unattended (Claude Code 2.1.302 or later). Pick a capable one.",
+      "type": "model"
+    },
+    {
+      "name": "CLAUDE_CODE_AUTO_MODE_SERVER",
+      "label": "Auto mode safety check",
+      "description": "No model behind this gateway reviews auto mode's actions, so Claude Code has to run that check itself, as ordinary requests.",
+      "type": "choice",
+      "default": "0",
+      "options": [
+        {"value": "0", "label": "Run by Claude Code"}
+      ]
+    },
+    {
+      "name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+      "label": "Model list from the gateway",
+      "description": "Fill Claude Code's /model picker with this gateway's models at startup.",
+      "type": "choice",
+      "default": "1",
+      "options": [
+        {"value": "1", "label": "On"},
+        {"value": "0", "label": "Off"}
+      ]
+    }
+  ]
+}
