@@ -106,7 +106,7 @@ Azure 與 Bedrock 模型放在 `[azure_models.*]`、`[bedrock_models.*]`；價�
 
 ## 功能總覽與各自需要的設定
 
-Gateway 的所有功能、在哪裡開啟，以及在 `.env` 需要設什麼。「一律開啟」表示除了兩組必要設定（`DATABASE_URL`，以及 Web UI 用的 `AUTH_*`）之外不需要其他設定。完整的變數清單在下一節。
+Gateway 的所有功能、在哪裡開啟，以及在 `.env` 需要設什麼。「一律開啟」表示除了必填設定（`DATABASE_URL` 與 `AUTH_*`）之外不需要其他設定。最後一欄裡的變數，除非標示「選用」，否則就是該功能必填的；下面的[環境變數](#環境變數)逐一標明每個變數是必填還是選用。
 
 **API 與路由**
 
@@ -180,42 +180,67 @@ Gateway 的所有功能、在哪裡開啟，以及在 `.env` 需要設什麼。�
 
 ## 環境變數
 
-Gateway 會讀取的所有變數。要能正常運作只需要設定前四個（它們內建的值只是佔位用）；其餘都是選用，[`.env.example`](.env.example) 裡被註解掉的每一行就是該變數的預設值。修改後要重啟才生效。
+Gateway 會讀取的所有變數，分成三組：一定要設的、某個功能需要的（有用到那個功能才設）、以及有預設值可用的選用項。修改後要重啟才生效。[`.env.example`](.env.example) 有同一批變數與更詳細的說明。
+
+### 必填
+
+沒有這些 gateway 無法運作。它們內建的值只是佔位用。
+
+| 變數 | 用途 |
+|---|---|
+| `DATABASE_URL` | PostgreSQL 連線字串 |
+| `AUTH_BASE_URL` | AuthCenter：JWT 的 issuer。沒設的話 Web UI 與終端機工具都無法登入 |
+| `AUTH_CENTER_APP_ID` | AuthCenter：JWT 的 audience（佔位值 `llm_gateway`） |
+| `AUTH_CENTER_PUBLIC_KEY_PATH` | AuthCenter 的 RS256 公鑰（佔位值 `./keys/public.pem`） |
+
+### 功能需要的
+
+整組不設，該功能就是關閉。同一組裡標示**必填**的變數都要設，功能才會運作。
+
+| 功能 | 變數 | 必填？ | 用途 |
+|---|---|---|---|
+| **Langfuse 追蹤**（週報也是從這裡讀資料） | `LANGFUSE_HOST` | **必填** | Langfuse 伺服器 |
+| | `LANGFUSE_PUBLIC_KEY` | **必填** | 專案的 public key |
+| | `LANGFUSE_SECRET_KEY` | **必填** | 專案的 secret key |
+| | `LANGFUSE_SAMPLE_RATE` | 選用（`1.0`） | 記錄的請求比例；`0` 表示完全不記錄，週報也會被鎖住 |
+| | `LANGFUSE_CAPTURE_IO` | 選用（`false`） | 連 prompt 與回覆內容也記錄。屬於對個人的監看，應當作政策決定 |
+| **寄信**（通知使用者修正 client 設定，以及週報） | `EXCHANGE_SERVER` | **必填** | Exchange（EWS）伺服器 |
+| | `EXCHANGE_USER` | **必填** | 寄信用的服務帳號 |
+| | `EXCHANGE_PASSWORD` | **必填** | 該帳號的密碼 |
+| | `EXCHANGE_EMAIL` | **必填** | 寄件人位址 |
+| | `COMPANY_EMAIL_DOMAIN` | **必填** | 使用者的信箱是 `<帳號>@<網域>`；信只會寄到這個網域 |
+| | `PUBLIC_BASE_URL` | 選用 | 瀏覽器連到 gateway 的網址，用在信中的連結（沒設就沒有連結） |
+| | `CLIENT_RULE_MAIL_BATCH`、`CLIENT_RULE_MAIL_PAUSE_S`、`CLIENT_RULE_MAIL_INTERVAL_S` | 選用（`20`、`2`、`600`） | Client 設定通知信的節奏：每輪幾封、每封間隔秒數、每輪間隔秒數（`0` = 關閉） |
+| **週報** | 上面的 Langfuse 追蹤與寄信 | **必填**（共八個） | 少了任一組，週報就無法開啟，也不會寄出 |
+| | `WEEKLY_REPORT_TICK_S` | 選用（`300`） | 多久檢查一次週報是否到期，也就是週報會在設定時間後這麼多秒內寄出（`0` = 關閉） |
+| **AWS Bedrock 模型** | `BEDROCK_REGION` | **必填**，除非每個模型在 `config.toml` 自己設 `region` | 所有 Bedrock 模型共用的 AWS region |
+| | `BEDROCK_AWS_ACCESS_KEY_ID`、`BEDROCK_AWS_SECRET_ACCESS_KEY` | **必填**，除非每個模型在 `config.toml` 有自己的 IAM 金鑰或 API key | 所有 Bedrock 模型共用的 IAM 金鑰（SigV4） |
+| | `BEDROCK_HTTP_PROXY` | 選用 | 只給 Bedrock 流量用的 HTTP proxy |
+| | `BEDROCK_INSECURE` | 選用（`false`） | 連 Bedrock 時不驗證 TLS |
+| **Azure OpenAI 模型** | 無：endpoint 與 key 是逐模型寫在 `config.toml` | – | – |
+| | `AZURE_HTTP_PROXY` | 選用 | 只給 Azure 流量用的 HTTP proxy |
+| | `AZURE_INSECURE` | 選用（`false`） | 連 Azure 時不驗證 TLS（公司有 TLS 檢查 proxy 時） |
+| **Prometheus 指標** | `METRICS_ENABLED` | **必填**（設 `true` 才開啟） | 在 `/metrics` 提供指標 |
+| | `METRICS_DIR` | 選用（`<tmp>/llm-gateway-metrics`） | 各 worker 共用指標數值的目錄 |
+| **刪除舊的用量紀錄** | `USAGE_LOG_RETENTION_DAYS` | **必填**（設天數才開啟） | 刪除超過這個天數的原始用量紀錄；報表的總計會保留 |
+
+### 選用
+
+都有可用的預設值；只有想改變行為時才需要設。
 
 | 變數 | 預設值 | 用途 |
 |---|---|---|
-| `DATABASE_URL` | **必要** | PostgreSQL 連線字串 |
-| `AUTH_BASE_URL` | **必要** | AuthCenter：JWT 的 issuer |
-| `AUTH_CENTER_APP_ID` | **必要**（`llm_gateway`） | AuthCenter：JWT 的 audience |
-| `AUTH_CENTER_PUBLIC_KEY_PATH` | **必要**（`./keys/public.pem`） | AuthCenter 的 RS256 公鑰 |
 | `APP_TITLE` | `LLM Gateway` | Web UI 與信件裡顯示的名稱 |
 | `SETUP_PAGE_ENABLED` | `true` | 設 `false` 移除 Windows 用的 Setup 頁與安裝檔 |
 | `ENFORCE_DAILY_LIMIT` | `true` | 設 `false` 時超出預算只記錄，不回 429 |
 | `AUTH_FAIL_DISTINCT_KEYS` | `10` | 同一位址送出幾把不同的無效 key 後封鎖（`0` = 關閉） |
 | `AUTH_FAIL_WINDOW_S` | `600` | 計算這些 key 的時間窗 |
 | `AUTH_LOCKOUT_S` | `900` | 封鎖多久 |
-| `AZURE_HTTP_PROXY` | – | 只給 Azure 流量用的 HTTP proxy |
-| `AZURE_INSECURE` | `false` | 連 Azure 時不驗證 TLS（公司有 TLS 檢查 proxy 時） |
-| `BEDROCK_HTTP_PROXY` | – | 只給 Bedrock 流量用的 HTTP proxy |
-| `BEDROCK_INSECURE` | `false` | 連 Bedrock 時不驗證 TLS |
-| `BEDROCK_REGION` | – | 所有 Bedrock 模型共用的 AWS region |
-| `BEDROCK_AWS_ACCESS_KEY_ID`、`BEDROCK_AWS_SECRET_ACCESS_KEY` | – | 所有 Bedrock 模型共用的 IAM 金鑰（SigV4） |
 | `DOWNSTREAM_MAX_CONNECTIONS`、`DOWNSTREAM_MAX_KEEPALIVE_CONNECTIONS` | `1000`、`100` | 連 vLLM 伺服器的連線池 |
 | `CLOUD_MAX_CONNECTIONS`、`CLOUD_MAX_KEEPALIVE_CONNECTIONS`、`CLOUD_KEEPALIVE_EXPIRY_S` | `200`、`100`、`30` | 連 Azure 與 Bedrock 的連線池 |
 | `GUARDRAIL_MAX_CONNECTIONS` | `200` | 連 guard 模型伺服器的連線池 |
-| `LANGFUSE_HOST`、`LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY` | – | 啟用 Langfuse 追蹤（三個都要設）；週報也是從這裡讀資料 |
-| `LANGFUSE_SAMPLE_RATE` | `1.0` | 記錄到 Langfuse 的請求比例；`0` 表示完全不記錄（週報也會被鎖住） |
-| `LANGFUSE_CAPTURE_IO` | `false` | 連 prompt 與回覆內容也記錄。屬於對個人的監看，應當作政策決定 |
-| `METRICS_ENABLED` | `false` | 在 `/metrics` 提供 Prometheus 指標 |
-| `METRICS_DIR` | `<tmp>/llm-gateway-metrics` | 各 worker 共用指標數值的目錄 |
-| `COMPANY_EMAIL_DOMAIN` | – | 寄信：使用者的信箱是 `<帳號>@<網域>`；信只會寄到這個網域 |
-| `EXCHANGE_SERVER`、`EXCHANGE_USER`、`EXCHANGE_PASSWORD`、`EXCHANGE_EMAIL` | – | 寄信：Exchange（EWS）伺服器、服務帳號與寄件人位址。這四個加上網域都設了才會寄信 |
-| `PUBLIC_BASE_URL` | – | 瀏覽器連到 gateway 的網址，用在信中的連結 |
-| `CLIENT_RULE_MAIL_BATCH`、`CLIENT_RULE_MAIL_PAUSE_S`、`CLIENT_RULE_MAIL_INTERVAL_S` | `20`、`2`、`600` | Client 設定通知信的節奏：每輪幾封、每封間隔秒數、每輪間隔秒數（`0` = 關閉） |
-| `WEEKLY_REPORT_TICK_S` | `300` | 多久檢查一次週報是否到期，也就是週報會在設定時間後這麼多秒內寄出（`0` = 關閉） |
 | `USAGE_ROLLUP_INTERVAL_S` | `600` | 每日用量 rollup 的執行間隔秒數（`0` = 關閉；報表數字仍正確，只是變慢） |
 | `ANOMALY_SCAN_INTERVAL_S` | `3600` | 用量異常掃描的間隔秒數（`0` = 關閉） |
-| `USAGE_LOG_RETENTION_DAYS` | 關閉 | 刪除超過這個天數的原始用量紀錄；報表的總計會保留 |
 | `LOG_DIR`、`LOG_LEVEL`、`LOG_ROTATION`、`LOG_RETENTION` | `./logs`、`WARNING`、`100 MB`、`14 days` | Log 檔（每個 worker 一份） |
 | `LOG_REQUEST_BODIES` | `false` | 下游出錯時記錄完整的請求內容。只用於除錯：會把 prompt 寫到磁碟 |
 | `SLOW_REQUEST_WARN_S` | `120` | 請求慢於這個秒數時在 log 警告（`0` = 關閉） |

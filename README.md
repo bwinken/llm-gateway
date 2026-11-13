@@ -106,7 +106,7 @@ Open `https://your-gateway` and sign in through SSO. Accounts with the `admin` s
 
 ## Features and what each needs
 
-Everything the gateway does, where it is switched on, and what it needs in `.env`. "Always on" needs nothing beyond the two required settings (`DATABASE_URL`, and `AUTH_*` for the web UI). The full variable list follows this table.
+Everything the gateway does, where it is switched on, and what it needs in `.env`. "Always on" needs nothing beyond the required settings (`DATABASE_URL` and `AUTH_*`). In the last column, a variable is required for that feature unless it says *optional*; [Environment variables](#environment-variables) below marks each one as required or optional.
 
 **API and routing**
 
@@ -180,42 +180,67 @@ A weekly report can only be turned on while Langfuse tracing is on (the three se
 
 ## Environment variables
 
-Every variable the gateway reads. Only the first four must be set for a working install (their built-in values are placeholders); everything else is optional, and a commented-out line in [`.env.example`](.env.example) shows its default. Changes take effect on restart.
+Every variable the gateway reads, in three groups: the ones you must set, the ones a feature needs (set them only if you use that feature), and the optional ones with a working default. Changes take effect on restart. [`.env.example`](.env.example) has the same variables with longer notes.
+
+### Required
+
+The gateway does not work without these. Their built-in values are placeholders.
+
+| Variable | What it is for |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `AUTH_BASE_URL` | AuthCenter: the JWT issuer. Web-UI and terminal sign-in fail without it |
+| `AUTH_CENTER_APP_ID` | AuthCenter: the JWT audience (placeholder `llm_gateway`) |
+| `AUTH_CENTER_PUBLIC_KEY_PATH` | AuthCenter's RS256 public key (placeholder `./keys/public.pem`) |
+
+### Required by a feature
+
+Leave a group unset and that feature is simply off. Within a group, every variable marked **required** must be set for the feature to work.
+
+| Feature | Variable | Required? | What it is for |
+|---|---|---|---|
+| **Langfuse tracing** (and the weekly reports, which read from it) | `LANGFUSE_HOST` | **required** | The Langfuse server |
+| | `LANGFUSE_PUBLIC_KEY` | **required** | Project public key |
+| | `LANGFUSE_SECRET_KEY` | **required** | Project secret key |
+| | `LANGFUSE_SAMPLE_RATE` | optional (`1.0`) | Share of requests recorded; `0` records nothing and locks the weekly reports |
+| | `LANGFUSE_CAPTURE_IO` | optional (`false`) | Also record prompts and replies. Individual-level monitoring: decide this as policy |
+| **Mail** (client-setup mail to users, and the weekly reports) | `EXCHANGE_SERVER` | **required** | Exchange (EWS) server |
+| | `EXCHANGE_USER` | **required** | Service account that sends |
+| | `EXCHANGE_PASSWORD` | **required** | Its password |
+| | `EXCHANGE_EMAIL` | **required** | Sender address |
+| | `COMPANY_EMAIL_DOMAIN` | **required** | A user's mailbox is `<username>@<domain>`; the only domain mail goes to |
+| | `PUBLIC_BASE_URL` | optional | Where browsers reach the gateway, for links in mail (no links without it) |
+| | `CLIENT_RULE_MAIL_BATCH`, `CLIENT_RULE_MAIL_PAUSE_S`, `CLIENT_RULE_MAIL_INTERVAL_S` | optional (`20`, `2`, `600`) | Pace of client-setup mail: mails per run, seconds between them, seconds between runs (`0` = off) |
+| **Weekly reports** | Langfuse tracing and Mail, above | **required** (all eight) | A report cannot be turned on, or sent, without both |
+| | `WEEKLY_REPORT_TICK_S` | optional (`300`) | How often the reports are looked at, so one goes out within this many seconds of its time (`0` = off) |
+| **AWS Bedrock models** | `BEDROCK_REGION` | **required**, unless each model sets `region` in `config.toml` | AWS region shared by every Bedrock model |
+| | `BEDROCK_AWS_ACCESS_KEY_ID`, `BEDROCK_AWS_SECRET_ACCESS_KEY` | **required**, unless each model has its own IAM pair or API key in `config.toml` | IAM pair shared by every Bedrock model (SigV4) |
+| | `BEDROCK_HTTP_PROXY` | optional | HTTP proxy for Bedrock traffic only |
+| | `BEDROCK_INSECURE` | optional (`false`) | Skip TLS verification to Bedrock |
+| **Azure OpenAI models** | none: endpoint and key are per model in `config.toml` | – | – |
+| | `AZURE_HTTP_PROXY` | optional | HTTP proxy for Azure traffic only |
+| | `AZURE_INSECURE` | optional (`false`) | Skip TLS verification to Azure (TLS-inspecting proxy) |
+| **Prometheus metrics** | `METRICS_ENABLED` | **required** (`true` turns it on) | Serve metrics at `/metrics` |
+| | `METRICS_DIR` | optional (`<tmp>/llm-gateway-metrics`) | Where the workers share their metric values |
+| **Deleting old usage rows** | `USAGE_LOG_RETENTION_DAYS` | **required** (a number of days turns it on) | Delete raw usage rows older than this; reports keep their totals |
+
+### Optional
+
+All have a working default; set one only to change the behaviour.
 
 | Variable | Default | What it is for |
 |---|---|---|
-| `DATABASE_URL` | **required** | PostgreSQL connection string |
-| `AUTH_BASE_URL` | **required** | AuthCenter: the JWT issuer |
-| `AUTH_CENTER_APP_ID` | **required** (`llm_gateway`) | AuthCenter: the JWT audience |
-| `AUTH_CENTER_PUBLIC_KEY_PATH` | **required** (`./keys/public.pem`) | AuthCenter's RS256 public key |
 | `APP_TITLE` | `LLM Gateway` | Name shown in the web UI and in mail |
 | `SETUP_PAGE_ENABLED` | `true` | `false` removes the Windows Setup page and installer |
 | `ENFORCE_DAILY_LIMIT` | `true` | `false` logs over-budget requests instead of answering 429 |
 | `AUTH_FAIL_DISTINCT_KEYS` | `10` | Different invalid keys from one address before it is locked out (`0` = off) |
 | `AUTH_FAIL_WINDOW_S` | `600` | Window those keys are counted in |
 | `AUTH_LOCKOUT_S` | `900` | How long the address is refused |
-| `AZURE_HTTP_PROXY` | – | HTTP proxy for Azure traffic only |
-| `AZURE_INSECURE` | `false` | Skip TLS verification to Azure (TLS-inspecting proxy) |
-| `BEDROCK_HTTP_PROXY` | – | HTTP proxy for Bedrock traffic only |
-| `BEDROCK_INSECURE` | `false` | Skip TLS verification to Bedrock |
-| `BEDROCK_REGION` | – | AWS region shared by every Bedrock model |
-| `BEDROCK_AWS_ACCESS_KEY_ID`, `BEDROCK_AWS_SECRET_ACCESS_KEY` | – | IAM pair shared by every Bedrock model (SigV4) |
 | `DOWNSTREAM_MAX_CONNECTIONS`, `DOWNSTREAM_MAX_KEEPALIVE_CONNECTIONS` | `1000`, `100` | Connection pool to the vLLM servers |
 | `CLOUD_MAX_CONNECTIONS`, `CLOUD_MAX_KEEPALIVE_CONNECTIONS`, `CLOUD_KEEPALIVE_EXPIRY_S` | `200`, `100`, `30` | Connection pools to Azure and Bedrock |
 | `GUARDRAIL_MAX_CONNECTIONS` | `200` | Connection pool to the guard model server |
-| `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | – | Turn on Langfuse tracing (all three); also what the weekly reports read from |
-| `LANGFUSE_SAMPLE_RATE` | `1.0` | Share of requests recorded in Langfuse; `0` records nothing (and locks the weekly reports) |
-| `LANGFUSE_CAPTURE_IO` | `false` | Also record prompts and replies. Individual-level monitoring: decide this as policy |
-| `METRICS_ENABLED` | `false` | Serve Prometheus metrics at `/metrics` |
-| `METRICS_DIR` | `<tmp>/llm-gateway-metrics` | Where the workers share their metric values |
-| `COMPANY_EMAIL_DOMAIN` | – | Mail: a user's mailbox is `<username>@<domain>`; the only domain mail goes to |
-| `EXCHANGE_SERVER`, `EXCHANGE_USER`, `EXCHANGE_PASSWORD`, `EXCHANGE_EMAIL` | – | Mail: the Exchange (EWS) server, the service account and the sender address. Mail is on when all four and the domain are set |
-| `PUBLIC_BASE_URL` | – | Where browsers reach the gateway, for links in mail |
-| `CLIENT_RULE_MAIL_BATCH`, `CLIENT_RULE_MAIL_PAUSE_S`, `CLIENT_RULE_MAIL_INTERVAL_S` | `20`, `2`, `600` | Pace of client-setup mail: mails per run, seconds between them, seconds between runs (`0` = off) |
-| `WEEKLY_REPORT_TICK_S` | `300` | How often the weekly reports are looked at, so one goes out within this many seconds of its time (`0` = off) |
 | `USAGE_ROLLUP_INTERVAL_S` | `600` | Seconds between runs of the daily usage rollup (`0` = off; reports stay correct, slower) |
 | `ANOMALY_SCAN_INTERVAL_S` | `3600` | Seconds between usage-anomaly scans (`0` = off) |
-| `USAGE_LOG_RETENTION_DAYS` | off | Delete raw usage rows older than this; reports keep their totals |
 | `LOG_DIR`, `LOG_LEVEL`, `LOG_ROTATION`, `LOG_RETENTION` | `./logs`, `WARNING`, `100 MB`, `14 days` | Log files (one per worker) |
 | `LOG_REQUEST_BODIES` | `false` | Log raw request bodies on a downstream error. Debugging only: it writes prompts to disk |
 | `SLOW_REQUEST_WARN_S` | `120` | Warn in the log about requests slower than this (`0` = off) |
