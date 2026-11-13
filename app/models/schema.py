@@ -464,6 +464,33 @@ class ClientMailLog(SQLModel, table=True):
     actor: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
 
 
+class ReportSchedule(SQLModel, table=True):
+    """When each weekly report mail goes out and to whom
+    (app/services/weekly_reports.py): one row per report (``usage``,
+    ``guardrail``), written by the admin's *Weekly reports* card. A report
+    without a row is off.
+
+    ``weekday`` (0 = Monday) and ``send_time`` (``HH:MM``) are Asia/Taipei;
+    ``recipients`` is a comma-separated list of mailboxes of the company
+    domain. ``last_period`` is the Monday of the week the last report was
+    about: the job claims a report by moving it forward with a conditional
+    UPDATE, so one worker sends each week's mail. Timestamps are naive UTC.
+    """
+    __tablename__ = "report_schedules"
+
+    name: str = Field(primary_key=True)
+    enabled: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
+    weekday: int = Field(default=0, sa_column=sa.Column(sa.Integer, nullable=False, server_default="0"))
+    send_time: str = Field(default="09:00", sa_column=sa.Column(sa.String, nullable=False, server_default="09:00"))
+    recipients: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    last_period: date | None = Field(default=None)
+    last_attempt_at: NaiveDatetime | None = Field(default=None)
+    last_status: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    last_detail: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    updated_by: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    updated_at: NaiveDatetime = Field(default_factory=_naive_utcnow)
+
+
 class AuditLog(SQLModel, table=True):
     """Who changed what through the Web UI / admin, and who read credentials
     or exported data (app/services/audit.py). Append-only: the app never

@@ -1406,6 +1406,76 @@ function submitExportCsv() {
 </div>
 
 </div>
+{# ── Weekly reports (mail) ── #}
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" id="weekly-reports" style="border-left:3px solid #f5a623">
+    <div class="mb-4">
+        <h2 class="text-sm font-bold text-t2 mb-1">Weekly reports</h2>
+        <p class="text-xs text-t4 gw-tip gw-tip-wide"
+           data-tip="Each report is about the last full week, Monday to Sunday (Asia/Taipei), and goes out as one mail to all its recipients within a few minutes of the time set. Token and estimated-cost figures come from the gateway's own usage record; latency, error rate and guardrail verdicts are read from Langfuse, so a report can only be turned on while Langfuse monitoring is on. If the gateway was down at that time, the mail goes out when it is back, the same week. Saving a schedule after this week's time has passed does not mail at once: use Send now.">
+            Two mails about last week, each with its own day, time and recipients. Preview shows the mail in a new tab, with live data.
+        </p>
+        {% if weekly_reports is none %}
+        <p class="text-xs text-ar mt-2">Unavailable: run <code>alembic upgrade head</code>.</p>
+        {% else %}
+        {% if not weekly_reports.mail.enabled %}
+        <p class="text-xs text-aa mt-2">Mail is not configured ({{ weekly_reports.mail.missing | join(', ') }} in .env): reports can be previewed but not sent.</p>
+        {% endif %}
+        {% if not weekly_reports.langfuse.on %}
+        <p class="text-xs text-aa mt-2" id="weekly-reports-langfuse-off">Langfuse monitoring is off: {{ weekly_reports.langfuse.reason }} The reports are built on what Langfuse records, so none can be turned on or sent until it is on. Preview still works.</p>
+        {% endif %}
+        {% endif %}
+    </div>
+    {% if weekly_reports is not none %}
+    {% for r in weekly_reports.reports %}
+    <form action="/admin/reports/{{ r.name }}" method="POST" data-report="{{ r.name }}" data-title="{{ r.title }}"
+          class="{{ '' if loop.first else 'mt-5 pt-5 border-t' }}" style="border-color:rgba(255,255,255,0.06)">
+        <div class="flex flex-wrap items-baseline gap-x-3 mb-2">
+            <h3 class="text-sm font-semibold text-t2">{{ r.title }}</h3>
+            <span class="text-xs text-t4">{{ r.summary }}</span>
+        </div>
+        <div class="flex items-end gap-3 flex-wrap">
+            {# Off while Langfuse monitoring is off: the switch cannot be turned on (the server refuses too). One that is already on stays usable, to turn it off. #}
+            {% set locked = not weekly_reports.langfuse.on and not r.enabled %}
+            <label class="flex items-center gap-2 text-sm py-1.5 {{ 'text-t4 gw-tip' if locked else 'text-t2' }}"
+                   {% if locked %}data-tip="Needs Langfuse monitoring: {{ weekly_reports.langfuse.reason }}"{% endif %}><input type="checkbox" name="enabled" value="on" {{ 'checked' if r.enabled }} {{ 'disabled' if locked }}> On</label>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Day</label>
+                <select name="weekday" class="gw-input text-sm py-1.5 px-2">
+                    {% for day in weekly_reports.weekdays %}
+                    <option value="{{ loop.index0 }}" {{ 'selected' if loop.index0 == r.weekday else '' }}>{{ day }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="Asia/Taipei, 24-hour">Time</label>
+                <input type="time" name="send_time" value="{{ r.send_time }}" required class="gw-input text-sm font-mono py-1.5 px-2">
+            </div>
+            <div class="flex-1" style="min-width:16rem">
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                       data-tip="Usernames or addresses, separated by commas. Only mailboxes of the company domain{% if weekly_reports.mail.domain %} (@{{ weekly_reports.mail.domain }}){% endif %} are accepted. At most {{ weekly_reports.max_recipients }}.">Recipients</label>
+                <input type="text" name="recipients" value="{{ r.recipients | join(', ') }}" placeholder="alice, bob"
+                       class="gw-input w-full text-sm font-mono py-1.5 px-2">
+            </div>
+            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
+        </div>
+        <div class="flex items-center gap-3 flex-wrap mt-3">
+            <a href="/admin/reports/{{ r.name }}/preview" target="_blank" rel="noopener" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5">Preview</a>
+            {% set can_send = weekly_reports.mail.enabled and weekly_reports.langfuse.on %}
+            <button type="button" data-report-send="me" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5" {{ '' if can_send else 'disabled' }}>Send to me</button>
+            <button type="button" data-report-send="recipients" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5" {{ '' if can_send else 'disabled' }}>Send now to recipients</button>
+            <span class="text-xs text-t4" data-report-status>
+                {% if r.next %}Next: <span class="font-mono text-t3">{{ r.next }}</span>{% else %}Off{% endif %}
+                {% if r.last_status %}
+                · Last: <span class="font-mono {{ 'text-ar' if r.last_status == 'failed' else 'text-t3' }}">{{ r.last_status }}</span>
+                {% if r.last_attempt %}{{ r.last_attempt }}{% endif %}{% if r.last_period %}, week of {{ r.last_period }}{% endif %}{% if r.last_detail %} ({{ r.last_detail }}){% endif %}
+                {% endif %}
+            </span>
+        </div>
+    </form>
+    {% endfor %}
+    {% endif %}
+</div>
+
 {# ── Site Links (support bot + install guide) ── #}
 <div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #4dd9e8">
     <div class="mb-4">
@@ -2394,6 +2464,54 @@ function submitExportCsv() {
                     paint(data);
                     gwToast('Client setup reset to the shipped example.', 'ok');
                 }).catch(function(err) { gwToast(err.message, 'error'); });
+            });
+        });
+    })();
+    /* ── Weekly reports: save a schedule, send one now ── */
+    (function() {
+        var card = document.getElementById('weekly-reports');
+        if (!card) return;
+        function body(form) {
+            var data = new FormData();
+            // An unchecked box is left out of FormData: say on / off outright.
+            data.set('enabled', form.querySelector('[name="enabled"]').checked ? 'on' : 'off');
+            ['weekday', 'send_time', 'recipients'].forEach(function(name) {
+                data.set(name, form.querySelector('[name="' + name + '"]').value);
+            });
+            return data;
+        }
+        function paint(form, r) {
+            form.querySelector('[name="recipients"]').value = r.recipients.join(', ');
+            var status = form.querySelector('[data-report-status]');
+            status.textContent = (r.next ? 'Next: ' + r.next : 'Off') + (r.last_detail ? ' · ' + r.last_detail : '');
+        }
+        card.querySelectorAll('form[data-report]').forEach(function(form) {
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                gwPost(form.action, body(form)).then(function(r) {
+                    paint(form, r);
+                    gwToast(form.dataset.title + (r.enabled ? ' saved: next mail ' + r.next + '.' : ' saved: off.'), 'ok');
+                }).catch(function(err) { gwToast(err.message, 'error'); });
+            });
+        });
+        card.addEventListener('click', function(e) {
+            var btn = e.target.closest('[data-report-send]');
+            if (!btn) return;
+            var form = btn.closest('form'), to = btn.getAttribute('data-report-send');
+            var ask = to === 'recipients'
+                ? gwConfirm('Send the ' + form.dataset.title.toLowerCase() + ' about last week to its saved recipients now?', { okLabel: 'Send' })
+                : Promise.resolve(true);
+            ask.then(function(yes) {
+                if (!yes) return;
+                var data = new FormData();
+                data.set('to', to);
+                btn.disabled = true;
+                gwToast('Building the report…', 'info');
+                gwPost(form.action + '/send', data).then(function(r) {
+                    if (r.ok) gwToast('Sent to ' + r.to.join(', ') + (r.detail ? ' (' + r.detail + ')' : '') + '.', 'ok');
+                    else gwToast('Not sent: ' + r.detail, 'error');
+                }).catch(function(err) { gwToast(err.message, 'error'); })
+                  .then(function() { btn.disabled = false; });
             });
         });
     })();

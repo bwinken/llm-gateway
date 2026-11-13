@@ -108,29 +108,45 @@ def _get_account():
         return _account
 
 
-def _send_sync(to: str, subject: str, html_body: str) -> None:
-    from exchangelib import HTMLBody, Mailbox, Message
+def _send_sync(to: str | list[str], subject: str, html_body: str, images: dict[str, bytes] | None = None) -> None:
+    from exchangelib import FileAttachment, HTMLBody, Mailbox, Message
 
     account = _get_account()
-    Message(
+    recipients = [to] if isinstance(to, str) else list(to)
+    message = Message(
         account=account,
         author=Mailbox(email_address=account.primary_smtp_address),
         subject=subject,
         body=HTMLBody(html_body),
-        to_recipients=[Mailbox(email_address=to)],
-    ).send(save_copy=False)  # a notification: no copy in Sent Items
+        to_recipients=[Mailbox(email_address=address) for address in recipients],
+    )
+    # Pictures the body shows as <img src="cid:NAME">: a mail client renders
+    # neither SVG nor a data: URI, so a chart travels as an inline PNG.
+    for name, content in (images or {}).items():
+        message.attach(FileAttachment(
+            name=f"{name}.png", content=content, content_type="image/png", is_inline=True, content_id=name,
+        ))
+    message.send(save_copy=False)  # a notification: no copy in Sent Items
 
 
-def send(to: str, subject: str, html_body: str) -> tuple[bool, str]:
-    """Send one HTML mail. Blocking. Returns ``(ok, error summary)``."""
+def send(
+    to: str | list[str], subject: str, html_body: str, images: dict[str, bytes] | None = None,
+) -> tuple[bool, str]:
+    """Send one HTML mail, to one address or to several in the same mail.
+    ``images`` are PNGs the body refers to as ``cid:<name>``. Blocking.
+    Returns ``(ok, error summary)``."""
     if not is_enabled():
         return False, "Mail is not configured."
+    shown = to if isinstance(to, str) else ", ".join(to)
     try:
-        _send_sync(to, subject, html_body)
+        if images:
+            _send_sync(to, subject, html_body, images)
+        else:
+            _send_sync(to, subject, html_body)
     except Exception as exc:
         lines = str(exc).strip().splitlines()
         summary = f"{type(exc).__name__}: {lines[0] if lines else ''}"[:200]
-        logger.error("Mail failed | to={} subject={!r} error={}", to, subject, summary)
+        logger.error("Mail failed | to={} subject={!r} error={}", shown, subject, summary)
         return False, summary
-    logger.info("Mail sent | to={} subject={!r}", to, subject)
+    logger.info("Mail sent | to={} subject={!r}", shown, subject)
     return True, ""
