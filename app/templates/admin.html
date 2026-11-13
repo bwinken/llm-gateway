@@ -214,7 +214,7 @@ function anomalyAction(id, action) {
         <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Chat / responses / messages requests running right now (counted only while the concurrency limit is Monitor or Enforce)">In flight now</dt>
         <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums">{{ concurrency_in_flight.total if concurrency_in_flight is not none and concurrency_mode != 'off' else '—' }}</dd>
         <div class="mt-1 text-xs text-t4">
-            {% if concurrency_mode == 'off' %}tracking off{% elif concurrency_in_flight is not none %}busiest account {{ concurrency_in_flight.peak_user }} / {{ concurrency_limit }}{% endif %}
+            {% if concurrency_mode == 'off' %}tracking off{% elif concurrency_in_flight is not none %}busiest account {{ concurrency_in_flight.peak_user }} / {{ concurrency_limit }} local · {{ concurrency_in_flight.peak_cloud_user }} / {{ concurrency_cloud_limit }} cloud{% endif %}
         </div>
     </div>
     <div class="gw-card gw-stat relative p-5 col-span-2 lg:col-span-1" style="--accent:linear-gradient(90deg,#f5a623,#ff9933)">
@@ -1237,8 +1237,8 @@ function submitExportCsv() {
         <div class="max-w-xl">
             <h2 class="text-sm font-bold text-t2 mb-1">Concurrency Limit</h2>
             <p class="text-xs text-t4 gw-tip gw-tip-wide"
-               data-tip="Counts chat / responses / messages requests (streams included) across all gateway workers, from admission until the response is fully sent. Monitor: everything is served, over-limit requests are logged as 'Concurrency limit exceeded (monitor)'. Enforce: over-limit requests get 429 with Retry-After: 5 (Claude Code retries automatically). Admins and accounts marked Waive are never limited; app accounts start out waived (un-waive one to limit it). count_tokens, tokenize, models, embeddings and rerank are not counted.">
-                Maximum in-flight inference requests per account. Admins and waived accounts (all app accounts, by default) are exempt.
+               data-tip="Counts chat / responses / messages requests (streams included) across all gateway workers, from admission until the response is fully sent. Local (on-prem) and cloud (Azure / AWS) requests are counted apart, each against its own limit: a full one neither borrows from nor blocks the other. A cloud model served on-prem because the cloud budget is spent counts as local. Monitor: everything is served, over-limit requests are logged as 'Concurrency limit exceeded (monitor)'. Enforce: over-limit requests get 429 with Retry-After: 5 (Claude Code retries automatically). Admins and accounts marked Waive are never limited; app accounts start out waived (un-waive one to limit it). count_tokens, tokenize, models, embeddings and rerank are not counted.">
+                Maximum in-flight inference requests per account: one limit for local models, a wider one for cloud. Admins and waived accounts (all app accounts, by default) are exempt.
             </p>
             <p class="text-xs text-t4 mt-1.5">
                 {% if concurrency_in_flight is none %}
@@ -1247,7 +1247,8 @@ function submitExportCsv() {
                 In flight now:
                 <span class="font-mono text-t2">{{ concurrency_in_flight.total }}</span> request{{ '' if concurrency_in_flight.total == 1 else 's' }}
                 across <span class="font-mono text-t2">{{ concurrency_in_flight.users }}</span> account{{ '' if concurrency_in_flight.users == 1 else 's' }}
-                · busiest account <span class="font-mono text-t2">{{ concurrency_in_flight.peak_user }}</span>
+                · busiest account <span class="font-mono text-t2">{{ concurrency_in_flight.peak_user }}</span> local,
+                <span class="font-mono text-t2">{{ concurrency_in_flight.peak_cloud_user }}</span> cloud
                 {% if concurrency_mode == 'off' %}<span class="text-t4">(not tracked while Off)</span>{% endif %}
                 {% endif %}
             </p>
@@ -1262,8 +1263,13 @@ function submitExportCsv() {
                 </select>
             </div>
             <div>
-                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Per account</label>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="In-flight requests to local (on-prem) models, per account">Local</label>
                 <input type="number" step="1" min="1" required name="limit" value="{{ concurrency_limit }}"
+                       class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="In-flight requests to Azure / AWS models, per account. Counted apart from local.">Cloud</label>
+                <input type="number" step="1" min="1" required name="cloud_limit" value="{{ concurrency_cloud_limit }}"
                        class="gw-input w-20 text-sm font-mono py-1.5 px-2">
             </div>
             <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
@@ -1775,7 +1781,7 @@ function submitExportCsv() {
         var ASK = {
             'concurrency': function(f) {
                 return f.mode.value === 'enforce'
-                    ? { text: 'Enforce the concurrency limit? Accounts over ' + f.limit.value + ' in-flight requests will get 429 responses.', okLabel: 'Enforce', danger: true }
+                    ? { text: 'Enforce the concurrency limit? Accounts over ' + f.limit.value + ' local or ' + f.cloud_limit.value + ' cloud in-flight requests will get 429 responses.', okLabel: 'Enforce', danger: true }
                     : null;
             },
             'default-limit': function(f) {

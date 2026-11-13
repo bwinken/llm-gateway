@@ -8,6 +8,12 @@ does this user have in flight" is then a COUNT over that table, which every
 gateway worker sees, so ``--workers 2`` enforces one limit instead of two
 per-process ones.
 
+An account has two independent counts, one per ``pool``: ``local`` (requests
+served by vLLM, where concurrent requests compete for the same GPUs) and
+``cloud`` (Azure / Bedrock, which gets a wider limit). A full pool never
+borrows from the other. Which pool a request is in is the caller's decision
+(``deps._limited``); this module only counts.
+
 Lifecycle of a lease:
   - ``acquire``  — short transaction: lock the user's row (``SELECT ... FOR
     UPDATE``, so two workers admitting the same user serialize), count the
@@ -51,6 +57,9 @@ from app.core.database import engine
 from app.core.logger import logger
 from app.models.schema import ConcurrencyLease, User
 
+POOL_LOCAL = "local"
+POOL_CLOUD = "cloud"
+
 LEASE_TTL = timedelta(seconds=180)
 HEARTBEAT_INTERVAL = 60.0
 
@@ -74,11 +83,13 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def acquire(user_id: int, limit: int, endpoint: str, *, enforce: bool) -> tuple[str | None, int]:
-    """Try to take a slot for ``user_id``.
+def acquire(
+    user_id: int, limit: int, endpoint: str, *, enforce: bool, pool: str = POOL_LOCAL,
+) -> tuple[str | None, int]:
+    """Try to take a slot for ``user_id`` in ``pool``.
 
     Returns ``(lease_id, active)`` where ``active`` is how many leases the
-    user held *before* this request. With ``enforce=True`` and
+    user held in that pool *before* this request. With ``enforce=True`` and
     ``active >= limit`` nothing is inserted and ``lease_id`` is None. In
     monitor mode (``enforce=False``) the lease is always taken, so the count
     — and the WARNING the caller logs — reflects the user's real peak rather
@@ -96,6 +107,7 @@ def acquire(user_id: int, limit: int, endpoint: str, *, enforce: bool) -> tuple[
             select(func.count())
             .select_from(ConcurrencyLease)
             .where(ConcurrencyLease.user_id == user_id)
+            .where(ConcurrencyLease.pool == pool)
             .where(ConcurrencyLease.expires_at > now)
         ).one())
         if enforce and active >= limit:
@@ -106,6 +118,7 @@ def acquire(user_id: int, limit: int, endpoint: str, *, enforce: bool) -> tuple[
             user_id=user_id,
             worker_id=worker_id(),
             endpoint=endpoint[:200],
+            pool=pool,
             created_at=now,
             expires_at=now + LEASE_TTL,
         ))
@@ -207,19 +220,25 @@ async def lease_heartbeat_loop(interval: float = HEARTBEAT_INTERVAL) -> None:
 
 def in_flight_summary() -> dict[str, int]:
     """Live leases right now, for the admin card: total, distinct users,
-    and the busiest user's count. Blocking."""
+    and per pool the lease count and the busiest user's count (the number
+    to hold against that pool's limit). ``peak_user`` is the local pool's.
+    Blocking."""
     now = _utcnow()
     with Session(engine) as session:
         rows = session.exec(
-            select(ConcurrencyLease.user_id, func.count())
+            select(ConcurrencyLease.user_id, ConcurrencyLease.pool, func.count())
             .where(ConcurrencyLease.expires_at > now)
-            .group_by(ConcurrencyLease.user_id)
+            .group_by(ConcurrencyLease.user_id, ConcurrencyLease.pool)
         ).all()
-    counts = [int(c) for _, c in rows]
+    local = [int(c) for _, pool, c in rows if pool != POOL_CLOUD]
+    cloud = [int(c) for _, pool, c in rows if pool == POOL_CLOUD]
     return {
-        "total": sum(counts),
-        "users": len(counts),
-        "peak_user": max(counts, default=0),
+        "total": sum(local) + sum(cloud),
+        "users": len({uid for uid, _, _ in rows}),
+        "peak_user": max(local, default=0),
+        "local": sum(local),
+        "cloud": sum(cloud),
+        "peak_cloud_user": max(cloud, default=0),
     }
 
 

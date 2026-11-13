@@ -487,11 +487,19 @@ class TestLangfuseFields:
         assert build_guardrail_scores(g) == [
             {"name": "guardrail", "value": "unsafe", "data_type": "CATEGORICAL"},
             {"name": "guardrail_action", "value": "flag", "data_type": "CATEGORICAL"},
+            {"name": "guardrail_category", "value": "Violent", "data_type": "CATEGORICAL"},
         ]
         md = guardrail_metadata(g)
         assert md["guardrail_status"] == "unsafe" and md["guardrail_categories"] == ["Violent"]
         assert "guardrail_detail" not in md
         assert build_guardrail_scores(None) == [] and guardrail_metadata(None) == {}
+
+    def test_one_category_score_per_category_and_none_when_safe(self):
+        from app.services.observability import build_guardrail_scores
+        def cats(g): return [s["value"] for s in build_guardrail_scores(g) if s["name"] == "guardrail_category"]
+        assert cats({"status": "unsafe", "action": "flag", "categories": ["Violent", "PII"]}) == ["Violent", "PII"]
+        assert cats({"status": "safe", "action": "pass", "categories": []}) == []
+        assert cats({"status": "error", "action": "pass"}) == []
 
     def test_generation_carries_the_verdict(self):
         from app.services.observability import GenerationRecord, record_generation
@@ -507,6 +515,9 @@ class TestLangfuseFields:
              patch("langfuse.propagate_attributes", create=True) as prop:
             record_generation(rec)
         assert "guardrail:controversial" in prop.call_args.kwargs["tags"]
+        assert "guardrail_category:PII" in prop.call_args.kwargs["tags"]
+        assert [c.kwargs["value"] for c in gen.score.call_args_list
+                if c.kwargs["name"] == "guardrail_category"] == ["PII"]
         md = client.start_observation.call_args.kwargs["metadata"]
         assert md["guardrail_status"] == "controversial"
         names = {c.kwargs["name"]: c.kwargs["value"] for c in gen.score.call_args_list}

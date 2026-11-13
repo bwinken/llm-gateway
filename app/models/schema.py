@@ -159,6 +159,9 @@ class ConcurrencyLease(SQLModel, table=True):
     PostgreSQL session TimeZone can never shift them between write and
     compare. No foreign key on ``user_id``: rows are short-lived and the
     user delete path removes them explicitly.
+
+    ``pool`` is which limit the request counts against: ``local`` (vLLM) or
+    ``cloud`` (Azure / Bedrock). An account's two counts are independent.
     """
     __tablename__ = "concurrency_leases"
     __table_args__ = (
@@ -169,6 +172,7 @@ class ConcurrencyLease(SQLModel, table=True):
     user_id: int = Field()
     worker_id: str = Field(index=True)      # "<hostname>:<pid>:<boot token>"
     endpoint: str = Field(default="")
+    pool: str = Field(default="local", sa_column=sa.Column(sa.String, nullable=False, server_default="local"))
     created_at: NaiveDatetime = Field()
     expires_at: NaiveDatetime = Field()
 

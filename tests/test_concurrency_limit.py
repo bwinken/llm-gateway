@@ -4,6 +4,8 @@ What is pinned here:
   - which endpoints are limited (chat / responses / messages on all three
     surfaces) and which are not (count_tokens etc.);
   - the three modes, the admin / waived exemptions, fail-open on DB trouble;
+  - local and cloud requests are counted apart, each against its own limit,
+    and a request's pool is the backend that will serve it (TestPools);
   - the lease is held for the WHOLE response — mid-stream it is still there,
     after the last byte it is gone. That relies on FastAPI running a yield
     dependency's exit after the response is sent; if a FastAPI upgrade ever
@@ -20,6 +22,8 @@ from __future__ import annotations
 
 import os
 import threading
+from contextlib import contextmanager
+from decimal import Decimal
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -29,7 +33,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.core import deps
-from app.models.schema import ConcurrencyLease, User
+from app.models.schema import ConcurrencyLease, UsageLog, User
 from app.services import concurrency
 from tests.conftest import (
     FakeStreamResponse,
@@ -58,8 +62,11 @@ _SSE = [
 ]
 
 
-def _mode(mode: str, limit: int = 1):
-    return patch("app.core.deps.get_concurrency_settings", return_value=(mode, limit))
+@contextmanager
+def _mode(mode: str, limit: int = 1, cloud_limit: int = 10):
+    with patch("app.core.deps.get_concurrency_settings", return_value=(mode, limit)), \
+         patch("app.core.deps.get_concurrency_cloud_limit", return_value=cloud_limit):
+        yield
 
 
 def _leases(user_id: int | None = None) -> list[ConcurrencyLease]:
@@ -70,7 +77,9 @@ def _leases(user_id: int | None = None) -> list[ConcurrencyLease]:
         return list(s.exec(stmt).all())
 
 
-def _add_lease(user_id: int, *, worker: str | None = None, expires_in: float = 120.0) -> str:
+def _add_lease(
+    user_id: int, *, worker: str | None = None, expires_in: float = 120.0, pool: str = "local",
+) -> str:
     now = concurrency._utcnow()
     lease_id = f"pre-{len(_leases())}-{user_id}"
     with Session(_test_engine) as s:
@@ -79,6 +88,7 @@ def _add_lease(user_id: int, *, worker: str | None = None, expires_in: float = 1
             user_id=user_id,
             worker_id=worker or concurrency.worker_id(),
             endpoint="/v1/messages",
+            pool=pool,
             created_at=now,
             expires_at=now + timedelta(seconds=expires_in),
         ))
@@ -204,8 +214,11 @@ class TestCoverage:
         ("/aws/v1/messages", {**_MESSAGES, "model": "bedrock-claude"}),
     ])
     def test_limited(self, client, test_user, path, body):
+        # One lease in each pool, both limits 1: whichever pool the route
+        # counts in is full.
         _add_lease(test_user.id)
-        with _mode("enforce", 1):
+        _add_lease(test_user.id, pool="cloud")
+        with _mode("enforce", 1, cloud_limit=1):
             resp = client.post(path, json=body, headers=auth_header())
         assert resp.status_code == 429, resp.text
 
@@ -219,7 +232,8 @@ class TestCoverage:
     def test_not_limited(self, client, test_user, path, body):
         client.__httpx_mock__.post.return_value = make_httpx_response(200, {"tokens": [1], "count": 1, "data": []})
         _add_lease(test_user.id)
-        with _mode("enforce", 1):
+        _add_lease(test_user.id, pool="cloud")
+        with _mode("enforce", 1, cloud_limit=1):
             resp = client.post(path, json=body, headers=auth_header())
         assert resp.status_code != 429, resp.text
 
@@ -227,6 +241,138 @@ class TestCoverage:
         _add_lease(test_user.id)
         with _mode("enforce", 1):
             assert client.get("/v1/models", headers=auth_header()).status_code == 200
+
+
+class TestPools:
+    """Local and cloud requests are counted apart. The pool is decided before
+    the handler runs, so it must agree with where the handler sends the
+    request: a cloud request counted as local would be throttled for
+    nothing, a local one counted as cloud would get the wide limit on the
+    shared GPUs."""
+
+    @staticmethod
+    def _downstream(client, user_id):
+        """Record, at the moment the downstream is called, which pool this
+        request's lease is in and which backend is being called."""
+        seen: dict = {}
+
+        async def fake_post(url, **kwargs):
+            seen["pools"] = [lease.pool for lease in _leases(user_id)]
+            seen["backend"] = (
+                "azure" if "openai.azure.com" in url
+                else "bedrock" if "amazonaws.com" in url
+                else "vllm"
+            )
+            return make_httpx_response(200, _OK_CHAT)
+
+        return patch.object(client.__httpx_mock__, "post", side_effect=fake_post), seen
+
+    @pytest.mark.parametrize("path, body, backend, pool", [
+        ("/v1/chat/completions", _CHAT, "vllm", "local"),
+        ("/v1/chat/completions", {**_CHAT, "model": "azure-gpt-4"}, "azure", "cloud"),
+        ("/v1/chat/completions", {**_CHAT, "model": "bedrock-claude"}, "bedrock", "cloud"),
+        ("/v1/messages", _MESSAGES, "vllm", "local"),
+        ("/v1/messages", {**_MESSAGES, "model": "azure-gpt-4"}, "azure", "cloud"),
+        ("/v1/messages", {**_MESSAGES, "model": "bedrock-claude"}, "bedrock", "cloud"),
+        ("/v1/responses", {"model": "test-llm", "input": "Hi"}, "vllm", "local"),
+        ("/v1/responses", {"model": "azure-gpt-4", "input": "Hi"}, "azure", "cloud"),
+        # /v1/responses has no Bedrock dispatch: the alias is served on-prem
+        ("/v1/responses", {"model": "bedrock-claude", "input": "Hi"}, "vllm", "local"),
+        ("/v1/chat/completions", {**_CHAT, "model": "no-such-model"}, "vllm", "local"),
+        ("/azure/v1/chat/completions", {**_CHAT, "model": "azure-gpt-4"}, "azure", "cloud"),
+        ("/azure/v1/messages", {**_MESSAGES, "model": "azure-gpt-4"}, "azure", "cloud"),
+        ("/aws/v1/chat/completions", {**_CHAT, "model": "bedrock-claude"}, "bedrock", "cloud"),
+        ("/aws/v1/messages", {**_MESSAGES, "model": "bedrock-claude"}, "bedrock", "cloud"),
+    ])
+    def test_the_pool_is_the_backend_that_serves(self, client, test_user, path, body, backend, pool):
+        mock, seen = self._downstream(client, test_user.id)
+        with _mode("enforce", 5), mock:
+            client.post(path, json=body, headers=auth_header())
+        assert seen == {"pools": [pool], "backend": backend}
+        assert _leases(test_user.id) == []
+
+    def test_a_cloud_alias_without_access_counts_as_local(self, client, db_session, test_user):
+        test_user.can_use_azure = False
+        db_session.add(test_user)
+        db_session.commit()
+        mock, seen = self._downstream(client, test_user.id)
+        with _mode("enforce", 5), mock:
+            client.post("/v1/chat/completions", json={**_CHAT, "model": "azure-gpt-4"}, headers=auth_header())
+        assert seen == {"pools": ["local"], "backend": "vllm"}
+
+    def test_cloud_is_not_held_to_the_local_limit(self, client, test_user):
+        _add_lease(test_user.id)  # local is full
+        mock, seen = self._downstream(client, test_user.id)
+        with _mode("enforce", 1), mock:
+            cloud = client.post("/v1/chat/completions", json={**_CHAT, "model": "azure-gpt-4"}, headers=auth_header())
+            local = client.post("/v1/chat/completions", json=_CHAT, headers=auth_header())
+        assert cloud.status_code != 429 and seen["backend"] == "azure"
+        assert local.status_code == 429
+
+    def test_cloud_has_its_own_limit(self, client, test_user):
+        for _ in range(3):
+            _add_lease(test_user.id, pool="cloud")
+        mock, seen = self._downstream(client, test_user.id)
+        with _mode("enforce", 1, cloud_limit=3), mock:
+            cloud = client.post("/v1/messages", json={**_MESSAGES, "model": "bedrock-claude"}, headers=auth_header())
+            # a full cloud pool does not take local slots
+            local = client.post("/v1/chat/completions", json=_CHAT, headers=auth_header())
+        assert cloud.status_code == 429
+        assert "concurrent cloud requests: 3 already in flight (limit 3)" in cloud.json()["detail"]
+        assert local.status_code == 200 and seen["backend"] == "vllm"
+
+    def test_the_default_cloud_limit_is_ten(self, client, test_user):
+        for _ in range(9):
+            _add_lease(test_user.id, pool="cloud")
+        mock, _ = self._downstream(client, test_user.id)
+        body = {**_CHAT, "model": "azure-gpt-4"}
+        with patch("app.core.deps.get_concurrency_settings", return_value=("enforce", 2)), mock:
+            assert client.post("/v1/chat/completions", json=body, headers=auth_header()).status_code != 429
+            _add_lease(test_user.id, pool="cloud")
+            assert client.post("/v1/chat/completions", json=body, headers=auth_header()).status_code == 429
+
+    def test_a_budget_fallback_to_onprem_counts_as_local(self, client, db_session, test_user):
+        """Cloud cap spent + cloud_budget_fallback: the cloud alias is served
+        by vLLM, so it must not get the wider cloud limit."""
+        db_session.add(UsageLog(
+            user_id=test_user.id, model="azure-gpt-4", model_type="llm", input_tokens=0,
+            output_tokens=0, cost_usd=Decimal("10.00"), endpoint="/v1/chat/completions", backend="azure",
+        ))
+        db_session.commit()
+        body = {**_CHAT, "model": "azure-gpt-4"}
+        cfg = {"cloud_budget_fallback": True, "cloud_daily_limit_usd": 10.0}
+        mock, seen = self._downstream(client, test_user.id)
+        with patch.dict("app.core.config.APP_CONFIG", cfg), _mode("enforce", 1), mock:
+            served = client.post("/v1/chat/completions", json=body, headers=auth_header())
+            assert seen == {"pools": ["local"], "backend": "vllm"}
+            _add_lease(test_user.id)  # local now full
+            refused = client.post("/v1/chat/completions", json=body, headers=auth_header())
+        assert served.status_code == 200 and "X-Budget-Fallback" in served.headers
+        assert refused.status_code == 429
+
+    def test_monitor_logs_the_pool(self, client, test_user):
+        _add_lease(test_user.id, pool="cloud")
+        mock, _ = self._downstream(client, test_user.id)
+        with _mode("monitor", 5, cloud_limit=1), mock, patch("app.core.deps.logger") as log:
+            client.post("/azure/v1/chat/completions", json={**_CHAT, "model": "azure-gpt-4"}, headers=auth_header())
+        msg, *args = log.warning.call_args.args
+        assert args[0] == "exceeded (monitor)" and args[-1] == "cloud" and args[3] == 1
+
+    def test_a_resolver_that_raises_fails_open(self, test_user):
+        """Working out the pool is part of the limiter: its failure serves
+        the request unlimited, like a broken lease store."""
+        _add_lease(test_user.id)
+
+        async def bad() -> str:
+            raise RuntimeError("boom")
+
+        async def run() -> str:
+            async with deps._concurrency_slot(test_user, "/v1/messages", bad):
+                return "served"
+
+        with _mode("enforce", 1):
+            assert anyio.run(run) == "served"
+        assert len(_leases(test_user.id)) == 1
 
 
 class TestLeaseSpansTheResponse:
@@ -414,7 +560,22 @@ class TestStore:
         _add_lease(test_user.id)
         _add_lease(admin_user.id)
         _add_lease(admin_user.id, expires_in=-1)
-        assert concurrency.in_flight_summary() == {"total": 3, "users": 2, "peak_user": 2}
+        _add_lease(admin_user.id, pool="cloud")
+        _add_lease(admin_user.id, pool="cloud")
+        _add_lease(admin_user.id, pool="cloud")
+        assert concurrency.in_flight_summary() == {
+            "total": 6, "users": 2, "peak_user": 2,
+            "local": 3, "cloud": 3, "peak_cloud_user": 3,
+        }
+
+    def test_each_pool_has_its_own_count(self, db_session, test_user):
+        assert concurrency.acquire(test_user.id, 1, "/v1/x", enforce=True)[0] is not None
+        # local is full; cloud is not, and the other way round
+        assert concurrency.acquire(test_user.id, 1, "/v1/x", enforce=True) == (None, 1)
+        lease, active = concurrency.acquire(test_user.id, 1, "/v1/x", enforce=True, pool="cloud")
+        assert lease is not None and active == 0
+        assert concurrency.acquire(test_user.id, 1, "/v1/x", enforce=True, pool="cloud") == (None, 1)
+        assert sorted(lease.pool for lease in _leases(test_user.id)) == ["cloud", "local"]
 
 
 # ── Settings ──────────────────────────────────────────────────────────────
@@ -449,6 +610,37 @@ class TestSettings:
             config.set_concurrency_settings("monitor", 4)
         save.assert_called_once_with({"concurrency_limit_mode": "monitor", "concurrency_limit": 4})
 
+    @pytest.mark.parametrize("app_cfg, expected", [
+        ({}, 10),
+        ({"concurrency_cloud_limit": 25}, 25),
+        ({"concurrency_cloud_limit": "6"}, 6),
+        ({"concurrency_cloud_limit": 0}, 10),
+        ({"concurrency_cloud_limit": "x"}, 10),
+        ({"concurrency_cloud_limit": True}, 10),
+        # the local limit never stands in for it
+        ({"concurrency_limit": 2}, 10),
+    ])
+    def test_get_cloud_limit(self, app_cfg, expected):
+        from app.core import config
+        with patch.object(config, "APP_CONFIG", app_cfg), patch.object(config, "_check_auto_reload"):
+            assert config.get_concurrency_cloud_limit() == expected
+
+    def test_set_persists_the_cloud_limit_when_given(self):
+        from app.core import config
+        with patch.object(config, "_save_app_keys") as save:
+            config.set_concurrency_settings("enforce", 2, cloud_limit=12)
+        save.assert_called_once_with({
+            "concurrency_limit_mode": "enforce", "concurrency_limit": 2, "concurrency_cloud_limit": 12,
+        })
+
+    @pytest.mark.parametrize("cloud_limit", [0, -1, True, "4"])
+    def test_set_rejects_a_bad_cloud_limit(self, cloud_limit):
+        from app.core import config
+        with patch.object(config, "_save_app_keys") as save:
+            with pytest.raises(ValueError):
+                config.set_concurrency_settings("enforce", 2, cloud_limit=cloud_limit)
+        save.assert_not_called()
+
 
 # ── Admin ─────────────────────────────────────────────────────────────────
 
@@ -476,7 +668,28 @@ class TestAdmin:
                 "/admin/concurrency-limit", data={"mode": "monitor", "limit": "6"},
                 headers=self._hdr(admin_user, json=True),
             )
-        assert resp.json() == {"ok": True, "mode": "monitor", "limit": 6}
+        # no cloud_limit sent: the stored one (default 10) stays and is echoed
+        assert resp.json() == {"ok": True, "mode": "monitor", "limit": 6, "cloud_limit": 10}
+
+    def test_set_cloud_limit(self, client, admin_user):
+        with patch("app.routers.admin.set_concurrency_settings") as save:
+            resp = client.post(
+                "/admin/concurrency-limit", data={"mode": "enforce", "limit": "2", "cloud_limit": "12"},
+                headers=self._hdr(admin_user, json=True),
+            )
+        assert resp.json() == {"ok": True, "mode": "enforce", "limit": 2, "cloud_limit": 12}
+        save.assert_called_once_with("enforce", 2, cloud_limit=12)
+
+    @pytest.mark.parametrize("cloud_limit", ["0", "-3", "2.5", "many"])
+    def test_set_cloud_limit_rejects(self, client, admin_user, cloud_limit):
+        with patch("app.routers.admin.set_concurrency_settings") as save:
+            resp = client.post(
+                "/admin/concurrency-limit",
+                data={"mode": "enforce", "limit": "2", "cloud_limit": cloud_limit},
+                headers=self._hdr(admin_user),
+            )
+        assert resp.status_code == 400
+        save.assert_not_called()
 
     @pytest.mark.parametrize("form", [
         {"mode": "enforce", "limit": "0"},
@@ -549,6 +762,7 @@ class TestAdmin:
         assert "Concurrency Limit" in resp.text
         assert 'value="monitor" selected' in resp.text
         assert 'name="limit" value="6"' in resp.text
+        assert 'name="cloud_limit" value="10"' in resp.text
         assert f"/admin/users/{test_user.id}/toggle-concurrency-waive" in resp.text
 
     def test_admin_page_survives_store_failure(self, client, admin_user):

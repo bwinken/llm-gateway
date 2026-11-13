@@ -1002,7 +1002,12 @@ def set_client_monthly_mail(enabled: bool) -> None:
 CONCURRENCY_MODES: tuple[str, ...] = ("off", "monitor", "enforce")
 _CONCURRENCY_MODE_KEY = "concurrency_limit_mode"
 _CONCURRENCY_LIMIT_KEY = "concurrency_limit"
+_CONCURRENCY_CLOUD_LIMIT_KEY = "concurrency_cloud_limit"
 DEFAULT_CONCURRENCY_LIMIT = 8
+# Cloud (Azure / Bedrock) requests are counted apart from local ones and get
+# a wider limit: the local limit protects shared GPUs, a cloud backend has
+# no such contention.
+DEFAULT_CONCURRENCY_CLOUD_LIMIT = 10
 
 
 def get_concurrency_settings() -> tuple[str, int]:
@@ -1027,8 +1032,25 @@ def get_concurrency_settings() -> tuple[str, int]:
     return mode, limit
 
 
-def set_concurrency_settings(mode: str, limit: int) -> None:
-    """Persist ``[app].concurrency_limit_mode`` / ``concurrency_limit``.
+def get_concurrency_cloud_limit() -> int:
+    """The per-user limit for in-flight **cloud** (Azure / Bedrock) requests,
+    ``[app].concurrency_cloud_limit``. The mode is shared with the local
+    limit (``get_concurrency_settings``). Missing or invalid → 10.
+    """
+    _check_auto_reload()
+    raw = APP_CONFIG.get(_CONCURRENCY_CLOUD_LIMIT_KEY, DEFAULT_CONCURRENCY_CLOUD_LIMIT)
+    try:
+        limit = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_CONCURRENCY_CLOUD_LIMIT
+    if isinstance(raw, bool) or limit < 1:
+        return DEFAULT_CONCURRENCY_CLOUD_LIMIT
+    return limit
+
+
+def set_concurrency_settings(mode: str, limit: int, cloud_limit: int | None = None) -> None:
+    """Persist ``[app].concurrency_limit_mode`` / ``concurrency_limit`` and,
+    when given, ``concurrency_cloud_limit`` (None leaves it as it is).
 
     Callers validate first; this re-checks so a bad value can never reach
     config.toml through some other path.
@@ -1037,7 +1059,12 @@ def set_concurrency_settings(mode: str, limit: int) -> None:
         raise ValueError(f"concurrency mode must be one of {CONCURRENCY_MODES}, got {mode!r}")
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError(f"concurrency limit must be an integer >= 1, got {limit!r}")
-    _save_app_keys({_CONCURRENCY_MODE_KEY: mode, _CONCURRENCY_LIMIT_KEY: limit})
+    keys: dict[str, Any] = {_CONCURRENCY_MODE_KEY: mode, _CONCURRENCY_LIMIT_KEY: limit}
+    if cloud_limit is not None:
+        if isinstance(cloud_limit, bool) or not isinstance(cloud_limit, int) or cloud_limit < 1:
+            raise ValueError(f"cloud concurrency limit must be an integer >= 1, got {cloud_limit!r}")
+        keys[_CONCURRENCY_CLOUD_LIMIT_KEY] = cloud_limit
+    _save_app_keys(keys)
 
 
 # API IP allowlist (admin panel → "IP Allowlist" card; rules live in the

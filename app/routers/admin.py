@@ -38,6 +38,7 @@ from app.core.config import (
     get_client_monthly_mail,
     get_cloud_budget_fallback,
     get_cloud_daily_limit,
+    get_concurrency_cloud_limit,
     get_concurrency_settings,
     get_config_data,
     get_azure_models_snapshot,
@@ -548,6 +549,7 @@ def admin_page(
             "system_status": system_status,
             "concurrency_mode": concurrency_mode,
             "concurrency_limit": concurrency_limit,
+            "concurrency_cloud_limit": get_concurrency_cloud_limit(),
             "concurrency_modes": CONCURRENCY_MODES,
             "concurrency_in_flight": concurrency_in_flight,
             "site_links": get_site_links(),
@@ -840,11 +842,13 @@ async def update_concurrency_limit(
     admin_user: User = Security(get_web_user, scopes=["admin"]),
 ):
     """Set the per-user concurrency limit (``[app].concurrency_limit_mode`` /
-    ``concurrency_limit``).
+    ``concurrency_limit`` / ``concurrency_cloud_limit``).
 
     Form fields: ``mode`` — ``off`` / ``monitor`` / ``enforce``; ``limit`` — an
     integer >= 1 (required in every mode, so switching back on later doesn't
-    silently come up with a stale or missing number). "Unlimited" is
+    silently come up with a stale or missing number), for local requests;
+    ``cloud_limit`` — the same for Azure / Bedrock requests, counted apart
+    (optional: left out, the stored value stays). "Unlimited" is
     ``mode=off``, never a magic limit value. Takes effect on the next request
     in every worker (config auto-reload); nothing in flight is interrupted.
     """
@@ -865,12 +869,27 @@ async def update_concurrency_limit(
             status_code=400,
             detail="limit must be at least 1 (use mode 'off' for no limit).",
         )
-    set_concurrency_settings(mode, limit)
+    raw_cloud = str(form.get("cloud_limit") or "").strip()
+    if raw_cloud:
+        try:
+            cloud_limit = int(raw_cloud)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="cloud_limit must be a whole number.")
+        if cloud_limit < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="cloud_limit must be at least 1 (use mode 'off' for no limit).",
+            )
+        set_concurrency_settings(mode, limit, cloud_limit=cloud_limit)
+    else:
+        cloud_limit = get_concurrency_cloud_limit()
+        set_concurrency_settings(mode, limit)
     logger.info(
-        "Concurrency limit set | mode={} limit={} admin={}", mode, limit, admin_user.username,
+        "Concurrency limit set | mode={} limit={} cloud_limit={} admin={}",
+        mode, limit, cloud_limit, admin_user.username,
     )
     if _wants_json(request):
-        return JSONResponse({"ok": True, "mode": mode, "limit": limit})
+        return JSONResponse({"ok": True, "mode": mode, "limit": limit, "cloud_limit": cloud_limit})
     return RedirectResponse(url="/admin", status_code=303)
 
 
