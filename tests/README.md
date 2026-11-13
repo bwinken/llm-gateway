@@ -447,7 +447,7 @@ flag granting nothing. `TestOverBudget` pins that it still answers once the budg
 and `x-api-key`; `TestConcurrency` the reported concurrency mode. Every
 response is checked for `null`s (`_no_nulls`).
 
-### `test_status_usage.py` — `GET /v1/status`, `/v1/usage`, `/v1/service-accounts` (and `/v1/apps`), `/v1/notices`, `/v1/settings`
+### `test_status_usage.py` — `GET /v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices`, `/v1/settings`
 
 What the dashboard shows an account, by API key. `TestAuth`: each needs a
 key, refuses a disabled account, answers once the budget is spent and
@@ -626,6 +626,7 @@ Service accounts can have human owners. Tests cover:
 | `TestNaming` | The form keeps the name as typed (no `app_` prefix), refuses malformed and taken names; the API makes a service account only when `is_service_account` is true, whatever the name (an `app_` name without it is a person's account), and the field must be a boolean; the listing shows it |
 | `TestNoSignIn` | An SSO token whose `sub` is a service account is refused on the dashboard and gets no key from `POST /auth/api-key`; the account's own key works; a person named `app_...` still signs in |
 | `TestTreatedAsOne` | A service account without the prefix sits in the admin's Service accounts table, is not counted as a person, is on the service leaderboard and is never mailed |
+| `TestOwners` | The owner search matches username, display name or department as the admin types (prefix first, people only, 8 at most, admins only); an account is created with several owners; an owner must be an existing person or nothing is created; reassigning replaces the owners and a refused name changes nothing; a person's account is never assigned (form, `PATCH`, `POST`); the JSON API checks `owner_ids` the same way; the table renders the owner picker with who it is assigned to |
 | `TestDashboardTab` | No tab without a service account; owners get a tab of its own with one card per account in natural order; this month's usage per model in the one model order with each model's share; last month's left out; "No usage this month"; each account's own figures; the same figures as `/v1/service-accounts`; the owner regenerates its key, others get 403 |
 
 ### `test_disable_user.py` — User disable + Azure access flags

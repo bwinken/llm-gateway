@@ -617,6 +617,85 @@ def _service_account_name(raw: object) -> str:
     return name
 
 
+OWNER_SEARCH_LIMIT = 8
+
+
+def _owner_names(raw: object) -> list[str]:
+    """Comma-separated usernames as typed, in order, without repeats."""
+    return list(dict.fromkeys(name.strip() for name in str(raw or "").split(",") if name.strip()))
+
+
+def _owners(session: Session, names: list[str]) -> list[User]:
+    """The accounts behind ``names``, checked as owners of a service
+    account: each must exist and be a person. A service account cannot own
+    one (it has no dashboard to see it on). 400 naming what is wrong."""
+    if not names:
+        return []
+    found = {u.username: u for u in session.exec(select(User).where(User.username.in_(names))).all()}  # type: ignore[attr-defined]
+    unknown = [name for name in names if name not in found]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"User(s) not found: {', '.join(unknown)}")
+    service = [name for name in names if found[name].is_service_account]
+    if service:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only a person can own a service account; {', '.join(service)} "
+                   f"{'is a service account' if len(service) == 1 else 'are service accounts'}.",
+        )
+    return [found[name] for name in names]
+
+
+def _owners_by_id(session: Session, raw: object) -> list[User]:
+    """``owner_ids`` of the JSON API, checked like ``_owners``."""
+    if raw in (None, []):
+        return []
+    if not isinstance(raw, list) or not all(isinstance(oid, int) and not isinstance(oid, bool) for oid in raw):
+        raise HTTPException(status_code=400, detail="owner_ids must be a list of user ids.")
+    ids = list(dict.fromkeys(raw))
+    found = {u.id: u for u in session.exec(select(User).where(User.id.in_(ids))).all()}  # type: ignore[attr-defined]
+    unknown = [str(oid) for oid in ids if oid not in found]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"User id(s) not found: {', '.join(unknown)}")
+    return _owners(session, [found[oid].username for oid in ids])
+
+
+def _service_account_or_400(target: User) -> None:
+    """Owners see the account's API key on their dashboard, so only an
+    account made for a program may be given any: never a person's."""
+    if not target.is_service_account:
+        raise HTTPException(status_code=400, detail="Only a service account has owners.")
+
+
+@router.get("/api/owner-search")
+def search_owners(
+    q: str = Query("", max_length=100),
+    session: Session = Depends(get_session),
+):
+    """Who can be made an owner, as an admin types: the people (never a
+    service account) whose username, display name or org code contains
+    ``q``, names starting with it first, ``OWNER_SEARCH_LIMIT`` at most.
+    Nothing for an empty ``q``. Plain ``def`` (database read)."""
+    q = q.strip()
+    if not q:
+        return {"users": []}
+    like = f"%{q}%"
+    rows = session.exec(
+        select(User.username, User.display_name, User.org_code, User.is_disabled)
+        .where(
+            ~service_account_clause(),
+            User.username.ilike(like)  # type: ignore[attr-defined]
+            | User.display_name.ilike(like)  # type: ignore[union-attr]
+            | User.org_code.ilike(like),  # type: ignore[union-attr]
+        )
+        .order_by(case((User.username.ilike(f"{q}%"), 0), else_=1), User.username)  # type: ignore[attr-defined]
+        .limit(OWNER_SEARCH_LIMIT)
+    ).all()
+    return {"users": [
+        {"username": username, "display_name": display_name or "", "org_code": org_code or "", "disabled": bool(disabled)}
+        for username, display_name, org_code, disabled in rows
+    ]}
+
+
 @router.post("/users/create")
 async def create_app_account_web(
     request: Request,
@@ -624,16 +703,19 @@ async def create_app_account_web(
 ):
     """Create a service account (web UI form): an account for a program,
     used by API key only. The name is taken as given (the ``app_`` prefix
-    older accounts carry is no longer added or needed)."""
+    older accounts carry is no longer added or needed). ``owner_usernames``
+    (comma-separated; ``owner_username`` is the older single field) are the
+    people it is assigned to: each must be an existing person, checked
+    before anything is created."""
 
     form = await request.form()
     username = _service_account_name(form.get("username"))
     daily_limit = form.get("daily_limit_usd")
-    owner_username = (form.get("owner_username") or "").strip()
 
     existing = session.exec(select(User).where(User.username == username)).first()
     if existing:
         raise HTTPException(status_code=409, detail=f"User '{username}' already exists.")
+    owners = _owners(session, _owner_names(f"{form.get('owner_usernames') or ''},{form.get('owner_username') or ''}"))
 
     # Service accounts start waived from the concurrency limit.
     user = User(username=username, is_service_account=True, concurrency_waived=True)
@@ -643,14 +725,12 @@ async def create_app_account_web(
     session.commit()
     session.refresh(user)
 
-    # Add owner via AppOwner table
-    if owner_username:
-        owner = session.exec(select(User).where(User.username == owner_username)).first()
-        if not owner:
-            raise HTTPException(status_code=400, detail=f"Owner '{owner_username}' not found.")
+    for owner in owners:
         session.add(AppOwner(app_id=user.id, owner_id=owner.id))
-        session.commit()
+    session.commit()
 
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "username": user.username, "owners": [o.username for o in owners]})
     return RedirectResponse(url="/admin", status_code=303)
 
 
@@ -660,36 +740,24 @@ async def update_user_owner(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """Replace a service account's owners (comma-separated usernames)."""
+    """Replace a service account's owners (comma-separated usernames): the
+    people who see it on their dashboard. Each must be an existing person;
+    with any name refused, nothing changes."""
 
     target = session.exec(select(User).where(User.id == user_id)).first()
     if not target:
         raise HTTPException(status_code=404, detail="User not found.")
+    _service_account_or_400(target)
 
     form = await request.form()
-    raw = (form.get("owner_usernames") or "").strip()
+    owners = _owners(session, _owner_names(form.get("owner_usernames")))
 
-    # Remove all existing owners for this app
     session.execute(delete(AppOwner).where(AppOwner.app_id == user_id))
-
-    # Add new owners
-    if raw:
-        not_found = []
-        for name in [n.strip() for n in raw.split(",") if n.strip()]:
-            owner = session.exec(select(User).where(User.username == name)).first()
-            if not owner:
-                not_found.append(name)
-            else:
-                session.add(AppOwner(app_id=user_id, owner_id=owner.id))
-        if not_found:
-            raise HTTPException(
-                status_code=400,
-                detail=f"User(s) not found: {', '.join(not_found)}",
-            )
-
+    for owner in owners:
+        session.add(AppOwner(app_id=user_id, owner_id=owner.id))
     session.commit()
 
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "owners": [o.username for o in owners]})
 
 
 @router.post("/users/{user_id}/limit")
@@ -1873,6 +1941,11 @@ def create_user_api(
     )
     if is_service:
         _service_account_name(username)
+    # Owners are people, and only a service account has any: checked before
+    # the account is created.
+    owners = _owners_by_id(session, body.get("owner_ids"))
+    if owners and not is_service:
+        raise HTTPException(status_code=400, detail="Only a service account has owners.")
     # Service accounts start waived from the concurrency limit; an explicit
     # "concurrency_waived" in the body (handled below) still wins.
     new_user = User(username=username, is_service_account=is_service, concurrency_waived=is_service)
@@ -1889,14 +1962,10 @@ def create_user_api(
     session.commit()
     session.refresh(new_user)
 
-    # Add owners via AppOwner table
-    owner_ids = body.get("owner_ids", [])
-    if isinstance(owner_ids, list):
-        for oid in owner_ids:
-            owner = session.exec(select(User).where(User.id == int(oid))).first()
-            if owner:
-                session.add(AppOwner(app_id=new_user.id, owner_id=owner.id))
-        session.commit()
+    for owner in owners:
+        session.add(AppOwner(app_id=new_user.id, owner_id=owner.id))
+    session.commit()
+    owner_ids = [owner.id for owner in owners]
 
     return {
         "ok": True,
@@ -1939,11 +2008,12 @@ def update_user_api(
     if "concurrency_waived" in body:
         target.concurrency_waived = _strict_bool(body["concurrency_waived"], "concurrency_waived")
     if "owner_ids" in body:
+        owners = _owners_by_id(session, body["owner_ids"])
+        if owners:
+            _service_account_or_400(target)
         session.execute(delete(AppOwner).where(AppOwner.app_id == user_id))
-        for oid in (body["owner_ids"] or []):
-            owner = session.exec(select(User).where(User.id == int(oid))).first()
-            if owner:
-                session.add(AppOwner(app_id=user_id, owner_id=owner.id))
+        for owner in owners:
+            session.add(AppOwner(app_id=user_id, owner_id=owner.id))
 
     session.add(target)
     session.commit()

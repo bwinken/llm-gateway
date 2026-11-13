@@ -57,11 +57,14 @@
     </td>
     {% if is_apps %}
     <td class="whitespace-nowrap">
-        <form action="/admin/users/{{ u.id }}/owner" method="POST" data-action="owner" class="flex items-center gap-1">
-            <input type="text" name="owner_usernames" value="{{ u.owners|join(', ') }}" placeholder="user1, user2"
-                   aria-label="Owners of {{ u.username }}"
-                   class="gw-input w-40 text-sm font-mono py-1 px-2" title="Comma-separated usernames">
-            <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Set</button>
+        {# Owner picker (admin.html: data-owner-picker). A change is saved at once. #}
+        <form action="/admin/users/{{ u.id }}/owner" method="POST" data-action="owner">
+            <div class="op" data-owner-picker data-saved="{{ u.owners|join(',') }}">
+                <span class="op-chips">{% for o in u.owners %}<span class="op-chip" data-name="{{ o }}">{{ o }}<button type="button" class="op-x" aria-label="Remove {{ o }}">&times;</button></span>{% endfor %}</span>
+                <input type="text" class="op-input" placeholder="{{ 'Add a person…' if u.owners else 'Assign a person…' }}" autocomplete="off" spellcheck="false"
+                       role="combobox" aria-expanded="false" aria-autocomplete="list" aria-label="Add an owner of {{ u.username }}">
+                <input type="hidden" name="owner_usernames" value="{{ u.owners|join(',') }}">
+            </div>
         </form>
     </td>
     {% endif %}

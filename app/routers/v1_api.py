@@ -591,19 +591,6 @@ def owned_service_accounts(user: User = Depends(get_current_user_unmetered)):
     }
 
 
-@router.get("/v1/apps")
-def owned_apps(user: User = Depends(get_current_user_unmetered)):
-    """``/v1/service-accounts`` under its first name, from when service
-    accounts were called app accounts: the same accounts and figures under
-    ``apps``. Kept for clients built against it; new ones read
-    ``/v1/service-accounts``. Plain ``def`` (database read)."""
-    return {
-        "object": "apps",
-        "month": local_month_start().strftime("%Y-%m"),
-        "apps": _owned_service_account_rows(user),
-    }
-
-
 def _patch(env: dict[str, str | None]) -> dict:
     """A settings patch as data: the variables to set in the ``env`` block
     of Claude Code's settings.json and the ones to take out of it."""

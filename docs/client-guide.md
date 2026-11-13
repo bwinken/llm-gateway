@@ -227,7 +227,6 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
 ```
 
 - A service account is an account for a program (a batch job, a service) that an administrator assigned to you. They used to be called app accounts: older ones are named `app_...`, newer ones anything.
-- `GET /v1/apps` is this endpoint's older name. It still answers, with the same accounts under `"object": "apps"` and the key `apps`; new clients read `/v1/service-accounts`.
 - `service_accounts` lists the ones you own (empty when you own none), each with its own daily limit and its usage this month: the dashboard's *Service accounts* tab.
 - `month.models` is that month by model: one row per model and backend, in the dashboard's order, adding up to the month's totals. Every backend the service account used is listed, whatever your own access.
 - A service account's API key is not included, and no endpoint returns a key. See or regenerate it on the dashboard's *Service accounts* tab.

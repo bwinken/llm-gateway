@@ -101,7 +101,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | **Default Daily Limit** | Settings | `POST /admin/default-limit` — 寫入 `[app].default_daily_limit_usd`，並批次將 `0 < daily_limit_usd < new_floor` 的使用者拉高到新 floor（`daily_limit_usd = 0` 的使用者是刻意設成 $0，不會被改動） |
 | **Cloud Daily Limit** | Settings | `POST /admin/cloud-limit` — 每位使用者每日 Azure + AWS 合計費用的預設上限（`[app].cloud_daily_limit_usd`），套用於有雲端權限且沒有自訂 *Cloud $* 的使用者。留空 = 無預設上限；0 = 拒絕雲端 |
 | **Cloud Budget Fallback** | Settings | 勾選框 → `POST /admin/cloud-budget-fallback`。開啟時，超過雲端上限的 `/v1/*` 雲端請求改由地端模型服務，而非回 429（整體每日上限仍然有效；`/azure/v1/*` 與 `/aws/v1/*` 永不 fallback） |
-| **Create Service Account** | Users | Name（照輸入的使用，不加前綴）、Daily Limit、Owner → `POST /admin/users/create`。服務帳號建立時即免除並行上限 |
+| **Create Service Account** | Users | Name（照輸入的使用，不加前綴）、Daily Limit、Owners（owner 選擇器：輸入即搜尋，從符合的既有使用者中挑選）→ `POST /admin/users/create`，原地處理（錯誤以 toast 顯示，新的一列載入表格）。服務帳號建立時即免除並行上限 |
 | **Site Links** | Settings | Support Bot URL（每頁右下角的浮動按鈕）與 Install Guide URL（`/setup` 上的卡片）→ `POST /admin/site-links`。只接受 `http(s)://` 或站內相對路徑；留空則隱藏 |
 | **Client rules** | Clients | 內建檢查（`client_checks.py`，CC001…）的設定與違規名單、Claude Code 版本分布、*Mail everyone* 與 *Test the combined mail*（所有開啟中的規則列在同一封信、附一份合併 patch）、寄信紀錄（每一封嘗試寄出的信：收件地址、規則、原因、成功或失敗；可篩選、搜尋、分頁）、淘汰中／已退役規則；見 `docs/architecture.md` 的 Client rules。 |
 | **IP Allowlist** | Security | API IP 白名單的模式與規則；見 `docs/architecture.md`。 |

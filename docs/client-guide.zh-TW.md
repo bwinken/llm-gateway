@@ -227,7 +227,6 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
 ```
 
 - 服務帳號是給程式用的帳號（批次工作、服務），由管理員指派給你。它以前叫 app 帳號：舊的帳號名稱是 `app_...`，新的可以是任何名稱。
-- `GET /v1/apps` 是這個端點的舊名稱，仍然可用，內容相同，只是放在 `"object": "apps"` 和 `apps` 欄位下；新的 client 請讀 `/v1/service-accounts`。
 - `service_accounts` 列出你名下的服務帳號（沒有的話是空陣列），各自有自己的每日上限和本月用量：就是 dashboard 的 *Service accounts* 分頁。
 - `month.models` 是當月依模型拆開的用量：每個模型和後端一列，順序和 dashboard 相同，加總等於當月合計。服務帳號用過的後端都會列出，和你自己的權限無關。
 - 不包含服務帳號的 API key，任何端點都不會回傳 key。要查看或重新產生，請到 dashboard 的 *Service accounts* 分頁。

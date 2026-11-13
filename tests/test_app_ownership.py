@@ -29,6 +29,7 @@ def owned_app(db_session: Session, owner_user: User) -> User:
     """An app account owned by owner_user via AppOwner table."""
     app = User(
         username="app_my_service",
+        is_service_account=True,
         api_key="sk-appkey-owned",
         daily_limit_usd=50.0,
     )
@@ -46,6 +47,7 @@ def unowned_app(db_session: Session) -> User:
     """An app account with no owner."""
     app = User(
         username="app_no_owner",
+        is_service_account=True,
         api_key="sk-appkey-noowner",
         daily_limit_usd=50.0,
     )

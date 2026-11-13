@@ -193,7 +193,7 @@ class TestRows:
         db_session.add(AppOwner(app_id=bot.id, owner_id=other_owner.id))
         db_session.commit()
         body = _panel(client, admin_user, kind="apps")
-        assert 'value="carol, testuser"' in body
+        assert 'name="owner_usernames" value="carol,testuser"' in body
         assert body.count('name="owner_usernames" value=""') == 1  # app_other
 
     def test_controls_are_in_place_actions(self, client, db_session, admin_user, test_user):

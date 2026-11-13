@@ -1,7 +1,7 @@
 """The dashboard's figures by API key, for clients such as a terminal tool:
 ``GET /v1/status`` (the models an account can use and whether they are up),
 ``GET /v1/usage`` (its usage per day, today and this month by model),
-``GET /v1/apps`` (the app accounts it owns), ``GET /v1/notices`` (its
+``GET /v1/service-accounts`` (the service accounts it owns), ``GET /v1/notices`` (its
 client-rule notices) and ``GET /v1/settings`` (the client settings it can be
 asked about, each with a default and its options)."""
 
@@ -49,7 +49,7 @@ def _no_nulls(value) -> bool:
     return value is not None
 
 
-PATHS = ["/v1/status", "/v1/usage", "/v1/service-accounts", "/v1/apps", "/v1/notices", "/v1/settings"]
+PATHS = ["/v1/status", "/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/settings"]
 
 
 class TestAuth:
@@ -288,15 +288,15 @@ class TestApps:
         return app
 
     def _apps(self, client, headers=None):
-        resp = client.get("/v1/apps", headers=headers or auth_header())
+        resp = client.get("/v1/service-accounts", headers=headers or auth_header())
         assert resp.status_code == 200, resp.text
         assert _no_nulls(resp.json()), resp.text
         return resp
 
     def test_none(self, client, test_user):
         body = self._apps(client).json()
-        assert body["object"] == "apps"
-        assert body["apps"] == []
+        assert body["object"] == "service_accounts"
+        assert body["service_accounts"] == []
 
     def test_owned_apps_with_this_months_usage(self, client, db_session, test_user):
         batch = self._app(db_session, test_user, "app_batch10")
@@ -305,7 +305,7 @@ class TestApps:
         _spend(db_session, batch, "2")
         body = self._apps(client).json()
         assert body["month"] == datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m")
-        assert body["apps"] == [
+        assert body["service_accounts"] == [
             {"username": "app_batch2", "daily_limit_usd": 0.0, "legacy_key": True,
              "month": {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "models": []}},
             {"username": "app_batch10", "daily_limit_usd": 50.0, "legacy_key": True,
@@ -325,7 +325,7 @@ class TestApps:
         _spend(db_session, etl, "0.5")
         last_month = (datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)).replace(tzinfo=None)
         _spend(db_session, etl, "9", created_at=last_month)
-        (app,) = self._apps(client).json()["apps"]
+        (app,) = self._apps(client).json()["service_accounts"]
         assert app["username"] == "billing-etl"
         # The dashboard's order: backends in turn, each by type then catalog order.
         assert [(m["model"], m["backend"], m["requests"], m["cost_usd"]) for m in app["month"]["models"]] == [
@@ -341,22 +341,14 @@ class TestApps:
         etl = self._app(db_session, test_user, "billing-etl", is_service_account=True)
         _spend(db_session, etl, "2", backend="azure", model="azure-gpt-4")
         _update(db_session, test_user, can_use_azure=False, can_use_bedrock=False)
-        (app,) = self._apps(client).json()["apps"]
+        (app,) = self._apps(client).json()["service_accounts"]
         assert [m["backend"] for m in app["month"]["models"]] == ["azure"]
 
-    def test_service_accounts_is_the_route_and_apps_its_older_name(self, client, db_session, test_user):
-        etl = self._app(db_session, test_user, "billing-etl", is_service_account=True)
-        _spend(db_session, etl, "2", backend="azure", model="azure-gpt-4")
-        resp = client.get("/v1/service-accounts", headers=auth_header())
-        assert resp.status_code == 200 and _no_nulls(resp.json())
-        body = resp.json()
-        assert body["object"] == "service_accounts" and set(body) == {"object", "month", "service_accounts"}
-        (account,) = body["service_accounts"]
-        assert account["username"] == "billing-etl" and account["month"]["models"][0]["model"] == "azure-gpt-4"
-        # The older route gives the same accounts and figures, under "apps".
-        old = self._apps(client).json()
-        assert old["object"] == "apps" and old["apps"] == body["service_accounts"] and old["month"] == body["month"]
-        assert "sk-billing-etl-secret" not in resp.text
+    def test_the_older_route_is_gone(self, client, test_user):
+        # /v1/apps was this endpoint's first name; nothing answers there now.
+        assert client.get("/v1/apps", headers=auth_header()).status_code == 404
+        body = self._apps(client).json()
+        assert set(body) == {"object", "month", "service_accounts"}
         for method in ("post", "put", "delete"):
             assert getattr(client, method)("/v1/service-accounts", headers=auth_header()).status_code == 405
 
@@ -369,8 +361,8 @@ class TestApps:
 
     def test_only_the_callers_own(self, client, db_session, test_user, admin_user):
         self._app(db_session, admin_user, "app_theirs")
-        assert self._apps(client).json()["apps"] == []
-        theirs = self._apps(client, headers=auth_header(admin_user.api_key)).json()["apps"]
+        assert self._apps(client).json()["service_accounts"] == []
+        theirs = self._apps(client, headers=auth_header(admin_user.api_key)).json()["service_accounts"]
         assert [a["username"] for a in theirs] == ["app_theirs"]
 
     def test_runs_off_the_event_loop(self):
@@ -378,7 +370,7 @@ class TestApps:
 
         from app.routers import v1_api
 
-        assert not inspect.iscoroutinefunction(v1_api.owned_apps)
+        assert not inspect.iscoroutinefunction(v1_api.owned_service_accounts)
         assert not inspect.iscoroutinefunction(v1_api.client_notices)
 
 

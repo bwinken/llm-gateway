@@ -246,7 +246,7 @@ class TestDashboardTab:
     def test_same_figures_as_the_api(self, client, db_session, test_user):
         etl = _service(db_session, "billing-etl", test_user)
         _spend(db_session, etl, "1.25", model="test-vlm", model_type="vlm")
-        (app,) = client.get("/v1/apps", headers=auth_header()).json()["apps"]
+        (app,) = client.get("/v1/service-accounts", headers=auth_header()).json()["service_accounts"]
         card = self._card(self._page(client, test_user), "billing-etl")
         for row in app["month"]["models"]:
             assert row["model"] in card and f"${row['cost_usd']:.4f}" in card
@@ -258,3 +258,125 @@ class TestDashboardTab:
         resp = client.post(f"/dashboard/app/{etl.id}/refresh-key", headers=web_auth_header(sub=test_user.username))
         assert resp.status_code == 200
         assert resp.json()["api_key"] == _get(db_session, "billing-etl").api_key != "sk-billing-etl-key"
+
+
+class TestOwners:
+    """Who a service account is assigned to: existing people, found as the
+    admin types, and nobody else."""
+
+    def _people(self, db_session: Session) -> None:
+        for username, display_name, org in (
+            ("alice", "Alice Wu", "ENG"), ("malice", "Mal Ice", "OPS"), ("bob", "Bob Lin", "ENG"),
+            ("carol", "Alicia Keys", "SALES"),
+        ):
+            db_session.add(User(username=username, display_name=display_name, org_code=org, api_key=f"sk-{username}"))
+        db_session.commit()
+
+    def _search(self, client, admin_user, q: str) -> list[dict]:
+        resp = client.get("/admin/api/owner-search", params={"q": q}, headers=_admin(admin_user))
+        assert resp.status_code == 200, resp.text
+        return resp.json()["users"]
+
+    def test_matching_as_the_admin_types(self, client, db_session, admin_user):
+        self._people(db_session)
+        found = self._search(client, admin_user, "ali")
+        # Username, display name or department; names that start with it first.
+        assert [u["username"] for u in found] == ["alice", "carol", "malice"]
+        assert found[0] == {"username": "alice", "display_name": "Alice Wu", "org_code": "ENG", "disabled": False}
+        assert [u["username"] for u in self._search(client, admin_user, "ENG")] == ["alice", "bob"]
+        assert self._search(client, admin_user, "ALICE")[0]["username"] == "alice"  # case does not matter
+        assert self._search(client, admin_user, "nobody-like-this") == []
+        assert self._search(client, admin_user, "   ") == []
+
+    def test_only_people_are_offered(self, client, db_session, admin_user):
+        self._people(db_session)
+        _service(db_session, "alice-etl")
+        assert [u["username"] for u in self._search(client, admin_user, "alice")] == ["alice", "malice"]
+
+    def test_a_handful_at_most(self, client, db_session, admin_user):
+        from app.routers import admin
+
+        for i in range(admin.OWNER_SEARCH_LIMIT + 5):
+            db_session.add(User(username=f"team{i:02d}", api_key=f"sk-team{i}"))
+        db_session.commit()
+        assert len(self._search(client, admin_user, "team")) == admin.OWNER_SEARCH_LIMIT
+
+    def test_the_search_is_the_admins(self, client, test_user):
+        resp = client.get("/admin/api/owner-search", params={"q": "a"}, headers=web_auth_header(sub=test_user.username))
+        assert resp.status_code == 403
+
+    def test_created_with_several_owners(self, client, db_session, admin_user):
+        self._people(db_session)
+        resp = client.post(
+            "/admin/users/create", data={"username": "billing-etl", "owner_usernames": "alice, bob,alice"},
+            headers={**_admin(admin_user), "Accept": "application/json"},
+        )
+        assert resp.status_code == 200 and resp.json() == {"ok": True, "username": "billing-etl", "owners": ["alice", "bob"]}
+        account = _get(db_session, "billing-etl")
+        owners = db_session.exec(select(AppOwner).where(AppOwner.app_id == account.id)).all()
+        assert sorted(o.owner_id for o in owners) == sorted([_get(db_session, "alice").id, _get(db_session, "bob").id])
+
+    @pytest.mark.parametrize("owners, message", [
+        ("alice, ghost", "not found: ghost"),
+        ("alice, other-service", "Only a person can own a service account"),
+    ])
+    def test_an_owner_must_be_an_existing_person(self, client, db_session, admin_user, owners, message):
+        self._people(db_session)
+        _service(db_session, "other-service")
+        resp = client.post("/admin/users/create", data={"username": "billing-etl", "owner_usernames": owners},
+                           headers=_admin(admin_user), follow_redirects=False)
+        assert resp.status_code == 400 and message in resp.json()["detail"]
+        assert _get(db_session, "billing-etl") is None  # nothing is created half-way
+
+    def test_reassigning_replaces_the_owners(self, client, db_session, admin_user):
+        self._people(db_session)
+        etl = _service(db_session, "billing-etl", _get(db_session, "alice"))
+        resp = client.post(f"/admin/users/{etl.id}/owner", data={"owner_usernames": "bob,carol"}, headers=_admin(admin_user))
+        assert resp.status_code == 200 and resp.json() == {"ok": True, "owners": ["bob", "carol"]}
+        assert client.post(f"/admin/users/{etl.id}/owner", data={"owner_usernames": ""},
+                           headers=_admin(admin_user)).json() == {"ok": True, "owners": []}
+        assert db_session.exec(select(AppOwner).where(AppOwner.app_id == etl.id)).all() == []
+
+    def test_a_refused_name_changes_nothing(self, client, db_session, admin_user):
+        self._people(db_session)
+        alice = _get(db_session, "alice")
+        etl = _service(db_session, "billing-etl", alice)
+        _service(db_session, "other-service")
+        for names in ("bob, ghost", "bob, other-service"):
+            resp = client.post(f"/admin/users/{etl.id}/owner", data={"owner_usernames": names}, headers=_admin(admin_user))
+            assert resp.status_code == 400
+        db_session.expire_all()
+        assert [o.owner_id for o in db_session.exec(select(AppOwner).where(AppOwner.app_id == etl.id)).all()] == [alice.id]
+
+    def test_a_persons_account_is_never_assigned(self, client, db_session, admin_user, test_user):
+        # An owner sees the account's key on their dashboard.
+        self._people(db_session)
+        alice = _get(db_session, "alice")
+        resp = client.post(f"/admin/users/{test_user.id}/owner", data={"owner_usernames": "alice"}, headers=_admin(admin_user))
+        assert resp.status_code == 400 and "Only a service account has owners" in resp.json()["detail"]
+        resp = client.patch(f"/admin/users/{test_user.id}", json={"owner_ids": [alice.id]}, headers=_admin(admin_user))
+        assert resp.status_code == 400
+        resp = client.post("/admin/users", json={"username": "newhire", "owner_ids": [alice.id]}, headers=_admin(admin_user))
+        assert resp.status_code == 400 and _get(db_session, "newhire") is None
+        assert db_session.exec(select(AppOwner)).all() == []
+
+    def test_the_json_api_checks_owners_too(self, client, db_session, admin_user):
+        self._people(db_session)
+        alice = _get(db_session, "alice")
+        other = _service(db_session, "other-service")
+        for owner_ids in ([999999], [other.id], "alice", [True]):
+            resp = client.post("/admin/users", json={"username": "x-etl", "is_service_account": True, "owner_ids": owner_ids},
+                               headers=_admin(admin_user))
+            assert resp.status_code == 400, owner_ids
+            assert _get(db_session, "x-etl") is None
+        resp = client.post("/admin/users", json={"username": "x-etl", "is_service_account": True, "owner_ids": [alice.id]},
+                           headers=_admin(admin_user))
+        assert resp.status_code == 200 and resp.json()["owner_ids"] == [alice.id]
+
+    def test_the_table_shows_who_it_is_assigned_to(self, client, db_session, admin_user):
+        self._people(db_session)
+        _service(db_session, "billing-etl", _get(db_session, "alice"), _get(db_session, "bob"))
+        body = client.get("/admin/user-table", params={"kind": "apps"}, headers=_admin(admin_user)).text
+        assert 'data-owner-picker data-saved="alice,bob"' in body
+        assert 'data-name="alice"' in body and 'data-name="bob"' in body
+        assert 'name="owner_usernames" value="alice,bob"' in body

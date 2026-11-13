@@ -54,7 +54,7 @@ graph LR
 | `GET` | `/v1/me`、`/me` | 呼叫者的權限(地端 / Azure / AWS)與各後端今日額度。驗證時不做每日額度 429，額度用完也能查 | 直接回傳 | — |
 | `GET` | `/v1/status` | 呼叫者看得到的模型與 `state`(地端 `up` / `down`,雲端 `unchecked`)、負載、計費價格(`model_catalog.visible_models`)。驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
 | `GET` | `/v1/usage` | 呼叫者每個本地日的用量(`?days=`,1 到 90,預設 7)以及今天、本月各模型用量,經 `usage_rollup.aggregate` 讀取。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `GET` | `/v1/service-accounts` | 呼叫者名下的服務帳號、每日上限與本月用量(合計與各模型)(`stats.get_owned_apps_summary`),不含 key。`GET /v1/apps` 是舊名稱,仍然可用,同樣的資料放在 `apps` 欄位下。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
+| `GET` | `/v1/service-accounts` | 呼叫者名下的服務帳號、每日上限與本月用量(合計與各模型)(`stats.get_owned_apps_summary`),不含 key。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
 | `GET` | `/v1/notices` | 呼叫者尚未處理的 client 通知,以及以 `{set, unset}` 表示的 patch(`client_rules.notices_for` / `combined_for`)。唯讀;驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
 | `GET` | `/v1/settings` | 工具幫呼叫者設定 client 時可以提供的設定:每個變數的說明、`default` 與 `options`,依 tier(帳號的雲端權限)而不同,來自 admin 的 `client_settings.json`(`client_settings.fields_for`)。唯讀;驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
 | `POST` | `/v1/chat/completions`、`/chat/completions` | Chat 對話生成 | `vllm_forward_chat_completions`(vLLM) / `azure_forward_chat_completions`(Azure) / `bedrock_forward_chat_completions`(Bedrock) | `llm`, `vlm` |
@@ -217,8 +217,9 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | 方法 | 路徑 | 說明 |
 |---|---|---|
 | `GET` | `/admin` | Admin 首頁：用量彙總、DAU 趨勢、部門用量、排行榜、使用者管理。支援分頁（`?limit=15&offset=0&app_limit=15&app_offset=0`）與伺服器端搜尋（`?q=keyword`，對 username/display_name/org_code 做 ILIKE） |
-| `POST` | `/admin/users/create` | 建立服務帳號（表單 `username`、`daily_limit_usd`、`owner_username`）。名稱照輸入的使用（不再加 `app_` 前綴）；只能是字母、數字、`.` `_` `-`，且以字母或數字開頭，否則回 400。建立時即豁免並行上限 |
-| `POST` | `/admin/users/{id}/owner` | 替換服務帳號的 owner（表單 `owner_usernames`，逗號分隔；有不存在的名稱回 400）。回傳 JSON |
+| `POST` | `/admin/users/create` | 建立服務帳號（表單 `username`、`daily_limit_usd`、`owner_usernames` 以逗號分隔）。名稱照輸入的使用（不再加 `app_` 前綴）；只能是字母、數字、`.` `_` `-`，且以字母或數字開頭，否則回 400。每個 owner 都必須是已存在的使用者（否則回 400，不會建立任何東西）。建立時即豁免並行上限。帶 `Accept: application/json` 時回 JSON |
+| `GET` | `/admin/api/owner-search?q=` | 給 owner 選擇器用：username、顯示名稱或部門代碼包含 `q` 的使用者（不含服務帳號），最多 8 筆，開頭相符的排前面 |
+| `POST` | `/admin/users/{id}/owner` | 取代服務帳號的 owner（表單 `owner_usernames`，逗號分隔）。名稱不存在、owner 是服務帳號，或目標是一般使用者的帳號時回 400 且不做任何變更。回傳 `{ok, owners}` |
 | `POST` | `/admin/users/{id}/limit` | 修改使用者每日限額（表單 `new_limit`） |
 | `POST` | `/admin/users/{id}/cloud-limit` | 設定使用者自己的雲端上限（表單 `new_cloud_limit`；空白則清除、改依預設值，`0` 為 $0 上限） |
 | `POST` | `/admin/users/{id}/delete` | 先清掉所有參照該使用者的資料（app owner、舊版 `owner_id`、anomaly event、並行租約）再刪除使用者。usage log 與每日彙總保留（計費／稽核紀錄），並在 log 記下 id 對應的帳號。不可刪除自己 |
