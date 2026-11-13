@@ -10,7 +10,9 @@ Where each figure comes from:
 
 * Tokens, requests, cost, active accounts: the gateway's own usage record,
   through ``usage_rollup.aggregate``. These are complete and match the
-  admin page.
+  admin page. Cost is an estimate: tokens at the prices in the model
+  configuration (what budgets are charged with), not a cloud invoice, and
+  for local models a notional price.
 * Latency (p50 / p95), time to first token and error rate: Langfuse
   (``langfuse_reader``). ``usage_logs`` holds neither a duration nor a
   failed request.
@@ -56,6 +58,7 @@ ERROR_RATE_ALERT = 0.05      # a model failing this share of its requests ...
 ALERT_MIN_REQUESTS = 50      # ... or slowing down, with at least this many requests
 P95_WORSE_RATIO = 1.5        # p95 at least this many times last week's
 PANEL_MODELS = 9             # latency panels per backend (the busiest models)
+COST_WEEKS = 8               # weeks on the cost trend, this one last
 TABLE_MODELS = 40            # table rows per backend
 
 # ── Guardrail report ──
@@ -152,6 +155,10 @@ def _ms_tick(value: float) -> str:
     if value < 1000:
         return f"{value:.0f}ms"
     return f"{value / 1000:.1f}".rstrip("0").rstrip(".") + "s"
+
+
+def _usd_tick(value: float) -> str:
+    return "$" + (report_charts.compact(value) if value >= 1000 else f"{value:.0f}" if value >= 10 else f"{value:.2f}".rstrip("0").rstrip("."))
 
 
 def _pct_tick(value: float) -> str:
@@ -313,8 +320,11 @@ def _backend_order(names) -> list[str]:
 
 
 def usage_figures(session: Session, period: Period) -> dict[str, Any]:
-    """The week's usage from the gateway's own record."""
-    by_day = aggregate(session, period.start, period.end, ("day", "backend"))
+    """The week's usage from the gateway's own record, and the cost of the
+    ``COST_WEEKS`` weeks ending with it."""
+    first = period.start - timedelta(days=7 * (COST_WEEKS - 1))
+    span = aggregate(session, first, period.end, ("day", "backend"))
+    by_day = {key: row for key, row in span.items() if key[0] >= period.start}
     by_model = aggregate(session, period.start, period.end, ("backend", "model", "model_type"))
     before = aggregate(session, period.previous.start, period.previous.end, ("backend",))
     accounts = len(aggregate(session, period.start, period.end, ("user_id",)))
@@ -324,7 +334,12 @@ def usage_figures(session: Session, period: Period) -> dict[str, Any]:
 
     totals: dict[str, dict[str, Any]] = {}
     daily: dict[str, list[float]] = {}
+    cost_daily: dict[str, list[float]] = {}
+    cost_weeks: dict[str, list[float]] = {}
+    for (day, backend), row in span.items():
+        cost_weeks.setdefault(backend, [0.0] * COST_WEEKS)[(day - first).days // 7] += float(row["cost_usd"])
     for (day, backend), row in by_day.items():
+        cost_daily.setdefault(backend, [0.0] * 7)[(day - period.start).days] += float(row["cost_usd"])
         total = totals.setdefault(backend, {"requests": 0, "input_tokens": 0, "output_tokens": 0, "tokens": 0, "cost": 0.0})
         total["requests"] += int(row["requests"])
         total["input_tokens"] += int(row["input_tokens"])
@@ -346,6 +361,8 @@ def usage_figures(session: Session, period: Period) -> dict[str, Any]:
     return {
         "backends": _backend_order(set(totals) | set(previous)), "totals": totals, "daily": daily,
         "models": models, "previous": previous, "accounts": accounts,
+        "cost_daily": cost_daily, "cost_weeks": cost_weeks,
+        "cost_week_starts": [first + timedelta(days=7 * i) for i in range(COST_WEEKS)],
     }
 
 
@@ -468,6 +485,8 @@ def render_usage(period: Period, usage: dict[str, Any], observed: dict[str, Any]
     all_cost = sum(t["cost"] for t in totals.values())
     before_tokens = sum(p["tokens"] for p in previous.values())
     before_requests = sum(p["requests"] for p in previous.values())
+    cost_weeks: dict[str, list[float]] = usage.get("cost_weeks") or {}
+    before_cost = sum(weeks[-2] for weeks in cost_weeks.values() if len(weeks) > 1)
 
     week = (observed or {}).get("week") or {}
     last = (observed or {}).get("previous") or {}
@@ -479,7 +498,7 @@ def render_usage(period: Period, usage: dict[str, Any], observed: dict[str, Any]
     parts.append(_tiles([
         ("Tokens", report_charts.compact(all_tokens), _delta(all_tokens, before_tokens) + " vs last week"),
         ("Requests", report_charts.compact(all_requests), _delta(all_requests, before_requests) + " vs last week"),
-        ("Cost", _usd(all_cost), ""),
+        ("Est. cost", _usd(all_cost), _delta(all_cost, before_cost) + " vs last week"),
         ("Error rate", _pct(overall) if observed is not None else "–",
          (_delta(overall, overall_before, worse="up") + " vs last week") if observed is not None else "no Langfuse data"),
         ("Active accounts", _int(usage["accounts"]), ""),
@@ -523,16 +542,16 @@ def render_usage(period: Period, usage: dict[str, Any], observed: dict[str, Any]
                 _swatch(color) + _esc(BACKEND_LABELS.get(backend, backend)),
                 _int(total["requests"]), _int(total["input_tokens"]), _int(total["output_tokens"]),
                 f"<b>{_int(total['tokens'])}</b>", f"{_bar(share, color)}&nbsp;{_pct(share)}",
-                _delta(total["tokens"], (previous.get(backend) or {}).get("tokens", 0)), _usd(total["cost"]),
+                _delta(total["tokens"], (previous.get(backend) or {}).get("tokens", 0)),
             ])
         rows.append([
             "<b>Total</b>", _int(all_requests), _int(sum(t["input_tokens"] for t in totals.values())),
             _int(sum(t["output_tokens"] for t in totals.values())), f"<b>{_int(all_tokens)}</b>", "",
-            _delta(all_tokens, before_tokens), _usd(all_cost),
+            _delta(all_tokens, before_tokens),
         ])
         parts.append(_table(
             [("Backend", "left"), ("Requests", "right"), ("Input tokens", "right"), ("Output tokens", "right"),
-             ("Total tokens", "right"), ("Share", "left"), ("vs last week", "right"), ("Cost", "right")],
+             ("Total tokens", "right"), ("Share", "left"), ("vs last week", "right")],
             rows,
         ))
         series = [
@@ -547,7 +566,7 @@ def render_usage(period: Period, usage: dict[str, Any], observed: dict[str, Any]
         parts.append(_note("Tokens per model (input + output), in the order the model lists use."))
         parts.append(_table(
             [("Model", "left"), ("Backend", "left"), ("Requests", "right"), ("Input", "right"), ("Output", "right"),
-             ("Total", "right"), ("Share", "right"), ("Cost", "right")],
+             ("Total", "right"), ("Share", "right"), ("Est. cost", "right")],
             [
                 [_esc(m["model"]), _esc(BACKEND_LABELS.get(m["backend"], m["backend"])), _int(m["requests"]),
                  _int(m["input_tokens"]), _int(m["output_tokens"]), _int(m["tokens"]),
@@ -556,7 +575,59 @@ def render_usage(period: Period, usage: dict[str, Any], observed: dict[str, Any]
             ],
         ))
 
-    # 2. Latency and 3. error rate, both from Langfuse.
+    # 2. Estimated cost: this week per day, and the trend over the last weeks.
+    parts.append(_heading("Estimated cost"))
+    cost_backends = _backend_order({b for b, weeks in cost_weeks.items() if any(weeks)})
+    if not cost_backends:
+        parts.append(f'<p style="font-size:13px;color:{_INK2}">No cost was recorded in the last {COST_WEEKS} weeks.</p>')
+    else:
+        parts.append(_note(
+            "Tokens at the prices set in the model configuration, the figure budgets are charged with: an estimate, "
+            "not a cloud invoice, and for local models a notional price."
+        ))
+        rows = []
+        for backend in cost_backends:
+            weeks = cost_weeks[backend]
+            color = report_charts.BACKEND_COLORS.get(backend, _MUTED)
+            share = _share(weeks[-1], all_cost)
+            rows.append([
+                _swatch(color) + _esc(BACKEND_LABELS.get(backend, backend)), f"<b>{_usd(weeks[-1])}</b>",
+                f"{_bar(share, color)}&nbsp;{_pct(share)}", _usd(weeks[-2]), _delta(weeks[-1], weeks[-2]),
+                _usd(sum(weeks) / len(weeks)),
+            ])
+        total_weeks = [sum(cost_weeks[b][i] for b in cost_backends) for i in range(COST_WEEKS)]
+        rows.append([
+            "<b>Total</b>", f"<b>{_usd(total_weeks[-1])}</b>", "", _usd(total_weeks[-2]),
+            _delta(total_weeks[-1], total_weeks[-2]), _usd(sum(total_weeks) / len(total_weeks)),
+        ])
+        parts.append(_table(
+            [("Backend", "left"), ("This week", "right"), ("Share", "left"), ("Last week", "right"),
+             ("Change", "right"), (f"{COST_WEEKS}-week average", "right")],
+            rows,
+        ))
+        if all_cost:
+            daily_series = [
+                (BACKEND_LABELS.get(b, b), report_charts.BACKEND_COLORS.get(b, _MUTED), usage["cost_daily"].get(b, [0.0] * 7))
+                for b in cost_backends
+            ]
+            parts.append(_note("This week, per day (the figure on each column is the day's total)."))
+            parts.append(_chart(
+                images, problems, "cost_by_day", "Estimated cost per day, stacked by backend",
+                lambda: report_charts.stacked_columns(labels, daily_series, _usd_tick),
+            ))
+        week_labels = [f"{start.month}/{start.day}" for start in usage["cost_week_starts"]]
+        trend = [
+            (BACKEND_LABELS.get(b, b), report_charts.BACKEND_COLORS.get(b, _MUTED), cost_weeks[b]) for b in cost_backends
+        ]
+        # The total is the sum of the others, not one more backend: neutral ink.
+        trend.append(("Total", report_charts.INK_SECONDARY, total_weeks))
+        parts.append(_note(f"Per week over the last {COST_WEEKS} weeks (each point is a Monday-to-Sunday week, named by its Monday)."))
+        parts.append(_chart(
+            images, problems, "cost_trend", f"Estimated cost per week over the last {COST_WEEKS} weeks, by backend and in total",
+            lambda: report_charts.lines(week_labels, trend, _usd_tick),
+        ))
+
+    # 3. Latency and 4. error rate, both from Langfuse.
     parts.append(_heading("Latency (p50 / p95) by model"))
     if observed is None:
         parts.append(_unavailable("Latency and error rate", error or "no data"))
@@ -647,8 +718,8 @@ def render_usage(period: Period, usage: dict[str, Any], observed: dict[str, Any]
         ))
 
     notes = [
-        "Tokens, requests and cost come from the gateway's usage record and are complete. Latency and error rate "
-        "come from Langfuse, where a request is dated by the moment it finished.",
+        "Tokens, requests and estimated cost come from the gateway's usage record and are complete. Latency and "
+        "error rate come from Langfuse, where a request is dated by the moment it finished.",
     ]
     sampling = _sampling_note() if observed is not None else None
     if sampling:

@@ -56,6 +56,19 @@ def is_configured() -> bool:
     )
 
 
+def monitoring() -> dict[str, Any]:
+    """Whether the gateway is recording to Langfuse at all: ``{"on", "reason"}``.
+    On means the three settings are present and ``LANGFUSE_SAMPLE_RATE`` is
+    above 0 (at 0 nothing is recorded, so there is nothing to report). The
+    weekly reports can only be turned on, and are only sent, while it is."""
+    missing = [name for name in ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY") if not os.getenv(name)]
+    if missing:
+        return {"on": False, "reason": f"Langfuse is not configured ({', '.join(missing)} in .env)."}
+    if sample_rate() <= 0.0:
+        return {"on": False, "reason": "LANGFUSE_SAMPLE_RATE is 0: nothing is being recorded in Langfuse."}
+    return {"on": True, "reason": ""}
+
+
 def host() -> str:
     return os.getenv("LANGFUSE_HOST", "").strip().rstrip("/")
 

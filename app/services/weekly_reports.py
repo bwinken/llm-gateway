@@ -23,6 +23,14 @@ sends it. So:
   passed does not mail at once: the first automatic mail is next week's,
   and *Send now* is there for the one wanted today.
 
+Both reports are built on what Langfuse recorded, so they depend on Langfuse
+monitoring being on (``langfuse_reader.monitoring``): a report cannot be
+turned on while it is off (``save_schedule`` refuses, and the card disables
+the switch), and nothing is sent while it is off, by the job or by hand. A
+report that is due then stays due, and goes out once monitoring is back, the
+same week. The preview is the one thing that still works, to see what is
+wrong.
+
 A report is one mail to all its recipients, so there is no burst to pace.
 Recipients are mailboxes of the company domain only, like test mail: the
 gateway cannot be made to mail usage figures or account names elsewhere.
@@ -64,8 +72,6 @@ class Report:
     title: str
     summary: str
     build: Callable[[Session, Period], Rendered]
-    # Nothing to say without Langfuse: the job skips it instead of mailing an empty report.
-    needs_langfuse: bool = False
 
 
 REPORTS: dict[str, Report] = {
@@ -73,8 +79,8 @@ REPORTS: dict[str, Report] = {
         name="usage",
         title="Usage report",
         summary=(
-            "Last week's tokens by backend (local / Azure / AWS) with a chart per day, p50 and p95 latency "
-            "per model as line charts, and the error rate."
+            "Last week's tokens by backend (local / Azure / AWS), the estimated cost per day and its trend over "
+            "8 weeks, p50 and p95 latency per model as line charts, and the error rate."
         ),
         build=report_content.usage_report,
     ),
@@ -86,7 +92,6 @@ REPORTS: dict[str, Report] = {
             "and the accounts worth a look."
         ),
         build=report_content.guardrail_report,
-        needs_langfuse=True,
     ),
 }
 
@@ -162,15 +167,20 @@ def save_schedule(
     session: Session, name: str, *, enabled: bool, weekday: int, send_time: str, recipients: list[str],
     updated_by: str = "", now: datetime | None = None,
 ) -> ReportSchedule:
-    """Store a report's schedule. An enabled report needs a recipient. When
-    this week's time has already passed and the week has not been reported,
-    the week is marked as skipped, so saving never mails by itself."""
+    """Store a report's schedule. An enabled report needs a recipient, and
+    a report can only be turned on while Langfuse monitoring is on (one that
+    is already on can still be edited, or turned off). When this week's time
+    has already passed and the week has not been reported, the week is
+    marked as skipped, so saving never mails by itself."""
     if name not in REPORTS:
         raise ValueError("Unknown report.")
     if enabled and not recipients:
         raise ValueError("Add at least one recipient before turning the report on.")
     now = now or utcnow()
     row = session.get(ReportSchedule, name) or ReportSchedule(name=name)
+    monitoring = langfuse_reader.monitoring()
+    if enabled and not row.enabled and not monitoring["on"]:
+        raise ValueError(f"{monitoring['reason']} The report can be turned on once Langfuse monitoring is on.")
     row.enabled, row.weekday, row.send_time = enabled, weekday, send_time
     row.recipients = ",".join(recipients)
     row.updated_by, row.updated_at = updated_by, now
@@ -203,7 +213,6 @@ def schedules(session: Session, now: datetime | None = None) -> list[dict[str, A
             upcoming = slot(target, weekday, send_time).strftime("%a %Y-%m-%d %H:%M")
         out.append({
             "name": report.name, "title": report.title, "summary": report.summary,
-            "needs_langfuse": report.needs_langfuse,
             "enabled": bool(row and row.enabled), "weekday": weekday, "send_time": send_time,
             "recipients": recipients_of(row),
             "last_status": row.last_status if row else "", "last_detail": row.last_detail if row else "",
@@ -234,12 +243,16 @@ def send(
     actor: str = "", subject_prefix: str = "",
 ) -> tuple[bool, str, Rendered | None]:
     """Build the report and send it as one mail to ``recipients``. Blocking.
-    ``(ok, detail, rendered)``; never raises. Every attempt goes to the mail
-    log, one row per recipient."""
+    ``(ok, detail, rendered)``; never raises. Nothing is sent while mail is
+    not configured or Langfuse monitoring is off. Every attempt goes to the
+    mail log, one row per recipient."""
     if not recipients:
         return False, "No recipients.", None
     if not mailer.is_enabled():
         return False, "Mail is not configured.", None
+    monitoring = langfuse_reader.monitoring()
+    if not monitoring["on"]:
+        return False, monitoring["reason"], None
     try:
         rendered = render(session, name, period)
     except Exception as exc:
@@ -299,14 +312,15 @@ def run_due(session: Session, now: datetime | None = None) -> str:
         if report is None or _local(now) < slot(period, row.weekday, row.send_time):
             continue
         name, recipients = row.name, recipients_of(row)
+        # Neither is claimed: the report stays due and goes out, this week,
+        # once mail and Langfuse monitoring are back.
         if not mailer.is_enabled():
             done.append(f"{name}=mail not configured")
             continue
-        if not _claim(session, name, period, now):
+        if not langfuse_reader.monitoring()["on"]:
+            done.append(f"{name}=langfuse monitoring off")
             continue
-        if report.needs_langfuse and not langfuse_reader.is_configured():
-            _finish(session, name, "skipped", "Langfuse is not configured: there is nothing to report.")
-            done.append(f"{name}=skipped")
+        if not _claim(session, name, period, now):
             continue
         ok, detail, _rendered = send(session, name, recipients, period=period)
         _finish(session, name, "sent" if ok else "failed", detail)

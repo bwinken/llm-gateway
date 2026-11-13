@@ -17,7 +17,7 @@ from sqlmodel import select
 
 from app.core.timeutil import local_day_start_utc_of
 from app.models.schema import ClientMailLog, ReportSchedule, UsageLog, User
-from app.services import langfuse_reader, mailer, report_charts, report_content, usage_rollup, weekly_reports
+from app.services import langfuse_reader, mailer, observability, report_charts, report_content, usage_rollup, weekly_reports
 from app.services.report_content import Period, Rendered
 from tests.conftest import web_auth_header
 
@@ -41,14 +41,19 @@ def mail_on(monkeypatch):
         yield sent
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def langfuse_on(monkeypatch):
+    """Langfuse monitoring is on unless a test asks for ``langfuse_off``:
+    the reports can only be turned on, and are only sent, while it is."""
     monkeypatch.setenv("LANGFUSE_HOST", "https://langfuse.example.test")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+    monkeypatch.delenv("LANGFUSE_SAMPLE_RATE", raising=False)
     langfuse_reader.reset()
+    observability.reset_langfuse_cache()
     yield
     langfuse_reader.reset()
+    observability.reset_langfuse_cache()
 
 
 @pytest.fixture
@@ -319,12 +324,6 @@ class TestSchedule:
         db_session.refresh(row)
         assert row.last_period == WEEK.previous.start        # this week's is still due once mail works
 
-    def test_the_guardrail_report_is_skipped_without_langfuse(self, db_session, mail_on, stub_reports, langfuse_off):
-        _schedule(db_session, "guardrail", now=MONDAY_9 - timedelta(days=3))
-        assert weekly_reports.run_due(db_session, now=MONDAY_9) == "guardrail=skipped"
-        assert mail_on == [] and stub_reports == []
-        assert "Langfuse" in db_session.get(ReportSchedule, "guardrail").last_detail
-
     def test_every_recipient_is_in_the_mail_log(self, db_session, mail_on, stub_reports):
         _schedule(db_session, now=MONDAY_9 - timedelta(days=3))
         weekly_reports.run_due(db_session, now=MONDAY_9)
@@ -353,7 +352,99 @@ class TestSchedule:
         from app import main
 
         assert weekly_reports.JOB.name == "weekly_reports" and weekly_reports.JOB.interval() == 300.0
+        assert not hasattr(weekly_reports.REPORTS["usage"], "needs_langfuse")     # one rule for both reports
         assert "weekly_reports.JOB" in inspect.getsource(main.lifespan)
+
+
+class TestNeedsLangfuseMonitoring:
+    """Both reports are built on what Langfuse records: neither can be
+    turned on, and nothing is sent, while monitoring is off."""
+
+    def test_monitoring_is_the_settings_and_a_sample_rate(self, monkeypatch):
+        assert langfuse_reader.monitoring() == {"on": True, "reason": ""}
+        monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "0")
+        observability.reset_langfuse_cache()
+        state = langfuse_reader.monitoring()
+        assert state["on"] is False and "LANGFUSE_SAMPLE_RATE is 0" in state["reason"]
+        monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "0.25")
+        observability.reset_langfuse_cache()
+        assert langfuse_reader.monitoring()["on"] is True
+        monkeypatch.delenv("LANGFUSE_SECRET_KEY")
+        state = langfuse_reader.monitoring()
+        assert state["on"] is False and "LANGFUSE_SECRET_KEY" in state["reason"] and "sk-lf-test" not in state["reason"]
+
+    @pytest.mark.parametrize("name", ["usage", "guardrail"])
+    def test_a_report_cannot_be_turned_on_while_it_is_off(self, db_session, mail_on, langfuse_off, name):
+        with pytest.raises(ValueError, match="Langfuse is not configured"):
+            _schedule(db_session, name, now=MONDAY_9 - timedelta(days=3))
+        assert db_session.get(ReportSchedule, name) is None
+        # Its day, time and recipients can still be prepared, off.
+        row = weekly_reports.save_schedule(
+            db_session, name, enabled=False, weekday=3, send_time="07:30", recipients=["alice@example.test"],
+        )
+        assert (row.enabled, row.weekday, row.recipients) == (False, 3, "alice@example.test")
+
+    def test_recording_nothing_counts_as_off(self, db_session, mail_on, monkeypatch):
+        monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "0")
+        observability.reset_langfuse_cache()
+        with pytest.raises(ValueError, match="LANGFUSE_SAMPLE_RATE is 0"):
+            _schedule(db_session, now=MONDAY_9 - timedelta(days=3))
+
+    def test_one_that_is_on_can_still_be_edited_or_turned_off(self, db_session, mail_on, monkeypatch):
+        _schedule(db_session, now=MONDAY_9 - timedelta(days=3))
+        monkeypatch.delenv("LANGFUSE_HOST")
+        row = _schedule(db_session, now=MONDAY_9 - timedelta(days=2), send_time="10:00", recipients=["carol@example.test"])
+        assert (row.enabled, row.send_time, row.recipients) == (True, "10:00", "carol@example.test")
+        row = weekly_reports.save_schedule(
+            db_session, "usage", enabled=False, weekday=0, send_time="10:00", recipients=["carol@example.test"],
+        )
+        assert row.enabled is False
+        with pytest.raises(ValueError, match="Langfuse"):          # and not back on
+            _schedule(db_session, now=MONDAY_9 - timedelta(days=1))
+
+    def test_a_due_report_waits_and_goes_out_once_monitoring_is_back(self, db_session, mail_on, stub_reports, monkeypatch):
+        _schedule(db_session, "usage", now=MONDAY_9 - timedelta(days=3))
+        _schedule(db_session, "guardrail", now=MONDAY_9 - timedelta(days=3))
+        monkeypatch.delenv("LANGFUSE_PUBLIC_KEY")
+        assert weekly_reports.run_due(db_session, now=MONDAY_9) == "usage=langfuse monitoring off guardrail=langfuse monitoring off"
+        assert mail_on == [] and stub_reports == []
+        assert db_session.get(ReportSchedule, "usage").last_period == WEEK.previous.start     # not claimed
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+        assert weekly_reports.run_due(db_session, now=MONDAY_9 + timedelta(hours=2)) == "usage=sent guardrail=sent"
+        assert stub_reports == [("usage", WEEK), ("guardrail", WEEK)]
+
+    def test_nothing_is_sent_by_hand_either(self, client, admin_user, db_session, mail_on, stub_reports, langfuse_off):
+        assert weekly_reports.send(db_session, "usage", ["alice@example.test"])[:2] == (
+            False, "Langfuse is not configured (LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY in .env).",
+        )
+        for to in ("me", "recipients"):
+            reply = client.post("/admin/reports/usage/send", headers=_admin(admin_user), data={"to": to})
+            assert reply.status_code == 400 and "Langfuse is not configured" in reply.json()["detail"]
+        assert mail_on == [] and stub_reports == []
+        assert db_session.exec(select(ClientMailLog)).all() == []
+
+    def test_the_admin_form_is_refused_and_the_switch_is_locked(self, client, admin_user, db_session, mail_on, langfuse_off):
+        reply = client.post("/admin/reports/guardrail", headers=_admin(admin_user), data={
+            "enabled": "on", "weekday": "0", "send_time": "09:00", "recipients": "alice",
+        })
+        assert reply.status_code == 400 and "Langfuse is not configured" in reply.json()["detail"]
+        assert db_session.get(ReportSchedule, "guardrail") is None
+        saved = client.post("/admin/reports/guardrail", headers=_admin(admin_user), data={
+            "enabled": "off", "weekday": "0", "send_time": "09:00", "recipients": "alice",
+        })
+        assert saved.status_code == 200 and saved.json()["enabled"] is False
+
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        card = body[body.index('id="weekly-reports"'):body.index(">Site Links</h2>")]
+        assert 'id="weekly-reports-langfuse-off"' in card and "Langfuse is not configured" in card
+        assert card.count('name="enabled" value="on"  disabled') == 2          # both switches locked
+        assert card.count('data-report-send="me" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5" disabled') == 2
+        assert "/admin/reports/usage/preview" in card                             # the preview stays
+
+    def test_the_switch_is_free_while_monitoring_is_on(self, client, admin_user, mail_on):
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        card = body[body.index('id="weekly-reports"'):body.index(">Site Links</h2>")]
+        assert "weekly-reports-langfuse-off" not in card and " disabled" not in card
 
 
 def _observation_handler(seen: list | None = None, *, fail: bool = False):
@@ -397,6 +488,20 @@ class TestUsageReport:
         assert figures["previous"] == {"vllm": {"tokens": 2200, "requests": 1}}
         assert figures["accounts"] == 1
 
+    def test_estimated_cost_per_day_and_per_week(self, db_session, week_of_usage):
+        _log(db_session, 1, date(2026, 9, 14), "azure", "gpt-test", 1, 1)       # eight weeks back: the first point
+        _log(db_session, 1, date(2026, 9, 13), "azure", "gpt-test", 1, 1)       # a day earlier: off the chart
+        db_session.commit()
+        figures = report_content.usage_figures(db_session, WEEK)
+        assert figures["cost_week_starts"][0] == date(2026, 9, 14) and figures["cost_week_starts"][-1] == WEEK.start
+        assert figures["cost_weeks"]["vllm"] == [0, 0, 0, 0, 0, 0, 0.5, 1.0]
+        assert figures["cost_weeks"]["azure"] == [0.5, 0, 0, 0, 0, 0, 0, 0.5]
+        assert figures["cost_daily"]["vllm"] == [0.5, 0, 0, 0, 0, 0, 0.5]
+        mail = report_content.render_usage(WEEK, figures, None, "Langfuse is not configured.")
+        assert "Estimated cost" in mail.html and "an estimate, not a cloud invoice" in mail.html
+        assert {"cost_by_day", "cost_trend"} <= set(mail.images)
+        assert "$2.00" in mail.html           # this week's total: four requests at $0.50
+
     def test_the_same_numbers_once_rolled_up(self, db_session, week_of_usage):
         before = report_content.usage_figures(db_session, WEEK)
         usage_rollup.advance(db_session, now=datetime(2026, 11, 12, 4, 0))
@@ -419,7 +524,7 @@ class TestUsageReport:
         assert ("2026-10-25T16:00:00.000Z", "2026-11-01T16:00:00.000Z") in windows          # the week before
         assert ("2026-11-04T16:00:00.000Z", "2026-11-05T16:00:00.000Z") in windows          # Thursday
         assert len(seen) == 10
-        assert set(mail.images) == {"tokens_by_day", "latency_vllm", "error_rate"}
+        assert set(mail.images) == {"tokens_by_day", "cost_by_day", "cost_trend", "latency_vllm", "error_rate"}
         assert all(png.startswith(b"\x89PNG") for png in mail.images.values())
         for name in mail.images:
             assert f'src="cid:{name}"' in mail.html
@@ -434,7 +539,7 @@ class TestUsageReport:
     def test_without_langfuse_it_is_the_token_report(self, db_session, week_of_usage, langfuse_off):
         mail = report_content.usage_report(db_session, WEEK)
         assert "Langfuse is not configured" in mail.html and "4,400" in mail.html
-        assert set(mail.images) == {"tokens_by_day"}
+        assert set(mail.images) == {"tokens_by_day", "cost_by_day", "cost_trend"}
 
     def test_what_comes_from_outside_is_escaped(self, db_session, week_of_usage, langfuse_on):
         _log(db_session, 1, date(2026, 11, 3), "vllm", "<script>x</script>", 5, 5)
@@ -447,12 +552,14 @@ class TestUsageReport:
     def test_a_chart_that_fails_costs_the_picture_only(self, db_session, week_of_usage, langfuse_off):
         with patch.object(report_charts, "stacked_columns", side_effect=RuntimeError("no font")):
             mail = report_content.usage_report(db_session, WEEK)
-        assert mail.images == {} and mail.problems[-1] == "chart tokens_by_day: RuntimeError"
-        assert "4,400" in mail.html and "cid:" not in mail.html
+        assert set(mail.images) == {"cost_trend"}
+        assert mail.problems[-2:] == ["chart tokens_by_day: RuntimeError", "chart cost_by_day: RuntimeError"]
+        assert "4,400" in mail.html and 'src="cid:tokens_by_day"' not in mail.html
 
     def test_an_empty_week_still_renders(self, db_session, langfuse_off):
         mail = report_content.usage_report(db_session, WEEK)
         assert "No usage was recorded this week." in mail.html and mail.images == {}
+        assert "No cost was recorded in the last 8 weeks." in mail.html
 
     def test_a_slower_p95_is_pointed_out(self):
         entry = {"ok": 500, "errors": 0, "blocked": 0, "latency_p50": 1000.0, "latency_p95": 9000.0}

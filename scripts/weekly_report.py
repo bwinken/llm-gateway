@@ -6,8 +6,9 @@ Settings -> Weekly reports (app/services/weekly_reports.py); no timer is
 needed. This builds one now from live data (the gateway's usage record and
 Langfuse) and writes it as an HTML page to open in a browser: the quickest
 way to see what the Langfuse queries return on this installation. With
---send it mails the report instead, to mailboxes of the company domain. The
-schedule is not touched either way.
+--send it mails the report instead, to mailboxes of the company domain
+(only while Langfuse monitoring is on, like every send). The schedule is not
+touched either way.
 
 Usage:
     uv run python scripts/weekly_report.py usage                    # -> weekly-usage.html (last week)

@@ -886,7 +886,7 @@ def _weekly_reports_view(session: Session) -> dict:
     return {
         "reports": weekly_reports.schedules(session),
         "mail": mailer.status(),
-        "langfuse": langfuse_reader.is_configured(),
+        "langfuse": langfuse_reader.monitoring(),
         "weekdays": weekly_reports.WEEKDAY_NAMES,
         "max_recipients": weekly_reports.MAX_RECIPIENTS,
     }
@@ -912,8 +912,9 @@ def save_report_schedule(
 ):
     """Save one weekly report's schedule: on / off, the day and time
     (Asia/Taipei) and who gets it. Recipients are usernames or addresses of
-    the company domain. Saving never sends: when this week's time has
-    already passed, the first automatic mail is next week's."""
+    the company domain. A report can only be turned on while Langfuse
+    monitoring is on. Saving never sends: when this week's time has already
+    passed, the first automatic mail is next week's."""
     report = _report_or_404(name)
     try:
         row = weekly_reports.save_schedule(
@@ -971,6 +972,9 @@ def send_report_now(
     report = _report_or_404(name)
     if not mailer.is_enabled():
         raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
+    monitoring = langfuse_reader.monitoring()
+    if not monitoring["on"]:
+        raise HTTPException(status_code=400, detail=f"{monitoring['reason']} Nothing is sent until it is on.")
     to = to.strip().lower()
     if to == "recipients":
         addresses = weekly_reports.recipients_of(session.get(ReportSchedule, report.name))
