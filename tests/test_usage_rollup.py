@@ -22,8 +22,8 @@ from app.models.schema import AppOwner, UsageDaily, UsageLog, UsageRollupState, 
 from app.services import usage_rollup
 
 
-def _user(session, username: str, org: str = "") -> User:
-    u = User(username=username, org_code=org, api_key=f"sk-{username}")
+def _user(session, username: str, org: str = "", service: bool = False) -> User:
+    u = User(username=username, org_code=org, api_key=f"sk-{username}", is_service_account=service)
     session.add(u)
     session.commit()
     session.refresh(u)
@@ -51,7 +51,7 @@ def history(db_session):
     deleted account's kept usage and empty turns."""
     alice = _user(db_session, "alice", "ENG")
     bob = _user(db_session, "bob", "OPS")
-    bot = _user(db_session, "app_bot", "ENG")
+    bot = _user(db_session, "app_bot", "ENG", service=True)
     db_session.add(AppOwner(app_id=bot.id, owner_id=alice.id))
     today = local_today()
     for back in range(0, 41):
@@ -305,7 +305,7 @@ class TestDauCountsPeopleOnly:
         from app.services.stats import get_dau_trends
 
         alice = _user(db_session, "alice")
-        bot = _user(db_session, "app_bot")
+        bot = _user(db_session, "app_bot", service=True)
         now = datetime.now(timezone.utc)
         _log(db_session, alice, now)
         _log(db_session, bot, now)

@@ -73,6 +73,16 @@ def usage_row_key(row: dict, catalog: dict[tuple[str, str], tuple]) -> tuple:
     )
 
 
+def sort_usage_rows(rows: list[dict], catalog: dict[tuple[str, str], tuple] | None = None) -> list[dict]:
+    """Usage rows (``model``, ``type``, ``backend`` as ``usage_logs`` spells
+    it) in the order every page lists models: the backends in turn (on-prem,
+    Azure, Bedrock, then any other), and within each ``usage_row_key``."""
+    catalog = current_catalog_keys() if catalog is None else catalog
+    extra = sorted({r["backend"] for r in rows} - set(BACKEND_ORDER))
+    rank = {name: index for index, name in enumerate((*BACKEND_ORDER, *extra))}
+    return sorted(rows, key=lambda r: (rank[r["backend"]], usage_row_key(r, catalog)))
+
+
 def _snapshots() -> dict[str, dict[str, dict]]:
     return {
         "vllm": config.get_model_routing_snapshot(),

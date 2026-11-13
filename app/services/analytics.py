@@ -16,7 +16,7 @@ from datetime import date
 from sqlmodel import Session, select
 
 from app.core.timeutil import next_month_first_day
-from app.models.schema import AppOwner, User, is_app_account
+from app.models.schema import AppOwner, User
 from app.services.usage_rollup import aggregate
 
 
@@ -93,18 +93,15 @@ class _UserInfo:
     username: str
     display_name: str
     org_code: str
-
-    @property
-    def is_app(self) -> bool:
-        return is_app_account(self.username)
+    is_app: bool = False   # a service account ("app" in the report's keys)
 
 
 def _load_users(session: Session) -> dict[int, _UserInfo]:
     """Every account's identity columns (``users`` is small)."""
     return {
-        int(uid): _UserInfo(str(username), display_name or "", org_code or "")
-        for uid, username, display_name, org_code in session.exec(
-            select(User.id, User.username, User.display_name, User.org_code)
+        int(uid): _UserInfo(str(username), display_name or "", org_code or "", bool(is_service))
+        for uid, username, display_name, org_code, is_service in session.exec(
+            select(User.id, User.username, User.display_name, User.org_code, User.is_service_account)
         ).all()
     }
 

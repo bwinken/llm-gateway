@@ -78,7 +78,7 @@ class TestServerStatus:
 
 class TestTodayAggregates:
     def test_today_totals_count_people_not_apps(self, db_session, test_user):
-        app = User(username="app_bot", api_key="sk-app")
+        app = User(username="report-bot", api_key="sk-app", is_service_account=True)
         db_session.add(app)
         db_session.commit()
         _spend(db_session, test_user, 1.5)

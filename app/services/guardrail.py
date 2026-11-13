@@ -54,7 +54,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import get_guardrail_settings
 from app.core.logger import logger
 from app.core.server_state import get_guardrail_client
-from app.models.schema import User, is_app_account
+from app.models.schema import User
 from app.services.observability import (
     GenerationRecord,
     get_langfuse,
@@ -209,9 +209,11 @@ def applies(settings: dict[str, Any], user: User, kind: str) -> bool:
     if user.username in settings.get("exempt_users", ()):
         return False
     scope = settings.get("apply_to", "all")
-    if scope == "apps" and not is_app_account(user.username):
+    # "apps" is the stored spelling of "service accounts only".
+    is_service = bool(getattr(user, "is_service_account", False))
+    if scope == "apps" and not is_service:
         return False
-    if scope == "users" and is_app_account(user.username):
+    if scope == "users" and is_service:
         return False
     return True
 

@@ -97,7 +97,7 @@ Azure 與 Bedrock 模型放在 `[azure_models.*]`、`[bedrock_models.*]`；價�
 | 分頁 | 在這裡做什麼 |
 |---|---|
 | **Overview** | 查看花費、請求數與活躍使用者；檢視用量異常；匯出每月費用報表 |
-| **Users** | 設定預算與雲端上限、授權 Azure 或 AWS、停用帳號、建立 App 帳號、查看或重新產生 key |
+| **Users** | 設定預算與雲端上限、授權 Azure 或 AWS、停用帳號、建立服務帳號、查看或重新產生 key |
 | **Clients** | 選擇要偵測哪些 client 問題、怎麼通知使用者、給他們什麼設定 patch；查看受影響的人和寄出的信 |
 | **Security** | IP allowlist、prompt guardrail、稽核紀錄 |
 | **Settings** | 預設預算、並行上限、雲端上限用完時的處理方式、網站連結 |

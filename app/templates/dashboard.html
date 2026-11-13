@@ -45,9 +45,9 @@
      style="background:rgba(245,166,35,0.06);border-color:rgba(245,166,35,0.3)">
     <div class="text-t1 font-semibold mb-0.5">Please regenerate your API key{{ '' if n_legacy == 1 else 's' }}</div>
     <div class="text-t3">
-        {% if legacy_key %}Your key{% if legacy_app_keys %} and {{ legacy_app_keys }} of your app key{{ '' if legacy_app_keys == 1 else 's' }}{% endif %}{% else %}{{ legacy_app_keys }} of your app key{{ '' if legacy_app_keys == 1 else 's' }}{% endif %}
+        {% if legacy_key %}Your key{% if legacy_app_keys %} and {{ legacy_app_keys }} of your service account key{{ '' if legacy_app_keys == 1 else 's' }}{% endif %}{% else %}{{ legacy_app_keys }} of your service account key{{ '' if legacy_app_keys == 1 else 's' }}{% endif %}
         {{ 'is' if n_legacy == 1 else 'are' }} in an older, weaker format. {{ 'It keeps' if n_legacy == 1 else 'They keep' }} working, but a newly generated key is far harder to guess.
-        Regenerate ({% if legacy_key %}<b>My API Key → Regenerate</b>{% endif %}{% if legacy_key and legacy_app_keys %}; {% endif %}{% if legacy_app_keys %}<b>Refresh</b> under My Apps{% endif %}) when you can update your clients: the old key stops working at once.{% if legacy_key %}
+        Regenerate ({% if legacy_key %}<b>My API Key → Regenerate</b>{% endif %}{% if legacy_key and legacy_app_keys %}; {% endif %}{% if legacy_app_keys %}<b>Regenerate</b> on the Service accounts tab{% endif %}) when you can update your clients: the old key stops working at once.{% if legacy_key %}
         For Claude Code, the same window then offers a script that puts the new key into its settings.{% endif %}
     </div>
 </div>
@@ -173,6 +173,13 @@
         Usage
         <span class="gw-tab-count">{{ money(total_cost) }} this month</span>
     </button>
+    {# Only for people an admin assigned a service account to. #}
+    {% if owned_apps %}
+    <button type="button" class="gw-tab" data-tab="service" role="tab">
+        Service accounts
+        <span class="gw-tab-count">{{ owned_apps | length }}</span>
+    </button>
+    {% endif %}
 </div>
 
 <div data-panel="models">
@@ -765,58 +772,90 @@
     </div>
 </div>
 
-{# ── My App Accounts ── #}
+</div>
+
+{# ── Service accounts: the accounts for programs an admin assigned to this user (app_owners),
+      each with its key and this month's usage per model. Formerly "My App Accounts". ── #}
 {% if owned_apps %}
-<div class="gw-card p-6 mb-8 gw-anim">
-    <div class="flex items-center justify-between mb-4">
-        <h3 class="text-base font-semibold text-t1">My App Accounts</h3>
-        <span class="text-xs text-t4">App accounts assigned to you</span>
+<div data-panel="service">
+<p class="text-xs text-t4 mb-4 max-w-3xl">
+    Accounts for programs (a batch job, a service) that an administrator assigned to you. Each has its own API key, daily limit and bill, separate from yours.
+    Usage below is this month's, {{ service_month }}.
+</p>
+{% for app in owned_apps %}
+<div class="gw-card p-6 mb-6 gw-anim" data-service-account="{{ app.username }}">
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-3 mb-4">
+        <div class="flex items-center gap-2">
+            <div class="h-8 w-8 rounded-lg bg-[rgba(99,152,255,0.1)] flex items-center justify-center text-ab font-bold text-xs">{{ app.initials }}</div>
+            <div>
+                <div class="text-base font-semibold text-t1 font-mono">{{ app.username }}</div>
+                <div class="text-[11px] text-t4">Daily limit {{ money(app.daily_limit_usd) }}</div>
+            </div>
+        </div>
+        <div class="flex items-center gap-2 ml-auto">
+            <code id="appKey-{{ app.id }}" class="text-xs font-mono text-t3 bg-n1 px-2 py-1 rounded border border-[rgba(255,255,255,0.04)]">{{ app.api_key[:12] }}...</code>
+            <button onclick="copyAppKey({{ app.id }}, this)" class="text-xs text-ab hover:text-ac font-medium transition-colors">Copy</button>
+            <button onclick="refreshAppKey({{ app.id }}, this.dataset.name)" data-name="{{ app.username }}" id="refreshAppBtn-{{ app.id }}" class="gw-btn gw-btn-warn text-xs px-2.5 py-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                Regenerate
+            </button>
+        </div>
     </div>
+    <dl class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+        <div><dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Cost this month</dt><dd class="mt-1 font-mono text-t1 text-base">${{ "%.4f"|format(app.monthly_cost) }}</dd></div>
+        <div><dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Requests</dt><dd class="mt-1 font-mono text-t1 text-base">{{ app.monthly_reqs }}</dd></div>
+        <div><dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Input</dt><dd class="mt-1 font-mono text-t1 text-base">{{ format_token(app.monthly_input) }}</dd></div>
+        <div><dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Output</dt><dd class="mt-1 font-mono text-t1 text-base">{{ format_token(app.monthly_output) }}</dd></div>
+    </dl>
     <div class="overflow-x-auto">
         <table class="gw-table">
             <thead><tr>
-                <th>App</th><th>API Key</th>
-                <th class="text-right gw-tip" data-tip="Cost in current billing cycle">Monthly Cost</th>
-                <th class="text-right gw-tip" data-tip="Input tokens (prompts)">Input</th>
-                <th class="text-right gw-tip" data-tip="Output tokens (completions)">Output</th>
-                <th class="text-right gw-tip" data-tip="Total API requests">Reqs</th><th class="text-center">Actions</th>
+                <th class="text-left">Model</th>
+                <th class="text-left">Backend</th>
+                <th style="text-align:right">Requests</th>
+                <th style="text-align:right">Input</th>
+                <th style="text-align:right">Output</th>
+                <th style="text-align:right">Cost</th>
+                <th class="text-left gw-tip" data-tip="Share of this account's cost this month" style="min-width:120px">Share</th>
             </tr></thead>
             <tbody>
-                {% for app in owned_apps %}
+                {% for m in app.models %}
+                {% set bcolor = backend_colors.get(m.backend, '#868da0') %}
                 <tr>
                     <td class="whitespace-nowrap">
-                        <div class="flex items-center gap-2">
-                            <div class="h-7 w-7 rounded-lg bg-[rgba(99,152,255,0.1)] flex items-center justify-center text-ab font-bold text-xs">
-                                {{ app.username[4:][:2]|upper if app.username|length > 4 else app.username[0]|upper }}
-                            </div>
-                            <span class="text-sm font-medium text-t1">{{ app.username }}</span>
-                        </div>
+                        <code class="text-sm font-mono font-medium text-t1">{{ m.model }}</code>
+                        {% if m.type %}<span class="text-[10px] text-t4 ml-1.5">{{ m.type }}</span>{% endif %}
                     </td>
                     <td class="whitespace-nowrap">
-                        <div class="flex items-center gap-2">
-                            <code id="appKey-{{ app.id }}" class="text-xs font-mono text-t3 bg-n1 px-2 py-1 rounded border border-[rgba(255,255,255,0.04)]">{{ app.api_key[:12] }}...</code>
-                            <button onclick="copyAppKey({{ app.id }}, this)" class="text-xs text-ab hover:text-ac font-medium transition-colors">Copy</button>
-                        </div>
+                        <span class="inline-flex items-center gap-1.5">
+                            <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:{{ bcolor }}"></span>
+                            <span class="text-xs text-t3">{{ m.backend_label }}</span>
+                        </span>
                     </td>
-                    <td class="text-right text-sm font-mono font-medium text-t1">${{ "%.4f"|format(app.monthly_cost) }}</td>
-                    <td class="text-right text-sm font-mono text-t3">{{ format_token(app.monthly_input) }}</td>
-                    <td class="text-right text-sm font-mono text-t3">{{ format_token(app.monthly_output) }}</td>
-                    <td class="text-right text-sm font-mono text-t3">{{ app.monthly_reqs }}</td>
-                    <td class="text-center">
-                        <button onclick="refreshAppKey({{ app.id }})" id="refreshAppBtn-{{ app.id }}" class="gw-btn gw-btn-warn text-xs px-2.5 py-1.5">
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-                            Refresh
-                        </button>
+                    <td class="text-right text-sm font-mono text-t3">{{ m.requests }}</td>
+                    <td class="text-right text-sm font-mono text-t3">{{ format_token(m.input_tokens) }}</td>
+                    <td class="text-right text-sm font-mono text-t3">{{ format_token(m.output_tokens) }}</td>
+                    <td class="text-right text-sm font-mono text-t2">${{ "%.4f"|format(m.cost_usd) }}</td>
+                    <td>
+                        <div class="flex items-center gap-2">
+                            <div class="flex-1 rounded-full h-1.5 overflow-hidden bg-n3" style="min-width:60px">
+                                <div class="h-1.5 rounded-full" style="width: {{ m.share }}%; background:{{ bcolor }}"></div>
+                            </div>
+                            <span class="text-[11px] font-mono text-t4 tabular-nums" style="min-width:38px;text-align:right">{{ m.share }}%</span>
+                        </div>
                     </td>
                 </tr>
                 {% endfor %}
+                {% if not app.models %}
+                <tr><td colspan="7" class="text-center py-6 text-sm text-t4">No usage this month.</td></tr>
+                {% endif %}
             </tbody>
         </table>
     </div>
 </div>
-{% endif %}
-
+{% endfor %}
 </div>
+{% endif %}
 
 {# ── API Integration Guide: reference material, folded under the model list ── #}
 <div data-panel="models">
@@ -1099,12 +1138,20 @@ result = client.system_one(
         else{var ta=document.createElement('textarea');ta.value=k;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);}
         var o=btn.textContent;btn.textContent='Copied!';setTimeout(function(){btn.textContent=o;},2000);
     }
-    function refreshAppKey(id){
-        if(!confirm('Regenerate this app API key? The old key will stop working immediately.'))return;
-        var btn=document.getElementById('refreshAppBtn-'+id);btn.disabled=true;btn.classList.add('opacity-50');
-        fetch('/dashboard/app/'+id+'/refresh-key',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
-            if(d.ok){appKeyMap[id]=d.api_key;document.getElementById('appKey-'+id).textContent=d.api_key.substring(0,12)+'...';alert('Key regenerated! Click Copy to get the new key.');}else alert('Failed.');
-        }).catch(function(){alert('Error.');}).finally(function(){btn.disabled=false;btn.classList.remove('opacity-50');});
+    function refreshAppKey(id, name){
+        gwConfirm('Regenerate the API key of ' + name + '? The old key stops working at once.', { okLabel: 'Regenerate', danger: true }).then(function(yes){
+            if(!yes)return;
+            var btn=document.getElementById('refreshAppBtn-'+id);btn.disabled=true;btn.classList.add('opacity-50');
+            fetch('/dashboard/app/'+id+'/refresh-key',{method:'POST',headers:{'Accept':'application/json'},credentials:'same-origin'})
+                .then(function(r){return r.json().then(function(d){if(!r.ok||!d.ok)throw new Error(d.detail||('HTTP '+r.status));return d;});})
+                .then(function(d){
+                    appKeyMap[id]=d.api_key;
+                    document.getElementById('appKey-'+id).textContent=d.api_key.substring(0,12)+'...';
+                    gwToast('New key for '+name+'. Press Copy to take it.', 'ok');
+                })
+                .catch(function(err){gwToast('Regenerate failed — '+err.message, 'error');})
+                .finally(function(){btn.disabled=false;btn.classList.remove('opacity-50');});
+        });
     }
 </script>
 

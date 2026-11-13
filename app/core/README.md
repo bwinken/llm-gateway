@@ -165,7 +165,7 @@ The auth dependencies open their **own short-lived `Session(engine)`** and close
 | `_key_use_due(user_id)` / `_record_key_use(user_id)` | `bool` / — | Stamp `users.api_key_last_used_at` at most once per `KEY_USE_RESOLUTION_S` (1 h) per user per worker, after the auth session has closed, with a conditional UPDATE. Never fails the request |
 | `get_today_usage(user)` | `dict` | Today's spend and tokens split by backend (`stats.get_user_daily_summary`); short-lived session |
 | `get_usage_history(user, days)` | `dict` | For `GET /v1/usage`: one row per local day for the last `days` days (`stats.get_daily_trends`) and today's and this month's rows per model and backend (`stats.get_model_breakdown`); short-lived session |
-| `get_owned_apps(user)` | `list[dict]` | For `GET /v1/apps`: the app accounts the user owns with this month's usage (`stats.get_owned_apps_summary`), their API keys removed; short-lived session |
+| `get_owned_apps(user)` | `list[dict]` | For `GET /v1/apps`: the service accounts the user owns with this month's usage (`stats.get_owned_apps_summary`), their API keys removed; short-lived session |
 | `get_client_notices(user)` | `dict` | For `GET /v1/notices`: `notices` (`client_rules.notices_for`) and `combined` (`client_rules.combined_for`); a broken store reads as nothing open; short-lived session |
 
 All daily-limit 429s carry `Retry-After` until the next local midnight (`timeutil`).

@@ -307,10 +307,42 @@ class TestApps:
         assert body["month"] == datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m")
         assert body["apps"] == [
             {"username": "app_batch2", "daily_limit_usd": 0.0, "legacy_key": True,
-             "month": {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}},
+             "month": {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "models": []}},
             {"username": "app_batch10", "daily_limit_usd": 50.0, "legacy_key": True,
-             "month": {"requests": 2, "input_tokens": 2000, "output_tokens": 1000, "cost_usd": 3.5}},
+             "month": {"requests": 2, "input_tokens": 2000, "output_tokens": 1000, "cost_usd": 3.5, "models": [
+                 {"model": "test-llm", "backend": "onprem", "type": "llm",
+                  "requests": 2, "input_tokens": 2000, "output_tokens": 1000, "cost_usd": 3.5},
+             ]}},
         ]
+
+    def test_this_months_usage_per_model(self, client, db_session, test_user):
+        # A service account is named anything; the name decides nothing.
+        etl = self._app(db_session, test_user, "billing-etl", is_service_account=True)
+        _spend(db_session, etl, "1", backend="bedrock", model="bedrock-claude")
+        _spend(db_session, etl, "2", backend="azure", model="azure-gpt-4")
+        _spend(db_session, etl, "0.25", model="test-vlm", model_type="vlm")
+        _spend(db_session, etl, "0.5")
+        _spend(db_session, etl, "0.5")
+        last_month = (datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)).replace(tzinfo=None)
+        _spend(db_session, etl, "9", created_at=last_month)
+        (app,) = self._apps(client).json()["apps"]
+        assert app["username"] == "billing-etl"
+        # The dashboard's order: backends in turn, each by type then catalog order.
+        assert [(m["model"], m["backend"], m["requests"], m["cost_usd"]) for m in app["month"]["models"]] == [
+            ("test-llm", "onprem", 2, 1.0), ("test-vlm", "onprem", 1, 0.25),
+            ("azure-gpt-4", "azure", 1, 2.0), ("bedrock-claude", "aws", 1, 1.0),
+        ]
+        # The rows are the bill: they add up to the month.
+        assert app["month"]["cost_usd"] == 4.25 == sum(m["cost_usd"] for m in app["month"]["models"])
+        assert app["month"]["requests"] == 5
+
+    def test_cloud_rows_show_whatever_the_owners_own_access(self, client, db_session, test_user):
+        # It is the service account's bill, not the owner's model list.
+        etl = self._app(db_session, test_user, "billing-etl", is_service_account=True)
+        _spend(db_session, etl, "2", backend="azure", model="azure-gpt-4")
+        _update(db_session, test_user, can_use_azure=False, can_use_bedrock=False)
+        (app,) = self._apps(client).json()["apps"]
+        assert [m["backend"] for m in app["month"]["models"]] == ["azure"]
 
     def test_an_apps_key_is_never_returned(self, client, db_session, test_user):
         # A leaked personal key must not open the app accounts behind it.

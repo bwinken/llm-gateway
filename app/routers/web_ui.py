@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
-from app.models.schema import AppOwner, User, is_legacy_api_key
+from app.models.schema import LEGACY_SERVICE_PREFIX, AppOwner, User, has_legacy_service_name, is_legacy_api_key
 
 from app.core.auth import get_web_user
 from app.core.deps import effective_cloud_limit
@@ -29,7 +29,7 @@ from app.core.config import (
 from app.core.database import get_session
 from app.core.logger import logger
 from app.core.server_state import get_metrics, is_alive
-from app.core.timeutil import LOCAL_TZ, seconds_until_local_midnight
+from app.core.timeutil import LOCAL_TZ, local_month_start, seconds_until_local_midnight
 from app.services import client_rules
 from app.services.model_catalog import (
     catalog_keys,
@@ -39,6 +39,7 @@ from app.services.model_catalog import (
 )
 from app.services.model_order import (
     catalog_key,
+    natural_key,
     positions,
     type_rank,
 )
@@ -147,7 +148,7 @@ def _build_model_breakdown(
         if r["backend"] not in hidden
     ]
     total_cost = sum(r["cost_usd"] for r in breakdown_rows)
-    backend_labels = {"vllm": "On-Prem", "azure": "Azure", "bedrock": "AWS Bedrock"}
+    backend_labels = _BACKEND_LABELS
     backend_order = ["vllm", "azure", "bedrock"]
     extra_backends = sorted({
         r["backend"] for r in breakdown_rows if r["backend"] not in backend_order
@@ -176,6 +177,27 @@ def _build_model_breakdown(
             "rows": rows,
         })
     return groups, round(total_cost, 6)
+
+
+_BACKEND_LABELS = {"vllm": "On-Prem", "azure": "Azure", "bedrock": "AWS Bedrock"}
+
+
+def _owned_service_accounts(session: Session, user: User) -> list[dict]:
+    """The dashboard's *Service accounts* tab: the accounts ``user`` owns
+    (``stats.get_owned_apps_summary``, the data ``GET /v1/apps`` serves), by
+    name in natural order, each model row with its share of that account's
+    month. Every row is shown, whatever cloud access the viewer has: it is
+    the service account's bill, not the viewer's."""
+    accounts = sorted(get_owned_apps_summary(session, user.id), key=lambda a: natural_key(a["username"]))
+    for account in accounts:
+        name = account["username"]
+        # Older accounts are named app_<name>: the letters after the prefix say more.
+        account["initials"] = (name[len(LEGACY_SERVICE_PREFIX):] if has_legacy_service_name(name) else name)[:2].upper() or "?"
+        total = account["monthly_cost"]
+        for row in account["models"]:
+            row["backend_label"] = _BACKEND_LABELS.get(row["backend"], row["backend"])
+            row["share"] = round(row["cost_usd"] / total * 100 if total > 0 else 0.0, 1)
+    return accounts
 
 
 def _common_ctx(request: Request, **extra) -> dict:
@@ -264,7 +286,7 @@ def dashboard(
 
     summary = get_user_monthly_summary(session, user.id)
     trend_data = get_daily_trends(session, user.id)
-    owned_apps = get_owned_apps_summary(session, user.id)
+    owned_apps = _owned_service_accounts(session, user)
 
     # Monthly cost split by model alias, grouped per backend so on-prem and
     # cloud spend read separately (same data the refresh API serves).
@@ -405,6 +427,7 @@ def dashboard(
             model_breakdown_groups=model_breakdown_groups,
             today_str=datetime.now(LOCAL_TZ).strftime("%Y-%m-%d"),
             owned_apps=owned_apps,
+            service_month=local_month_start().strftime("%Y-%m"),
             legacy_key=is_legacy_api_key(user.api_key),
             legacy_app_keys=sum(1 for a in owned_apps if a.get("legacy_key")),
             client_notices=_client_notices(session, user),
@@ -465,17 +488,17 @@ def refresh_owned_app_key(
     user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
 ):
-    """Refresh API key for an app account owned by the current user."""
+    """Reissue the API key of a service account owned by the current user."""
 
     target = session.exec(select(User).where(User.id == app_id)).first()
     if not target:
-        raise HTTPException(status_code=404, detail="App account not found.")
+        raise HTTPException(status_code=404, detail="Service account not found.")
 
     ownership = session.exec(
         select(AppOwner).where(AppOwner.app_id == app_id, AppOwner.owner_id == user.id)
     ).first()
     if not ownership:
-        raise HTTPException(status_code=403, detail="You do not own this app account.")
+        raise HTTPException(status_code=403, detail="You do not own this service account.")
 
     from app.models.schema import issue_api_key
     issue_api_key(target)

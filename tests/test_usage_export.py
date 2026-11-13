@@ -34,7 +34,7 @@ def seeded(db_session):
         User(username="carol", display_name="Carol C.", org_code="ENG",
              api_key="sk-c", is_admin=False),
         User(username="app_backend", display_name="", org_code="",
-             api_key="sk-app1", is_admin=False),
+             api_key="sk-app1", is_admin=False, is_service_account=True),
     ]
     for u in users:
         db_session.add(u)

@@ -54,7 +54,7 @@ graph LR
 | `GET` | `/v1/me`、`/me` | 呼叫者的權限(地端 / Azure / AWS)與各後端今日額度。驗證時不做每日額度 429，額度用完也能查 | 直接回傳 | — |
 | `GET` | `/v1/status` | 呼叫者看得到的模型與 `state`(地端 `up` / `down`,雲端 `unchecked`)、負載、計費價格(`model_catalog.visible_models`)。驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
 | `GET` | `/v1/usage` | 呼叫者每個本地日的用量(`?days=`,1 到 90,預設 7)以及今天、本月各模型用量,經 `usage_rollup.aggregate` 讀取。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `GET` | `/v1/apps` | 呼叫者名下的 app 帳號、每日上限與本月用量(`stats.get_owned_apps_summary`),不含 key。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
+| `GET` | `/v1/apps` | 呼叫者名下的服務帳號、每日上限與本月用量(`stats.get_owned_apps_summary`),不含 key。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
 | `GET` | `/v1/notices` | 呼叫者尚未處理的 client 通知,以及以 `{set, unset}` 表示的 patch(`client_rules.notices_for` / `combined_for`)。唯讀;驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
 | `GET` | `/v1/settings` | 工具幫呼叫者設定 client 時可以提供的設定:每個變數的說明、`default` 與 `options`,依 tier(帳號的雲端權限)而不同,來自 admin 的 `client_settings.json`(`client_settings.fields_for`)。唯讀;驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
 | `POST` | `/v1/chat/completions`、`/chat/completions` | Chat 對話生成 | `vllm_forward_chat_completions`(vLLM) / `azure_forward_chat_completions`(Azure) / `bedrock_forward_chat_completions`(Bedrock) | `llm`, `vlm` |
@@ -179,10 +179,10 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | 方法 | 路徑 | 說明 |
 |---|---|---|
 | `GET` | `/` | Welcome 首頁：API 使用指南、可用模型、快速上手 |
-| `GET` | `/dashboard` | Dashboard 頁面：今日額度、用量統計、趨勢圖、各模型費用、伺服器狀態、App 帳號 |
+| `GET` | `/dashboard` | Dashboard 頁面：今日額度、用量統計、趨勢圖、各模型費用、伺服器狀態、服務帳號 |
 | `GET` | `/dashboard/api/model-breakdown` | Cost by Model 卡片的 JSON 資料（`?period=month` 為預設，或 `day`；其他值回 400）。供 Month/Today 切換與重新整理按鈕使用 |
 | `POST` | `/dashboard/refresh-key` | 重新產生自己的 API key（`schema.issue_api_key`：256 bits 的 key，並重設發放／最後使用時間），回傳 JSON `{ok, api_key}` |
-| `POST` | `/dashboard/app/{app_id}/refresh-key` | 重新產生所屬 App 帳號的 API key（需為 owner，否則 403） |
+| `POST` | `/dashboard/app/{app_id}/refresh-key` | 重新產生所屬服務帳號的 API key（需為 owner，否則 403） |
 | `GET` | `/dashboard/install-claude-code.bat` | 下載 Windows Claude Code 安裝檔：`setup/install-claude-code.bat` 中的 `__USER_API_KEY__` 換成呼叫者的 key，換行統一為 CRLF（範本不存在時回 404） |
 | `GET` | `/dashboard/client-notices` | 只回 dashboard 的 client rule 通知面板（`_client_notices.html`；沒有未處理項目時為空）。按下 *I've applied it* 後頁面會換上這一段 |
 | `GET` | `/dashboard/client-rules/all/patch.{bat,sh}` | 帳號唯一的設定 patch：所有未處理項目合併成一份（`client_rules.combined_for`），沒有各 check 自己的下載。沒有可套用的內容時回 404（瀏覽器會被導回 `/dashboard`：信件連結指向這裡） |
@@ -199,7 +199,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | Stats Cards | `get_user_monthly_summary()` | 當月 requests、cost、tokens |
 | Usage Trend | `get_daily_trends()` | 近 30 天的每日 requests / cost |
 | Cost by Model | `get_model_breakdown()`（經 `_build_model_breakdown()`） | 依後端分組的各模型費用；使用者無權使用的雲端後端不顯示（`_hidden_cloud_backends`） |
-| My App Accounts | `get_owned_apps_summary()` | 所屬 App 帳號的月用量 |
+| Service accounts tab | `get_owned_apps_summary()` | 所屬服務帳號的月用量 |
 | System Status | `MODEL_ROUTING` + `is_alive()` | 依類型分組的伺服器健康狀態；Azure / Bedrock 模型清單只顯示給有權限的使用者 |
 
 ---
@@ -217,8 +217,8 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | 方法 | 路徑 | 說明 |
 |---|---|---|
 | `GET` | `/admin` | Admin 首頁：用量彙總、DAU 趨勢、部門用量、排行榜、使用者管理。支援分頁（`?limit=15&offset=0&app_limit=15&app_offset=0`）與伺服器端搜尋（`?q=keyword`，對 username/display_name/org_code 做 ILIKE） |
-| `POST` | `/admin/users/create` | 建立 App 帳號（表單 `username`、`daily_limit_usd`、`owner_username`；username 自動加 `app_` 前綴；建立時即豁免並行上限） |
-| `POST` | `/admin/users/{id}/owner` | 替換 App 帳號的 owner（表單 `owner_usernames`，逗號分隔；有不存在的名稱回 400）。回傳 JSON |
+| `POST` | `/admin/users/create` | 建立服務帳號（表單 `username`、`daily_limit_usd`、`owner_username`）。名稱照輸入的使用（不再加 `app_` 前綴）；只能是字母、數字、`.` `_` `-`，且以字母或數字開頭，否則回 400。建立時即豁免並行上限 |
+| `POST` | `/admin/users/{id}/owner` | 替換服務帳號的 owner（表單 `owner_usernames`，逗號分隔；有不存在的名稱回 400）。回傳 JSON |
 | `POST` | `/admin/users/{id}/limit` | 修改使用者每日限額（表單 `new_limit`） |
 | `POST` | `/admin/users/{id}/cloud-limit` | 設定使用者自己的雲端上限（表單 `new_cloud_limit`；空白則清除、改依預設值，`0` 為 $0 上限） |
 | `POST` | `/admin/users/{id}/delete` | 先清掉所有參照該使用者的資料（app owner、舊版 `owner_id`、anomaly event、並行租約）再刪除使用者。usage log 與每日彙總保留（計費／稽核紀錄），並在 log 記下 id 對應的帳號。不可刪除自己 |
@@ -266,7 +266,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | 方法 | 路徑 | 說明 |
 |---|---|---|
 | `GET` | `/admin/users` | 列出所有使用者（遮罩後的 `api_key`、`daily_limit_usd`、`cloud_daily_limit_usd`、`concurrency_waived`、`owner_ids`、`display_name`、`org_code`） |
-| `POST` | `/admin/users` | 建立使用者（JSON body：`username`、`daily_limit_usd`、`cloud_daily_limit_usd` — `null` 表示依預設值、`concurrency_waived` — 必須是 JSON boolean，`app_*` 帳號預設為 true、`owner_ids`）。username 重複回 409；回應含完整 `api_key` |
+| `POST` | `/admin/users` | 建立使用者（JSON body：`username`、`daily_limit_usd`、`cloud_daily_limit_usd` — `null` 表示依預設值、`is_service_account` — JSON boolean；沒給時，舊式的 `app_*` 名稱仍會建立成服務帳號、`concurrency_waived` — 必須是 JSON boolean，服務帳號預設為 true、`owner_ids`）。username 重複回 409；回應含完整 `api_key` |
 | `PATCH` | `/admin/users/{id}` | 更新使用者（`daily_limit_usd`、`cloud_daily_limit_usd`、`owner_ids` — 整份替換 owner 清單、`concurrency_waived` — 必須是 JSON boolean） |
 | `GET` | `/admin/api/anomalies` | gateway 每小時異常掃描（`app/services/anomaly_scan.py`）寫入的異常紀錄（`?status=new` 為預設，或 `acknowledged`、`resolved`、`all`；`?limit=50`，上限 200） |
 | `POST` | `/admin/api/anomalies/{id}/ack` | 將異常標為 `acknowledged` |
@@ -280,8 +280,8 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | 方法 | 路徑 | 說明 |
 |---|---|---|
 | `GET` | `/admin/api/export/usage.xlsx` | 月用量報表活頁簿（4 個工作表），範圍 `?from=YYYY-MM&to=YYYY-MM`（含頭尾，最多 24 個月） |
-| `GET` | `/admin/api/export/user-backend-costs.csv` | 每個月 × 帳號一列（含使用者與 `app_*`），費用拆成 vLLM / Azure / Bedrock 欄位；同樣用 `from` / `to` |
-| `GET` | `/admin/api/export/users.csv` | 所有真人使用者（不含 `app_*`），附旗標、每日額度、本月費用/requests 與最後活動時間 |
+| `GET` | `/admin/api/export/user-backend-costs.csv` | 每個月 × 帳號一列（含使用者與服務帳號），費用拆成 vLLM / Azure / Bedrock 欄位；同樣用 `from` / `to` |
+| `GET` | `/admin/api/export/users.csv` | 所有真人使用者（不含服務帳號），附旗標、每日額度、本月費用/requests 與最後活動時間 |
 | `GET` | `/admin/api/export/audit-log.csv` | 最近 `?days=` 天（預設 365）的稽核紀錄，新的在前 |
 
 CSV 開頭帶 UTF-8 BOM，Excel 開啟中文才不會亂碼。

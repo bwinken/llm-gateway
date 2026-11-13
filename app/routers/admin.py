@@ -5,6 +5,7 @@ Admin panel: web UI + API endpoints for user management and model configuration.
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.parse import urlencode
@@ -69,8 +70,8 @@ from app.models.schema import (
     IpAllowRule,
     User,
     UsageLog,
-    app_account_clause,
-    is_app_account,
+    has_legacy_service_name,
+    service_account_clause,
     is_legacy_api_key,
     legacy_api_key_clause,
     mask_api_key,
@@ -191,7 +192,7 @@ USER_TABLE_STATUSES: dict[str, str] = {
 STALE_KEY_DAYS = 90
 # The "Special access" overview above the tables: one count per permission,
 # each linking to its filter. The waiver counts only what differs from an
-# account kind's default (users are created limited, app accounts waived).
+# account kind's default (users are created limited, service accounts waived).
 SPECIAL_ACCESS_KEYS: tuple[str, ...] = (
     "azure", "bedrock", "cloud_cap", "waiver_changed", "disabled",
 )
@@ -252,7 +253,7 @@ def _special_access_summary(session: Session) -> list[dict]:
     keys = ("special", *SPECIAL_ACCESS_KEYS)
     counts: dict[str, dict[str, int]] = {key: {} for key in keys}
     for kind, is_apps in (("users", False), ("apps", True)):
-        kind_clause = app_account_clause() if is_apps else ~app_account_clause()
+        kind_clause = service_account_clause() if is_apps else ~service_account_clause()
         row = session.exec(
             select(*[
                 func.coalesce(func.sum(case((_status_clause(key, is_apps), 1), else_=0)), 0)
@@ -316,7 +317,7 @@ def _user_table(
     offset_key, limit_key = ("app_offset", "app_limit") if is_apps else ("offset", "limit")
     limit = state[limit_key]
 
-    clauses = [app_account_clause() if is_apps else ~app_account_clause()]
+    clauses = [service_account_clause() if is_apps else ~service_account_clause()]
     if state["q"]:
         like = f"%{state['q']}%"
         clauses.append(
@@ -598,28 +599,45 @@ def user_table_panel(
     )
 
 
+_SERVICE_ACCOUNT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _service_account_name(raw: object) -> str:
+    """A service account's name as typed, checked: letters, digits, ``.``
+    ``_`` ``-``, starting with a letter or digit (it appears in URLs, logs
+    and CSV exports). An SSO sign-in under the same name is refused from
+    then on, so it must not be a person's AuthCenter username."""
+    name = str(raw or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Username is required.")
+    if not _SERVICE_ACCOUNT_NAME.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail="A service account name is 1 to 64 letters, digits, dots, dashes or underscores, starting with a letter or digit.",
+        )
+    return name
+
+
 @router.post("/users/create")
 async def create_app_account_web(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """Create a new app account (web UI form)."""
+    """Create a service account (web UI form): an account for a program,
+    used by API key only. The name is taken as given (the ``app_`` prefix
+    older accounts carry is no longer added or needed)."""
 
     form = await request.form()
-    username = (form.get("username") or "").strip()
+    username = _service_account_name(form.get("username"))
     daily_limit = form.get("daily_limit_usd")
     owner_username = (form.get("owner_username") or "").strip()
-
-    if not username:
-        raise HTTPException(status_code=400, detail="Username is required.")
-    if not username.startswith("app_"):
-        username = f"app_{username}"
 
     existing = session.exec(select(User).where(User.username == username)).first()
     if existing:
         raise HTTPException(status_code=409, detail=f"User '{username}' already exists.")
 
-    user = User(username=username, concurrency_waived=True)  # app accounts start waived
+    # Service accounts start waived from the concurrency limit.
+    user = User(username=username, is_service_account=True, concurrency_waived=True)
     if daily_limit is not None:
         user.daily_limit_usd = _limit_usd(daily_limit, "daily_limit_usd")
     session.add(user)
@@ -643,7 +661,7 @@ async def update_user_owner(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """Replace app account owners (comma-separated usernames)."""
+    """Replace a service account's owners (comma-separated usernames)."""
 
     target = session.exec(select(User).where(User.id == user_id)).first()
     if not target:
@@ -1821,6 +1839,7 @@ def list_users_api(
             "daily_limit_usd": u.daily_limit_usd,
             "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
             "concurrency_waived": u.concurrency_waived,
+            "is_service_account": u.is_service_account,
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
@@ -1846,9 +1865,18 @@ def create_user_api(
 
     _reject_retired_limits(body)
     _reject_retired_admin_flag(body)
-    # App accounts start waived from the concurrency limit; an explicit
+    # What kind of account: "is_service_account" says so. Without it, a name
+    # of the older ``app_*`` form still makes a service account, as it did
+    # when the name was the test (scripts written then keep working).
+    if "is_service_account" in body:
+        is_service = _strict_bool(body["is_service_account"], "is_service_account")
+    else:
+        is_service = has_legacy_service_name(username)
+    if is_service:
+        _service_account_name(username)
+    # Service accounts start waived from the concurrency limit; an explicit
     # "concurrency_waived" in the body (handled below) still wins.
-    new_user = User(username=username, concurrency_waived=is_app_account(username))
+    new_user = User(username=username, is_service_account=is_service, concurrency_waived=is_service)
     if "daily_limit_usd" in body:
         new_user.daily_limit_usd = _limit_usd(body["daily_limit_usd"], "daily_limit_usd")
     if "cloud_daily_limit_usd" in body:
@@ -1877,6 +1905,7 @@ def create_user_api(
         "username": new_user.username,
         "api_key": new_user.api_key,
         "daily_limit_usd": new_user.daily_limit_usd,
+        "is_service_account": new_user.is_service_account,
         "owner_ids": owner_ids,
     }
 
@@ -2490,7 +2519,7 @@ def export_user_backend_costs_csv(
     One row per (month × account) with separate On-prem (vLLM) / Azure /
     AWS Bedrock cost columns — the flat-file counterpart of the xlsx
     "Cost by Backend" sheet, for feeding billing/chargeback systems.
-    Includes both human users and app_* accounts (see the `type` column).
+    Includes both human users and service accounts (see the `type` column).
     """
     import csv
     import io
@@ -2630,7 +2659,7 @@ def export_audit_log_csv(
 
 @router.get("/api/export/users.csv")
 def export_users_csv(session: Session = Depends(get_session)):
-    """Export all real users (excluding app_* accounts) as CSV for mass mailing."""
+    """Export all real users (service accounts left out) as CSV for mass mailing."""
     import csv
     import io
 
@@ -2645,7 +2674,7 @@ def export_users_csv(session: Session = Depends(get_session)):
     )
     rows = session.exec(
         select(User, last_active_col)
-        .where(~app_account_clause())
+        .where(~service_account_clause())
         .order_by(User.org_code, User.username)
     ).all()
     users = [u for u, _ in rows]

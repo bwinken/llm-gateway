@@ -66,7 +66,7 @@ class TestCreateUserAPI:
 
         db_session.add(User(username="alice", display_name="Alice Wu", org_code="ENG", daily_limit_usd=20.0, can_use_azure=True))
         db_session.add(User(username="carol", display_name="Carol Lin", org_code="RAD", daily_limit_usd=10.0))
-        db_session.add(User(username="app_billing", display_name="", org_code="", daily_limit_usd=0.0))
+        db_session.add(User(username="app_billing", display_name="", org_code="", daily_limit_usd=0.0, is_service_account=True))
         db_session.commit()
 
         resp = client.get(

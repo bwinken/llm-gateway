@@ -68,7 +68,7 @@ Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 C
 | `GET /v1/me`、`/me` | 你的權限（地端 / Azure / AWS）和今日額度：上限、已用、剩餘、重置時間。額度用完時一樣可以查。見[查詢額度](#查詢額度) |
 | `GET /v1/status` | 你可以用的模型，以及每個模型是否正常、目前負載和價格。見[模型狀態](#模型狀態) |
 | `GET /v1/usage` | 你每天的用量，以及今天和本月各模型的用量。見[用量紀錄](#用量紀錄) |
-| `GET /v1/apps` | 你名下的 app 帳號，以及各自的上限和本月用量。見[App 帳號](#app-帳號) |
+| `GET /v1/apps` | 你名下的服務帳號，以及各自的上限和本月用量。見[服務帳號](#服務帳號) |
 | `GET /v1/notices` | dashboard 要你修正的 client 設定。見[通知](#通知) |
 | `GET /v1/settings` | 工具可以幫你設定的 client 設定，每項都帶有說明、對你的帳號的建議值和其他選項。見[設定](#設定) |
 | `POST /auth/api-key` | 用 AuthCenter 的 access token 換你的 API key，terminal 工具的登入方式。見[從 terminal 工具登入](#從-terminal-工具登入) |
@@ -203,7 +203,7 @@ curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-ap
 - `today` 和 `month` 分別是今天和本月到目前為止的合計，`models` 依模型和後端分列，順序和 dashboard 一樣。
 - 和 dashboard 一樣，`today` 和 `month` 不包含你已經沒有權限的雲端後端；`days` 則全部都算，和每日額度的算法一致。
 
-## App 帳號
+## 服務帳號
 
 ```bash
 curl https://your-gateway/v1/apps -H "Authorization: Bearer sk-your-api-key"
@@ -214,14 +214,22 @@ curl https://your-gateway/v1/apps -H "Authorization: Bearer sk-your-api-key"
   "object": "apps",
   "month": "2026-10",
   "apps": [
-    {"username": "app_batch", "daily_limit_usd": 50.0, "legacy_key": false,
-     "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5}}
+    {"username": "billing-etl", "daily_limit_usd": 50.0, "legacy_key": false,
+     "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5,
+               "models": [
+                 {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
+                  "requests": 1100, "input_tokens": 3700000, "output_tokens": 340000, "cost_usd": 21.5},
+                 {"model": "gpt-5", "backend": "azure", "type": "llm",
+                  "requests": 100, "input_tokens": 400000, "output_tokens": 40000, "cost_usd": 40.0}
+               ]}}
   ]
 }
 ```
 
-- `apps` 列出你名下的 app 帳號（沒有的話是空陣列），各自有自己的每日上限和本月用量。
-- 不包含 app 的 API key，任何端點都不會回傳 key。要查看或重新產生 app 的 key，請到 dashboard。
+- 服務帳號是給程式用的帳號（批次工作、服務），由管理員指派給你。它以前叫 app 帳號，所以路徑和欄位名稱還是 `apps`；舊的帳號名稱是 `app_...`，新的可以是任何名稱。
+- `apps` 列出你名下的服務帳號（沒有的話是空陣列），各自有自己的每日上限和本月用量：就是 dashboard 的 *Service accounts* 分頁。
+- `month.models` 是當月依模型拆開的用量：每個模型和後端一列，順序和 dashboard 相同，加總等於當月合計。服務帳號用過的後端都會列出，和你自己的權限無關。
+- 不包含服務帳號的 API key，任何端點都不會回傳 key。要查看或重新產生，請到 dashboard 的 *Service accounts* 分頁。
 
 ## 通知
 

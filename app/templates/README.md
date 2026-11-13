@@ -60,7 +60,7 @@ The budget hero stays at the top; the lower half is split into two tabs (**Model
 | **Usage Trend** | Usage | Chart.js chart, 30-day trend, toggle between Requests / Cost (USD) |
 | **Cost by Model** | Usage | Per-model cost grouped by backend (On-Prem / Azure / AWS Bedrock) with a share bar and doughnut chart; This Month / Today toggle and a Refresh button, both fetching `GET /dashboard/api/model-breakdown?period=month\|day` and re-rendering in place. Backends the user has no access to are left out |
 | **Daily Breakdown** | Usage | Last 30 days with requests: requests, cost, input / output tokens |
-| **My App Accounts** | Usage | Owned app accounts (owners only): truncated API key with Copy, monthly cost / tokens / requests, Refresh key |
+| **Service accounts** | Service accounts (a tab of its own, shown only to people who own one) | One card per owned service account: truncated API key with Copy and Regenerate, daily limit, this month's cost / requests / tokens, and a table of this month's usage per model (backend, requests, tokens, cost, share of the account's month) |
 
 ### Available Actions
 
@@ -68,8 +68,8 @@ The budget hero stays at the top; the lower half is split into two tabs (**Model
 |---|---|---|
 | View API Key | Button → Modal | Shows full API key, copyable to clipboard |
 | Regenerate Key | `POST /dashboard/refresh-key` | Regenerate own API key (old key immediately invalidated); from the key modal |
-| Refresh App Key | `POST /dashboard/app/{id}/refresh-key` | Regenerate owned app account's API key (owner only) |
-| Copy App Key | Button | Copy app account's full API key |
+| Regenerate service account key | `POST /dashboard/app/{id}/refresh-key` | Regenerate owned service account's API key (owner only) |
+| Copy service account key | Button | Copy service account's full API key |
 | Cost by Model refresh | `GET /dashboard/api/model-breakdown?period=` | JSON for the Cost by Model card (`month` or `day`) |
 | Download installer | `GET /dashboard/install-claude-code.bat` | Personalized Claude Code installer (linked from `/setup`) |
 | Download settings patch | `GET /dashboard/client-rules/all/patch.{bat,sh}` | One script for everything the account has open (the mail links to the same URL) |
@@ -92,7 +92,7 @@ Above the tab bar: only the **Needs attention** strip, a `<details>` that is one
 | **Needs attention** | — | Folded: counts per kind (models down, anomalies, at / near daily limit, client rules violated). Open: Three columns: open usage anomalies from the gateway's hourly scan (`app/services/anomaly_scan.py`) (severity, user/model, rule, summary; Ack / Resolve buttons), on-prem models down or queueing, and accounts at ≥ 90 % of today's daily limit (each links to `?q=<username>#users`). Collapses to "All clear" when empty |
 | **Key numbers** | Overview | Spend today, Requests today, Active users today, In flight now (concurrency leases; "tracking off" when the limit is `off`), this month's cost / requests / tokens |
 | **DAU Trend** | Overview | Chart.js bar chart, 30-day Daily Active Users, today's DAU in top-right |
-| **App Leaderboard** | Overview | App account ranking (`app_*`), top-10 by monthly cost descending |
+| **Service Account Leaderboard** | Overview | Service account ranking, top-10 by monthly cost descending |
 | **User Leaderboard** | Overview | User ranking, top-10 by monthly cost descending, shows display_name and org_code badge |
 | **Department Usage** | Overview | Usage grouped by org_code: Users, Cost, Input / Output Tokens, Reqs; client-side pager past 15 rows |
 | **Export Usage Report** | Overview | Month range (max 24 months) → **Download xlsx** (`GET /admin/api/export/usage.xlsx`, 4 sheets) or **Backend costs (CSV)** (`GET /admin/api/export/user-backend-costs.csv`, one row per month × account with On-prem / Azure / Bedrock cost columns) |
@@ -101,7 +101,7 @@ Above the tab bar: only the **Needs attention** strip, a `<details>` that is one
 | **Default Daily Limit** | Settings | `POST /admin/default-limit` — sets `[app].default_daily_limit_usd` and bulk-bumps any user with `0 < daily_limit_usd < new_floor` up to the floor (users at `daily_limit_usd = 0`, a deliberate $0 budget, are never modified) |
 | **Cloud Daily Limit** | Settings | `POST /admin/cloud-limit` — default cap on each user's combined Azure + AWS spend per day (`[app].cloud_daily_limit_usd`) for users with cloud access and no *Cloud $* of their own. Blank = no default cap; 0 = cloud refused |
 | **Cloud Budget Fallback** | Settings | Checkbox → `POST /admin/cloud-budget-fallback`. When on, a `/v1/*` cloud request over the cloud cap is served on-prem instead of a 429 (the overall daily limit still applies; `/azure/v1/*` and `/aws/v1/*` never fall back) |
-| **Create App Account** | Users | Username (auto-prefixed with `app_`), Daily Limit, Owner → `POST /admin/users/create`. App accounts are created concurrency-waived |
+| **Create Service Account** | Users | Name (used as typed; no prefix), Daily Limit, Owner → `POST /admin/users/create`. Service accounts are created concurrency-waived |
 | **Site Links** | Settings | Support Bot URL (floating button on every page) and Install Guide URL (card on `/setup`) → `POST /admin/site-links`. Only `http(s)://` or site-relative URLs; empty hides the element |
 | **Client rules** | Clients | Settings and violators of the built-in checks (`client_checks.py`, CC001…), Claude Code versions in use, *Mail everyone* and *Test the combined mail* (every rule that is on in one mail with one merged patch), the mail log (every mail tried: address, rules, why, sent or failed; filter, search, paging), deprecated / retired checks; see Client rules in `docs/architecture.md`. |
 | **IP Allowlist** | Security | Mode and rules of the API IP allowlist; see `docs/architecture.md`. |

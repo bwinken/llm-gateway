@@ -410,9 +410,9 @@ def get_usage_history(user: User, days: int) -> dict:
 
 
 def get_owned_apps(user: User) -> list[dict]:
-    """The app accounts ``user`` owns with this month's usage
-    (``stats.get_owned_apps_summary``), for ``GET /v1/apps``. The apps' API
-    keys are taken out here: no API-key endpoint hands out a key. Short-lived
+    """The service accounts ``user`` owns with this month's usage, in total
+    and per model (``stats.get_owned_apps_summary``), for ``GET /v1/apps``.
+    Their API keys are taken out here: no API-key endpoint hands out a key. Short-lived
     session; blocking."""
     from app.services.stats import get_owned_apps_summary
 

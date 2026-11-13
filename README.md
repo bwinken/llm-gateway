@@ -97,7 +97,7 @@ Open `https://your-gateway` and sign in through SSO. Accounts with the `admin` s
 | Tab | What you do there |
 |---|---|
 | **Overview** | See spend, requests and active users; review usage anomalies; export monthly cost reports |
-| **Users** | Set budgets and cloud caps, grant Azure or AWS access, disable accounts, create app accounts, view or regenerate keys |
+| **Users** | Set budgets and cloud caps, grant Azure or AWS access, disable accounts, create service accounts, view or regenerate keys |
 | **Clients** | Choose which client problems to detect, how users are told, and the settings patch they get; see who is affected and what mail went out |
 | **Security** | IP allowlist, prompt guardrail, audit log |
 | **Settings** | Default budgets, concurrency limit, what happens when the cloud cap is spent, site links |

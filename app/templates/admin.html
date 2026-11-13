@@ -206,7 +206,7 @@ function anomalyAction(id, action) {
         <div class="mt-1 text-xs text-t4">all accounts</div>
     </div>
     <div class="gw-card gw-stat relative p-5" style="--accent:linear-gradient(90deg,#a78bfa,#6398ff)">
-        <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip" data-tip="People (not app accounts) with at least one request today">Active users today</dt>
+        <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip" data-tip="People (not service accounts) with at least one request today">Active users today</dt>
         <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums">{{ today_totals.active_users }}</dd>
         <div class="mt-1 text-xs text-t4">{{ user_total }} accounts total</div>
     </div>
@@ -245,16 +245,16 @@ function anomalyAction(id, action) {
 
 {# ── Leaderboards ── #}
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8 gw-anim gw-d3">
-    {# App Leaderboard #}
+    {# Service account leaderboard #}
     <div class="gw-card overflow-hidden">
         <div class="px-5 py-3 flex items-center gap-2" style="border-bottom:1px solid rgba(255,255,255,0.04)">
-            <h3 class="text-xs font-bold text-t3 uppercase tracking-wider">App Leaderboard</h3>
+            <h3 class="text-xs font-bold text-t3 uppercase tracking-wider">Service Account Leaderboard</h3>
             <span class="ml-auto text-[11px] text-t4 font-mono">{{ month_label }} · top 10</span>
         </div>
         <div class="overflow-x-auto">
             <table class="gw-table">
                 <thead><tr>
-                    <th>#</th><th>App</th><th style="text-align:right">Cost</th>
+                    <th>#</th><th>Service account</th><th style="text-align:right">Cost</th>
                     <th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Reqs</th>
                 </tr></thead>
                 <tbody>
@@ -276,7 +276,7 @@ function anomalyAction(id, action) {
                     </tr>
                     {% endfor %}
                     {% if not app_leaderboard %}
-                    <tr><td colspan="6" class="text-center py-6 text-sm text-t4">No app accounts found.</td></tr>
+                    <tr><td colspan="6" class="text-center py-6 text-sm text-t4">No service accounts found.</td></tr>
                     {% endif %}
                 </tbody>
             </table>
@@ -483,12 +483,12 @@ function submitExportCsv() {
 <div class="gw-card p-4 mb-4 gw-anim gw-d6">
     <div class="flex flex-wrap items-center gap-2">
         <span class="text-[11px] font-bold text-t3 uppercase tracking-wider mr-1 gw-tip gw-tip-wide"
-              data-tip="Accounts with a permission or setting other than the defaults. Click one to list those accounts below; each row's toggles show what it has. Users and app accounts are counted separately (Waiver not the default: users waived, or app accounts un-waived). Counts are as of this page load.">Special access</span>
+              data-tip="Accounts with a permission or setting other than the defaults. Click one to list those accounts below; each row's toggles show what it has. Users and service accounts are counted separately (Waiver not the default: users waived, or service accounts un-waived). Counts are as of this page load.">Special access</span>
         {% for s in special_access %}
         {% set n = s.users + s.apps %}
         <a href="{{ s.url }}" class="sa-chip {{ 'is-zero' if n == 0 }} {{ 'is-active' if table_state.status == s.key }}">
             {{ s.label }} <span class="font-mono {{ 'text-t1' if s.users else '' }}">{{ s.users }}</span>
-            {% if s.apps %}<span class="text-t4 font-mono">+{{ s.apps }} app{{ '' if s.apps == 1 else 's' }}</span>{% endif %}
+            {% if s.apps %}<span class="text-t4 font-mono">+{{ s.apps }} service</span>{% endif %}
         </a>
         {% endfor %}
     </div>
@@ -503,15 +503,15 @@ function submitExportCsv() {
                 <button type="button" id="umTabUsers" data-um-tab="users" role="tab" class="text-xs font-medium px-3 py-1.5 transition-colors">
                     Users <span class="text-t4 font-mono" data-um-count="users">{{ users_table.total }}</span></button>
                 <button type="button" id="umTabApps" data-um-tab="apps" role="tab" class="text-xs font-medium px-3 py-1.5 transition-colors">
-                    Apps <span class="text-t4 font-mono" data-um-count="apps">{{ apps_table.total }}</span></button>
+                    Service accounts <span class="text-t4 font-mono" data-um-count="apps">{{ apps_table.total }}</span></button>
             </div>
             <button type="button" class="text-xs text-ab hover:underline"
-                    onclick="var c=document.getElementById('create-app');c.scrollIntoView({behavior:'smooth',block:'center'});c.querySelector('input[name=username]').focus({preventScroll:true})">+ New app account</button>
+                    onclick="var c=document.getElementById('create-app');c.scrollIntoView({behavior:'smooth',block:'center'});c.querySelector('input[name=username]').focus({preventScroll:true})">+ New service account</button>
         </div>
         <div class="flex flex-wrap items-center gap-2">
             <a href="/admin/api/export/users.csv" download
                class="gw-btn gw-btn-ghost text-xs px-3 py-1.5 gw-tip gw-tip-wide"
-               data-tip="Download a CSV of all real users (excluding app_* accounts) for mass mailing. Includes username, display_name, org_code, access flags (disabled / Azure / Bedrock), monthly cost, last active.">
+               data-tip="Download a CSV of all real users (service accounts left out) for mass mailing. Includes username, display_name, org_code, access flags (disabled / Azure / Bedrock), monthly cost, last active.">
                 <svg class="w-3.5 h-3.5 inline -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                 Export Users (CSV)
             </a>
@@ -542,19 +542,16 @@ function submitExportCsv() {
     {% with table = apps_table %}{% include "_admin_user_table.html" %}{% endwith %}
 </div>
 
-{# ── Create App Account ── #}
+{# ── Create a service account (formerly "app account"; the id and the route keep the old name) ── #}
 <div id="create-app" class="gw-card p-5 mt-6 mb-6 gw-anim gw-d5">
-    <h2 class="text-sm font-bold text-t2 mb-1">Create App Account</h2>
-    <p class="text-xs text-t4 mb-4">A service account for programmatic access: its own key and daily limit, no concurrency limit by default.</p>
+    <h2 class="text-sm font-bold text-t2 mb-1">Create Service Account</h2>
+    <p class="text-xs text-t4 mb-4 max-w-3xl">An account for a program rather than a person: its own key and daily limit, no concurrency limit by default, no sign-in. Name it as you like (the <span class="font-mono">app_</span> prefix older accounts carry is no longer needed), but not after a person's sign-in name: nobody can sign in under a service account's name.</p>
     <form action="/admin/users/create" method="POST" class="flex items-end gap-4 flex-wrap">
         <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Prefix app_ is added automatically. Use for programmatic API access.">Username</label>
-            <div class="flex items-center gap-1">
-                <span class="text-sm text-t4 font-mono">app_</span>
-                <input type="text" name="username" required placeholder="my_service"
-                       pattern="[a-zA-Z0-9_\-]+" title="Letters, numbers, underscores and hyphens"
-                       class="gw-input w-48 text-sm font-mono py-1.5 px-2">
-            </div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Used exactly as typed. Letters, digits, dots, dashes and underscores, starting with a letter or digit.">Name</label>
+            <input type="text" name="username" required placeholder="billing-etl" maxlength="64"
+                   pattern="[a-zA-Z0-9][a-zA-Z0-9._\-]*" title="Letters, digits, dots, dashes and underscores, starting with a letter or digit"
+                   class="gw-input w-56 text-sm font-mono py-1.5 px-2">
         </div>
         <div>
             <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Max daily spend in USD. API returns 429 when limit is reached. 0 = $0 (every request refused).">Daily Limit (USD)</label>
@@ -565,7 +562,7 @@ function submitExportCsv() {
             </div>
         </div>
         <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Owner can view and refresh this app's API key from their Dashboard. Enter username.">Owner</label>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="The owner sees this account on the Service accounts tab of their Dashboard: its key (and can regenerate it) and this month's usage per model. Enter a username; add more owners in the table afterwards.">Owner</label>
             <input type="text" name="owner_username" placeholder="username (optional)"
                    class="gw-input w-48 text-sm font-mono py-1.5 px-2">
         </div>
@@ -1171,7 +1168,7 @@ function submitExportCsv() {
                 <select name="apply_to" class="gw-input text-sm py-1.5 px-2">
                     <option value="all" {{ 'selected' if g.apply_to == 'all' else '' }}>All accounts</option>
                     <option value="users" {{ 'selected' if g.apply_to == 'users' else '' }}>Users only</option>
-                    <option value="apps" {{ 'selected' if g.apply_to == 'apps' else '' }}>App accounts only</option>
+                    <option value="apps" {{ 'selected' if g.apply_to == 'apps' else '' }}>Service accounts only</option>
                 </select>
             </div>
             <div>
@@ -1188,7 +1185,7 @@ function submitExportCsv() {
             <div>
                 <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
                        data-tip="Usernames never screened, comma-separated.">Exempt users</label>
-                <input type="text" name="exempt_users" value="{{ g.exempt_users | join(', ') }}" placeholder="app_batch, alice"
+                <input type="text" name="exempt_users" value="{{ g.exempt_users | join(', ') }}" placeholder="billing-etl, alice"
                        class="gw-input w-56 text-sm font-mono py-1.5 px-2">
             </div>
         </div>
@@ -1272,7 +1269,7 @@ function submitExportCsv() {
             <h2 class="text-sm font-bold text-t2 mb-1">Concurrency Limit</h2>
             <p class="text-xs text-t4 gw-tip gw-tip-wide"
                data-tip="Counts chat / responses / messages requests (streams included) across all gateway workers, from admission until the response is fully sent. Local (on-prem) and cloud (Azure / AWS) requests are counted apart, each against its own limit: a full one neither borrows from nor blocks the other. A cloud model served on-prem because the cloud budget is spent counts as local. Monitor: everything is served, over-limit requests are logged as 'Concurrency limit exceeded (monitor)'. Enforce: over-limit requests get 429 with Retry-After: 5 (Claude Code retries automatically). Admins and accounts marked Waive are never limited; app accounts start out waived (un-waive one to limit it). count_tokens, tokenize, models, embeddings and rerank are not counted.">
-                Maximum in-flight inference requests per account: one limit for local models, a wider one for cloud. Admins and waived accounts (all app accounts, by default) are exempt.
+                Maximum in-flight inference requests per account: one limit for local models, a wider one for cloud. Admins and waived accounts (all service accounts, by default) are exempt.
             </p>
             <p class="text-xs text-t4 mt-1.5">
                 {% if concurrency_in_flight is none %}

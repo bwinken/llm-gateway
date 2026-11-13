@@ -838,7 +838,9 @@ class TestAppAccountsStartWaived:
         resp = client.post("/admin/users/create", data={"username": "batch", "daily_limit": "5"},
                            headers=self._hdr(admin_user), follow_redirects=False)
         assert resp.status_code in (200, 303)
-        assert self._get(db_session, "app_batch").concurrency_waived is True
+        # The name is kept as typed: no app_ prefix is added any more.
+        created = self._get(db_session, "batch")
+        assert created.is_service_account is True and created.concurrency_waived is True
 
     def test_api_create_app_defaults_waived(self, client, db_session, admin_user):
         resp = client.post("/admin/users", json={"username": "app_etl"}, headers=self._hdr(admin_user))

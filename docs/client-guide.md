@@ -68,7 +68,7 @@ Windows users can get a pre-configured Claude Code installer from the **Setup** 
 | `GET /v1/me`, `/me` | Your access (on-prem / Azure / AWS) and today's budget: limit, spent, remaining, reset time. Answers even when the budget is spent. See [Checking your quota](#checking-your-quota) |
 | `GET /v1/status` | The models you can use and whether each is up, with load and price. See [Model status](#model-status) |
 | `GET /v1/usage` | Your usage per day, and today and this month by model. See [Usage history](#usage-history) |
-| `GET /v1/apps` | The app accounts you own, with their limits and this month's usage. See [App accounts](#app-accounts) |
+| `GET /v1/apps` | The service accounts you own, with their limits and this month's usage. See [Service accounts](#service-accounts) |
 | `GET /v1/notices` | What the dashboard asks you to fix in your client's settings. See [Notices](#notices) |
 | `GET /v1/settings` | The client settings a tool can set up for you, each with a description, the suggested value and the other options for your account. See [Settings](#settings) |
 | `POST /auth/api-key` | Your API key for an AuthCenter access token: how a terminal tool signs in. See [Signing in from a terminal tool](#signing-in-from-a-terminal-tool) |
@@ -203,7 +203,7 @@ curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-ap
 - `today` and `month` are today and the current month so far, each with one `models` entry per model and backend, in the dashboard's order.
 - `today` and `month` leave out a cloud backend you no longer have access to, as the dashboard does; `days` counts everything, as your daily budget does.
 
-## App accounts
+## Service accounts
 
 ```bash
 curl https://your-gateway/v1/apps -H "Authorization: Bearer sk-your-api-key"
@@ -214,14 +214,22 @@ curl https://your-gateway/v1/apps -H "Authorization: Bearer sk-your-api-key"
   "object": "apps",
   "month": "2026-10",
   "apps": [
-    {"username": "app_batch", "daily_limit_usd": 50.0, "legacy_key": false,
-     "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5}}
+    {"username": "billing-etl", "daily_limit_usd": 50.0, "legacy_key": false,
+     "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5,
+               "models": [
+                 {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
+                  "requests": 1100, "input_tokens": 3700000, "output_tokens": 340000, "cost_usd": 21.5},
+                 {"model": "gpt-5", "backend": "azure", "type": "llm",
+                  "requests": 100, "input_tokens": 400000, "output_tokens": 40000, "cost_usd": 40.0}
+               ]}}
   ]
 }
 ```
 
-- `apps` lists the app accounts you own (empty when you own none), each with its own daily limit and its usage this month.
-- An app's API key is not included, and no endpoint returns a key. See or regenerate an app's key on the dashboard.
+- A service account is an account for a program (a batch job, a service) that an administrator assigned to you. They used to be called app accounts, which is why the route and the keys say `apps`; older ones are named `app_...`, newer ones anything.
+- `apps` lists the ones you own (empty when you own none), each with its own daily limit and its usage this month: the dashboard's *Service accounts* tab.
+- `month.models` is that month by model: one row per model and backend, in the dashboard's order, adding up to the month's totals. Every backend the service account used is listed, whatever your own access.
+- A service account's API key is not included, and no endpoint returns a key. See or regenerate it on the dashboard's *Service accounts* tab.
 
 ## Notices
 
