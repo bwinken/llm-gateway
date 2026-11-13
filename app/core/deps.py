@@ -8,7 +8,7 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import anyio
@@ -18,7 +18,11 @@ from sqlmodel import Session, func, select, update
 from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import AccountDisabledError
-from app.core.config import get_cloud_daily_limit, get_concurrency_settings
+from app.core.config import (
+    get_cloud_daily_limit,
+    get_concurrency_cloud_limit,
+    get_concurrency_settings,
+)
 from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
@@ -506,9 +510,24 @@ def require_bedrock_access(
 _CONCURRENCY_RETRY_AFTER_S = 5
 
 
+# Which limit a request counts against: a fixed pool name, or a callable
+# that works it out for this request (``/v1/*`` only knows once it has read
+# the model alias). See ``app.services.concurrency``.
+PoolResolver = Callable[[Request, User], Awaitable[str]]
+
+
 @asynccontextmanager
-async def _concurrency_slot(user: User, endpoint: str) -> AsyncIterator[None]:
+async def _concurrency_slot(
+    user: User,
+    endpoint: str,
+    pool: str | Callable[[], Awaitable[str]] = "local",
+) -> AsyncIterator[None]:
     """Hold one concurrency slot for ``user`` around the request.
+
+    ``pool`` is ``"local"`` (vLLM; ``[app].concurrency_limit``) or ``"cloud"``
+    (Azure / Bedrock; ``concurrency_cloud_limit``), or an async callable
+    returning one of them. The two are counted apart: a full pool neither
+    borrows from nor blocks the other.
 
     - mode ``off`` and ``concurrency_waived`` users: no-op.
     - ``monitor``: the lease is always taken; going over the limit logs a
@@ -526,8 +545,15 @@ async def _concurrency_slot(user: User, endpoint: str) -> AsyncIterator[None]:
     from app.services import concurrency
 
     try:
+        if not isinstance(pool, str):
+            pool = await pool()
+        if pool == concurrency.POOL_CLOUD:
+            limit = get_concurrency_cloud_limit()
+        else:
+            pool = concurrency.POOL_LOCAL
         lease_id, active = await run_in_threadpool(
-            concurrency.acquire, user.id, limit, endpoint, enforce=(mode == "enforce"),
+            concurrency.acquire, user.id, limit, endpoint,
+            enforce=(mode == "enforce"), pool=pool,
         )
     except Exception as exc:
         logger.warning(
@@ -539,16 +565,17 @@ async def _concurrency_slot(user: User, endpoint: str) -> AsyncIterator[None]:
 
     if active >= limit:
         logger.warning(
-            "Concurrency limit {} | user={} in_flight={} limit={} endpoint={}",
+            "Concurrency limit {} | user={} in_flight={} limit={} endpoint={} pool={}",
             "hit" if lease_id is None else "exceeded (monitor)",
-            user.username, active + (0 if lease_id is None else 1), limit, endpoint,
+            user.username, active + (0 if lease_id is None else 1), limit, endpoint, pool,
         )
         if lease_id is None:
             metrics.observe_rejection("concurrency_limit")
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=(
-                    f"Too many concurrent requests: {active} already in flight "
+                    f"Too many concurrent {'cloud ' if pool == concurrency.POOL_CLOUD else ''}"
+                    f"requests: {active} already in flight "
                     f"(limit {limit}). Retry when one finishes."
                 ),
                 headers={"Retry-After": str(_CONCURRENCY_RETRY_AFTER_S)},
@@ -571,15 +598,21 @@ async def _concurrency_slot(user: User, endpoint: str) -> AsyncIterator[None]:
                 )
 
 
-def _limited(auth_dependency: Callable[..., User]) -> Callable[..., AsyncIterator[User]]:
+def limited(
+    auth_dependency: Callable[..., User], pool: str | PoolResolver = "local",
+) -> Callable[..., AsyncIterator[User]]:
     """Build a dependency that authenticates via ``auth_dependency`` and then
-    holds a concurrency slot until the response has been sent."""
+    holds a concurrency slot in ``pool`` until the response has been sent.
+
+    ``pool`` is a pool name or ``async (request, user) -> name``; the
+    resolver only runs when the limit applies to the account."""
 
     async def dependency(
         request: Request,
         user: User = Depends(auth_dependency),
     ) -> AsyncIterator[User]:
-        async with _concurrency_slot(user, request.url.path):
+        slot_pool = pool if isinstance(pool, str) else (lambda: pool(request, user))
+        async with _concurrency_slot(user, request.url.path, slot_pool):
             yield user
 
     dependency.__name__ = f"limited_{auth_dependency.__name__}"
@@ -589,6 +622,8 @@ def _limited(auth_dependency: Callable[..., User]) -> Callable[..., AsyncIterato
 # Inference endpoints only (chat / responses / messages). Cheap metadata calls
 # — count_tokens, tokenize, render, models — and the short single-pass
 # embeddings / rerank / systemone keep the plain auth dependencies.
-limited_current_user = _limited(get_current_user)
-limited_azure_access = _limited(require_azure_access)
-limited_bedrock_access = _limited(require_bedrock_access)
+# ``/v1/*`` serves all three backends, so it builds its own with a resolver
+# (``v1_api.limited_v1_user``); the dedicated cloud surfaces are always cloud.
+limited_current_user = limited(get_current_user)
+limited_azure_access = limited(require_azure_access, pool="cloud")
+limited_bedrock_access = limited(require_bedrock_access, pool="cloud")

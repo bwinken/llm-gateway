@@ -44,8 +44,12 @@ cloud_budget_fallback = false
 # concurrency_limit: integer >= 1. Admins and accounts marked "waived" in the
 # admin user table are never limited. App accounts (app_*) start out waived;
 # un-waive one in the admin panel to limit it.
+# concurrency_cloud_limit: the same for requests to cloud models (Azure /
+# AWS), counted apart from local ones (default 10). The local limit protects
+# shared GPUs; a cloud backend has no such contention, so it can be wider.
 concurrency_limit_mode = "off"
 concurrency_limit = 8
+concurrency_cloud_limit = 10
 
 # API IP allowlist (admin panel → "IP Allowlist" card): which accounts may
 # call /v1, /azure and /aws from which addresses (the web UI and health checks

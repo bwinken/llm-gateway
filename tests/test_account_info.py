@@ -184,6 +184,12 @@ class TestConcurrency:
         assert _me(client)["concurrency"] == {"mode": "off"}
 
     def test_enforced_limit_reported(self, client, test_user):
+        # "limit" is the local one; cloud requests are counted apart
+        with patch("app.routers.v1_api.get_concurrency_settings", return_value=("enforce", 4)):
+            assert _me(client)["concurrency"] == {"mode": "enforce", "limit": 4, "cloud_limit": 10}
+
+    def test_cloud_limit_only_with_cloud_access(self, client, db_session, test_user):
+        _update(db_session, test_user, can_use_azure=False, can_use_bedrock=False)
         with patch("app.routers.v1_api.get_concurrency_settings", return_value=("enforce", 4)):
             assert _me(client)["concurrency"] == {"mode": "enforce", "limit": 4}
 

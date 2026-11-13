@@ -38,6 +38,7 @@ from app.core.config import (
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
     get_cloud_budget_fallback,
+    get_concurrency_cloud_limit,
     get_concurrency_settings,
     get_model_routing_snapshot,
 )
@@ -51,7 +52,7 @@ from app.core.deps import (
     get_owned_apps,
     get_today_usage,
     get_usage_history,
-    limited_current_user,
+    limited,
 )
 from app.core.logger import logger
 from app.core.timeutil import (
@@ -107,7 +108,7 @@ async def _peek_model_alias(request: Request) -> str:
     return alias if isinstance(alias, str) else ""
 
 
-def _route_to_azure(alias: str, user: User) -> bool:
+def _route_to_azure(alias: str, user: User, *, quiet: bool = False) -> bool:
     """Whether ``alias`` should be dispatched to the Azure backend.
 
     Returns True only when the alias is configured under ``[azure_models.*]``
@@ -128,6 +129,8 @@ def _route_to_azure(alias: str, user: User) -> bool:
         return False
     if user.can_use_azure:
         return True
+    if quiet:
+        return False
     # Azure alias requested by user without access — fall through to the
     # vLLM handler so its _resolve_model can route to the configured
     # vLLM-side default. Logged so operators can spot clients that keep
@@ -140,7 +143,7 @@ def _route_to_azure(alias: str, user: User) -> bool:
     return False
 
 
-def _route_to_bedrock(alias: str, user: User) -> bool:
+def _route_to_bedrock(alias: str, user: User, *, quiet: bool = False) -> bool:
     """Whether ``alias`` should be dispatched to the Bedrock backend.
 
     Same contract as ``_route_to_azure``: True only when the alias is
@@ -153,12 +156,48 @@ def _route_to_bedrock(alias: str, user: User) -> bool:
         return False
     if user.can_use_bedrock:
         return True
+    if quiet:
+        return False
     logger.info(
         "Bedrock alias '{}' requested by user '{}' without can_use_bedrock; "
         "falling back to vLLM default",
         alias, user.username,
     )
     return False
+
+
+def _concurrency_pool(*, bedrock: bool = True):
+    """Resolver for ``deps.limited``: which concurrency pool a ``/v1/*``
+    request counts against, ``cloud`` when the handler below will send it to
+    Azure / Bedrock and ``local`` otherwise.
+
+    It must reach the same answer as the handler, through the same
+    ``_route_to_*`` functions (``bedrock=False`` for ``/v1/responses``, which
+    has no Bedrock dispatch). A cloud alias that will be served on-prem
+    because the cloud cap is spent (``cloud_budget_fallback``) is ``local``:
+    it loads the GPUs, so it must not get the wider cloud limit. With the
+    fallback off the handler either goes to the cloud or answers 429, so the
+    cap is not read here. Only runs while the limit applies to the account.
+    """
+    async def pool(request: Request, user: User) -> str:
+        alias = await _peek_model_alias(request)
+        if alias and _route_to_azure(alias, user, quiet=True):
+            backend = "azure"
+        elif alias and bedrock and _route_to_bedrock(alias, user, quiet=True):
+            backend = "bedrock"
+        else:
+            return "local"
+        if get_cloud_budget_fallback() and not await run_in_threadpool(
+            check_cloud_budget, user, backend, allow_fallback=True
+        ):
+            return "local"
+        return "cloud"
+
+    return pool
+
+
+limited_v1_user = limited(get_current_user, pool=_concurrency_pool())
+limited_v1_responses_user = limited(get_current_user, pool=_concurrency_pool(bedrock=False))
 
 
 # Response header set when a cloud-bound request was served on-prem because
@@ -394,8 +433,15 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
             "remaining_usd": cloud_remaining,
         }} if cloud_limit is not None else {}),
         "cloud_budget_fallback": get_cloud_budget_fallback(),
+        # "limit" is for local (on-prem) requests; cloud requests are counted
+        # apart, against "cloud_limit" (only shown with cloud access).
         "concurrency": (
-            {"mode": mode, "limit": limit} if concurrency_applies else {"mode": "off"}
+            {
+                "mode": mode,
+                "limit": limit,
+                **({"cloud_limit": get_concurrency_cloud_limit()}
+                   if azure_access or bedrock_access else {}),
+            } if concurrency_applies else {"mode": "off"}
         ),
     }
 
@@ -585,7 +631,7 @@ def client_notices(user: User = Depends(get_current_user_unmetered)):
 
 @router.post("/v1/chat/completions")
 @router.post("/chat/completions")
-async def chat_completions(request: Request, user: User = Depends(limited_current_user)):
+async def chat_completions(request: Request, user: User = Depends(limited_v1_user)):
     alias = await _peek_model_alias(request)
     budget_fallback: str | None = None
     if alias and _route_to_azure(alias, user):
@@ -928,7 +974,7 @@ print(resp.json()["decoded_prompt"])
 
 @router.post("/v1/responses")
 @router.post("/responses")
-async def responses(request: Request, user: User = Depends(limited_current_user)):
+async def responses(request: Request, user: User = Depends(limited_v1_responses_user)):
     """OpenAI Responses API endpoint.
 
     Dispatches to the Azure backend (pure Responses pass-through) when the
@@ -957,7 +1003,7 @@ async def responses(request: Request, user: User = Depends(limited_current_user)
 
 @router.post("/v1/messages")
 @router.post("/messages")
-async def messages(request: Request, user: User = Depends(limited_current_user)):
+async def messages(request: Request, user: User = Depends(limited_v1_user)):
     """Anthropic Messages API compatibility endpoint.
 
     Translates Anthropic /v1/messages requests to OpenAI chat completions
