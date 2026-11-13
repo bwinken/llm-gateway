@@ -30,8 +30,8 @@ from tests.conftest import web_auth_header
 NOW = datetime.now(timezone.utc)
 
 
-def _seed_user(session: Session, username: str) -> User:
-    u = User(username=username)
+def _seed_user(session: Session, username: str, service: bool = False) -> User:
+    u = User(username=username, is_service_account=service)
     session.add(u)
     session.commit()
     session.refresh(u)
@@ -75,7 +75,7 @@ class TestBurstRate:
 
     def test_burst_flagged_for_human_only(self, db_session):
         human = _seed_user(db_session, "fastfingers")
-        app = _seed_user(db_session, "app_batch")
+        app = _seed_user(db_session, "batch-runner", service=True)
         for _ in range(BURST_PER_HOUR + 1):
             _log(db_session, human, when=NOW - timedelta(minutes=30))
             _log(db_session, app, when=NOW - timedelta(minutes=30))
@@ -92,7 +92,7 @@ class TestOffHours:
     def test_counts_only_local_night_requests_of_humans(self, db_session):
         night_owl = _seed_user(db_session, "night_owl")
         day_worker = _seed_user(db_session, "day_worker")
-        app = _seed_user(db_session, "app_cron")
+        app = _seed_user(db_session, "app_cron", service=True)
         night = local_day_start_utc() + timedelta(hours=2)      # 02:00 local
         day = local_day_start_utc() + timedelta(hours=7)        # 07:00 local
         for _ in range(OFF_HOURS_MIN_REQUESTS + 1):

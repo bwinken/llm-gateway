@@ -50,7 +50,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | **Header** | — | 「Set up Claude Code」連結（→ `/setup`）與 **My API Key** 按鈕（開啟 key modal） |
 | **Get started** | — | 帳號本月尚無任何請求時才顯示，連到 `/setup` |
 | **Action needed** | — | 這個帳號的 client rule 通知（`_client_notices.html`），有未處理項目時才顯示。最上面只有**一組** patch 下載（`.bat` / `.sh`），修正所有腳本能修的項目，並標明哪些通知不在腳本範圍內；有兩則以上時另有 *I've applied everything*。每一列說明一則通知、列出手動設定用的變數，並有 *I've applied it*；各列沒有自己的下載 |
-| **Please regenerate your API key** | — | 使用者自己的 key，或他擁有的 app 帳號的 key，早於目前的 256 bits 格式時顯示（`schema.is_legacy_api_key`）。請他在方便更新 client 設定時重新產生；不強制，舊 key 照常可用。使用者重新產生自己的 key 後當場移除 |
+| **Please regenerate your API key** | — | 使用者自己的 key，或他擁有的服務帳號的 key，早於目前的 256 bits 格式時顯示（`schema.is_legacy_api_key`）。請他在方便更新 client 設定時重新產生；不強制，舊 key 照常可用。使用者重新產生自己的 key 後當場移除 |
 | **Spent today（預算主卡）** | — | 今日費用對比 `daily_limit_usd`、Remaining、距重置（當地午夜）時間，以及依比例變色的進度條（ok < 70 % · warn < 90 % · crit < 100 % · over）。`daily_limit_usd = 0` 時顯示 "No daily budget on this account"。使用者可用任一雲端後端時（token 帶 admin scope 的人一律可用），下方多一列 **On-prem / Azure / AWS Bedrock** 分欄，只列出使用者有權使用的後端；另有 **Cloud (Azure + AWS)** 列，顯示今日雲端合計費用對比使用者的雲端上限（`deps.effective_cloud_limit`；無上限時不顯示） |
 | **This month** | — | 本月費用、請求數、Tokens in / out（附今日數字） |
 | **On-Prem Models** | Models | 所有未隱藏的 vLLM 模型，依類型分組、依價格排序：ONLINE / DOWN、即時負載（來自 `/metrics` 的 running / queued）、Context、Max Out、實際計費的 In / Out $/1M（per-model → per-type → default，與計費一致）、能力 badge（`reasoning`、`tools`、`vision`、`cache`）。標題列顯示 online / queueing / down 數量與 base URL |
@@ -60,7 +60,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | **Usage Trend** | Usage | Chart.js 圖表，近 30 天趨勢，可切換 Requests / Cost (USD) |
 | **Cost by Model** | Usage | 依後端（On-Prem / Azure / AWS Bedrock）分組的各模型費用，含占比條與甜甜圈圖；This Month / Today 切換與 Refresh 按鈕都會呼叫 `GET /dashboard/api/model-breakdown?period=month\|day` 並原地重繪。使用者無權使用的後端不列入 |
 | **Daily Breakdown** | Usage | 近 30 天有請求的日子：請求數、費用、input / output tokens |
-| **My App Accounts** | Usage | 擁有的 App 帳號（僅 owner 可見）：截斷的 API key 與 Copy、本月費用 / tokens / 請求數、Refresh key |
+| **Service accounts** | Service accounts（獨立分頁，只有名下有服務帳號的人看得到） | 每個服務帳號一張卡片：截斷的 API key 與 Copy、Regenerate，每日上限，本月費用 / 請求數 / tokens，以及本月各模型的用量表（後端、請求數、tokens、費用、占該帳號當月的比例） |
 
 ### 可執行操作
 
@@ -68,8 +68,8 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 |---|---|---|
 | 查看 API Key | 按鈕 → Modal | 顯示完整 API key，可複製到剪貼簿 |
 | Regenerate Key | `POST /dashboard/refresh-key` | 重新產生自己的 API key（舊 key 立即失效）；在 key modal 內操作 |
-| Refresh App Key | `POST /dashboard/app/{id}/refresh-key` | 重新產生所屬 App 帳號的 API key（僅 owner 可操作） |
-| Copy App Key | 按鈕 | 複製 App 帳號的完整 API key |
+| Regenerate service account key | `POST /dashboard/app/{id}/refresh-key` | 重新產生所屬服務帳號的 API key（僅 owner 可操作） |
+| Copy service account key | 按鈕 | 複製服務帳號的完整 API key |
 | Cost by Model 重新整理 | `GET /dashboard/api/model-breakdown?period=` | Cost by Model 卡片用的 JSON（`month` 或 `day`） |
 | 下載安裝腳本 | `GET /dashboard/install-claude-code.bat` | 個人化的 Claude Code 安裝腳本（由 `/setup` 連結） |
 | 下載設定 patch | `GET /dashboard/client-rules/all/patch.{bat,sh}` | 一個腳本處理帳號所有未處理項目（信件連結指向同一個 URL） |
@@ -92,7 +92,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | **Needs attention** | — | 收合時顯示各類數量（模型離線、異常、接近或達到每日上限、被違反的 client rule）；展開後：三欄：gateway 每小時異常掃描（`app/services/anomaly_scan.py`）找出的未結用量異常（嚴重度、使用者/模型、規則、摘要；Ack / Resolve 按鈕）、DOWN 或排隊中的地端模型、今日用量 ≥ 90 % 每日上限的帳號（點擊連到 `?q=<username>#users`）。都沒有時收合為 "All clear" |
 | **關鍵數字** | — | Spend today、Requests today、Active users today、In flight now（並行 lease 數；上限為 `off` 時顯示 "tracking off"）、本月費用 / 請求數 / tokens |
 | **DAU Trend** | Overview | Chart.js 柱狀圖，近 30 天 Daily Active Users，右上顯示今日 DAU |
-| **App Leaderboard** | Overview | App 帳號排行榜（`app_*`），按月費用降序 top-10 |
+| **Service Account Leaderboard** | Overview | 服務帳號排行榜，按月費用降序 top-10 |
 | **User Leaderboard** | Overview | 使用者排行榜，按月費用降序 top-10，顯示 display_name、org_code badge |
 | **Department Usage** | Overview | 依 org_code 分組：Users、Cost、Input / Output Tokens、Reqs；超過 15 列時前端分頁 |
 | **Export Usage Report** | Overview | 選擇月份區間（最多 24 個月）→ **Download xlsx**（`GET /admin/api/export/usage.xlsx`，4 個工作表）或 **Backend costs (CSV)**（`GET /admin/api/export/user-backend-costs.csv`，每列為「月份 × 帳號」，分 On-prem / Azure / Bedrock 費用欄） |
@@ -101,7 +101,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | **Default Daily Limit** | Settings | `POST /admin/default-limit` — 寫入 `[app].default_daily_limit_usd`，並批次將 `0 < daily_limit_usd < new_floor` 的使用者拉高到新 floor（`daily_limit_usd = 0` 的使用者是刻意設成 $0，不會被改動） |
 | **Cloud Daily Limit** | Settings | `POST /admin/cloud-limit` — 每位使用者每日 Azure + AWS 合計費用的預設上限（`[app].cloud_daily_limit_usd`），套用於有雲端權限且沒有自訂 *Cloud $* 的使用者。留空 = 無預設上限；0 = 拒絕雲端 |
 | **Cloud Budget Fallback** | Settings | 勾選框 → `POST /admin/cloud-budget-fallback`。開啟時，超過雲端上限的 `/v1/*` 雲端請求改由地端模型服務，而非回 429（整體每日上限仍然有效；`/azure/v1/*` 與 `/aws/v1/*` 永不 fallback） |
-| **Create App Account** | Users | Username（自動加 `app_` 前綴）、Daily Limit、Owner → `POST /admin/users/create`。App 帳號建立時即免除並行上限 |
+| **Create Service Account** | Users | Name（照輸入的使用，不加前綴）、Daily Limit、Owners（owner 選擇器：輸入即搜尋，從符合的既有使用者中挑選）→ `POST /admin/users/create`，原地處理（錯誤以 toast 顯示，新的一列載入表格）。服務帳號建立時即免除並行上限 |
 | **Site Links** | Settings | Support Bot URL（每頁右下角的浮動按鈕）與 Install Guide URL（`/setup` 上的卡片）→ `POST /admin/site-links`。只接受 `http(s)://` 或站內相對路徑；留空則隱藏 |
 | **Client rules** | Clients | 內建檢查（`client_checks.py`，CC001…）的設定與違規名單、Claude Code 版本分布、*Mail everyone* 與 *Test the combined mail*（所有開啟中的規則列在同一封信、附一份合併 patch）、寄信紀錄（每一封嘗試寄出的信：收件地址、規則、原因、成功或失敗；可篩選、搜尋、分頁）、淘汰中／已退役規則；見 `docs/architecture.md` 的 Client rules。 |
 | **IP Allowlist** | Security | API IP 白名單的模式與規則；見 `docs/architecture.md`。 |

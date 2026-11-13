@@ -422,8 +422,8 @@ class TestSpecialAccess:
             User(username="carol", api_key="k3", concurrency_waived=True),
             User(username="dave", api_key="k4", is_disabled=True),
             User(username="plain", api_key="k5"),
-            User(username="app_batch", api_key="k6", concurrency_waived=True),   # the app default
-            User(username="app_limited", api_key="k7", concurrency_waived=False, can_use_bedrock=True),
+            User(username="app_batch", api_key="k6", concurrency_waived=True, is_service_account=True),   # the service-account default
+            User(username="app_limited", api_key="k7", concurrency_waived=False, can_use_bedrock=True, is_service_account=True),
         ]
         for u in rows:
             db_session.add(u)

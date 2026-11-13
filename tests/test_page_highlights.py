@@ -78,7 +78,7 @@ class TestServerStatus:
 
 class TestTodayAggregates:
     def test_today_totals_count_people_not_apps(self, db_session, test_user):
-        app = User(username="app_bot", api_key="sk-app")
+        app = User(username="report-bot", api_key="sk-app", is_service_account=True)
         db_session.add(app)
         db_session.commit()
         _spend(db_session, test_user, 1.5)
@@ -217,7 +217,7 @@ class TestTabs:
             return [name for name in order if starts[name] < at][-1]
 
         assert panel_of("User Management") == "users" and panel_of('id="create-app"') == "users"
-        assert panel_of('id="client-rules"') == "clients"
+        assert panel_of('id="client-rules"') == "clients" and panel_of('id="client-setup"') == "clients"
         for card in ('id="ip-allowlist"', ">Guardrail</h2>", ">Audit Log</h2>"):
             assert panel_of(card) == "security", card
         for card in (">Concurrency Limit</h2>", ">Default Daily Limit</h2>", ">Cloud Daily Limit</h2>", ">Cloud Budget Fallback</h2>", ">Site Links</h2>"):

@@ -24,6 +24,26 @@
     [data-um-panel].is-loading { opacity: 0.55; pointer-events: none; transition: opacity 0.15s; }
     .um-flash-ok  { box-shadow: 0 0 0 2px rgba(52,211,153,0.85) !important; }
     .um-flash-err { box-shadow: 0 0 0 2px rgba(248,113,113,0.9) !important; }
+    /* Owner picker: chips of the people chosen, a box to search for more, one shared menu. */
+    .op { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; width: 15rem; min-height: 30px; padding: 3px 6px;
+          background: #13141a; border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; cursor: text; white-space: normal; }
+    .op-lg { width: 20rem; min-height: 34px; }
+    .op:focus-within { border-color: rgba(99,152,255,0.4); box-shadow: 0 0 0 3px rgba(99,152,255,0.08); }
+    .op-chips { display: contents; }
+    .op-chip { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 7px; border-radius: 6px; font-size: .75rem;
+               font-family: "JetBrains Mono", monospace; color: #c4c9d4; background: rgba(99,152,255,0.12); border: 1px solid rgba(99,152,255,0.2); }
+    .op-x { width: 16px; height: 16px; line-height: 14px; border-radius: 4px; color: #868da0; font-size: .875rem; }
+    .op-x:hover { color: #ff8a8a; background: rgba(255,92,92,0.12); }
+    .op-input { flex: 1 1 5rem; min-width: 5rem; background: transparent; border: 0; outline: 0; color: #eef0f4; font-size: .8125rem; padding: 2px; }
+    .op-input::placeholder { color: #4e5569; }
+    #opMenu { position: fixed; z-index: 60; max-height: 17rem; overflow-y: auto; padding: 4px; border-radius: 10px;
+              background: #1f2029; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 12px 32px rgba(0,0,0,0.5); }
+    #opMenu li { display: flex; align-items: baseline; gap: 8px; padding: 6px 9px; border-radius: 7px; cursor: pointer; font-size: .8125rem; color: #c4c9d4; }
+    #opMenu li[aria-selected="true"] { background: rgba(99,152,255,0.16); color: #eef0f4; }
+    #opMenu li.op-none { cursor: default; color: #868da0; }
+    #opMenu .op-user { font-family: "JetBrains Mono", monospace; color: #eef0f4; }
+    #opMenu .op-meta { color: #868da0; font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #opMenu mark { background: transparent; color: #6398ff; font-weight: 700; }
     /* Attention strip: compact count chips in its header line. */
     .gw-att-chip { font-size: .6875rem; font-weight: 600; padding: .125rem .5rem; border-radius: 999px; white-space: nowrap; }
     .gw-att-crit { background: rgba(255,92,92,0.14); color: #ff8a8a; }
@@ -206,7 +226,7 @@ function anomalyAction(id, action) {
         <div class="mt-1 text-xs text-t4">all accounts</div>
     </div>
     <div class="gw-card gw-stat relative p-5" style="--accent:linear-gradient(90deg,#a78bfa,#6398ff)">
-        <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip" data-tip="People (not app accounts) with at least one request today">Active users today</dt>
+        <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip" data-tip="People (not service accounts) with at least one request today">Active users today</dt>
         <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums">{{ today_totals.active_users }}</dd>
         <div class="mt-1 text-xs text-t4">{{ user_total }} accounts total</div>
     </div>
@@ -245,16 +265,16 @@ function anomalyAction(id, action) {
 
 {# ── Leaderboards ── #}
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8 gw-anim gw-d3">
-    {# App Leaderboard #}
+    {# Service account leaderboard #}
     <div class="gw-card overflow-hidden">
         <div class="px-5 py-3 flex items-center gap-2" style="border-bottom:1px solid rgba(255,255,255,0.04)">
-            <h3 class="text-xs font-bold text-t3 uppercase tracking-wider">App Leaderboard</h3>
+            <h3 class="text-xs font-bold text-t3 uppercase tracking-wider">Service Account Leaderboard</h3>
             <span class="ml-auto text-[11px] text-t4 font-mono">{{ month_label }} · top 10</span>
         </div>
         <div class="overflow-x-auto">
             <table class="gw-table">
                 <thead><tr>
-                    <th>#</th><th>App</th><th style="text-align:right">Cost</th>
+                    <th>#</th><th>Service account</th><th style="text-align:right">Cost</th>
                     <th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Reqs</th>
                 </tr></thead>
                 <tbody>
@@ -276,7 +296,7 @@ function anomalyAction(id, action) {
                     </tr>
                     {% endfor %}
                     {% if not app_leaderboard %}
-                    <tr><td colspan="6" class="text-center py-6 text-sm text-t4">No app accounts found.</td></tr>
+                    <tr><td colspan="6" class="text-center py-6 text-sm text-t4">No service accounts found.</td></tr>
                     {% endif %}
                 </tbody>
             </table>
@@ -401,7 +421,7 @@ function anomalyAction(id, action) {
         <div class="flex flex-wrap items-end justify-between gap-4">
             <div>
                 <h3 class="text-sm font-bold text-t2 mb-1">Export Usage Report</h3>
-                <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="xlsx with 4 sheets: Summary, By Department, By App, Top 10 Users with rank movement.">
+                <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="xlsx with 4 sheets: Summary, By Department, By Service Account, Top 10 Users with rank movement.">
                     Multi-sheet xlsx across a range of complete months. Department = <code class="font-mono">org_code</code>.
                 </p>
             </div>
@@ -483,12 +503,12 @@ function submitExportCsv() {
 <div class="gw-card p-4 mb-4 gw-anim gw-d6">
     <div class="flex flex-wrap items-center gap-2">
         <span class="text-[11px] font-bold text-t3 uppercase tracking-wider mr-1 gw-tip gw-tip-wide"
-              data-tip="Accounts with a permission or setting other than the defaults. Click one to list those accounts below; each row's toggles show what it has. Users and app accounts are counted separately (Waiver not the default: users waived, or app accounts un-waived). Counts are as of this page load.">Special access</span>
+              data-tip="Accounts with a permission or setting other than the defaults. Click one to list those accounts below; each row's toggles show what it has. Users and service accounts are counted separately (Waiver not the default: users waived, or service accounts un-waived). Counts are as of this page load.">Special access</span>
         {% for s in special_access %}
         {% set n = s.users + s.apps %}
         <a href="{{ s.url }}" class="sa-chip {{ 'is-zero' if n == 0 }} {{ 'is-active' if table_state.status == s.key }}">
             {{ s.label }} <span class="font-mono {{ 'text-t1' if s.users else '' }}">{{ s.users }}</span>
-            {% if s.apps %}<span class="text-t4 font-mono">+{{ s.apps }} app{{ '' if s.apps == 1 else 's' }}</span>{% endif %}
+            {% if s.apps %}<span class="text-t4 font-mono">+{{ s.apps }} service</span>{% endif %}
         </a>
         {% endfor %}
     </div>
@@ -503,15 +523,15 @@ function submitExportCsv() {
                 <button type="button" id="umTabUsers" data-um-tab="users" role="tab" class="text-xs font-medium px-3 py-1.5 transition-colors">
                     Users <span class="text-t4 font-mono" data-um-count="users">{{ users_table.total }}</span></button>
                 <button type="button" id="umTabApps" data-um-tab="apps" role="tab" class="text-xs font-medium px-3 py-1.5 transition-colors">
-                    Apps <span class="text-t4 font-mono" data-um-count="apps">{{ apps_table.total }}</span></button>
+                    Service accounts <span class="text-t4 font-mono" data-um-count="apps">{{ apps_table.total }}</span></button>
             </div>
             <button type="button" class="text-xs text-ab hover:underline"
-                    onclick="var c=document.getElementById('create-app');c.scrollIntoView({behavior:'smooth',block:'center'});c.querySelector('input[name=username]').focus({preventScroll:true})">+ New app account</button>
+                    onclick="var c=document.getElementById('create-app');c.scrollIntoView({behavior:'smooth',block:'center'});c.querySelector('input[name=username]').focus({preventScroll:true})">+ New service account</button>
         </div>
         <div class="flex flex-wrap items-center gap-2">
             <a href="/admin/api/export/users.csv" download
                class="gw-btn gw-btn-ghost text-xs px-3 py-1.5 gw-tip gw-tip-wide"
-               data-tip="Download a CSV of all real users (excluding app_* accounts) for mass mailing. Includes username, display_name, org_code, access flags (disabled / Azure / Bedrock), monthly cost, last active.">
+               data-tip="Download a CSV of all real users (service accounts left out) for mass mailing. Includes username, display_name, org_code, access flags (disabled / Azure / Bedrock), monthly cost, last active.">
                 <svg class="w-3.5 h-3.5 inline -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                 Export Users (CSV)
             </a>
@@ -542,19 +562,16 @@ function submitExportCsv() {
     {% with table = apps_table %}{% include "_admin_user_table.html" %}{% endwith %}
 </div>
 
-{# ── Create App Account ── #}
+{# ── Create a service account (formerly "app account"; the id and the route keep the old name) ── #}
 <div id="create-app" class="gw-card p-5 mt-6 mb-6 gw-anim gw-d5">
-    <h2 class="text-sm font-bold text-t2 mb-1">Create App Account</h2>
-    <p class="text-xs text-t4 mb-4">A service account for programmatic access: its own key and daily limit, no concurrency limit by default.</p>
-    <form action="/admin/users/create" method="POST" class="flex items-end gap-4 flex-wrap">
+    <h2 class="text-sm font-bold text-t2 mb-1">Create Service Account</h2>
+    <p class="text-xs text-t4 mb-4 max-w-3xl">An account for a program rather than a person: its own key and daily limit, no concurrency limit by default, no sign-in. Name it as you like (the <span class="font-mono">app_</span> prefix older accounts carry is no longer needed), but not after a person's sign-in name: nobody can sign in under a service account's name.</p>
+    <form action="/admin/users/create" method="POST" id="create-service-form" class="flex items-start gap-4 flex-wrap">
         <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Prefix app_ is added automatically. Use for programmatic API access.">Username</label>
-            <div class="flex items-center gap-1">
-                <span class="text-sm text-t4 font-mono">app_</span>
-                <input type="text" name="username" required placeholder="my_service"
-                       pattern="[a-zA-Z0-9_\-]+" title="Letters, numbers, underscores and hyphens"
-                       class="gw-input w-48 text-sm font-mono py-1.5 px-2">
-            </div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Used exactly as typed. Letters, digits, dots, dashes and underscores, starting with a letter or digit.">Name</label>
+            <input type="text" name="username" required placeholder="billing-etl" maxlength="64"
+                   pattern="[a-zA-Z0-9][a-zA-Z0-9._\-]*" title="Letters, digits, dots, dashes and underscores, starting with a letter or digit"
+                   class="gw-input w-56 text-sm font-mono py-1.5 px-2">
         </div>
         <div>
             <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Max daily spend in USD. API returns 429 when limit is reached. 0 = $0 (every request refused).">Daily Limit (USD)</label>
@@ -565,11 +582,15 @@ function submitExportCsv() {
             </div>
         </div>
         <div>
-            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Owner can view and refresh this app's API key from their Dashboard. Enter username.">Owner</label>
-            <input type="text" name="owner_username" placeholder="username (optional)"
-                   class="gw-input w-48 text-sm font-mono py-1.5 px-2">
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="The people this account is assigned to. Each sees it on the Service accounts tab of their Dashboard: its key (and can regenerate it) and this month's usage per model. Type part of a username, display name or department and pick from the list; only existing users can be picked, never another service account.">Owners</label>
+            <div class="op op-lg" data-owner-picker data-saved="">
+                <span class="op-chips"></span>
+                <input type="text" class="op-input" placeholder="Type a name to search…" autocomplete="off" spellcheck="false"
+                       role="combobox" aria-expanded="false" aria-autocomplete="list" aria-label="Add an owner">
+                <input type="hidden" name="owner_usernames" value="">
+            </div>
         </div>
-        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">
+        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2" style="margin-top:1.375rem">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
             Create
         </button>
@@ -911,6 +932,40 @@ function submitExportCsv() {
     {% endif %}
 </div>
 
+{# ── Client setup: the fields GET /v1/settings offers a terminal tool (app/services/client_settings.py) ── #}
+{% set cs = client_setup %}
+<div id="client-setup" class="gw-card p-5 mb-6" style="border-left:3px solid #4da3ff">
+    <div class="mb-4 max-w-3xl">
+        <h2 class="text-sm font-bold text-t2 mb-1">Client setup</h2>
+        <p class="text-xs text-t4">
+            What a terminal tool offers when it sets Claude Code up for a user (<span class="font-mono">GET /v1/settings</span>): one field per environment variable,
+            each with a description, a default the tool can apply as it is, and the options the user may pick instead.
+            <span class="font-mono">default</span> and <span class="font-mono">options</span> can differ per tier, the account's cloud access: write an object keyed by
+            <span class="font-mono">everyone</span> / <span class="font-mono">azure</span> / <span class="font-mono">aws</span> / <span class="font-mono">both</span> instead of a plain value
+            (the most specific key that applies wins). A <span class="font-mono">model</span> field without options offers every chat model the account can see.
+            This is separate from the client rules above and their patches.
+        </p>
+    </div>
+    <p class="text-xs text-t4 mb-3" id="cs-source" data-path="{{ cs.path }}">
+        {% if cs.customized %}Stored in <span class="font-mono text-t2">{{ cs.path }}</span>; editing that file by hand works too and applies at the next request.
+        {% else %}Showing the shipped example. Saving creates <span class="font-mono text-t2">{{ cs.path }}</span>, which you can also edit by hand.{% endif %}
+    </p>
+    <p class="text-xs text-ar mb-3{{ '' if cs.error else ' hidden' }}" id="cs-error">{% if cs.error %}The file on disk is not in force (the last good one is): {{ cs.error }}{% endif %}</p>
+    <p class="text-xs mb-3{{ '' if cs.unknown_models else ' hidden' }}" id="cs-unknown" style="color:#f5a623">{% if cs.unknown_models %}Not a chat model of this gateway, so skipped for every account: {{ cs.unknown_models | join(', ') }}{% endif %}</p>
+    <form action="/admin/client-settings" method="POST" id="cs-form">
+        <textarea name="settings" rows="22" spellcheck="false" aria-label="Client settings (JSON)" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ cs.text }}</textarea>
+        <div class="flex flex-wrap items-center gap-3 mt-3">
+            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
+            <button type="button" id="cs-reset" class="gw-btn gw-btn-ghost text-sm px-3 py-2{{ '' if cs.customized else ' hidden' }}">Reset to the shipped example</button>
+        </div>
+    </form>
+    <div class="mt-5 pt-3" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">What each tier is offered</div>
+        <div class="overflow-x-auto"><table class="gw-table" id="cs-preview"></table></div>
+        <p class="text-[11px] text-t4 mt-2">The default, then how many options there are. A dash: the field is not offered to that tier.</p>
+    </div>
+</div>
+
 </div>
 
 <div data-panel="security">
@@ -1137,7 +1192,7 @@ function submitExportCsv() {
                 <select name="apply_to" class="gw-input text-sm py-1.5 px-2">
                     <option value="all" {{ 'selected' if g.apply_to == 'all' else '' }}>All accounts</option>
                     <option value="users" {{ 'selected' if g.apply_to == 'users' else '' }}>Users only</option>
-                    <option value="apps" {{ 'selected' if g.apply_to == 'apps' else '' }}>App accounts only</option>
+                    <option value="apps" {{ 'selected' if g.apply_to == 'apps' else '' }}>Service accounts only</option>
                 </select>
             </div>
             <div>
@@ -1154,7 +1209,7 @@ function submitExportCsv() {
             <div>
                 <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
                        data-tip="Usernames never screened, comma-separated.">Exempt users</label>
-                <input type="text" name="exempt_users" value="{{ g.exempt_users | join(', ') }}" placeholder="app_batch, alice"
+                <input type="text" name="exempt_users" value="{{ g.exempt_users | join(', ') }}" placeholder="billing-etl, alice"
                        class="gw-input w-56 text-sm font-mono py-1.5 px-2">
             </div>
         </div>
@@ -1238,7 +1293,7 @@ function submitExportCsv() {
             <h2 class="text-sm font-bold text-t2 mb-1">Concurrency Limit</h2>
             <p class="text-xs text-t4 gw-tip gw-tip-wide"
                data-tip="Counts chat / responses / messages requests (streams included) across all gateway workers, from admission until the response is fully sent. Local (on-prem) and cloud (Azure / AWS) requests are counted apart, each against its own limit: a full one neither borrows from nor blocks the other. A cloud model served on-prem because the cloud budget is spent counts as local. Monitor: everything is served, over-limit requests are logged as 'Concurrency limit exceeded (monitor)'. Enforce: over-limit requests get 429 with Retry-After: 5 (Claude Code retries automatically). Admins and accounts marked Waive are never limited; app accounts start out waived (un-waive one to limit it). count_tokens, tokenize, models, embeddings and rerank are not counted.">
-                Maximum in-flight inference requests per account: one limit for local models, a wider one for cloud. Admins and waived accounts (all app accounts, by default) are exempt.
+                Maximum in-flight inference requests per account: one limit for local models, a wider one for cloud. Admins and waived accounts (all service accounts, by default) are exempt.
             </p>
             <p class="text-xs text-t4 mt-1.5">
                 {% if concurrency_in_flight is none %}
@@ -1615,6 +1670,197 @@ function submitExportCsv() {
         return { load: load };
     })();
 
+    /* ── Owner picker (data-owner-picker) ──
+       Who a service account is assigned to. The admin types part of a
+       username, display name or department; GET /admin/api/owner-search
+       answers with the people that match (never a service account) and one
+       is picked from the menu, so an owner is always an existing user. The
+       chosen ones are chips; the hidden owner_usernames input carries them.
+       In a table row (a form with data-action="owner") every change is
+       saved at once; in the create form they go with the form. One menu
+       for the page, fixed to the box being typed in (the tables clip
+       anything positioned inside them). Delegated, so rows loaded later
+       work too. */
+    var gwOwnerPicker = (function() {
+        var menu = document.createElement('ul');
+        menu.id = 'opMenu'; menu.setAttribute('role', 'listbox'); menu.hidden = true;
+        document.body.appendChild(menu);
+        var active = null, items = [], cursor = -1, timer = null, seq = 0;
+
+        function names(op) { return op.querySelector('input[type=hidden]').value.split(',').filter(Boolean); }
+        function paint(op, list) {
+            var chips = op.querySelector('.op-chips');
+            chips.textContent = '';
+            list.forEach(function(name) {
+                var chip = document.createElement('span');
+                chip.className = 'op-chip'; chip.dataset.name = name; chip.textContent = name;
+                var x = document.createElement('button');
+                x.type = 'button'; x.className = 'op-x'; x.textContent = '×'; x.setAttribute('aria-label', 'Remove ' + name);
+                chip.appendChild(x); chips.appendChild(chip);
+            });
+            op.querySelector('input[type=hidden]').value = list.join(',');
+        }
+        function changed(op) {
+            var form = op.closest('form');
+            if (form && form.dataset.action === 'owner') form.requestSubmit();
+        }
+        function add(op, name) {
+            var list = names(op);
+            if (list.indexOf(name) < 0) { list.push(name); paint(op, list); changed(op); }
+            var input = op.querySelector('.op-input');
+            input.value = ''; close(); input.focus();
+        }
+        function remove(op, name) {
+            paint(op, names(op).filter(function(n) { return n !== name; }));
+            changed(op);
+        }
+
+        function close() {
+            menu.hidden = true; items = []; cursor = -1;
+            if (active) active.querySelector('.op-input').setAttribute('aria-expanded', 'false');
+        }
+        function place() {
+            if (!active || menu.hidden) return;
+            var r = active.getBoundingClientRect();
+            menu.style.left = r.left + 'px';
+            menu.style.top = (r.bottom + 4) + 'px';
+            menu.style.minWidth = Math.max(r.width, 300) + 'px';
+        }
+        function mark(text, q) {
+            var frag = document.createDocumentFragment(), at = q ? text.toLowerCase().indexOf(q.toLowerCase()) : -1;
+            if (at < 0) { frag.appendChild(document.createTextNode(text)); return frag; }
+            frag.appendChild(document.createTextNode(text.slice(0, at)));
+            var m = document.createElement('mark'); m.textContent = text.slice(at, at + q.length); frag.appendChild(m);
+            frag.appendChild(document.createTextNode(text.slice(at + q.length)));
+            return frag;
+        }
+        function show(users, q) {
+            menu.textContent = '';
+            items = users;
+            if (!users.length) {
+                var none = document.createElement('li');
+                none.className = 'op-none'; none.textContent = 'No user matches "' + q + '".';
+                menu.appendChild(none);
+            }
+            users.forEach(function(u, i) {
+                var li = document.createElement('li');
+                li.setAttribute('role', 'option'); li.dataset.index = i;
+                var who = document.createElement('span'); who.className = 'op-user'; who.appendChild(mark(u.username, q));
+                var meta = document.createElement('span'); meta.className = 'op-meta';
+                meta.appendChild(mark([u.display_name, u.org_code].filter(Boolean).join(' · ') + (u.disabled ? ' · disabled' : ''), q));
+                li.appendChild(who); li.appendChild(meta); menu.appendChild(li);
+            });
+            cursor = users.length ? 0 : -1;
+            highlight();
+            menu.hidden = false;
+            active.querySelector('.op-input').setAttribute('aria-expanded', 'true');
+            place();
+        }
+        function highlight() {
+            Array.prototype.forEach.call(menu.querySelectorAll('li[role=option]'), function(li, i) {
+                li.setAttribute('aria-selected', i === cursor ? 'true' : 'false');
+                if (i === cursor) li.scrollIntoView({ block: 'nearest' });
+            });
+        }
+        function search(op) {
+            var q = op.querySelector('.op-input').value.trim(), mine = ++seq;
+            if (!q) return close();
+            fetch('/admin/api/owner-search?q=' + encodeURIComponent(q), { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+                .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+                .then(function(data) {
+                    if (mine !== seq || active !== op) return;  // an older answer, or the box was left
+                    var have = names(op);
+                    show(data.users.filter(function(u) { return have.indexOf(u.username) < 0; }), q);
+                })
+                .catch(function() { if (mine === seq) close(); });
+        }
+
+        document.addEventListener('input', function(e) {
+            if (!e.target.classList || !e.target.classList.contains('op-input')) return;
+            active = e.target.closest('[data-owner-picker]');
+            clearTimeout(timer);
+            timer = setTimeout(function() { search(active); }, 150);
+        });
+        document.addEventListener('keydown', function(e) {
+            if (!e.target.classList || !e.target.classList.contains('op-input')) return;
+            var op = e.target.closest('[data-owner-picker]');
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                if (menu.hidden || !items.length) return;
+                e.preventDefault();
+                cursor = (cursor + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+                highlight();
+            } else if (e.key === 'Enter') {
+                // Only a match from the list becomes an owner. With nothing
+                // typed, Enter is the form's (the create form submits).
+                if (!e.target.value.trim()) return;
+                e.preventDefault();
+                if (!menu.hidden && cursor >= 0) add(op, items[cursor].username);
+            } else if (e.key === 'Escape') {
+                if (!menu.hidden) { e.preventDefault(); e.stopPropagation(); close(); }
+            } else if (e.key === 'Backspace' && !e.target.value) {
+                var list = names(op);
+                if (list.length) remove(op, list[list.length - 1]);
+            }
+        });
+        // mousedown, not click: it comes before the box loses focus.
+        menu.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            var li = e.target.closest('li[role=option]');
+            if (li && active) add(active, items[+li.dataset.index].username);
+        });
+        document.addEventListener('click', function(e) {
+            var x = e.target.closest && e.target.closest('.op-x');
+            if (x) return remove(x.closest('[data-owner-picker]'), x.parentNode.dataset.name);
+            var op = e.target.closest && e.target.closest('[data-owner-picker]');
+            if (op && e.target === op) op.querySelector('.op-input').focus();
+        });
+        document.addEventListener('focusout', function(e) {
+            if (e.target.classList && e.target.classList.contains('op-input')) close();
+        });
+        window.addEventListener('scroll', place, true);
+        window.addEventListener('resize', place);
+
+        return {
+            // The server's answer is what the row shows from now on.
+            saved: function(form, owners) {
+                var op = form.querySelector('[data-owner-picker]');
+                op.dataset.saved = owners.join(','); paint(op, owners);
+                op.querySelector('.op-input').placeholder = owners.length ? 'Add a person…' : 'Assign a person…';
+            },
+            revert: function(form) {
+                var op = form.querySelector('[data-owner-picker]');
+                paint(op, op.dataset.saved.split(',').filter(Boolean));
+            },
+            clear: function(form) { paint(form.querySelector('[data-owner-picker]'), []); }
+        };
+    })();
+
+    /* ── Create a service account, in place: errors as a toast, the new row in the table ── */
+    (function() {
+        var form = document.getElementById('create-service-form');
+        if (!form) return;
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            var box = form.querySelector('.op-input');
+            if (box.value.trim()) {
+                gwToast('Pick "' + box.value.trim() + '" from the list of matching users, or clear the Owners box.', 'error');
+                return box.focus();
+            }
+            var btn = form.querySelector('button[type="submit"]');
+            btn.disabled = true;
+            gwPost(form.action, new URLSearchParams(new FormData(form)))
+                .then(function(data) {
+                    gwToast('Service account ' + data.username + ' created' + (data.owners.length ? ', assigned to ' + data.owners.join(', ') : '') + '.', 'ok');
+                    form.reset(); gwOwnerPicker.clear(form);
+                    var tab = document.getElementById('umTabApps');
+                    if (tab) tab.click();
+                    return um.load('apps');
+                })
+                .catch(function(err) { gwToast(err.message, 'error'); })
+                .then(function() { btn.disabled = false; });
+        });
+    })();
+
     /* ── Per-account actions, in place ──
        Every row form carries data-action. One delegated handler confirms
        when the action needs it, POSTs with Accept: application/json and
@@ -1689,6 +1935,11 @@ function submitExportCsv() {
                 gwToast(name + ' deleted.', 'ok');
                 return um.load(form.closest('[data-um-panel]').dataset.umPanel);
             }
+            if (action === 'owner') {
+                gwOwnerPicker.saved(form, data.owners || []);
+                gwToast(name + ': ' + (data.owners && data.owners.length ? 'assigned to ' + data.owners.join(', ') : 'no owner now') + '.', 'ok');
+                return flash(form.querySelector('.op'), true);
+            }
             var input = form.querySelector('input:not([type=hidden])');
             if (action === 'limit') input.value = data.daily_limit_usd;
             if (action === 'cloud-limit') input.value = data.cloud_daily_limit_usd == null ? '' : data.cloud_daily_limit_usd;
@@ -1709,7 +1960,8 @@ function submitExportCsv() {
                 gwPost(form.action, body)
                     .then(function(data) { apply(form, action, data); })
                     .catch(function(err) {
-                        flash(form.querySelector('input:not([type=hidden])'), false);
+                        if (action === 'owner') gwOwnerPicker.revert(form);  // show what is really saved
+                        flash(form.querySelector(action === 'owner' ? '.op' : 'input:not([type=hidden])'), false);
                         gwToast(form.closest('tr').dataset.username + ': ' + err.message, 'error');
                     })
                     .then(function() { if (btn) btn.disabled = false; });
@@ -2066,6 +2318,84 @@ function submitExportCsv() {
         // 30 s freshness window: a stale save must not yank the viewport
         // when the admin comes back to this page later.
         if (saved && typeof saved.y === 'number' && Date.now() - saved.t < 30000) window.scrollTo(0, saved.y);
+    })();
+    /* ── Client setup: save / reset the settings file in place, repaint the per-tier preview ── */
+    (function() {
+        var card = document.getElementById('client-setup');
+        if (!card) return;
+        var form = document.getElementById('cs-form'), box = form.querySelector('textarea');
+        var resetBtn = document.getElementById('cs-reset'), table = document.getElementById('cs-preview');
+        var TIER = { local: 'Local only', azure: 'Azure', aws: 'AWS', both: 'Azure + AWS' };
+
+        function cell(tag, text, cls) {
+            var el = document.createElement(tag);
+            el.textContent = text;
+            if (cls) el.className = cls;
+            return el;
+        }
+        function paintPreview(preview, names) {
+            var byTier = {};
+            preview.forEach(function(p) {
+                byTier[p.account] = {};
+                p.fields.forEach(function(f) { byTier[p.account][f.name] = f; });
+            });
+            table.textContent = '';
+            var head = document.createElement('tr');
+            head.appendChild(cell('th', 'Variable'));
+            preview.forEach(function(p) { head.appendChild(cell('th', TIER[p.account] || p.account)); });
+            table.appendChild(document.createElement('thead')).appendChild(head);
+            var body = table.appendChild(document.createElement('tbody'));
+            if (!names.length) {
+                var empty = cell('td', 'The file has no fields.', 'text-xs text-t4');
+                empty.colSpan = preview.length + 1;
+                body.appendChild(document.createElement('tr')).appendChild(empty);
+            }
+            names.forEach(function(name) {
+                var row = body.appendChild(document.createElement('tr'));
+                row.appendChild(cell('td', name, 'font-mono text-xs text-t2'));
+                preview.forEach(function(p) {
+                    var f = byTier[p.account][name];
+                    var td = cell('td', f ? f['default'] : '—', 'font-mono text-xs ' + (f ? 'text-t2' : 'text-t4'));
+                    if (f) {
+                        td.appendChild(cell('span', '  ' + f.options.length + (f.options.length === 1 ? ' option' : ' options'), 'text-t4'));
+                        td.title = f.options.map(function(o) { return o.value; }).join(', ');
+                    }
+                    row.appendChild(td);
+                });
+            });
+        }
+        function paint(data) {
+            paintPreview(data.preview, data.names);
+            box.value = data.text;
+            resetBtn.classList.toggle('hidden', !data.customized);
+            document.getElementById('cs-error').classList.add('hidden');
+            var unknown = document.getElementById('cs-unknown');
+            unknown.textContent = data.unknown_models.length
+                ? 'Not a chat model of this gateway, so skipped for every account: ' + data.unknown_models.join(', ') : '';
+            unknown.classList.toggle('hidden', !data.unknown_models.length);
+            var source = document.getElementById('cs-source');
+            source.textContent = data.customized
+                ? 'Stored in ' + source.dataset.path + '; editing that file by hand works too and applies at the next request.'
+                : 'Showing the shipped example. Saving creates ' + source.dataset.path + ', which you can also edit by hand.';
+        }
+
+        paintPreview({{ cs.preview | tojson }}, {{ cs.names | tojson }});
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            gwPost(form.action, new FormData(form)).then(function(data) {
+                paint(data);
+                gwToast('Client setup saved: ' + data.fields + (data.fields === 1 ? ' field.' : ' fields.'), 'ok');
+            }).catch(function(err) { gwToast(err.message, 'error'); });
+        });
+        resetBtn.addEventListener('click', function() {
+            gwConfirm('Remove your client settings file and offer the shipped example again?', { okLabel: 'Reset', danger: true }).then(function(yes) {
+                if (!yes) return;
+                gwPost('/admin/client-settings/reset', new FormData()).then(function(data) {
+                    paint(data);
+                    gwToast('Client setup reset to the shipped example.', 'ok');
+                }).catch(function(err) { gwToast(err.message, 'error'); });
+            });
+        });
     })();
 </script>
 {% endblock %}

@@ -64,7 +64,10 @@ from app.core.config import APP_TITLE
 from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import LOCAL_TZ, local_today
-from app.models.schema import ClientMailLog, ClientRuleSetting, ClientVersion, ClientViolation, User, is_app_account
+from app.models.schema import (
+    ClientMailLog, ClientRuleSetting, ClientVersion, ClientViolation, User,
+    service_account_clause, service_account_names,
+)
 from app.services import client_checks, mailer
 from app.services.client_checks import Check, Facts, version_key
 from app.services.scheduler import Job, env_seconds
@@ -783,8 +786,8 @@ async def _observe(request: Any, user: User) -> JSONResponse | None:
     if record_version or rule_ids:
         await run_in_threadpool(_record, username, version, record_version, rule_ids)
 
-    if is_app_account(username):
-        return None
+    if getattr(user, "is_service_account", False):
+        return None  # a program: nobody reads a reminder
     today = local_today().isoformat()
     for rule in violated:
         if rule.action != "remind" or rule.deprecated:
@@ -1202,11 +1205,13 @@ def render_digest_preview(session: Session, username: str, audience: str = "loca
 
 def mailable(session: Session, rows: list[ClientViolation]) -> list[ClientViolation]:
     """Violations still worth a mail: the account exists, has a mailbox (not
-    an app account) and has not reported the fix."""
-    names = [v.username for v in rows if not is_app_account(v.username) and not is_resolved(v)]
+    a service account) and has not reported the fix."""
+    names = [v.username for v in rows if not is_resolved(v)]
     if not names:
         return []
-    known = set(session.exec(select(User.username).where(User.username.in_(names))).all())  # type: ignore[attr-defined]
+    known = set(session.exec(
+        select(User.username).where(User.username.in_(names), ~service_account_clause())  # type: ignore[attr-defined]
+    ).all())
     return [v for v in rows if v.username in known and not is_resolved(v)]
 
 
@@ -1290,11 +1295,13 @@ def _send_digests(
     violation the mail covered and write it to the mail log (``kinds``:
     why each account is being mailed, ``requested`` when not given).
     Returns (sent, failed) in accounts."""
-    usernames = [name for name in dict.fromkeys(usernames) if not is_app_account(name)]
+    usernames = list(dict.fromkeys(usernames))
     if not usernames:
         return 0, 0
     users = {
-        u.username: u for u in session.exec(select(User).where(User.username.in_(usernames))).all()  # type: ignore[attr-defined]
+        u.username: u
+        for u in session.exec(select(User).where(User.username.in_(usernames))).all()  # type: ignore[attr-defined]
+        if not u.is_service_account  # no mailbox
     }
     by_account = open_items(session, now, list(users))
     jobs = []
@@ -1417,14 +1424,16 @@ def mail_all_targets(session: Session, only_unmailed: bool = True, now: datetime
     names = []
     for username, items in open_items(session, now).items():
         rows = [row for rule, row in items if not rule.deprecated]
-        if is_app_account(username) or not rows:
+        if not rows:
             continue
         if only_unmailed and all(row.mailed_at is not None for row in rows):
             continue
         names.append(username)
     if not names:
         return []
-    known = set(session.exec(select(User.username).where(User.username.in_(names))).all())  # type: ignore[attr-defined]
+    known = set(session.exec(
+        select(User.username).where(User.username.in_(names), ~service_account_clause())  # type: ignore[attr-defined]
+    ).all())
     return sorted(name for name in names if name in known)
 
 
@@ -1461,8 +1470,9 @@ def queue_monthly(session: Session, now: datetime | None = None) -> int:
         return 0
     month_start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).replace(tzinfo=None)
     queued = 0
+    service = service_account_names(session)
     for username, items in open_items(session, now).items():
-        if is_app_account(username):
+        if username in service:
             continue
         touched = False
         for rule, row in items:
@@ -1489,8 +1499,9 @@ def due_list(session: Session, now: datetime | None = None) -> list[tuple[str, s
     now = now or utcnow()
     requested: list[tuple[datetime, str]] = []
     automatic: list[str] = []
+    service = service_account_names(session)
     for username, items in open_items(session, now).items():
-        if is_app_account(username):
+        if username in service:
             continue
         live = [(rule, row) for rule, row in items if not rule.deprecated]
         asked = [row.mail_requested_at for _, row in live if _request_due(row, now)]

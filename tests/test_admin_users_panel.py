@@ -58,7 +58,7 @@ class TestFragmentEndpoint:
         assert resp.status_code == 422
 
     def test_renders_one_panel(self, client, db_session, admin_user, test_user):
-        _user(db_session, "app_bot")
+        _user(db_session, "app_bot", is_service_account=True)
         body = _panel(client, admin_user, kind="users")
         assert 'data-um-panel="users"' in body and 'data-um-panel="apps"' not in body
         assert "<html" not in body
@@ -186,14 +186,14 @@ class TestRows:
         assert f"/admin/users/{test_user.id}/delete" in body
 
     def test_apps_list_only_their_own_owners(self, client, db_session, admin_user, test_user):
-        bot = _user(db_session, "app_bot")
+        bot = _user(db_session, "app_bot", is_service_account=True)
         other_owner = _user(db_session, "carol")
-        _user(db_session, "app_other")
+        _user(db_session, "app_other", is_service_account=True)
         db_session.add(AppOwner(app_id=bot.id, owner_id=test_user.id))
         db_session.add(AppOwner(app_id=bot.id, owner_id=other_owner.id))
         db_session.commit()
         body = _panel(client, admin_user, kind="apps")
-        assert 'value="carol, testuser"' in body
+        assert 'name="owner_usernames" value="carol,testuser"' in body
         assert body.count('name="owner_usernames" value=""') == 1  # app_other
 
     def test_controls_are_in_place_actions(self, client, db_session, admin_user, test_user):
@@ -274,7 +274,7 @@ class TestAdminPage:
         assert "lbPage" not in body
 
     def test_both_panels_and_counts_render(self, client, db_session, admin_user, test_user):
-        _user(db_session, "app_bot")
+        _user(db_session, "app_bot", is_service_account=True)
         body = client.get("/admin", headers=_hdr(admin_user)).text
         assert 'data-um-panel="users"' in body and 'data-um-panel="apps"' in body
         assert 'data-um-count="apps">1<' in body

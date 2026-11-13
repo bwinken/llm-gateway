@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -432,6 +433,9 @@ _ALL_PATCHES = [
     lambda: patch("app.services.guardrail.get_guardrail_settings", return_value=dict(GUARDRAIL_OFF)),
     lambda: patch("app.services.ip_allowlist.engine", _test_engine),
     lambda: patch("app.services.client_rules.engine", _test_engine),
+    # /v1/settings reads a per-site file: tests see the shipped example, never a
+    # developer's own client_settings.json (tests of the file patch this again).
+    lambda: patch("app.services.client_settings.SETTINGS_PATH", Path("/nonexistent/client_settings.json")),
     lambda: patch("app.services.ip_allowlist.get_ip_allowlist_settings", return_value=dict(IP_ALLOWLIST_OFF)),
 ]
 
@@ -451,6 +455,8 @@ def _patch_all():
     import app.services.auth_throttle as auth_throttle
     ip_allowlist.reset()  # the per-worker snapshot is module state
     client_rules.reset()  # so are the client rules and their write throttles
+    import app.services.client_settings as client_settings
+    client_settings.reset_cache()  # and the settings file each worker caches
     auth_throttle.reset()  # so are failed-auth counts and locks
     from app.core.deps import reset_key_use_cache
     reset_key_use_cache()  # and which users' key use was stamped recently

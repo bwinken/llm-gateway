@@ -8,7 +8,7 @@
 
 | 檔案 | 說明 |
 |---|---|
-| `schema.py` | `User`、`AppOwner`、`UsageLog`、`UsageDaily`、`UsageRollupState`、`ScheduledJob`、`AnomalyEvent`、`ConcurrencyLease`、`IpAllowRule`、`AuditLog` 十個 ORM Model，以及輔助函式 `is_app_account()`（`app_*` 前綴）、`mask_api_key()`（Admin 列表的金鑰遮罩顯示）、`issue_api_key()`（發放／重發 key 的唯一入口）與 `is_legacy_api_key()`（判斷舊格式 key） |
+| `schema.py` | `User`、`AppOwner`、`UsageLog`、`UsageDaily`、`UsageRollupState`、`ScheduledJob`、`AnomalyEvent`、`ConcurrencyLease`、`IpAllowRule`、`AuditLog` 十個 ORM Model，以及輔助函式 `service_account_clause()` / `service_account_names()`（誰是服務帳號：看 `is_service_account` 欄位）、`mask_api_key()`（Admin 列表的金鑰遮罩顯示）、`issue_api_key()`（發放／重發 key 的唯一入口）與 `is_legacy_api_key()`（判斷舊格式 key） |
 
 ## ER Diagram
 
@@ -51,7 +51,7 @@ erDiagram
 
     app_owners {
         INTEGER id PK "自動遞增主鍵"
-        INTEGER app_id FK "App 帳號 → users.id"
+        INTEGER app_id FK "服務帳號 → users.id"
         INTEGER owner_id FK "擁有者 → users.id"
     }
 
@@ -134,7 +134,7 @@ erDiagram
 
 ## User 模型
 
-對應資料表 `users`。代表人類使用者或程式化 App 帳號。
+對應資料表 `users`。代表人類使用者或程式化服務帳號。
 
 ```mermaid
 classDiagram
@@ -164,7 +164,7 @@ classDiagram
 | 欄位 | 型別 | 約束 | 預設值 | 說明 |
 |---|---|---|---|---|
 | `id` | `INTEGER` | PK, auto-increment | — | 主鍵，資料庫自動產生 |
-| `username` | `VARCHAR` | UNIQUE, INDEX | — | SSO 登入時的 `sub` claim。App 帳號以 `app_` 開頭（`is_app_account()`） |
+| `username` | `VARCHAR` | UNIQUE, INDEX | — | 一般使用者是 SSO 登入時的 `sub` claim；服務帳號可以是任何名稱（舊的是 `app_*`；名稱不決定任何事，見 `is_service_account`） |
 | `password_hash` | `VARCHAR` | — | `""` | **未使用**。歷史欄位，保留以維持向後相容 |
 | `api_key` | `VARCHAR` | UNIQUE, INDEX | `_generate_api_key()` | 自動產生，格式 `sk-internal-` + 64 位 hex（256 bits 隨機）。舊格式 `sk-internal-{unix_timestamp}-{8位hex}` 仍可使用，由 `is_legacy_api_key` 辨識。用於 API 認證。Admin 列表顯示 `mask_api_key(...)` |
 | `daily_limit_usd` | `FLOAT` | — | `10.0` | 所有 backend 合計的每日花費上限（USD）。超過時 API 回傳 429 Too Many Requests。一律為有限值且 ≥ 0：**`0` 代表 $0 預算，不是無上限**。SSO 自動建立的使用者取 `[app].default_daily_limit_usd` |
@@ -175,8 +175,9 @@ classDiagram
 | `is_disabled` | `BOOLEAN` | — | `False` | `True` 時 API key 與 JWT 認證皆會丟出 `AccountDisabledError`(HTML 頁或 JSON 403)。在 Web UI 上，token 帶 admin scope 的人不受此限；API 上沒有例外。透過 `POST /admin/users/{id}/toggle-disable` 切換(禁止停用自己) |
 | `can_use_azure` | `BOOLEAN` | — | `False` | 控制 `/azure/v1/*`（由 `deps.require_azure_access` 檢查）及統一 `/v1/*` 對 Azure 別名的分派。透過 `POST /admin/users/{id}/toggle-azure` 切換 |
 | `can_use_bedrock` | `BOOLEAN` | — | `False` | 控制 `/aws/v1/*`（由 `deps.require_bedrock_access` 檢查）及統一 `/v1/*` 對 Bedrock 別名的分派。透過 `POST /admin/users/{id}/toggle-bedrock` 切換 |
-| `concurrency_waived` | `BOOLEAN` | — | `False` | 免除並行上限（`[app].concurrency_limit_*`）。這是唯一的免除方式。App 帳號建立時即為免除。透過 `POST /admin/users/{id}/toggle-concurrency-waive` 切換 |
-| `owner_id` | `INTEGER` | FK → `users.id`, INDEX, NULLABLE | `None` | **舊版**單一擁有者欄位，已由 `app_owners` 取代。Migration `d5a2c3e67f04` 複製資料時未清空，舊 App 帳號可能仍指向原擁有者 |
+| `concurrency_waived` | `BOOLEAN` | — | `False` | 免除並行上限（`[app].concurrency_limit_*`）。這是唯一的免除方式。服務帳號建立時即為免除。透過 `POST /admin/users/{id}/toggle-concurrency-waive` 切換 |
+| `is_service_account` | `BOOLEAN` | — | `False` | 給程式用而不是給人用的帳號（原本叫 app 帳號，當時靠 `app_` 開頭的名稱辨識）。所有區分兩者的地方都看它：admin 的兩張表、以人計算的數字、寄信、guardrail 範圍，以及沒有人能用它的名稱登入 |
+| `owner_id` | `INTEGER` | FK → `users.id`, INDEX, NULLABLE | `None` | **舊版**單一擁有者欄位，已由 `app_owners` 取代。Migration `d5a2c3e67f04` 複製資料時未清空，舊服務帳號可能仍指向原擁有者 |
 | `display_name` | `VARCHAR` | — | `""` | 使用者顯示名稱，來自 IdP JWT 的 `display_name` 欄位。每次 Web 登入時自動同步更新 |
 | `org_code` | `VARCHAR` | — | `""` | 組織代碼，來自 IdP JWT 的 `org_code` 欄位。每次 Web 登入時自動同步更新。顯示於 Admin 使用者表格 |
 | `created_at` | `DATETIME` | — | `datetime.now(UTC)` | 帳號建立時間 |
@@ -196,20 +197,20 @@ def _generate_api_key() -> str:
 
 | 類型 | 判斷方式 | 說明 |
 |---|---|---|
-| 一般使用者 | 不以 `app_` 開頭 | SSO 登入後自動建立 |
-| App 帳號 | `is_app_account(username)`（`username.startswith("app_")`） | Admin 建立，供程式使用（Admin 面板會自動加上前綴）。建立時 `concurrency_waived = True` |
+| 一般使用者 | `is_service_account = False` | SSO 登入後自動建立 |
+| 服務帳號（原本叫 app 帳號） | `is_service_account = True`（SQL 用 `schema.service_account_clause()`） | Admin 建立，供程式使用，名稱不限。只能用 API key：用它的名稱做 SSO 登入會被拒絕。建立時 `concurrency_waived = True`。Migration `b2f7c9a41e68` 已標記既有的 `app_*` 帳號 |
 | 被擁有的 App | `app_owners` 中有 `app_id = id` 的資料列 | 綁定一或多位使用者，owner 可在 Dashboard 管理 |
 
 ---
 
 ## AppOwner 模型
 
-對應資料表 `app_owners`。多對多：哪些使用者擁有哪些 App 帳號。
+對應資料表 `app_owners`。多對多：哪些使用者擁有哪些服務帳號。
 
 | 欄位 | 型別 | 約束 | 預設值 | 說明 |
 |---|---|---|---|---|
 | `id` | `INTEGER` | PK, auto-increment | — | 主鍵 |
-| `app_id` | `INTEGER` | FK → `users.id`, INDEX | — | App 帳號 |
+| `app_id` | `INTEGER` | FK → `users.id`, INDEX | — | 服務帳號 |
 | `owner_id` | `INTEGER` | FK → `users.id`, INDEX | — | 擁有者 |
 
 ---

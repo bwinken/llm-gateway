@@ -8,7 +8,7 @@ Defines PostgreSQL table structures using [SQLModel](https://sqlmodel.tiangolo.c
 
 | File | Description |
 |---|---|
-| `schema.py` | `User`, `AppOwner`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AnomalyEvent`, `ConcurrencyLease`, `IpAllowRule`, `AuditLog` — ten ORM models, plus helpers `is_app_account()` (`app_*` prefix), `mask_api_key()` (key display in admin listings), `issue_api_key()` (the one way to (re)issue a key) and `is_legacy_api_key()` (keys older than the current format) |
+| `schema.py` | `User`, `AppOwner`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AnomalyEvent`, `ConcurrencyLease`, `IpAllowRule`, `AuditLog` — ten ORM models, plus helpers `service_account_clause()` / `service_account_names()` (who is a service account: the `is_service_account` column), `mask_api_key()` (key display in admin listings), `issue_api_key()` (the one way to (re)issue a key) and `is_legacy_api_key()` (keys older than the current format) |
 
 ## ER Diagram
 
@@ -51,7 +51,7 @@ erDiagram
 
     app_owners {
         INTEGER id PK "Auto-increment primary key"
-        INTEGER app_id FK "App account → users.id"
+        INTEGER app_id FK "Service account → users.id"
         INTEGER owner_id FK "Owner → users.id"
     }
 
@@ -134,7 +134,7 @@ erDiagram
 
 ## User Model
 
-Maps to `users` table. Represents a human user or a programmatic app account.
+Maps to `users` table. Represents a human user or a programmatic service account.
 
 ```mermaid
 classDiagram
@@ -164,7 +164,7 @@ classDiagram
 | Field | Type | Constraints | Default | Description |
 |---|---|---|---|---|
 | `id` | `INTEGER` | PK, auto-increment | — | Primary key, auto-generated |
-| `username` | `VARCHAR` | UNIQUE, INDEX | — | SSO `sub` claim. App accounts are prefixed with `app_` (`is_app_account()`) |
+| `username` | `VARCHAR` | UNIQUE, INDEX | — | SSO `sub` claim for a person; any name for a service account (older ones are `app_*`; the name decides nothing, see `is_service_account`) |
 | `password_hash` | `VARCHAR` | — | `""` | **Unused.** Legacy field kept for backward compatibility |
 | `api_key` | `VARCHAR` | UNIQUE, INDEX | `_generate_api_key()` | Auto-generated, format `sk-internal-` + 64 hex (256 random bits). Keys issued earlier (`sk-internal-{unix_timestamp}-{8-char hex}`) keep working; `is_legacy_api_key` flags them. Used for API auth. Admin listings show `mask_api_key(...)` |
 | `daily_limit_usd` | `FLOAT` | — | `10.0` | Daily spend limit (USD) for all backends. API returns 429 when exceeded. Always finite and ≥ 0: **`0` is a $0 budget, not unlimited**. SSO-created users get `[app].default_daily_limit_usd` |
@@ -175,8 +175,9 @@ classDiagram
 | `is_disabled` | `BOOLEAN` | — | `False` | When `True`, both API key auth and JWT web auth raise `AccountDisabledError` (HTML page or JSON 403). On the web UI an admin by the token's scope is let in regardless; on the API nobody is. Toggled via `POST /admin/users/{id}/toggle-disable` (refuses self-disable) |
 | `can_use_azure` | `BOOLEAN` | — | `False` | Gates `/azure/v1/*` (`deps.require_azure_access`) and unified `/v1/*` dispatch to Azure aliases. Toggled via `POST /admin/users/{id}/toggle-azure` |
 | `can_use_bedrock` | `BOOLEAN` | — | `False` | Gates `/aws/v1/*` (`deps.require_bedrock_access`) and unified `/v1/*` dispatch to Bedrock aliases. Toggled via `POST /admin/users/{id}/toggle-bedrock` |
-| `concurrency_waived` | `BOOLEAN` | — | `False` | Exempt from the concurrency limit (`[app].concurrency_limit_*`); the only exemption there is. App accounts are created waived. Toggled via `POST /admin/users/{id}/toggle-concurrency-waive` |
-| `owner_id` | `INTEGER` | FK → `users.id`, INDEX, NULLABLE | `None` | **Legacy** single-owner column, superseded by `app_owners`. Migration `d5a2c3e67f04` copied it without clearing it, so old app accounts may still point at their original owner |
+| `concurrency_waived` | `BOOLEAN` | — | `False` | Exempt from the concurrency limit (`[app].concurrency_limit_*`); the only exemption there is. Service accounts are created waived. Toggled via `POST /admin/users/{id}/toggle-concurrency-waive` |
+| `is_service_account` | `BOOLEAN` | — | `False` | An account for a program rather than a person (formerly "app account", then recognised by an `app_` name). Decides everything that tells the two apart: the admin's two tables, the per-person figures, mail, the guardrail scope, and that nobody signs in under its name |
+| `owner_id` | `INTEGER` | FK → `users.id`, INDEX, NULLABLE | `None` | **Legacy** single-owner column, superseded by `app_owners`. Migration `d5a2c3e67f04` copied it without clearing it, so old service accounts may still point at their original owner |
 | `display_name` | `VARCHAR` | — | `""` | Display name from IdP JWT `display_name` field. Auto-synced on each web login |
 | `org_code` | `VARCHAR` | — | `""` | Org code from IdP JWT `org_code` field. Auto-synced on each web login. Shown in Admin user table |
 | `created_at` | `DATETIME` | — | `datetime.now(UTC)` | Account creation time |
@@ -196,20 +197,20 @@ Example: `sk-internal-3f9c…` (76 characters). Keys issued before this format, 
 
 | Type | Criteria | Description |
 |---|---|---|
-| Regular user | Not prefixed with `app_` | Auto-created on SSO login |
-| App account | `is_app_account(username)` (`username.startswith("app_")`) | Created by admin for programmatic use (the admin panel adds the prefix). Created with `concurrency_waived = True` |
+| Regular user | `is_service_account = False` | Auto-created on SSO login |
+| Service account (formerly "app account") | `is_service_account = True` (`schema.service_account_clause()` in SQL) | Created by an admin for a program, under any name. API key only: an SSO sign-in under its name is refused. Created with `concurrency_waived = True`. Migration `b2f7c9a41e68` marked the existing `app_*` accounts |
 | Owned app | Has `app_owners` rows with `app_id = id` | Bound to one or more users; owners can manage it on Dashboard |
 
 ---
 
 ## AppOwner Model
 
-Maps to `app_owners` table. Many-to-many: which users own which app accounts.
+Maps to `app_owners` table. Many-to-many: which users own which service accounts.
 
 | Field | Type | Constraints | Default | Description |
 |---|---|---|---|---|
 | `id` | `INTEGER` | PK, auto-increment | — | Primary key |
-| `app_id` | `INTEGER` | FK → `users.id`, INDEX | — | The app account |
+| `app_id` | `INTEGER` | FK → `users.id`, INDEX | — | The service account |
 | `owner_id` | `INTEGER` | FK → `users.id`, INDEX | — | The owning user |
 
 ---

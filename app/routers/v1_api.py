@@ -69,7 +69,7 @@ from app.services.azure_proxy import (
     azure_forward_messages,
     azure_forward_responses,
 )
-from app.services import client_rules, guardrail, model_catalog
+from app.services import client_rules, client_settings, guardrail, model_catalog
 from app.services.model_order import natural_key
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
@@ -478,6 +478,20 @@ async def model_status(user: User = Depends(get_current_user_unmetered)):
 USAGE_MAX_DAYS = 90
 
 
+def _model_usage_row(row: dict) -> dict:
+    """One model's usage as the account endpoints give it: the backend under
+    its client-facing name (``onprem`` / ``azure`` / ``aws``)."""
+    return {
+        "model": row["model"],
+        "backend": model_catalog.BACKEND_NAMES.get(row["backend"], row["backend"]),
+        "type": row["type"],
+        "requests": row["requests"],
+        "input_tokens": row["input_tokens"],
+        "output_tokens": row["output_tokens"],
+        "cost_usd": row["cost_usd"],
+    }
+
+
 @router.get("/v1/usage")
 def usage_history(
     days: int = Query(7, ge=1, le=USAGE_MAX_DAYS, description="How many days back, today included."),
@@ -503,27 +517,13 @@ def usage_history(
     def by_model(rows: list[dict]) -> dict:
         """Totals and one row per model and backend, in the dashboard's
         order, without the cloud backends the account may not use."""
-        rows = [r for r in rows if r["backend"] not in hidden]
-        extra = sorted({r["backend"] for r in rows} - set(model_catalog.BACKEND_ORDER))
-        backend_rank = {name: i for i, name in enumerate((*model_catalog.BACKEND_ORDER, *extra))}
-        rows.sort(key=lambda r: (backend_rank[r["backend"]], model_catalog.usage_row_key(r, catalog)))
+        rows = model_catalog.sort_usage_rows([r for r in rows if r["backend"] not in hidden], catalog)
         return {
             "requests": sum(r["requests"] for r in rows),
             "input_tokens": sum(r["input_tokens"] for r in rows),
             "output_tokens": sum(r["output_tokens"] for r in rows),
             "cost_usd": _usd(sum(r["cost_usd"] for r in rows)),
-            "models": [
-                {
-                    "model": r["model"],
-                    "backend": model_catalog.BACKEND_NAMES.get(r["backend"], r["backend"]),
-                    "type": r["type"],
-                    "requests": r["requests"],
-                    "input_tokens": r["input_tokens"],
-                    "output_tokens": r["output_tokens"],
-                    "cost_usd": r["cost_usd"],
-                }
-                for r in rows
-            ],
+            "models": [_model_usage_row(r) for r in rows],
         }
 
     return {
@@ -544,36 +544,50 @@ def usage_history(
     }
 
 
-@router.get("/v1/apps")
-def owned_apps(user: User = Depends(get_current_user_unmetered)):
-    """The app accounts the caller owns, with each one's daily limit and
-    this month's usage: the dashboard's *My App Accounts* table.
+def _owned_service_account_rows(user: User) -> list[dict]:
+    """The service accounts ``user`` owns, by name in natural order, as the
+    account endpoints give them: never a key."""
+    accounts = sorted(get_owned_apps(user), key=lambda account: natural_key(account["username"]))
+    return [
+        {
+            "username": account["username"],
+            "daily_limit_usd": max(0.0, float(account["daily_limit_usd"])),
+            "legacy_key": account["legacy_key"],
+            "month": {
+                "requests": account["monthly_reqs"],
+                "input_tokens": account["monthly_input"],
+                "output_tokens": account["monthly_output"],
+                "cost_usd": _usd(account["monthly_cost"]),
+                "models": [_model_usage_row(r) for r in account["models"]],
+            },
+        }
+        for account in accounts
+    ]
 
-    An app's API key is **not** part of it, and no API-key endpoint returns
-    one: a leaked personal key must not open every app account its holder
-    owns. Showing and regenerating an app's key stays on the dashboard,
-    behind SSO. ``legacy_key`` says an app's key is of the older format.
+
+@router.get("/v1/service-accounts")
+def owned_service_accounts(user: User = Depends(get_current_user_unmetered)):
+    """The service accounts the caller owns (accounts for programs, assigned
+    by an admin), with each one's daily limit and this month's usage, in
+    total and per model: the dashboard's *Service accounts* tab.
+
+    ``month.models`` has one row per model and backend, in the dashboard's
+    order (as ``month.models`` of ``/v1/usage``), and adds up to the
+    month's totals. Nothing is left out of it: it is that account's bill,
+    whatever cloud access the caller has.
+
+    A service account's API key is **not** part of it, and no API-key
+    endpoint returns one: a leaked personal key must not open every service
+    account its holder owns. Showing and regenerating such a key stays on
+    the dashboard, behind SSO. ``legacy_key`` says its key is of the older
+    format.
 
     Answers once the daily limit is spent. Plain ``def`` (database read).
     """
-    apps = sorted(get_owned_apps(user), key=lambda app: natural_key(app["username"]))
     return {
-        "object": "apps",
+        "object": "service_accounts",
         "month": local_month_start().strftime("%Y-%m"),
-        "apps": [
-            {
-                "username": app["username"],
-                "daily_limit_usd": max(0.0, float(app["daily_limit_usd"])),
-                "legacy_key": app["legacy_key"],
-                "month": {
-                    "requests": app["monthly_reqs"],
-                    "input_tokens": app["monthly_input"],
-                    "output_tokens": app["monthly_output"],
-                    "cost_usd": _usd(app["monthly_cost"]),
-                },
-            }
-            for app in apps
-        ],
+        "service_accounts": _owned_service_account_rows(user),
     }
 
 
@@ -627,6 +641,36 @@ def client_notices(user: User = Depends(get_current_user_unmetered)):
     if combined:
         body["patch"] = {**_patch(combined["env"]), "covers": combined["covered"], "manual": combined["manual"]}
     return body
+
+
+@router.get("/v1/settings")
+async def client_settings_fields(user: User = Depends(get_current_user_unmetered)):
+    """The client settings this account can be offered, for a tool that
+    sets a client up: apply every ``default``, or let the user pick.
+
+    A field is one variable of the ``env`` block of Claude Code's
+    settings.json (``client`` names the client): ``name``, a ``label`` and
+    a ``description`` to show, ``type`` (``model``: its options are models;
+    ``choice``: fixed values), ``default`` and ``options``. ``default`` is
+    never empty and is always the ``value`` of one of the ``options``; a
+    field with one option has nothing else to pick. An option has a
+    ``value`` and a ``label``, sometimes a ``description``, and a model
+    option its ``backend``.
+
+    The fields are the admin's (``client_settings.json``, the admin panel's
+    *Client setup* card), and both ``default`` and ``options`` follow the
+    account's tier, its cloud access: none, Azure, AWS or both. A model the
+    account cannot use is never offered. What the account has set now is on
+    its machine; the gateway does not know it.
+
+    Read-only and never a key. Answers once the daily limit is spent. No
+    database read.
+    """
+    return {
+        "object": "settings",
+        "client": client_settings.CLIENT,
+        "fields": client_settings.fields_for(user),
+    }
 
 
 @router.post("/v1/chat/completions")

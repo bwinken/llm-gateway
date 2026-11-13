@@ -42,7 +42,7 @@ from sqlmodel import Session, func, select
 
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc, local_today
-from app.models.schema import AnomalyEvent, UsageLog, User, is_app_account
+from app.models.schema import AnomalyEvent, UsageLog, User, service_account_clause
 from app.services.scheduler import Job, env_seconds
 from app.services.usage_rollup import aggregate
 
@@ -76,8 +76,8 @@ def _finding(scope: str, rule: str, *, severity: str, window_start: datetime,
 
 
 def _human_user_ids(session: Session) -> dict[int, str]:
-    rows = session.exec(select(User.id, User.username)).all()
-    return {int(uid): name for uid, name in rows if not is_app_account(str(name))}
+    rows = session.exec(select(User.id, User.username).where(~service_account_clause())).all()
+    return {int(uid): str(name) for uid, name in rows}
 
 
 def _baseline_window() -> tuple:

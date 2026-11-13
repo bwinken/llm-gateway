@@ -1,8 +1,9 @@
 """The dashboard's figures by API key, for clients such as a terminal tool:
 ``GET /v1/status`` (the models an account can use and whether they are up),
 ``GET /v1/usage`` (its usage per day, today and this month by model),
-``GET /v1/apps`` (the app accounts it owns) and ``GET /v1/notices`` (its
-client-rule notices)."""
+``GET /v1/service-accounts`` (the service accounts it owns), ``GET /v1/notices`` (its
+client-rule notices) and ``GET /v1/settings`` (the client settings it can be
+asked about, each with a default and its options)."""
 
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from tests.conftest import (
     TEST_MODEL_ROUTING,
     auth_header,
     earlier_today,
+    web_auth_header,
 )
 
 
@@ -47,7 +49,7 @@ def _no_nulls(value) -> bool:
     return value is not None
 
 
-PATHS = ["/v1/status", "/v1/usage", "/v1/apps", "/v1/notices"]
+PATHS = ["/v1/status", "/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/settings"]
 
 
 class TestAuth:
@@ -286,15 +288,15 @@ class TestApps:
         return app
 
     def _apps(self, client, headers=None):
-        resp = client.get("/v1/apps", headers=headers or auth_header())
+        resp = client.get("/v1/service-accounts", headers=headers or auth_header())
         assert resp.status_code == 200, resp.text
         assert _no_nulls(resp.json()), resp.text
         return resp
 
     def test_none(self, client, test_user):
         body = self._apps(client).json()
-        assert body["object"] == "apps"
-        assert body["apps"] == []
+        assert body["object"] == "service_accounts"
+        assert body["service_accounts"] == []
 
     def test_owned_apps_with_this_months_usage(self, client, db_session, test_user):
         batch = self._app(db_session, test_user, "app_batch10")
@@ -303,12 +305,52 @@ class TestApps:
         _spend(db_session, batch, "2")
         body = self._apps(client).json()
         assert body["month"] == datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m")
-        assert body["apps"] == [
+        assert body["service_accounts"] == [
             {"username": "app_batch2", "daily_limit_usd": 0.0, "legacy_key": True,
-             "month": {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}},
+             "month": {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "models": []}},
             {"username": "app_batch10", "daily_limit_usd": 50.0, "legacy_key": True,
-             "month": {"requests": 2, "input_tokens": 2000, "output_tokens": 1000, "cost_usd": 3.5}},
+             "month": {"requests": 2, "input_tokens": 2000, "output_tokens": 1000, "cost_usd": 3.5, "models": [
+                 {"model": "test-llm", "backend": "onprem", "type": "llm",
+                  "requests": 2, "input_tokens": 2000, "output_tokens": 1000, "cost_usd": 3.5},
+             ]}},
         ]
+
+    def test_this_months_usage_per_model(self, client, db_session, test_user):
+        # A service account is named anything; the name decides nothing.
+        etl = self._app(db_session, test_user, "billing-etl", is_service_account=True)
+        _spend(db_session, etl, "1", backend="bedrock", model="bedrock-claude")
+        _spend(db_session, etl, "2", backend="azure", model="azure-gpt-4")
+        _spend(db_session, etl, "0.25", model="test-vlm", model_type="vlm")
+        _spend(db_session, etl, "0.5")
+        _spend(db_session, etl, "0.5")
+        last_month = (datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)).replace(tzinfo=None)
+        _spend(db_session, etl, "9", created_at=last_month)
+        (app,) = self._apps(client).json()["service_accounts"]
+        assert app["username"] == "billing-etl"
+        # The dashboard's order: backends in turn, each by type then catalog order.
+        assert [(m["model"], m["backend"], m["requests"], m["cost_usd"]) for m in app["month"]["models"]] == [
+            ("test-llm", "onprem", 2, 1.0), ("test-vlm", "onprem", 1, 0.25),
+            ("azure-gpt-4", "azure", 1, 2.0), ("bedrock-claude", "aws", 1, 1.0),
+        ]
+        # The rows are the bill: they add up to the month.
+        assert app["month"]["cost_usd"] == 4.25 == sum(m["cost_usd"] for m in app["month"]["models"])
+        assert app["month"]["requests"] == 5
+
+    def test_cloud_rows_show_whatever_the_owners_own_access(self, client, db_session, test_user):
+        # It is the service account's bill, not the owner's model list.
+        etl = self._app(db_session, test_user, "billing-etl", is_service_account=True)
+        _spend(db_session, etl, "2", backend="azure", model="azure-gpt-4")
+        _update(db_session, test_user, can_use_azure=False, can_use_bedrock=False)
+        (app,) = self._apps(client).json()["service_accounts"]
+        assert [m["backend"] for m in app["month"]["models"]] == ["azure"]
+
+    def test_the_older_route_is_gone(self, client, test_user):
+        # /v1/apps was this endpoint's first name; nothing answers there now.
+        assert client.get("/v1/apps", headers=auth_header()).status_code == 404
+        body = self._apps(client).json()
+        assert set(body) == {"object", "month", "service_accounts"}
+        for method in ("post", "put", "delete"):
+            assert getattr(client, method)("/v1/service-accounts", headers=auth_header()).status_code == 405
 
     def test_an_apps_key_is_never_returned(self, client, db_session, test_user):
         # A leaked personal key must not open the app accounts behind it.
@@ -319,8 +361,8 @@ class TestApps:
 
     def test_only_the_callers_own(self, client, db_session, test_user, admin_user):
         self._app(db_session, admin_user, "app_theirs")
-        assert self._apps(client).json()["apps"] == []
-        theirs = self._apps(client, headers=auth_header(admin_user.api_key)).json()["apps"]
+        assert self._apps(client).json()["service_accounts"] == []
+        theirs = self._apps(client, headers=auth_header(admin_user.api_key)).json()["service_accounts"]
         assert [a["username"] for a in theirs] == ["app_theirs"]
 
     def test_runs_off_the_event_loop(self):
@@ -328,7 +370,7 @@ class TestApps:
 
         from app.routers import v1_api
 
-        assert not inspect.iscoroutinefunction(v1_api.owned_apps)
+        assert not inspect.iscoroutinefunction(v1_api.owned_service_accounts)
         assert not inspect.iscoroutinefunction(v1_api.client_notices)
 
 
@@ -447,6 +489,326 @@ class TestNotices:
     def test_a_broken_store_reads_as_nothing_open(self, client, test_user):
         with patch("app.services.client_rules.notices_for", side_effect=RuntimeError("no table")):
             assert self._notices(client)["notices"] == []
+
+
+MODEL_FIELDS = ["ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_AUTO_MODE_MODEL"]
+DISCOVERY = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
+
+
+def _model_field(**extra) -> dict:
+    return {"name": "ANTHROPIC_MODEL", "label": "Default model", "description": "Main model.", "type": "model", **extra}
+
+
+def _choice_field(name: str = "SWITCH", **extra) -> dict:
+    field = {
+        "name": name, "label": "A switch", "description": "What the switch does.", "type": "choice",
+        "default": "1", "options": [{"value": "1", "label": "On"}, {"value": "0", "label": "Off"}],
+    }
+    field.update(extra)
+    return field
+
+
+@pytest.fixture
+def settings_file(tmp_path):
+    """Write the site's ``client_settings.json`` (in a temp ``CONFIG_DIR``)."""
+    import json
+
+    path = tmp_path / "client_settings.json"
+    with patch("app.services.client_settings.SETTINGS_PATH", path):
+        def write(*fields: dict) -> None:
+            path.write_text(json.dumps({"fields": list(fields)}), encoding="utf-8")
+        write.path = path
+        yield write
+
+
+class TestSettings:
+    """``GET /v1/settings``: the client settings a tool can offer an account,
+    each with a description, a default and its options, from the admin's
+    ``client_settings.json``."""
+
+    def _body(self, client, headers=None) -> dict:
+        resp = client.get("/v1/settings", headers=headers or auth_header())
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert _no_nulls(body), body
+        return body
+
+    def _fields(self, client, headers=None) -> dict[str, dict]:
+        return {field["name"]: field for field in self._body(client, headers)["fields"]}
+
+    def _values(self, field: dict) -> list[str]:
+        return [option["value"] for option in field["options"]]
+
+    def _tier(self, db_session, user, azure: bool, aws: bool) -> None:
+        _update(db_session, user, can_use_azure=azure, can_use_bedrock=aws)
+
+    # ── The shape, with the shipped example ──
+
+    def test_fields_with_a_description_a_default_and_options(self, client, test_user):
+        body = self._body(client)
+        assert body["object"] == "settings" and body["client"] == "claude-code"
+        assert [field["name"] for field in body["fields"]] == [*MODEL_FIELDS, "CLAUDE_CODE_AUTO_MODE_SERVER", DISCOVERY]
+        for field in body["fields"]:
+            assert set(field) == {"name", "label", "description", "type", "default", "options"}
+            assert field["label"] and field["description"] and field["type"] in ("model", "choice")
+            # A client can always apply or preselect the default.
+            assert field["default"] and field["default"] in self._values(field)
+            assert all(option["label"] for option in field["options"])
+        fields = {field["name"]: field for field in body["fields"]}
+        assert self._values(fields[DISCOVERY]) == ["1", "0"] and fields[DISCOVERY]["default"] == "1"
+        assert self._values(fields["CLAUDE_CODE_AUTO_MODE_SERVER"]) == ["0"]
+
+    def test_the_shipped_example_is_a_valid_file(self):
+        from app.services import client_settings
+
+        fields = client_settings.parse(client_settings.EXAMPLE_PATH.read_text(encoding="utf-8"))
+        assert [field.name for field in fields][:3] == MODEL_FIELDS
+
+    def test_model_options_are_the_accounts_chat_models(self, client, test_user):
+        fields = self._fields(client)
+        status = client.get("/v1/status", headers=auth_header()).json()["models"]
+        chat = [m["id"] for m in status if m["type"] in ("llm", "vlm")]
+        for name in MODEL_FIELDS:
+            assert fields[name]["type"] == "model"
+            assert self._values(fields[name]) == chat  # the one display order
+        options = {option["value"]: option for option in fields["ANTHROPIC_MODEL"]["options"]}
+        assert "test-embedding" not in options
+        assert options["test-llm"] == {"value": "test-llm", "label": "test-llm", "backend": "onprem"}
+        assert options["test-vlm"]["label"] == "Test VLM"
+        assert options["azure-gpt-4"]["backend"] == "azure"
+        assert options["bedrock-claude"]["backend"] == "aws"
+
+    def test_a_model_field_without_a_default_suggests_the_gateways_fallback(self, client, test_user):
+        # Without one, the first model of the account's list.
+        assert self._fields(client)["ANTHROPIC_MODEL"]["default"] == "test-llm"
+        with patch("app.core.config.FALLBACK_MAP", {"llm": "test-vlm"}):
+            assert self._fields(client)["ANTHROPIC_MODEL"]["default"] == "test-vlm"
+        with patch("app.core.config.FALLBACK_MAP", {"llm": "not-configured"}):
+            assert self._fields(client)["ANTHROPIC_MODEL"]["default"] == "test-llm"
+
+    # ── The admin's file ──
+
+    def test_the_sites_file_replaces_the_example(self, client, test_user, settings_file):
+        settings_file(_choice_field(options=[{"value": "1", "label": "On", "description": "Recommended."}, "0"]))
+        assert self._body(client)["fields"] == [{
+            "name": "SWITCH", "label": "A switch", "description": "What the switch does.", "type": "choice",
+            "default": "1",
+            "options": [{"value": "1", "label": "On", "description": "Recommended."}, {"value": "0", "label": "0"}],
+        }]
+
+    def test_a_file_edited_by_hand_applies_at_the_next_request(self, client, test_user, settings_file):
+        import os
+
+        settings_file(_choice_field())
+        assert list(self._fields(client)) == ["SWITCH"]
+        settings_file(_choice_field("OTHER_SWITCH"))
+        os.utime(settings_file.path, ns=(1, 1))  # whatever the clock's resolution
+        assert list(self._fields(client)) == ["OTHER_SWITCH"]
+
+    def test_a_broken_file_changes_nothing(self, client, test_user, settings_file):
+        from app.services import client_settings
+
+        settings_file(_choice_field())
+        assert list(self._fields(client)) == ["SWITCH"]
+        settings_file.path.write_text("{not json", encoding="utf-8")
+        assert list(self._fields(client)) == ["SWITCH"]  # the last good one
+        assert "Not valid JSON" in client_settings.status()["error"]
+
+    # ── Tiers: the account's cloud access ──
+
+    def test_the_default_follows_the_tier(self, client, db_session, test_user, settings_file):
+        settings_file(_model_field(default={"everyone": "test-llm", "azure": "azure-gpt-4", "both": "bedrock-claude"}))
+        expected = {(False, False): "test-llm", (True, False): "azure-gpt-4",
+                    (False, True): "test-llm", (True, True): "bedrock-claude"}
+        for (azure, aws), default in expected.items():
+            self._tier(db_session, test_user, azure, aws)
+            assert self._fields(client)["ANTHROPIC_MODEL"]["default"] == default, (azure, aws)
+
+    def test_the_most_specific_tier_wins(self):
+        from app.services.client_settings import pick
+
+        tiered = {"everyone": "e", "azure": "az", "aws": "aw"}
+        assert pick(tiered, False, False) == "e"
+        assert pick(tiered, True, False) == "az"
+        assert pick(tiered, False, True) == "aw"
+        assert pick(tiered, True, True) == "aw"  # no "both": aws over azure
+        assert pick({**tiered, "both": "b"}, True, True) == "b"
+        assert pick({"azure": "az"}, False, False) is None
+
+    def test_the_options_follow_the_tier(self, client, db_session, test_user, settings_file):
+        settings_file(
+            _model_field(options={"everyone": ["test-llm"], "azure": ["azure-gpt-4", "test-llm"]}),
+            _choice_field(default={"everyone": "0", "both": "2"},
+                          options={"everyone": ["0", "1"], "both": ["0", "1", "2"]}),
+        )
+        self._tier(db_session, test_user, False, False)
+        fields = self._fields(client)
+        assert self._values(fields["ANTHROPIC_MODEL"]) == ["test-llm"]
+        assert self._values(fields["SWITCH"]) == ["0", "1"] and fields["SWITCH"]["default"] == "0"
+        self._tier(db_session, test_user, True, False)
+        assert self._values(self._fields(client)["ANTHROPIC_MODEL"]) == ["azure-gpt-4", "test-llm"]  # the file's order
+        self._tier(db_session, test_user, True, True)
+        fields = self._fields(client)
+        assert self._values(fields["SWITCH"]) == ["0", "1", "2"] and fields["SWITCH"]["default"] == "2"
+
+    def test_a_field_can_be_for_some_tiers_only(self, client, db_session, test_user, settings_file):
+        settings_file(_choice_field(default={"azure": "1"}, options={"azure": ["1", "0"]}))
+        self._tier(db_session, test_user, False, False)
+        assert self._body(client)["fields"] == []
+        self._tier(db_session, test_user, True, False)
+        assert list(self._fields(client)) == ["SWITCH"]
+
+    def test_a_model_the_account_cannot_use_is_never_offered(self, client, db_session, test_user, settings_file):
+        # Listed for everyone, but a cloud model needs the access.
+        settings_file(_model_field(default="azure-gpt-4", options=["test-llm", "azure-gpt-4", "no-such-model"]))
+        self._tier(db_session, test_user, False, False)
+        field = self._fields(client)["ANTHROPIC_MODEL"]
+        assert self._values(field) == ["test-llm"] and field["default"] == "test-llm"
+        self._tier(db_session, test_user, True, False)
+        field = self._fields(client)["ANTHROPIC_MODEL"]
+        assert self._values(field) == ["test-llm", "azure-gpt-4"] and field["default"] == "azure-gpt-4"
+
+    def test_the_stored_admin_flag_shows_nothing_more(self, client, admin_user):
+        field = self._fields(client, headers=auth_header(admin_user.api_key))["ANTHROPIC_MODEL"]
+        assert {option["backend"] for option in field["options"]} == {"onprem"}
+
+    def test_a_hidden_model_can_be_the_default(self, client, test_user, settings_file):
+        # e.g. a small model kept for background tasks: not in the lists,
+        # but it answers by name.
+        settings_file(_model_field(default="small-hidden"))
+        routing = {**TEST_MODEL_ROUTING, "small-hidden": {**TEST_MODEL_ROUTING["test-llm"], "hidden": True}}
+        with patch("app.core.config.get_model_routing_snapshot", return_value=routing):
+            field = self._fields(client)["ANTHROPIC_MODEL"]
+        assert field["default"] == "small-hidden"
+        assert field["options"][0] == {"value": "small-hidden", "label": "small-hidden", "backend": "onprem"}
+        assert "test-llm" in self._values(field)
+
+    def test_no_models_no_model_fields(self, client, db_session, test_user):
+        self._tier(db_session, test_user, False, False)
+        with patch("app.core.config.get_model_routing_snapshot", return_value={}):
+            fields = self._fields(client)
+        assert not any(name in fields for name in MODEL_FIELDS)
+        assert DISCOVERY in fields
+
+    # ── What a file may say ──
+
+    @pytest.mark.parametrize("field, message", [
+        ({**_choice_field(), "description": ""}, "description"),
+        ({k: v for k, v in _choice_field().items() if k != "description"}, "description"),
+        (_choice_field("ANTHROPIC_AUTH_TOKEN"), "API key"),
+        (_choice_field("ANTHROPIC_API_KEY"), "API key"),
+        (_choice_field("not a name"), "environment variable name"),
+        (_choice_field(type="text"), "type"),
+        (_choice_field(default="9"), "not one of their options"),
+        (_choice_field(default={"azure": "1"}), "no \"default\" for local accounts"),
+        (_choice_field(default={"vip": "1"}), "keyed by"),
+        (_choice_field(options=["1", "1"]), "twice"),
+        ({k: v for k, v in _choice_field().items() if k != "options"}, "needs \"options\""),
+        (_choice_field(defualt="1"), "unknown key"),
+    ])
+    def test_what_is_refused(self, field, message):
+        import json
+
+        from app.services import client_settings
+
+        with pytest.raises(ValueError, match=message):
+            client_settings.parse(json.dumps({"fields": [field]}))
+
+    def test_a_variable_is_listed_once(self):
+        import json
+
+        from app.services import client_settings
+
+        with pytest.raises(ValueError, match="listed twice"):
+            client_settings.parse(json.dumps({"fields": [_choice_field(), _choice_field()]}))
+
+    def test_a_key_is_never_offered(self, client, test_user):
+        assert test_user.api_key not in client.get("/v1/settings", headers=auth_header()).text
+
+    def test_read_only_and_no_database_read(self, client, test_user):
+        for method in ("post", "put", "delete"):
+            assert getattr(client, method)("/v1/settings", headers=auth_header()).status_code == 405
+        from app.services import client_settings
+
+        with patch("app.core.deps.engine", None), patch("app.services.client_rules.engine", None):
+            assert client_settings.fields_for(test_user)
+
+    def test_it_does_not_follow_the_client_checks(self, client, db_session, test_user):
+        # A check's patch is what a notice says; setup has its own file.
+        TestNotices._configure(self, db_session, AUTO, patch='{"ANTHROPIC_MODEL": "test-vlm", "EXTRA": "1"}')
+        fields = self._fields(client)
+        assert fields["ANTHROPIC_MODEL"]["default"] == "test-llm" and "EXTRA" not in fields
+
+
+class TestClientSetupAdmin:
+    """The admin panel's *Client setup* card: the same file, edited from the
+    browser."""
+
+    def _admin(self, admin_user) -> dict:
+        return {**web_auth_header(sub=admin_user.username, scopes=["admin"]), "Accept": "application/json"}
+
+    def _text(self, *fields: dict) -> str:
+        import json
+
+        return json.dumps({"fields": list(fields)}, indent=2)
+
+    def test_saving_writes_the_file_the_api_reads(self, client, admin_user, test_user, settings_file):
+        text = self._text(_choice_field(), _model_field(default={"azure": "azure-gpt-4"}))
+        resp = client.post("/admin/client-settings", data={"settings": text}, headers=self._admin(admin_user))
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] and body["fields"] == 2 and body["customized"] and body["unknown_models"] == []
+        assert settings_file.path.read_text(encoding="utf-8") == text + "\n"
+        fields = client.get("/v1/settings", headers=auth_header()).json()["fields"]
+        assert [field["name"] for field in fields] == ["SWITCH", "ANTHROPIC_MODEL"]
+        # What each tier is offered, for the card.
+        preview = {p["account"]: {f["name"]: f["default"] for f in p["fields"]} for p in body["preview"]}
+        assert list(preview) == ["local", "azure", "aws", "both"]
+        assert preview["local"]["ANTHROPIC_MODEL"] == "test-llm"
+        assert preview["azure"]["ANTHROPIC_MODEL"] == "azure-gpt-4"
+
+    def test_an_invalid_file_is_refused_and_nothing_is_written(self, client, admin_user, settings_file):
+        settings_file(_choice_field())
+        before = settings_file.path.read_text(encoding="utf-8")
+        for text in ("{not json", self._text({**_choice_field(), "description": ""})):
+            resp = client.post("/admin/client-settings", data={"settings": text}, headers=self._admin(admin_user))
+            assert resp.status_code == 400 and resp.json()["detail"]
+        assert settings_file.path.read_text(encoding="utf-8") == before
+
+    def test_a_model_the_gateway_does_not_have_is_pointed_out(self, client, admin_user, settings_file):
+        text = self._text(_model_field(default="typo-model", options=["test-llm", "gone-model"]))
+        body = client.post("/admin/client-settings", data={"settings": text}, headers=self._admin(admin_user)).json()
+        assert body["unknown_models"] == ["gone-model", "typo-model"]
+
+    def test_reset_goes_back_to_the_shipped_example(self, client, admin_user, test_user, settings_file):
+        settings_file(_choice_field())
+        body = client.post("/admin/client-settings/reset", headers=self._admin(admin_user)).json()
+        assert body["ok"] and not body["customized"]
+        assert not settings_file.path.exists()
+        names = [f["name"] for f in client.get("/v1/settings", headers=auth_header()).json()["fields"]]
+        assert names[:3] == MODEL_FIELDS
+
+    def test_only_an_admin(self, client, test_user, settings_file):
+        headers = {**web_auth_header(sub=test_user.username), "Accept": "application/json"}
+        for path in ("/admin/client-settings", "/admin/client-settings/reset"):
+            assert client.post(path, data={"settings": self._text(_choice_field())}, headers=headers).status_code == 403
+        assert not settings_file.path.exists()
+
+    def test_the_card_shows_the_file_in_force(self, client, admin_user, settings_file):
+        settings_file(_choice_field("MY_OWN_SWITCH"))
+        page = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        card = page[page.index('id="client-setup"'):]
+        assert "MY_OWN_SWITCH" in card[:card.index("</form>")]
+        assert str(settings_file.path) in card
+
+    def test_a_save_is_in_the_audit_log(self, client, db_session, admin_user, settings_file):
+        from app.models.schema import AuditLog
+
+        client.post("/admin/client-settings", data={"settings": self._text(_choice_field())},
+                    headers=self._admin(admin_user))
+        rows = [r for r in db_session.exec(select(AuditLog)).all() if r.route == "/admin/client-settings"]
+        assert len(rows) == 1 and rows[0].actor == admin_user.username and rows[0].status == 200
+        assert "SWITCH" in (rows[0].detail or "")
 
 
 def _jwt() -> str:

@@ -68,8 +68,9 @@ Windows users can get a pre-configured Claude Code installer from the **Setup** 
 | `GET /v1/me`, `/me` | Your access (on-prem / Azure / AWS) and today's budget: limit, spent, remaining, reset time. Answers even when the budget is spent. See [Checking your quota](#checking-your-quota) |
 | `GET /v1/status` | The models you can use and whether each is up, with load and price. See [Model status](#model-status) |
 | `GET /v1/usage` | Your usage per day, and today and this month by model. See [Usage history](#usage-history) |
-| `GET /v1/apps` | The app accounts you own, with their limits and this month's usage. See [App accounts](#app-accounts) |
+| `GET /v1/service-accounts` | The service accounts you own, with their limits and this month's usage. See [Service accounts](#service-accounts) |
 | `GET /v1/notices` | What the dashboard asks you to fix in your client's settings. See [Notices](#notices) |
+| `GET /v1/settings` | The client settings a tool can set up for you, each with a description, the suggested value and the other options for your account. See [Settings](#settings) |
 | `POST /auth/api-key` | Your API key for an AuthCenter access token: how a terminal tool signs in. See [Signing in from a terminal tool](#signing-in-from-a-terminal-tool) |
 | `POST /v1/embeddings` | Embeddings (vLLM only) |
 | `POST /v1/rerank`, `/v1/score` | Reranking |
@@ -202,25 +203,33 @@ curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-ap
 - `today` and `month` are today and the current month so far, each with one `models` entry per model and backend, in the dashboard's order.
 - `today` and `month` leave out a cloud backend you no longer have access to, as the dashboard does; `days` counts everything, as your daily budget does.
 
-## App accounts
+## Service accounts
 
 ```bash
-curl https://your-gateway/v1/apps -H "Authorization: Bearer sk-your-api-key"
+curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-api-key"
 ```
 
 ```json
 {
-  "object": "apps",
+  "object": "service_accounts",
   "month": "2026-10",
-  "apps": [
-    {"username": "app_batch", "daily_limit_usd": 50.0, "legacy_key": false,
-     "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5}}
+  "service_accounts": [
+    {"username": "billing-etl", "daily_limit_usd": 50.0, "legacy_key": false,
+     "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5,
+               "models": [
+                 {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
+                  "requests": 1100, "input_tokens": 3700000, "output_tokens": 340000, "cost_usd": 21.5},
+                 {"model": "gpt-5", "backend": "azure", "type": "llm",
+                  "requests": 100, "input_tokens": 400000, "output_tokens": 40000, "cost_usd": 40.0}
+               ]}}
   ]
 }
 ```
 
-- `apps` lists the app accounts you own (empty when you own none), each with its own daily limit and its usage this month.
-- An app's API key is not included, and no endpoint returns a key. See or regenerate an app's key on the dashboard.
+- A service account is an account for a program (a batch job, a service) that an administrator assigned to you. They used to be called app accounts: older ones are named `app_...`, newer ones anything.
+- `service_accounts` lists the ones you own (empty when you own none), each with its own daily limit and its usage this month: the dashboard's *Service accounts* tab.
+- `month.models` is that month by model: one row per model and backend, in the dashboard's order, adding up to the month's totals. Every backend the service account used is listed, whatever your own access.
+- A service account's API key is not included, and no endpoint returns a key. See or regenerate it on the dashboard's *Service accounts* tab.
 
 ## Notices
 
@@ -256,7 +265,46 @@ curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
 - The top-level `patch` is the one to apply: everything open, merged, with the settings every account should have. `covers` lists the notices it fixes, `manual` those it cannot. It is absent when nothing is open. A patch never holds a key.
 - This endpoint only reads. After applying a fix, press *I've applied it* on the dashboard; the notice also goes away by itself once the gateway has not seen the problem for `window_days` days.
 
-`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps` and `/v1/notices` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows. All of them answer when your budget is spent, none is billed, and none returns an API key: a key is only ever handed out for a sign-in (next section, or the dashboard).
+## Settings
+
+```bash
+curl https://your-gateway/v1/settings -H "Authorization: Bearer sk-your-api-key"
+```
+
+```json
+{
+  "object": "settings",
+  "client": "claude-code",
+  "fields": [
+    {"name": "ANTHROPIC_MODEL", "label": "Default model",
+     "description": "The model Claude Code starts a session with.",
+     "type": "model", "default": "qwen3-coder",
+     "options": [
+       {"value": "qwen3-coder", "label": "Qwen3 Coder", "backend": "onprem"},
+       {"value": "qwen3-small", "label": "qwen3-small", "backend": "onprem"},
+       {"value": "gpt-5", "label": "GPT-5", "backend": "azure"}
+     ]},
+    {"name": "CLAUDE_CODE_AUTO_MODE_SERVER", "label": "Auto mode safety check",
+     "description": "No model behind this gateway reviews auto mode's actions, so Claude Code has to run that check itself.",
+     "type": "choice", "default": "0",
+     "options": [{"value": "0", "label": "Run by Claude Code"}]},
+    {"name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "label": "Model list from the gateway",
+     "description": "Fill Claude Code's /model picker with this gateway's models at startup.",
+     "type": "choice", "default": "1",
+     "options": [{"value": "1", "label": "On"}, {"value": "0", "label": "Off"}]}
+  ]
+}
+```
+
+- This is for a tool that sets Claude Code up for you: it can apply every `default` as it is, or let you pick. Each field is one variable of the `env` block of `~/.claude/settings.json` (`client` names the client the fields are for). Your gateway's administrator decides which fields there are.
+- `description` says what the variable is for. It and `label` are always there.
+- `default` is the suggested value for **your** account. It is never empty and is always the `value` of one of the `options`, so it can be applied or preselected.
+- `options` is everything you may pick. For a `model` field they are chat models your account can use, each with its `backend`; for a `choice` field they are fixed values. An option may have its own `description`. A field with a single option has nothing else to pick: the only question is whether to apply it.
+- Both follow your tier, which is your cloud access (none, Azure, AWS, or both): another account may get a different default, different options, or a field you do not have. A model you cannot use is never offered.
+- The gateway does not know what you have set now: compare with your own settings.json.
+- The fields change with the gateway's configuration and your access, so read them when you need them rather than keeping a copy. Never a key, and read-only: applying a value is up to the tool.
+
+`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` and `/v1/settings` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows, and what a tool needs to set a client up. All of them answer when your budget is spent, none is billed, and none returns an API key: a key is only ever handed out for a sign-in (next section, or the dashboard).
 
 ## Signing in from a terminal tool
 
@@ -273,7 +321,7 @@ curl -X POST https://your-gateway/auth/api-key -H "Authorization: Bearer $AUTHCE
 {"object": "api_key", "username": "alice", "api_key": "sk-your-api-key", "legacy_key": false}
 ```
 
-3. From then on it uses the API key, like every other client: for the models, and for `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps` and `/v1/notices`. The access token is not needed again and nothing else accepts it; throw it away.
+3. From then on it uses the API key, like every other client: for the models, and for `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` and `/v1/settings`. The access token is not needed again and nothing else accepts it; throw it away.
 
 - You always get your existing key. Signing in on a second machine does not change the key on the first.
 - A first sign-in creates your account, as a first visit to the dashboard does.

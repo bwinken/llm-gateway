@@ -150,8 +150,8 @@ class TestDecideAction:
 
 class TestApplies:
 
-    def _user(self, name):
-        return MagicMock(username=name)
+    def _user(self, name, service=False):
+        return MagicMock(username=name, is_service_account=service)
 
     def test_inactive(self):
         from app.services.guardrail import applies
@@ -167,9 +167,9 @@ class TestApplies:
 
     def test_scope(self):
         from app.services.guardrail import applies
-        assert applies(_settings(apply_to="apps"), self._user("app_x"), "messages")
+        assert applies(_settings(apply_to="apps"), self._user("etl-bot", service=True), "messages")
         assert not applies(_settings(apply_to="apps"), self._user("bob"), "messages")
-        assert not applies(_settings(apply_to="users"), self._user("app_x"), "messages")
+        assert not applies(_settings(apply_to="users"), self._user("etl-bot", service=True), "messages")
 
 
 class TestExtractUserText:

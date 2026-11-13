@@ -73,6 +73,16 @@ def usage_row_key(row: dict, catalog: dict[tuple[str, str], tuple]) -> tuple:
     )
 
 
+def sort_usage_rows(rows: list[dict], catalog: dict[tuple[str, str], tuple] | None = None) -> list[dict]:
+    """Usage rows (``model``, ``type``, ``backend`` as ``usage_logs`` spells
+    it) in the order every page lists models: the backends in turn (on-prem,
+    Azure, Bedrock, then any other), and within each ``usage_row_key``."""
+    catalog = current_catalog_keys() if catalog is None else catalog
+    extra = sorted({r["backend"] for r in rows} - set(BACKEND_ORDER))
+    rank = {name: index for index, name in enumerate((*BACKEND_ORDER, *extra))}
+    return sorted(rows, key=lambda r: (rank[r["backend"]], usage_row_key(r, catalog)))
+
+
 def _snapshots() -> dict[str, dict[str, dict]]:
     return {
         "vllm": config.get_model_routing_snapshot(),
@@ -91,6 +101,25 @@ def _positions() -> dict[str, dict[str, int]]:
 def current_catalog_keys() -> dict[tuple[str, str], tuple]:
     """``catalog_keys`` for the configuration as it is now."""
     return catalog_keys(_snapshots(), config.get_pricing_snapshot(), _positions())
+
+
+def usable_models(user: User) -> list[dict[str, Any]]:
+    """Every configured model ``user`` may ask for, hidden entries included
+    (a hidden model is left out of the lists but answers by name): ``id``,
+    ``backend``, ``type`` and ``display_name`` when declared. Cloud backends
+    without access are left out, as a request for them is served elsewhere.
+    No order; for what to show, use ``visible_models``."""
+    hidden = hidden_cloud_backends(user)
+    rows: list[dict[str, Any]] = []
+    for backend, snapshot in _snapshots().items():
+        if backend in hidden:
+            continue
+        for alias, entry in snapshot.items():
+            row: dict[str, Any] = {"id": alias, "backend": BACKEND_NAMES[backend], "type": entry.get("type", "llm")}
+            if entry.get("display_name"):
+                row["display_name"] = entry["display_name"]
+            rows.append(row)
+    return rows
 
 
 def visible_models(user: User) -> list[dict[str, Any]]:

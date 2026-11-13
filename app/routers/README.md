@@ -55,8 +55,9 @@ One base URL surfaces every backend to clients like Claude Code's model picker. 
 | `GET` | `/v1/me`, `/me` | Caller's access (on-prem / Azure / AWS) and today's budget per backend. Auth skips the daily-limit 429 so it answers when the budget is spent | Direct response | — |
 | `GET` | `/v1/status` | The models the caller can see with `state` (`up` / `down` on-prem, `unchecked` cloud), load and billed prices (`model_catalog.visible_models`). Unmetered auth; no DB read | Direct response | — |
 | `GET` | `/v1/usage` | The caller's usage per local day (`?days=`, 1 to 90, default 7), and today and this month by model, through `usage_rollup.aggregate`. Unmetered auth; plain `def` | Direct response | — |
-| `GET` | `/v1/apps` | The app accounts the caller owns with their daily limit and this month's usage (`stats.get_owned_apps_summary`), never their keys. Unmetered auth; plain `def` | Direct response | — |
+| `GET` | `/v1/service-accounts` | The service accounts the caller owns with their daily limit and this month's usage, in total and per model (`stats.get_owned_apps_summary`), never their keys. Unmetered auth; plain `def` | Direct response | — |
 | `GET` | `/v1/notices` | The caller's open client-rule notices and their patches as `{set, unset}` (`client_rules.notices_for` / `combined_for`). Read-only; unmetered auth; plain `def` | Direct response | — |
+| `GET` | `/v1/settings` | The client settings a tool can offer the caller when it sets a client up: per variable a description, a `default` and its `options`, by tier (the account's cloud access), from the admin's `client_settings.json` (`client_settings.fields_for`). Read-only; unmetered auth; no DB read | Direct response | — |
 | `POST` | `/v1/chat/completions`, `/chat/completions` | Chat completion generation | `vllm_forward_chat_completions` (vLLM) / `azure_forward_chat_completions` (Azure) / `bedrock_forward_chat_completions` (Bedrock) | `llm`, `vlm` |
 | `POST` | `/v1/responses`, `/responses` | Responses API (no Bedrock dispatch: a Bedrock alias falls back to vLLM) | `vllm_forward_responses` (vLLM) / `azure_forward_responses` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`, `/embeddings` | Text embeddings | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
@@ -179,10 +180,10 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/` | Welcome page: API guide, available models, quick start |
-| `GET` | `/dashboard` | Dashboard page: today's budget, usage stats, trend charts, cost by model, server status, app accounts |
+| `GET` | `/dashboard` | Dashboard page: today's budget, usage stats, trend charts, cost by model, server status, and for owners the *Service accounts* tab |
 | `GET` | `/dashboard/api/model-breakdown` | Cost by Model card data as JSON (`?period=month` default, or `day`; else 400). Backs the Month/Today toggle and refresh button |
 | `POST` | `/dashboard/refresh-key` | Regenerate own API key (`schema.issue_api_key`: 256-bit key, resets its issue / last-use dates), returns JSON `{ok, api_key}` |
-| `POST` | `/dashboard/app/{app_id}/refresh-key` | Regenerate owned app account's API key (must be owner, else 403) |
+| `POST` | `/dashboard/app/{app_id}/refresh-key` | Regenerate owned service account's API key (must be owner, else 403) |
 | `GET` | `/dashboard/install-claude-code.bat` | Windows Claude Code installer download, `setup/install-claude-code.bat` with `__USER_API_KEY__` replaced by the caller's key and line endings normalized to CRLF (404 when the template is absent) |
 | `GET` | `/dashboard/client-notices` | The dashboard's client-rule notices panel alone (`_client_notices.html`; empty when nothing is open). The page swaps it in after *I've applied it* |
 | `GET` | `/dashboard/client-rules/all/patch.{bat,sh}` | The account's one settings patch: everything it has open, merged (`client_rules.combined_for`). There is no download per check. 404 when there is nothing to apply (a browser is redirected to `/dashboard`: mail links here) |
@@ -199,7 +200,7 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 | Stats Cards | `get_user_monthly_summary()` | Current month requests, cost, tokens |
 | Usage Trend | `get_daily_trends()` | Daily requests/cost for last 30 days |
 | Cost by Model | `get_model_breakdown()` via `_build_model_breakdown()` | Per-model cost grouped by backend; cloud backends the user may not use are left out (`_hidden_cloud_backends`) |
-| My App Accounts | `get_owned_apps_summary()` | Owned app accounts' monthly usage |
+| Service accounts tab | `get_owned_apps_summary()` via `_owned_service_accounts()` | Owned service accounts: key, daily limit, this month's totals and usage per model with each model's share |
 | System Status | `MODEL_ROUTING` + `is_alive()` | Server health grouped by type; Azure / Bedrock model lists only for users with access |
 
 ---
@@ -217,8 +218,9 @@ Limits are validated by `_limit_usd`: a finite number ≥ 0, where `0` is a $0 b
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/admin` | Admin home: usage summary, DAU trends, department usage, leaderboards, user management. Supports pagination (`?limit=15&offset=0&app_limit=15&app_offset=0`) and server-side search (`?q=keyword`, ILIKE on username/display_name/org_code) |
-| `POST` | `/admin/users/create` | Create app account (form `username`, `daily_limit_usd`, `owner_username`; username auto-prefixed with `app_`; created concurrency-waived) |
-| `POST` | `/admin/users/{id}/owner` | Replace an app account's owners (form `owner_usernames`, comma-separated; 400 on unknown names). Returns JSON |
+| `POST` | `/admin/users/create` | Create a service account (form `username`, `daily_limit_usd`, `owner_usernames` comma-separated). The name is kept as typed (no `app_` prefix is added); 400 unless it is letters, digits, `.` `_` `-` starting with a letter or digit. Each owner must be an existing person (400 otherwise, and nothing is created). Created concurrency-waived. JSON reply with `Accept: application/json` |
+| `GET` | `/admin/api/owner-search?q=` | For the owner picker: up to 8 people (never a service account) whose username, display name or org code contains `q`, names starting with it first |
+| `POST` | `/admin/users/{id}/owner` | Replace a service account's owners (form `owner_usernames`, comma-separated). 400, changing nothing, on an unknown name, an owner that is a service account, or a target that is a person's account. Returns `{ok, owners}` |
 | `POST` | `/admin/users/{id}/limit` | Update user daily limit (form `new_limit`) |
 | `POST` | `/admin/users/{id}/cloud-limit` | Set the user's own cloud cap (form `new_cloud_limit`; blank clears it so the user follows the default, `0` is a $0 cap) |
 | `POST` | `/admin/users/{id}/delete` | Delete user after clearing every row referencing it (app owners, legacy `owner_id`, anomaly events, concurrency leases). Usage logs and the daily rollup are kept (billing / audit record); the id → account mapping is logged. Cannot delete self |
@@ -244,6 +246,8 @@ Behavior is described in [docs/architecture.md](../../docs/architecture.md) (Adm
 | `GET` | `/admin/user-table` | One Users-tab panel (`kind=users\|apps`) as an HTML fragment (`_admin_user_table.html`), with the same `q` / `sort` / `status` / paging parameters as `/admin` |
 | `POST` | `/admin/client-rules/{rule_id}` | Save a check's settings: on / off, action, wording, patch, mail. What it detects is code and not editable |
 | `POST` | `/admin/client-rules/{rule_id}/reset` | Back to the defaults in code; recorded violations are kept |
+| `POST` | `/admin/client-settings` | Save `client_settings.json` (form field `settings`, the JSON text): the fields `GET /v1/settings` offers. Validated first; an invalid text is a 400 and nothing is written |
+| `POST` | `/admin/client-settings/reset` | Remove `client_settings.json`: the shipped example is offered again |
 | `POST` | `/admin/client-rules/{rule_id}/mail` | Queue a mail to the check's accounts (`only_unmailed=on\|off`); the first batch goes out after the reply, the mail job sends the rest |
 | `POST` | `/admin/client-rules/mail-all` | Queue a mail to every account with anything open under any check |
 | `POST` | `/admin/client-rules/{rule_id}/mail-test` | Send that check's mail as the form stands to one company address (`to`, `audience`) |
@@ -264,7 +268,7 @@ Behavior is described in [docs/architecture.md](../../docs/architecture.md) (Adm
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/admin/users` | List all users (masked `api_key`, `daily_limit_usd`, `cloud_daily_limit_usd`, `concurrency_waived`, `owner_ids`, `display_name`, `org_code`) |
-| `POST` | `/admin/users` | Create user (JSON body: `username`, `daily_limit_usd`, `cloud_daily_limit_usd` — `null` follows the default, `concurrency_waived` — a JSON boolean, defaulting to true for `app_*` accounts, `owner_ids`). 409 on a duplicate username; the reply carries the full `api_key`. `is_admin` in the body (here and on `PATCH`) is a 400: the stored flag is retired, AuthCenter's `admin` scope decides |
+| `POST` | `/admin/users` | Create user (JSON body: `username`, `daily_limit_usd`, `cloud_daily_limit_usd` — `null` follows the default, `is_service_account` — a JSON boolean, false when absent whatever the name (an `app_` prefix no longer makes a service account), `concurrency_waived` — a JSON boolean, defaulting to true for service accounts, `owner_ids`). 409 on a duplicate username; the reply carries the full `api_key`. `is_admin` in the body (here and on `PATCH`) is a 400: the stored flag is retired, AuthCenter's `admin` scope decides |
 | `PATCH` | `/admin/users/{id}` | Update user (`daily_limit_usd`, `cloud_daily_limit_usd`, `owner_ids` — replaces the owner list, `concurrency_waived` — a JSON boolean) |
 | `GET` | `/admin/api/anomalies` | Anomaly findings written by the gateway's hourly scan (`app/services/anomaly_scan.py`) (`?status=new` default, `acknowledged`, `resolved` or `all`; `?limit=50`, max 200) |
 | `POST` | `/admin/api/anomalies/{id}/ack` | Mark a finding `acknowledged` |
@@ -278,8 +282,8 @@ Behavior is described in [docs/architecture.md](../../docs/architecture.md) (Adm
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/admin/api/export/usage.xlsx` | Monthly usage report workbook (4 sheets) for `?from=YYYY-MM&to=YYYY-MM` (inclusive, at most 24 months) |
-| `GET` | `/admin/api/export/user-backend-costs.csv` | One row per month × account (users and `app_*`), cost split into vLLM / Azure / Bedrock columns; same `from` / `to` |
-| `GET` | `/admin/api/export/users.csv` | All human users (no `app_*`) with flags, daily limit, this month's cost/requests and last activity |
+| `GET` | `/admin/api/export/user-backend-costs.csv` | One row per month × account (users and service accounts), cost split into vLLM / Azure / Bedrock columns; same `from` / `to` |
+| `GET` | `/admin/api/export/users.csv` | All human users (no service accounts) with flags, daily limit, this month's cost/requests and last activity |
 | `GET` | `/admin/api/export/audit-log.csv` | The audit trail of the last `?days=` days (default 365), newest first |
 
 CSV exports start with a UTF-8 BOM so Excel opens CJK text correctly.

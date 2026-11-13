@@ -16,7 +16,7 @@ The files an existing host (gateway under systemd) uses are unchanged:
 
 Two related changes live outside this folder; both keep their default behavior:
 
-- `CONFIG_DIR` (application): the directory holding `config.toml`. Unset, it is the project root as before.
+- `CONFIG_DIR` (application): the directory holding `config.toml` (and `client_settings.json`, once an admin has saved the *Client setup* card). Unset, it is the project root as before.
 - `deploy/backup-db.sh`: encrypts backups only when a public key is set. Unset, it behaves as before (see [deploy/README](../README.md#encryption)).
 
 ## Files
@@ -111,7 +111,8 @@ Until the switch the new server's database is empty. **Do not load production da
 # old server
 systemctl --user stop llm-gateway            # 1. requests fail from here; no new writes
 bash deploy/backup-db.sh                     # 2. final backup
-# copy the newest backup file and config.toml (admins may have edited it) to the new server
+# copy the newest backup file and config.toml (admins may have edited it) to the new server,
+# and client_settings.json from the same directory if there is one (without it the shipped example is offered)
 
 # new server
 BACKUP_GPG_KEY=/media/usb/llm-gateway-backup.key.asc \

@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 config.toml
+client_settings.json
 /config/
 *.db
 pgdata/

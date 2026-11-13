@@ -444,7 +444,7 @@ class TestReminder:
         assert _messages(client, safeguards={})[0].status_code == 200
 
     def test_app_accounts_are_never_reminded(self, client, db_session):
-        db_session.add(User(username="app_batch", password_hash="x", api_key="sk-appkey", daily_limit_usd=10.0))
+        db_session.add(User(username="app_batch", password_hash="x", api_key="sk-appkey", daily_limit_usd=10.0, is_service_account=True))
         db_session.commit()
         _configure(db_session, AUTO, action="remind")
         assert _messages(client, key="sk-appkey", safeguards={})[0].status_code == 200
@@ -1098,7 +1098,7 @@ class TestMail:
         assert client.post(self._SEND, headers=_admin(admin_user)).status_code == 400
 
     def test_manual_send_reaches_violating_accounts_once(self, client, db_session, admin_user, test_user, mail_on):
-        db_session.add(User(username="app_batch", password_hash="x", api_key="sk-appkey", daily_limit_usd=1.0))
+        db_session.add(User(username="app_batch", password_hash="x", api_key="sk-appkey", daily_limit_usd=1.0, is_service_account=True))
         db_session.commit()
         for name in ("testuser", "admin", "app_batch", "deleted-account"):
             _violation(db_session, AUTO, name)

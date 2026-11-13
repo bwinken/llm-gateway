@@ -5,6 +5,7 @@ Admin panel: web UI + API endpoints for user management and model configuration.
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.parse import urlencode
@@ -69,13 +70,12 @@ from app.models.schema import (
     IpAllowRule,
     User,
     UsageLog,
-    app_account_clause,
-    is_app_account,
+    service_account_clause,
     is_legacy_api_key,
     legacy_api_key_clause,
     mask_api_key,
 )
-from app.services import audit, client_checks, client_rules, concurrency, guardrail, ip_allowlist, mailer
+from app.services import audit, client_checks, client_rules, client_settings, concurrency, guardrail, ip_allowlist, mailer
 from app.services.analytics import build_monthly_report, iter_months, parse_ym, user_backend_costs
 from app.core.server_state import get_metrics, is_alive
 from app.services.stats import (
@@ -191,7 +191,7 @@ USER_TABLE_STATUSES: dict[str, str] = {
 STALE_KEY_DAYS = 90
 # The "Special access" overview above the tables: one count per permission,
 # each linking to its filter. The waiver counts only what differs from an
-# account kind's default (users are created limited, app accounts waived).
+# account kind's default (users are created limited, service accounts waived).
 SPECIAL_ACCESS_KEYS: tuple[str, ...] = (
     "azure", "bedrock", "cloud_cap", "waiver_changed", "disabled",
 )
@@ -252,7 +252,7 @@ def _special_access_summary(session: Session) -> list[dict]:
     keys = ("special", *SPECIAL_ACCESS_KEYS)
     counts: dict[str, dict[str, int]] = {key: {} for key in keys}
     for kind, is_apps in (("users", False), ("apps", True)):
-        kind_clause = app_account_clause() if is_apps else ~app_account_clause()
+        kind_clause = service_account_clause() if is_apps else ~service_account_clause()
         row = session.exec(
             select(*[
                 func.coalesce(func.sum(case((_status_clause(key, is_apps), 1), else_=0)), 0)
@@ -316,7 +316,7 @@ def _user_table(
     offset_key, limit_key = ("app_offset", "app_limit") if is_apps else ("offset", "limit")
     limit = state[limit_key]
 
-    clauses = [app_account_clause() if is_apps else ~app_account_clause()]
+    clauses = [service_account_clause() if is_apps else ~service_account_clause()]
     if state["q"]:
         like = f"%{state['q']}%"
         clauses.append(
@@ -541,6 +541,7 @@ def admin_page(
             "today_totals": today_totals,
             "budget_pressure": budget_pressure,
             "client_rules": client_rules_view,
+            "client_setup": client_settings.status(),
             "client_rule_attention": [
                 {"id": r["id"], "name": r["name"], "count": r["open"]}
                 for r in (client_rules_view or {}).get("rules", []) if r["enabled"] and r["open"]
@@ -597,42 +598,147 @@ def user_table_panel(
     )
 
 
+_SERVICE_ACCOUNT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _service_account_name(raw: object) -> str:
+    """A service account's name as typed, checked: letters, digits, ``.``
+    ``_`` ``-``, starting with a letter or digit (it appears in URLs, logs
+    and CSV exports). An SSO sign-in under the same name is refused from
+    then on, so it must not be a person's AuthCenter username."""
+    name = str(raw or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Username is required.")
+    if not _SERVICE_ACCOUNT_NAME.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail="A service account name is 1 to 64 letters, digits, dots, dashes or underscores, starting with a letter or digit.",
+        )
+    return name
+
+
+OWNER_SEARCH_LIMIT = 8
+
+
+def _owner_names(raw: object) -> list[str]:
+    """Comma-separated usernames as typed, in order, without repeats."""
+    return list(dict.fromkeys(name.strip() for name in str(raw or "").split(",") if name.strip()))
+
+
+def _owners(session: Session, names: list[str], already: frozenset[int] = frozenset()) -> list[User]:
+    """The accounts behind ``names``, checked as owners of a service
+    account: each must exist and be a person. A service account cannot own
+    one (it has no dashboard to see it on). 400 naming what is wrong.
+
+    ``already`` holds the ids of the account's current owners: an
+    assignment made before this rule existed is never refused, so editing
+    the list cannot take an existing owner away by accident."""
+    if not names:
+        return []
+    found = {u.username: u for u in session.exec(select(User).where(User.username.in_(names))).all()}  # type: ignore[attr-defined]
+    unknown = [name for name in names if name not in found]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"User(s) not found: {', '.join(unknown)}")
+    service = [name for name in names if found[name].is_service_account and found[name].id not in already]
+    if service:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only a person can own a service account; {', '.join(service)} "
+                   f"{'is a service account' if len(service) == 1 else 'are service accounts'}.",
+        )
+    return [found[name] for name in names]
+
+
+def _current_owner_ids(session: Session, account_id: int) -> frozenset[int]:
+    return frozenset(session.exec(select(AppOwner.owner_id).where(AppOwner.app_id == account_id)).all())
+
+
+def _owners_by_id(session: Session, raw: object, already: frozenset[int] = frozenset()) -> list[User]:
+    """``owner_ids`` of the JSON API, checked like ``_owners``."""
+    if raw in (None, []):
+        return []
+    if not isinstance(raw, list) or not all(isinstance(oid, int) and not isinstance(oid, bool) for oid in raw):
+        raise HTTPException(status_code=400, detail="owner_ids must be a list of user ids.")
+    ids = list(dict.fromkeys(raw))
+    found = {u.id: u for u in session.exec(select(User).where(User.id.in_(ids))).all()}  # type: ignore[attr-defined]
+    unknown = [str(oid) for oid in ids if oid not in found]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"User id(s) not found: {', '.join(unknown)}")
+    return _owners(session, [found[oid].username for oid in ids], already)
+
+
+def _service_account_or_400(target: User) -> None:
+    """Owners see the account's API key on their dashboard, so only an
+    account made for a program may be given any: never a person's."""
+    if not target.is_service_account:
+        raise HTTPException(status_code=400, detail="Only a service account has owners.")
+
+
+@router.get("/api/owner-search")
+def search_owners(
+    q: str = Query("", max_length=100),
+    session: Session = Depends(get_session),
+):
+    """Who can be made an owner, as an admin types: the people (never a
+    service account) whose username, display name or org code contains
+    ``q``, names starting with it first, ``OWNER_SEARCH_LIMIT`` at most.
+    Nothing for an empty ``q``. Plain ``def`` (database read)."""
+    q = q.strip()
+    if not q:
+        return {"users": []}
+    like = f"%{q}%"
+    rows = session.exec(
+        select(User.username, User.display_name, User.org_code, User.is_disabled)
+        .where(
+            ~service_account_clause(),
+            User.username.ilike(like)  # type: ignore[attr-defined]
+            | User.display_name.ilike(like)  # type: ignore[union-attr]
+            | User.org_code.ilike(like),  # type: ignore[union-attr]
+        )
+        .order_by(case((User.username.ilike(f"{q}%"), 0), else_=1), User.username)  # type: ignore[attr-defined]
+        .limit(OWNER_SEARCH_LIMIT)
+    ).all()
+    return {"users": [
+        {"username": username, "display_name": display_name or "", "org_code": org_code or "", "disabled": bool(disabled)}
+        for username, display_name, org_code, disabled in rows
+    ]}
+
+
 @router.post("/users/create")
 async def create_app_account_web(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """Create a new app account (web UI form)."""
+    """Create a service account (web UI form): an account for a program,
+    used by API key only. The name is taken as given (the ``app_`` prefix
+    older accounts carry is no longer added or needed). ``owner_usernames``
+    (comma-separated; ``owner_username`` is the older single field) are the
+    people it is assigned to: each must be an existing person, checked
+    before anything is created."""
 
     form = await request.form()
-    username = (form.get("username") or "").strip()
+    username = _service_account_name(form.get("username"))
     daily_limit = form.get("daily_limit_usd")
-    owner_username = (form.get("owner_username") or "").strip()
-
-    if not username:
-        raise HTTPException(status_code=400, detail="Username is required.")
-    if not username.startswith("app_"):
-        username = f"app_{username}"
 
     existing = session.exec(select(User).where(User.username == username)).first()
     if existing:
         raise HTTPException(status_code=409, detail=f"User '{username}' already exists.")
+    owners = _owners(session, _owner_names(f"{form.get('owner_usernames') or ''},{form.get('owner_username') or ''}"))
 
-    user = User(username=username, concurrency_waived=True)  # app accounts start waived
+    # Service accounts start waived from the concurrency limit.
+    user = User(username=username, is_service_account=True, concurrency_waived=True)
     if daily_limit is not None:
         user.daily_limit_usd = _limit_usd(daily_limit, "daily_limit_usd")
     session.add(user)
     session.commit()
     session.refresh(user)
 
-    # Add owner via AppOwner table
-    if owner_username:
-        owner = session.exec(select(User).where(User.username == owner_username)).first()
-        if not owner:
-            raise HTTPException(status_code=400, detail=f"Owner '{owner_username}' not found.")
+    for owner in owners:
         session.add(AppOwner(app_id=user.id, owner_id=owner.id))
-        session.commit()
+    session.commit()
 
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "username": user.username, "owners": [o.username for o in owners]})
     return RedirectResponse(url="/admin", status_code=303)
 
 
@@ -642,36 +748,24 @@ async def update_user_owner(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """Replace app account owners (comma-separated usernames)."""
+    """Replace a service account's owners (comma-separated usernames): the
+    people who see it on their dashboard. Each must be an existing person;
+    with any name refused, nothing changes."""
 
     target = session.exec(select(User).where(User.id == user_id)).first()
     if not target:
         raise HTTPException(status_code=404, detail="User not found.")
+    _service_account_or_400(target)
 
     form = await request.form()
-    raw = (form.get("owner_usernames") or "").strip()
+    owners = _owners(session, _owner_names(form.get("owner_usernames")), _current_owner_ids(session, user_id))
 
-    # Remove all existing owners for this app
     session.execute(delete(AppOwner).where(AppOwner.app_id == user_id))
-
-    # Add new owners
-    if raw:
-        not_found = []
-        for name in [n.strip() for n in raw.split(",") if n.strip()]:
-            owner = session.exec(select(User).where(User.username == name)).first()
-            if not owner:
-                not_found.append(name)
-            else:
-                session.add(AppOwner(app_id=user_id, owner_id=owner.id))
-        if not_found:
-            raise HTTPException(
-                status_code=400,
-                detail=f"User(s) not found: {', '.join(not_found)}",
-            )
-
+    for owner in owners:
+        session.add(AppOwner(app_id=user_id, owner_id=owner.id))
     session.commit()
 
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "owners": [o.username for o in owners]})
 
 
 @router.post("/users/{user_id}/limit")
@@ -1487,6 +1581,55 @@ def reset_client_rule(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+# ── Client setup (app/services/client_settings.py): what GET /v1/settings offers ──
+
+def _client_setup_reply() -> dict:
+    state = client_settings.status()
+    return {
+        "ok": True, "fields": state["fields"], "names": state["names"], "customized": state["customized"],
+        "unknown_models": state["unknown_models"], "preview": state["preview"], "text": state["text"],
+    }
+
+
+@router.post("/client-settings")
+def save_client_settings(
+    request: Request,
+    settings: str = Form(""),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+):
+    """Save the client settings file (``client_settings.json`` in
+    ``CONFIG_DIR``): the fields ``GET /v1/settings`` offers, with their
+    default and options per tier. The text is validated first; an invalid
+    one is refused and nothing is written. Every worker reads the new file
+    at its next request. Plain ``def``: file I/O, no await."""
+    try:
+        fields = client_settings.save(settings)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    audit.note(client_settings_fields=[field.name for field in fields])
+    logger.info("Client settings saved | fields={} admin={}", len(fields), admin_user.username)
+    if _wants_json(request):
+        return JSONResponse(_client_setup_reply())
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/client-settings/reset")
+def reset_client_settings(
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+):
+    """Remove the client settings file: the shipped
+    ``client_settings.json.example`` is offered again."""
+    try:
+        client_settings.reset()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info("Client settings reset to the shipped example | admin={}", admin_user.username)
+    if _wants_json(request):
+        return JSONResponse(_client_setup_reply())
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 @router.post("/client-rules/{rule_id}/mail")
 def send_client_rule_mail(
     rule_id: str,
@@ -1771,6 +1914,7 @@ def list_users_api(
             "daily_limit_usd": u.daily_limit_usd,
             "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
             "concurrency_waived": u.concurrency_waived,
+            "is_service_account": u.is_service_account,
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
@@ -1796,9 +1940,23 @@ def create_user_api(
 
     _reject_retired_limits(body)
     _reject_retired_admin_flag(body)
-    # App accounts start waived from the concurrency limit; an explicit
+    # What kind of account: "is_service_account" says so, and nothing else
+    # does. A name starting with ``app_`` makes a person's account like any
+    # other name (it made an app account when the name was the test).
+    is_service = (
+        _strict_bool(body["is_service_account"], "is_service_account")
+        if "is_service_account" in body else False
+    )
+    if is_service:
+        _service_account_name(username)
+    # Owners are people, and only a service account has any: checked before
+    # the account is created.
+    owners = _owners_by_id(session, body.get("owner_ids"))
+    if owners and not is_service:
+        raise HTTPException(status_code=400, detail="Only a service account has owners.")
+    # Service accounts start waived from the concurrency limit; an explicit
     # "concurrency_waived" in the body (handled below) still wins.
-    new_user = User(username=username, concurrency_waived=is_app_account(username))
+    new_user = User(username=username, is_service_account=is_service, concurrency_waived=is_service)
     if "daily_limit_usd" in body:
         new_user.daily_limit_usd = _limit_usd(body["daily_limit_usd"], "daily_limit_usd")
     if "cloud_daily_limit_usd" in body:
@@ -1812,14 +1970,10 @@ def create_user_api(
     session.commit()
     session.refresh(new_user)
 
-    # Add owners via AppOwner table
-    owner_ids = body.get("owner_ids", [])
-    if isinstance(owner_ids, list):
-        for oid in owner_ids:
-            owner = session.exec(select(User).where(User.id == int(oid))).first()
-            if owner:
-                session.add(AppOwner(app_id=new_user.id, owner_id=owner.id))
-        session.commit()
+    for owner in owners:
+        session.add(AppOwner(app_id=new_user.id, owner_id=owner.id))
+    session.commit()
+    owner_ids = [owner.id for owner in owners]
 
     return {
         "ok": True,
@@ -1827,6 +1981,7 @@ def create_user_api(
         "username": new_user.username,
         "api_key": new_user.api_key,
         "daily_limit_usd": new_user.daily_limit_usd,
+        "is_service_account": new_user.is_service_account,
         "owner_ids": owner_ids,
     }
 
@@ -1861,11 +2016,15 @@ def update_user_api(
     if "concurrency_waived" in body:
         target.concurrency_waived = _strict_bool(body["concurrency_waived"], "concurrency_waived")
     if "owner_ids" in body:
+        current = _current_owner_ids(session, user_id)
+        owners = _owners_by_id(session, body["owner_ids"], current)
+        # A person's account gets no new owner; one it already has may stay
+        # (or be taken away) like any other.
+        if any(owner.id not in current for owner in owners):
+            _service_account_or_400(target)
         session.execute(delete(AppOwner).where(AppOwner.app_id == user_id))
-        for oid in (body["owner_ids"] or []):
-            owner = session.exec(select(User).where(User.id == int(oid))).first()
-            if owner:
-                session.add(AppOwner(app_id=user_id, owner_id=owner.id))
+        for owner in owners:
+            session.add(AppOwner(app_id=user_id, owner_id=owner.id))
 
     session.add(target)
     session.commit()
@@ -2440,7 +2599,7 @@ def export_user_backend_costs_csv(
     One row per (month × account) with separate On-prem (vLLM) / Azure /
     AWS Bedrock cost columns — the flat-file counterpart of the xlsx
     "Cost by Backend" sheet, for feeding billing/chargeback systems.
-    Includes both human users and app_* accounts (see the `type` column).
+    Includes both human users and service accounts (see the `type` column).
     """
     import csv
     import io
@@ -2475,7 +2634,7 @@ def export_user_backend_costs_csv(
                 u["username"],
                 u["display_name"],
                 u["org_code"],
-                "app" if u["is_app"] else "user",
+                "service_account" if u["is_service_account"] else "user",
                 u["requests"],
                 u["input_tokens"],
                 u["output_tokens"],
@@ -2580,7 +2739,7 @@ def export_audit_log_csv(
 
 @router.get("/api/export/users.csv")
 def export_users_csv(session: Session = Depends(get_session)):
-    """Export all real users (excluding app_* accounts) as CSV for mass mailing."""
+    """Export all real users (service accounts left out) as CSV for mass mailing."""
     import csv
     import io
 
@@ -2595,7 +2754,7 @@ def export_users_csv(session: Session = Depends(get_session)):
     )
     rows = session.exec(
         select(User, last_active_col)
-        .where(~app_account_clause())
+        .where(~service_account_clause())
         .order_by(User.org_code, User.username)
     ).all()
     users = [u for u, _ in rows]

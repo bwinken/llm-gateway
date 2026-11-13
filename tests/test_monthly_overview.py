@@ -1,7 +1,7 @@
 """The admin page's month view (``stats.get_monthly_overview``): one aggregate
 over usage_logs feeding the totals, both leaderboards, the per-user columns
-and the department table. Also pins the ``app_`` prefix filter, whose bare
-``LIKE 'app_%'`` form treated ``_`` as a wildcard."""
+and the department table. Also pins what a service account is: the
+``users.is_service_account`` column, whatever the account is named."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ from decimal import Decimal
 
 from sqlmodel import select
 
-from app.models.schema import User, UsageLog, app_account_clause
+from app.models.schema import User, UsageLog, service_account_clause
 from app.services.stats import get_monthly_overview
 
 
-def _user(session, username: str, org: str = "") -> User:
-    u = User(username=username, org_code=org)
+def _user(session, username: str, org: str = "", service: bool = False) -> User:
+    u = User(username=username, org_code=org, is_service_account=service)
     session.add(u)
     session.commit()
     session.refresh(u)
@@ -32,12 +32,18 @@ def _spend(session, user: User, usd: str, *, inp: int = 100, out: int = 10) -> N
     session.commit()
 
 
-class TestAppAccountClause:
-    def test_underscore_is_literal(self, db_session):
-        for name in ("app_batch", "apple", "app1", "appx_y"):
+class TestServiceAccountClause:
+    def test_the_column_decides_not_the_name(self, db_session):
+        # A service account can be named anything; a name of the old app_
+        # form is not one unless the column says so.
+        for name in ("app_batch", "billing-bot"):
+            _user(db_session, name, service=True)
+        for name in ("app_person", "apple", "app1"):
             _user(db_session, name)
-        apps = db_session.exec(select(User.username).where(app_account_clause())).all()
-        assert apps == ["app_batch"]
+        service = db_session.exec(select(User.username).where(service_account_clause())).all()
+        assert sorted(service) == ["app_batch", "billing-bot"]
+        people = db_session.exec(select(User.username).where(~service_account_clause())).all()
+        assert sorted(people) == ["app1", "app_person", "apple"]
 
 
 class TestMonthlyOverview:
@@ -45,7 +51,7 @@ class TestMonthlyOverview:
         alice = _user(db_session, "alice", "ENG")
         bob = _user(db_session, "bob", "ENG")
         apple = _user(db_session, "apple", "")       # a person, despite the prefix
-        bot = _user(db_session, "app_bot", "ENG")
+        bot = _user(db_session, "app_bot", "ENG", service=True)
         _spend(db_session, alice, "3.0")
         _spend(db_session, alice, "1.0")
         _spend(db_session, bob, "2.0")

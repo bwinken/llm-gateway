@@ -96,6 +96,16 @@ def _sync_user(session: Session, username: str, display_name: str, org_code: str
         session.refresh(user)
         logger.info("Auto-provisioned user '{}' via JWT", username)
     else:
+        if user.is_service_account:
+            # A service account is a program's: API key only. Its name is no
+            # longer set apart by a prefix, so a person whose AuthCenter
+            # username equals it must not be signed in as it (and, through
+            # POST /auth/api-key, be handed its key).
+            logger.warning("SSO sign-in refused: '{}' is a service account", username)
+            raise HTTPException(
+                status_code=403,
+                detail=f"'{username}' is a service account and has no sign-in. Ask an administrator.",
+            )
         changed = False
         if display_name and user.display_name != display_name:
             user.display_name = display_name

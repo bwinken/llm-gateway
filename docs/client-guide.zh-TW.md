@@ -68,8 +68,9 @@ Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 C
 | `GET /v1/me`、`/me` | 你的權限（地端 / Azure / AWS）和今日額度：上限、已用、剩餘、重置時間。額度用完時一樣可以查。見[查詢額度](#查詢額度) |
 | `GET /v1/status` | 你可以用的模型，以及每個模型是否正常、目前負載和價格。見[模型狀態](#模型狀態) |
 | `GET /v1/usage` | 你每天的用量，以及今天和本月各模型的用量。見[用量紀錄](#用量紀錄) |
-| `GET /v1/apps` | 你名下的 app 帳號，以及各自的上限和本月用量。見[App 帳號](#app-帳號) |
+| `GET /v1/service-accounts` | 你名下的服務帳號，以及各自的上限和本月用量。見[服務帳號](#服務帳號) |
 | `GET /v1/notices` | dashboard 要你修正的 client 設定。見[通知](#通知) |
+| `GET /v1/settings` | 工具可以幫你設定的 client 設定，每項都帶有說明、對你的帳號的建議值和其他選項。見[設定](#設定) |
 | `POST /auth/api-key` | 用 AuthCenter 的 access token 換你的 API key，terminal 工具的登入方式。見[從 terminal 工具登入](#從-terminal-工具登入) |
 | `POST /v1/embeddings` | Embeddings（僅 vLLM） |
 | `POST /v1/rerank`、`/v1/score` | Rerank |
@@ -202,25 +203,33 @@ curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-ap
 - `today` 和 `month` 分別是今天和本月到目前為止的合計，`models` 依模型和後端分列，順序和 dashboard 一樣。
 - 和 dashboard 一樣，`today` 和 `month` 不包含你已經沒有權限的雲端後端；`days` 則全部都算，和每日額度的算法一致。
 
-## App 帳號
+## 服務帳號
 
 ```bash
-curl https://your-gateway/v1/apps -H "Authorization: Bearer sk-your-api-key"
+curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-api-key"
 ```
 
 ```json
 {
-  "object": "apps",
+  "object": "service_accounts",
   "month": "2026-10",
-  "apps": [
-    {"username": "app_batch", "daily_limit_usd": 50.0, "legacy_key": false,
-     "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5}}
+  "service_accounts": [
+    {"username": "billing-etl", "daily_limit_usd": 50.0, "legacy_key": false,
+     "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5,
+               "models": [
+                 {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
+                  "requests": 1100, "input_tokens": 3700000, "output_tokens": 340000, "cost_usd": 21.5},
+                 {"model": "gpt-5", "backend": "azure", "type": "llm",
+                  "requests": 100, "input_tokens": 400000, "output_tokens": 40000, "cost_usd": 40.0}
+               ]}}
   ]
 }
 ```
 
-- `apps` 列出你名下的 app 帳號（沒有的話是空陣列），各自有自己的每日上限和本月用量。
-- 不包含 app 的 API key，任何端點都不會回傳 key。要查看或重新產生 app 的 key，請到 dashboard。
+- 服務帳號是給程式用的帳號（批次工作、服務），由管理員指派給你。它以前叫 app 帳號：舊的帳號名稱是 `app_...`，新的可以是任何名稱。
+- `service_accounts` 列出你名下的服務帳號（沒有的話是空陣列），各自有自己的每日上限和本月用量：就是 dashboard 的 *Service accounts* 分頁。
+- `month.models` 是當月依模型拆開的用量：每個模型和後端一列，順序和 dashboard 相同，加總等於當月合計。服務帳號用過的後端都會列出，和你自己的權限無關。
+- 不包含服務帳號的 API key，任何端點都不會回傳 key。要查看或重新產生，請到 dashboard 的 *Service accounts* 分頁。
 
 ## 通知
 
@@ -256,7 +265,46 @@ curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
 - 最上層的 `patch` 是實際要套用的那一份：把所有未處理的項目合併，再加上每個帳號都該有的設定。`covers` 是它能修正的通知，`manual` 是它修不了的。沒有待辦時不會出現。patch 裡不會有 key。
 - 這個端點只能讀。套用修正後，請到 dashboard 按 *I've applied it*；gateway 連續 `window_days` 天沒再看到同樣的問題時，通知也會自己消失。
 
-狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/apps`、`/v1/notices`，合起來就是 dashboard 上看得到的資訊。它們在額度用完時一樣可以查，都不計費，也都不會回傳 API key：key 只會在登入之後交出（見下一節，或 dashboard）。
+## 設定
+
+```bash
+curl https://your-gateway/v1/settings -H "Authorization: Bearer sk-your-api-key"
+```
+
+```json
+{
+  "object": "settings",
+  "client": "claude-code",
+  "fields": [
+    {"name": "ANTHROPIC_MODEL", "label": "Default model",
+     "description": "The model Claude Code starts a session with.",
+     "type": "model", "default": "qwen3-coder",
+     "options": [
+       {"value": "qwen3-coder", "label": "Qwen3 Coder", "backend": "onprem"},
+       {"value": "qwen3-small", "label": "qwen3-small", "backend": "onprem"},
+       {"value": "gpt-5", "label": "GPT-5", "backend": "azure"}
+     ]},
+    {"name": "CLAUDE_CODE_AUTO_MODE_SERVER", "label": "Auto mode safety check",
+     "description": "No model behind this gateway reviews auto mode's actions, so Claude Code has to run that check itself.",
+     "type": "choice", "default": "0",
+     "options": [{"value": "0", "label": "Run by Claude Code"}]},
+    {"name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "label": "Model list from the gateway",
+     "description": "Fill Claude Code's /model picker with this gateway's models at startup.",
+     "type": "choice", "default": "1",
+     "options": [{"value": "1", "label": "On"}, {"value": "0", "label": "Off"}]}
+  ]
+}
+```
+
+- 這是給幫你設定 Claude Code 的工具用的：它可以直接套用每一項的 `default`，也可以讓你自己選。每個 field 是 `~/.claude/settings.json` 的 `env` 區塊裡的一個變數（`client` 說明這些欄位是給哪個 client 的）。有哪些欄位由 gateway 的管理員決定。
+- `description` 說明這個變數的用途。它和 `label` 一定都有。
+- `default` 是對**你的**帳號的建議值。它不會是空的，而且一定是 `options` 其中一項的 `value`，所以可以直接套用或當預選項。
+- `options` 是所有可選的值。`model` 類欄位的選項是你的帳號能用的對話模型，各自帶有 `backend`；`choice` 類欄位則是固定的幾個值。選項本身也可能有 `description`。只有一個選項的欄位沒有別的可選：要問的只有「要不要套用」。
+- 兩者都依你的 tier 而定，也就是你的雲端權限（沒有、Azure、AWS、兩者都有）：別的帳號可能拿到不同的預設值、不同的選項，或是你沒有的欄位。你不能用的模型不會出現在選項裡。
+- gateway 不知道你目前設了什麼：請和自己的 settings.json 比對。
+- 欄位會隨 gateway 的設定和你的權限改變，需要時再讀，不要留副本。回應裡不會有 key，而且這個端點只能讀：要不要套用、怎麼套用由工具決定。
+
+狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings`，合起來就是 dashboard 上看得到的資訊，加上工具設定 client 所需要的資料。它們在額度用完時一樣可以查，都不計費，也都不會回傳 API key：key 只會在登入之後交出（見下一節，或 dashboard）。
 
 ## 從 terminal 工具登入
 
@@ -273,7 +321,7 @@ curl -X POST https://your-gateway/auth/api-key -H "Authorization: Bearer $AUTHCE
 {"object": "api_key", "username": "alice", "api_key": "sk-your-api-key", "legacy_key": false}
 ```
 
-3. 之後它就和其他 client 一樣用 API key：呼叫模型，以及讀 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/apps`、`/v1/notices`。access token 不會再用到，其他端點也不接受它，用完就丟。
+3. 之後它就和其他 client 一樣用 API key：呼叫模型，以及讀 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings`。access token 不會再用到，其他端點也不接受它，用完就丟。
 
 - 拿到的永遠是你現有的 key。在第二台機器登入，不會讓第一台的 key 失效。
 - 第一次登入會建立帳號，和第一次開 dashboard 一樣。

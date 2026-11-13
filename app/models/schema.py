@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import sqlalchemy as sa
 from sqlalchemy import Index, UniqueConstraint, func
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, SQLModel, select
 from pydantic import NaiveDatetime
 
 # Every timestamp column is `timestamp without time zone` holding UTC, and the
@@ -50,19 +50,32 @@ def legacy_api_key_clause():
     )
 
 
-APP_ACCOUNT_PREFIX = "app_"
+# Service accounts used to be called app accounts and were told apart by
+# this prefix of their name. The prefix decides nothing any more
+# (``users.is_service_account`` does): it only marks the names the
+# migration turned into service accounts, and the dashboard skips it when
+# it picks an account's initials.
+LEGACY_SERVICE_PREFIX = "app_"
 
 
-def is_app_account(username: str) -> bool:
-    """Service accounts are named ``app_*`` (the admin panel adds the prefix)."""
-    return username.startswith(APP_ACCOUNT_PREFIX)
+def has_legacy_service_name(username: str) -> bool:
+    """Named the way app accounts were (``app_*``). For display only, never
+    a test of what an account is: read ``User.is_service_account`` for that."""
+    return username.startswith(LEGACY_SERVICE_PREFIX)
 
 
-def app_account_clause():
-    """SQL counterpart of ``is_app_account``. ``autoescape`` matters: a bare
-    ``startswith("app_")`` compiles to ``LIKE 'app_%'``, where ``_`` is a
-    wildcard, so "apple" or "app1" would count as app accounts."""
-    return User.username.startswith(APP_ACCOUNT_PREFIX, autoescape=True)
+def service_account_clause():
+    """SQL test for a service account (``users.is_service_account``). Negate
+    it with ``~`` for the people. Never test the name instead: any name can
+    be a service account, and ``startswith("app_")`` compiles to
+    ``LIKE 'app_%'``, where ``_`` is a wildcard."""
+    return User.is_service_account.is_(True)  # type: ignore[attr-defined]
+
+
+def service_account_names(session) -> set[str]:
+    """The usernames of every service account (``users`` is small): for code
+    that holds usernames and no account, such as the client-rule violations."""
+    return set(session.exec(select(User.username).where(service_account_clause())).all())
 
 
 def mask_api_key(key: str) -> str:
@@ -111,10 +124,16 @@ class User(SQLModel, table=True):
     can_use_azure: bool = Field(default=False)
     can_use_bedrock: bool = Field(default=False)
     # Exempt from the gateway-wide concurrency limit ([app].concurrency_limit_*,
-    # see app/services/concurrency.py). Admins are always exempt. App accounts
+    # see app/services/concurrency.py). Admins are always exempt. Service accounts
     # are created waived (batch jobs legitimately run many requests at once);
     # an admin can un-waive one to limit it.
     concurrency_waived: bool = Field(default=False)
+    # An account for a program rather than a person: made by an admin, used
+    # only by API key (an SSO sign-in under its name is refused), owned by
+    # the people in ``app_owners``, left out of the per-person figures and
+    # never mailed. Formerly "app accounts", recognised by an ``app_`` name;
+    # the name is free now and this column is the only test.
+    is_service_account: bool = Field(default=False)
     owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     display_name: str = Field(default="")
     org_code: str = Field(default="")

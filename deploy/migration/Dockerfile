@@ -37,7 +37,7 @@ ENV PYTHONUNBUFFERED=1 \
     METRICS_DIR=/tmp/llm-gateway-metrics
 WORKDIR /app
 COPY --from=build /app/.venv /app/.venv
-COPY alembic.ini config.toml.example pyproject.toml ./
+COPY alembic.ini config.toml.example client_settings.json.example pyproject.toml ./
 COPY alembic/ alembic/
 COPY app/ app/
 COPY scripts/ scripts/

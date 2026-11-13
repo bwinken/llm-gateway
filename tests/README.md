@@ -447,7 +447,7 @@ flag granting nothing. `TestOverBudget` pins that it still answers once the budg
 and `x-api-key`; `TestConcurrency` the reported concurrency mode. Every
 response is checked for `null`s (`_no_nulls`).
 
-### `test_status_usage.py` — `GET /v1/status`, `/v1/usage`, `/v1/apps`, `/v1/notices`
+### `test_status_usage.py` — `GET /v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices`, `/v1/settings`
 
 What the dashboard shows an account, by API key. `TestAuth`: each needs a
 key, refuses a disabled account, answers once the budget is spent and
@@ -460,12 +460,23 @@ display order. `TestUsage`: one row per local day with today last and
 quiet days as zeros, the `days` bounds, today and this month by model in
 catalog order, a revoked backend left out of rows and total, the same
 numbers once rolled up, plain `def`. `TestMe`: `legacy_key`. `TestApps`:
-the caller's own app accounts with this month's usage, never an app's
+the caller's own service accounts with this month's usage, never an app's
 key. `TestNotices`: the dashboard panel's notices with patches as
 `{set, unset}`, the one combined patch and what it cannot fix, the patch
 following the account's access, resolved / old / other accounts'
 violations left out, never a key, read-only, a broken store reading as
-nothing open. Every response is checked for `null`s.
+nothing open. `TestSettings`: every field has a description and a default
+that is one of its options, the shipped example validates, model options
+are the account's chat models in the display order, the site's
+`client_settings.json` replaces the example and applies when edited by
+hand, a broken file changes nothing, default and options follow the tier
+(the most specific key wins), a field can be for some tiers only, a model
+the account cannot use is never offered, a hidden model can be the
+default, what a file is refused for, never a key, read-only, no database
+read, independent of the client checks. `TestClientSetupAdmin`: the admin
+card saves the file the API reads, refuses an invalid one without
+writing, points out unknown models, resets to the example, admins only,
+audited. Every response is checked for `null`s.
 
 ### `test_concurrency_limit.py` — per-user concurrency limit
 
@@ -478,7 +489,7 @@ nothing open. Every response is checked for `null`s.
 | `TestClientDisconnect` | A cancelled request still releases (shielded release) |
 | `TestStore` | Acquire, heartbeat renewal, sweep of expired leases, dead local workers and recycled pids; `pid_alive` (never signals on Windows); errors swallowed; in-flight summary |
 | `TestSettings` / `TestAdmin` | Mode/limit validation and persistence; admin limit form / JSON, waive toggle and `PATCH` (a string is not a bool), `delete_user` removes leases, admin card renders even if the store fails |
-| `TestAppAccountsStartWaived` | App accounts are created waived (form and API), people are not, an explicit value wins, an un-waived app is limited |
+| `TestAppAccountsStartWaived` | Service accounts are created waived (form and API), people are not, an explicit value wins, an un-waived app is limited |
 
 `test_pg_concurrent_acquire_respects_limit` (PostgreSQL only, `CONCURRENCY_TEST_PG_URL`) checks that `FOR UPDATE` admits exactly `limit` concurrent acquirers.
 
@@ -596,17 +607,28 @@ metrics directory never fails a request.
 
 | Test class | What it covers |
 |---|---|
-| `TestCreateUserAPI` | `POST /admin/users` to create app accounts and regular users; duplicate username → 409; empty username → 400; non-admin → 403; users CSV export requires admin |
+| `TestCreateUserAPI` | `POST /admin/users` to create service accounts and regular users; duplicate username → 409; empty username → 400; non-admin → 403; users CSV export requires admin |
 | `TestDeleteUser` | `delete_user` clears every row referencing the user, with `PRAGMA foreign_keys` on so SQLite catches a missed reference like PostgreSQL would, and keeps the user's `usage_logs` / `usage_daily` rows (billing / audit record) |
 
-### `test_app_ownership.py` — App account ownership
+### `test_app_ownership.py` — Service account ownership
 
-App accounts (`app_*` usernames) can have human owners. Tests cover:
+Service accounts can have human owners. Tests cover:
 
 - Creating an app with or without `owner_ids`
 - Setting / clearing owners via `PATCH /admin/users/{id}` with `owner_ids`
 - `GET /admin/users` includes the `owner_ids` field
 - `POST /dashboard/app/{id}/refresh-key` — owner can rotate their app's key, non-owners get 403, missing app → 404, no auth → 401
+
+### `test_service_accounts.py` — Service accounts (formerly app accounts)
+
+| Test class | What it covers |
+|---|---|
+| `TestNaming` | The form keeps the name as typed (no `app_` prefix), refuses malformed and taken names; the API makes a service account only when `is_service_account` is true, whatever the name (an `app_` name without it is a person's account), and the field must be a boolean; the listing shows it |
+| `TestNoSignIn` | An SSO token whose `sub` is a service account is refused on the dashboard and gets no key from `POST /auth/api-key`; the account's own key works; a person named `app_...` still signs in |
+| `TestTreatedAsOne` | A service account without the prefix sits in the admin's Service accounts table, is not counted as a person, is on the service leaderboard and is never mailed |
+| `TestOwners` | The owner search matches username, display name or department as the admin types (prefix first, people only, 8 at most, admins only); an account is created with several owners; an owner must be an existing person or nothing is created; reassigning replaces the owners and a refused name changes nothing; a person's account is never assigned (form, `PATCH`, `POST`); the JSON API checks `owner_ids` the same way; the table renders the owner picker with who it is assigned to |
+| `TestAssignmentsLast` | Assignments from before the rename are still there; adding an owner keeps the others; an owner from before the people-only rule is not refused; deleting a person ends their assignments and nothing else (the accounts, keys and other owners stay); someone who signs in again under that name owns nothing; deleting a service account ends its assignments |
+| `TestDashboardTab` | No tab without a service account; owners get a tab of its own with one card per account in natural order; this month's usage per model in the one model order with each model's share; last month's left out; "No usage this month"; each account's own figures; the same figures as `/v1/service-accounts`; the owner regenerates its key, others get 403 |
 
 ### `test_disable_user.py` — User disable + Azure access flags
 
@@ -638,8 +660,8 @@ lists / acks / resolves (admin only) and the admin page shows open anomalies.
 | Test class | What it covers |
 |---|---|
 | `TestParsing` | `parse_ym("2026-04")` round-trip; invalid month raises; `iter_months(start, end)` is inclusive; cross-year iteration; reversed range raises |
-| `TestMonthlyReport` | Summary counts DAU/MAU only for human users (excludes `app_*`); department breakdown excludes apps; per-app sheet only lists `app_*` users; user ranking excludes apps |
-| `TestByUserBackend` | Per-user cost split across vLLM / Azure / Bedrock: pivoted per user, app accounts flagged, sorted by total, columns sum to the total, empty month |
+| `TestMonthlyReport` | Summary counts DAU/MAU only for human users (service accounts excluded); department breakdown excludes them; the By Service Account sheet lists only service accounts; user ranking excludes them |
+| `TestByUserBackend` | Per-user cost split across vLLM / Azure / Bedrock: pivoted per user, service accounts flagged, sorted by total, columns sum to the total, empty month |
 | `TestTopUsersDelta` | Rank movement between months (e.g., user moved from #5 → #2); new entrant after a month of absence |
 | `TestExportEndpoint` | `GET /admin/api/export/usage.xlsx`: admin can download (including the cost-by-backend sheet), non-admin denied, invalid `month` → 400, reversed range → 400, range > 12 months → 400 |
 | `TestUserBackendCostsCsv` | `GET /admin/api/export/user-backend-costs.csv`: one row per month × account with per-backend columns; admin only; invalid month / too-wide range → 400 |
@@ -672,7 +694,7 @@ renders the same bar.
 
 `get_monthly_overview` derives totals, both leaderboards (capped at 10), the
 per-user map and the department table (apps excluded) from one aggregate;
-`app_account_clause` treats `_` literally (`apple` is a person); and the
+a service account is one by `users.is_service_account`, whatever its name (`TestServiceAccountClause`); and the
 usage-heavy web/admin handlers are plain `def`, so their DB work runs in the
 threadpool instead of on the event loop.
 
@@ -680,13 +702,13 @@ threadpool instead of on the event loop.
 
 | Test class | What it covers |
 |---|---|
-| `TestSameNumbersEitherWay` | Every report that reads through `usage_rollup.aggregate` (admin month view, DAU, dashboard trends / monthly / Cost by Model / owned apps, xlsx and CSV exports, the anomaly baselines) is identical before and after the rollup, and with the watermark in the middle of a month; fixture includes local-midnight boundary rows, an app account and a deleted account's kept usage. Rollup rows past the watermark are ignored |
+| `TestSameNumbersEitherWay` | Every report that reads through `usage_rollup.aggregate` (admin month view, DAU, dashboard trends / monthly / Cost by Model / owned apps, xlsx and CSV exports, the anomaly baselines) is identical before and after the rollup, and with the watermark in the middle of a month; fixture includes local-midnight boundary rows, an service account and a deleted account's kept usage. Rollup rows past the watermark are ignored |
 | `TestAggregate` | Local-midnight boundary, empty inputs, unknown dimension, `empty_turns` |
 | `TestTaipeiMonths` | 01:00 Taipei on the 1st (17:00 UTC the day before) belongs to the new month |
 | `TestAdvance` | Settle delay, backfill from the oldest row, idempotent, `max_days` and resume, no data, today never rolled |
 | `TestRecompute` | Re-rolls corrected days without moving the watermark; keeps days whose raw rows are gone |
 | `TestInAppLoop` | `roll_next_day` rolls one day and never raises, `0` interval disables the loop, env parsing, lifespan starts it |
-| `TestDauCountsPeopleOnly` | DAU excludes app accounts and deleted accounts |
+| `TestDauCountsPeopleOnly` | DAU excludes service accounts and deleted accounts |
 
 ### `test_scheduled_jobs.py` — in-gateway periodic jobs
 
@@ -722,7 +744,7 @@ switch.
 - Checks: one test per check (`CC001`–`CC005`), what trips it and what does not.
 - Request path: a violation is recorded under its id and the request is still served; checks that are off record nothing; thresholds are constants in code and the settings table has no judgment column; the account's access reaches the check; plain `http://` is the connection's scheme (a client-sent `X-Forwarded-Proto` changes nothing); hourly write throttle; a broken store or a check that raises never fails a request; the cloud Messages routes are watched too.
 - Versions: recorded per account from the User-Agent; the overview counts each account under its newest version.
-- Reminder (`action = remind`): first violating request of the day is a 400 with the id and message, the retry passes, once a day across workers, never for app accounts.
+- Reminder (`action = remind`): first violating request of the day is a 400 with the id and message, the retry passes, once a day across workers, never for service accounts.
 - Patch: only environment variables can be written (`NAME=value` lines or a JSON object); `apply_env` changes the `env` block and nothing else; each audience (local-only, Azure, AWS) gets its own set, on the dashboard, in the download and in mail; admin text never reaches cmd.exe; the generated script's Node part is run for real against several settings files (skipped without `node`) and must equal `apply_env`; an unreadable settings file is left alone. The PowerShell part is not run.
 - Shell script (`patch.sh`): run for real with only Node, and with only Python 3, on the PATH; equals `apply_env`; leaves an unreadable file alone; says what it needs when neither is there; admin text never reaches the shell; carries the same Node logic as the `.bat`.
 - Resolved (*I've applied it*): the notice goes at once; a later violation brings it back; only that check and that account; not mailed while resolved; the admin sees *says fixed* and counts only open ones.
@@ -738,7 +760,7 @@ switch.
 - Patch guard: `CC001` / `CC002` / `CC004` cannot be turned on with an empty *Everyone* patch (400; saving it switched off is fine; a test mail of the unfinished form still works); `CC003` / `CC005` need none; an older row without one is flagged.
 - Admin: defaults come from code until an admin saves; save, reset to defaults (violations kept); detection is not editable and checks cannot be added or deleted from the UI; input validation; admin-only; the card lists every check with its id.
 - Mail footer: every mail (automatic, manual, test) says it is automated and not to reply, and links the support page when the admin set one (absolute, or site-relative under `PUBLIC_BASE_URL`; nothing else).
-- Mail: off until every setting is present; company-domain addresses only; failures become a summary; test mail (form as it stands, address and audience selectable); the combined test mail (every rule that is on, as saved, in one mail with one merged patch for the chosen audience; refused outside the company domain, for non-admins and when no rule is on); manual send (unmailed only / all, no app accounts, no deleted accounts, one check's violations only); automatic job (opt-in per check, never for a check that is off, once or every N days, window, retry after a failure, idle when unconfigured). `mailer._send_sync` is patched: no test talks to Exchange.
+- Mail: off until every setting is present; company-domain addresses only; failures become a summary; test mail (form as it stands, address and audience selectable); the combined test mail (every rule that is on, as saved, in one mail with one merged patch for the chosen audience; refused outside the company domain, for non-admins and when no rule is on); manual send (unmailed only / all, no service accounts, no deleted accounts, one check's violations only); automatic job (opt-in per check, never for a check that is off, once or every N days, window, retry after a failure, idle when unconfigured). `mailer._send_sync` is patched: no test talks to Exchange.
 - Mail log: a sent mail is recorded with its address and rules; a failure with the error, each retry a new line; why it went out (requested / automatic / test, the admin behind a test); nothing recorded for a mail never tried; a broken log never stops a mail or its stamp; read newest first by page, narrowed to failed / sent / test or one account or address (wildcards matched as text); 30-day counts; admins only; shown escaped on the admin page; kept when the account is deleted.
 
 ---

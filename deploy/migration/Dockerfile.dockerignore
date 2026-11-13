@@ -7,6 +7,7 @@
 .env.*
 !.env.example
 config.toml
+client_settings.json
 config/
 keys/
 *.pem

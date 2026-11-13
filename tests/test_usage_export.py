@@ -34,7 +34,7 @@ def seeded(db_session):
         User(username="carol", display_name="Carol C.", org_code="ENG",
              api_key="sk-c", is_admin=False),
         User(username="app_backend", display_name="", org_code="",
-             api_key="sk-app1", is_admin=False),
+             api_key="sk-app1", is_admin=False, is_service_account=True),
     ]
     for u in users:
         db_session.add(u)
@@ -125,11 +125,11 @@ class TestMonthlyReport:
         assert depts["ENG"]["users"] == 2
         assert depts["SALES"]["users"] == 1
 
-    def test_by_app_lists_only_app_prefixed_users(self, db_session, seeded):
+    def test_by_service_account_lists_only_service_accounts(self, db_session, seeded):
         report = build_monthly_report(db_session, "2026-01", "2026-01")
-        apps = report.breakdowns[0].by_app
+        apps = report.breakdowns[0].by_service_account
         assert len(apps) == 1
-        assert apps[0]["app"] == "app_backend"
+        assert apps[0]["service_account"] == "app_backend"
         assert apps[0]["owners"] == ["bob"]
         assert apps[0]["cost_usd"] == 5.0
 
@@ -166,9 +166,9 @@ class TestByUserBackend:
     def test_includes_app_accounts_with_flag(self, db_session, seeded):
         report = build_monthly_report(db_session, "2026-01", "2026-01")
         rows = {r["username"]: r for r in report.breakdowns[0].by_user_backend}
-        assert rows["app_backend"]["is_app"] is True
+        assert rows["app_backend"]["is_service_account"] is True
         assert rows["app_backend"]["vllm_cost_usd"] == 5.0
-        assert rows["alice"]["is_app"] is False
+        assert rows["alice"]["is_service_account"] is False
 
     def test_sorted_by_total_cost_desc(self, db_session, seeded):
         report = build_monthly_report(db_session, "2026-01", "2026-01")
@@ -236,7 +236,7 @@ class TestExportEndpoint:
 
         wb = load_workbook(BytesIO(resp.content))
         assert wb.sheetnames == [
-            "Summary", "By Department", "By App", "Top 10 Users", "Cost by Backend",
+            "Summary", "By Department", "By Service Account", "Top 10 Users", "Cost by Backend",
         ]
 
         # Summary sheet: 3 data rows (Jan/Feb/Mar) starting at row 5
@@ -249,8 +249,8 @@ class TestExportEndpoint:
         header = [c.value for c in next(depts.iter_rows(min_row=1, max_row=1))]
         assert header[0] == "Month" and header[1] == "Department"
 
-        # By App sheet should include app_backend in January
-        apps = wb["By App"]
+        # By Service Account sheet should include app_backend in January
+        apps = wb["By Service Account"]
         app_rows = [
             [c.value for c in row]
             for row in apps.iter_rows(min_row=2, values_only=False)
@@ -274,7 +274,7 @@ class TestExportEndpoint:
         assert alice[9] == 2.0    # Azure
         assert alice[10] == 0.0   # AWS
         assert alice[11] == 3.0   # Total
-        assert rows["app_backend"][4] == "App"
+        assert rows["app_backend"][4] == "Service account"
 
     def test_non_admin_denied(self, client, seeded):
         resp = client.get(
@@ -344,7 +344,7 @@ class TestUserBackendCostsCsv:
         assert float(bob["bedrock_cost_usd"]) == 1.5
 
         app = rows["app_backend"]
-        assert app["type"] == "app"
+        assert app["type"] == "service_account"
         assert float(app["vllm_cost_usd"]) == 5.0
 
     def test_multi_month_rows_carry_month_column(self, client, db_session, admin_user, seeded):

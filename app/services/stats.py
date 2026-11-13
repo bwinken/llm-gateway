@@ -15,8 +15,7 @@ from app.models.schema import (
     AppOwner,
     UsageLog,
     User,
-    app_account_clause,
-    is_app_account,
+    service_account_clause,
     is_legacy_api_key,
 )
 from app.services.usage_rollup import aggregate
@@ -123,8 +122,8 @@ def get_daily_trends(session: Session, user_id: int, days: int = 30) -> list[dic
 
 
 def human_user_ids(session: Session) -> set[int]:
-    """Ids of every existing non-app account (``users`` is small)."""
-    return {int(uid) for uid in session.exec(select(User.id).where(~app_account_clause())).all()}
+    """Ids of every existing person, service accounts left out (``users`` is small)."""
+    return {int(uid) for uid in session.exec(select(User.id).where(~service_account_clause())).all()}
 
 
 def count_daily_active(per_day_user: dict[tuple, dict], humans: set[int]) -> dict:
@@ -187,9 +186,9 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
     # Every user, unfiltered: ``users`` is small next to ``usage_logs``, and an
     # IN list of every active id would hit bind-parameter limits.
     users = {
-        int(uid): (username, display_name, org_code)
-        for uid, username, display_name, org_code in session.exec(
-            select(User.id, User.username, User.display_name, User.org_code)
+        int(uid): (username, display_name, org_code, bool(is_service))
+        for uid, username, display_name, org_code, is_service in session.exec(
+            select(User.id, User.username, User.display_name, User.org_code, User.is_service_account)
         ).all()
     } if per_user else {}
 
@@ -204,7 +203,7 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
         totals["requests"] += u["requests"]
         if uid not in users:
             continue  # rows of a since-deleted account count only in the totals
-        username, display_name, org_code = users[uid]
+        username, display_name, org_code, is_service = users[uid]
         row = {
             "id": uid,
             "username": username,
@@ -215,7 +214,7 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
             "monthly_output": u["output_tokens"],
             "monthly_reqs": u["requests"],
         }
-        if is_app_account(username):
+        if is_service:
             apps.append(row)
             continue
         people.append(row)
@@ -245,35 +244,50 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
 
 
 def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
-    """Return app accounts owned by this user, with their monthly usage."""
+    """The service accounts this user owns (``app_owners``), each with this
+    local month's usage: the totals and one ``models`` row per model and
+    backend, in the order every page lists models. One usage read for all
+    of them. ("apps" in the names here is the older word for service
+    accounts.)"""
     app_ids_stmt = select(AppOwner.app_id).where(AppOwner.owner_id == owner_id)
     apps = session.exec(select(User).where(User.id.in_(app_ids_stmt))).all()  # type: ignore[attr-defined]
     if not apps:
         return []
 
-    usage_by_id = {}
-    for (uid,), entry in aggregate(
-        session, local_month_start(), _tomorrow(), ("user_id",),
+    from app.services import model_catalog
+
+    rows_by_id: dict[int, list[dict]] = {}
+    for (uid, model, model_type, backend), entry in aggregate(
+        session, local_month_start(), _tomorrow(), ("user_id", "model", "model_type", "backend"),
         user_ids=[a.id for a in apps],
     ).items():
-        t = _totals(entry)
-        t["cost"] = round(t["cost"], 6)
-        usage_by_id[int(uid)] = t
+        rows_by_id.setdefault(int(uid), []).append({
+            "model": model,
+            "type": model_type,
+            "backend": backend or "vllm",
+            "requests": int(entry["requests"]),
+            "input_tokens": int(entry["input_tokens"]),
+            "output_tokens": int(entry["output_tokens"]),
+            "cost_usd": round(float(entry["cost_usd"]), 6),
+        })
+    catalog = model_catalog.current_catalog_keys() if rows_by_id else {}
 
-    return [
-        {
+    def _one(app: User) -> dict:
+        models = model_catalog.sort_usage_rows(rows_by_id.get(app.id, []), catalog)
+        return {
             "id": app.id,
             "username": app.username,
             "api_key": app.api_key,
             "legacy_key": is_legacy_api_key(app.api_key),
             "daily_limit_usd": app.daily_limit_usd,
-            "monthly_cost": usage_by_id.get(app.id, {}).get("cost", 0.0),
-            "monthly_input": usage_by_id.get(app.id, {}).get("input_tokens", 0),
-            "monthly_output": usage_by_id.get(app.id, {}).get("output_tokens", 0),
-            "monthly_reqs": usage_by_id.get(app.id, {}).get("requests", 0),
+            "monthly_cost": round(sum(r["cost_usd"] for r in models), 6),
+            "monthly_input": sum(r["input_tokens"] for r in models),
+            "monthly_output": sum(r["output_tokens"] for r in models),
+            "monthly_reqs": sum(r["requests"] for r in models),
+            "models": models,
         }
-        for app in apps
-    ]
+
+    return [_one(app) for app in apps]
 
 
 def get_model_breakdown(
@@ -325,7 +339,7 @@ def get_today_totals(session: Session) -> dict:
         select(UsageLog.user_id)
         .join(User, UsageLog.user_id == User.id)
         .where(UsageLog.created_at >= today_start)
-        .where(~app_account_clause())
+        .where(~service_account_clause())
         .distinct()
         .subquery()
     )
