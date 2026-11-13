@@ -394,13 +394,30 @@ def build_guardrail_scores(guardrail: dict | None) -> list[dict]:
                         | timeout | error | parse_error
       guardrail_action  pass | flag | block   (flag = would be blocked by
                         the current policy, but the action is "monitor")
+      guardrail_category  one score per category the guard reported
+                        (Violent, PII, Jailbreak, ...); none on a safe,
+                        skipped or failed verdict
     """
     if not guardrail:
         return []
-    return [
+    scores = [
         {"name": "guardrail", "value": str(guardrail.get("status")), "data_type": "CATEGORICAL"},
         {"name": "guardrail_action", "value": str(guardrail.get("action")), "data_type": "CATEGORICAL"},
     ]
+    scores += [
+        {"name": "guardrail_category", "value": c, "data_type": "CATEGORICAL"}
+        for c in guardrail_categories(guardrail)
+    ]
+    return scores
+
+
+def guardrail_categories(guardrail: dict | None) -> list[str]:
+    """The categories of a verdict, as strings (the parser already bounds
+    their number and length)."""
+    cats = (guardrail or {}).get("categories")
+    if not isinstance(cats, (list, tuple)):
+        return []
+    return [str(c) for c in cats if c]
 
 
 def guardrail_metadata(guardrail: dict | None) -> dict[str, Any]:
@@ -653,6 +670,7 @@ def record_generation(rec: GenerationRecord) -> None:
         tags = [f"backend:{rec.backend}", f"type:{rec.model_type}"]
         if rec.guardrail and rec.guardrail.get("status"):
             tags.append(f"guardrail:{rec.guardrail['status']}")
+            tags += [f"guardrail_category:{c}" for c in guardrail_categories(rec.guardrail)]
 
         metadata: dict[str, Any] = {
             "user_id": rec.user_id,
