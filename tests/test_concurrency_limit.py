@@ -843,16 +843,18 @@ class TestAppAccountsStartWaived:
         assert created.is_service_account is True and created.concurrency_waived is True
 
     def test_api_create_app_defaults_waived(self, client, db_session, admin_user):
-        resp = client.post("/admin/users", json={"username": "app_etl"}, headers=self._hdr(admin_user))
+        resp = client.post("/admin/users", json={"username": "etl", "is_service_account": True},
+                           headers=self._hdr(admin_user))
         assert resp.status_code == 200
-        assert self._get(db_session, "app_etl").concurrency_waived is True
+        assert self._get(db_session, "etl").concurrency_waived is True
 
     def test_api_create_person_not_waived(self, client, db_session, admin_user):
         client.post("/admin/users", json={"username": "dana"}, headers=self._hdr(admin_user))
         assert self._get(db_session, "dana").concurrency_waived is False
 
     def test_api_explicit_value_wins(self, client, db_session, admin_user):
-        client.post("/admin/users", json={"username": "app_strict", "concurrency_waived": False},
+        client.post("/admin/users", json={"username": "app_strict", "is_service_account": True,
+                                          "concurrency_waived": False},
                     headers=self._hdr(admin_user))
         assert self._get(db_session, "app_strict").concurrency_waived is False
 

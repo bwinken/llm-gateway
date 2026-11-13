@@ -68,7 +68,7 @@ Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 C
 | `GET /v1/me`、`/me` | 你的權限（地端 / Azure / AWS）和今日額度：上限、已用、剩餘、重置時間。額度用完時一樣可以查。見[查詢額度](#查詢額度) |
 | `GET /v1/status` | 你可以用的模型，以及每個模型是否正常、目前負載和價格。見[模型狀態](#模型狀態) |
 | `GET /v1/usage` | 你每天的用量，以及今天和本月各模型的用量。見[用量紀錄](#用量紀錄) |
-| `GET /v1/apps` | 你名下的服務帳號，以及各自的上限和本月用量。見[服務帳號](#服務帳號) |
+| `GET /v1/service-accounts` | 你名下的服務帳號，以及各自的上限和本月用量。見[服務帳號](#服務帳號) |
 | `GET /v1/notices` | dashboard 要你修正的 client 設定。見[通知](#通知) |
 | `GET /v1/settings` | 工具可以幫你設定的 client 設定，每項都帶有說明、對你的帳號的建議值和其他選項。見[設定](#設定) |
 | `POST /auth/api-key` | 用 AuthCenter 的 access token 換你的 API key，terminal 工具的登入方式。見[從 terminal 工具登入](#從-terminal-工具登入) |
@@ -206,14 +206,14 @@ curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-ap
 ## 服務帳號
 
 ```bash
-curl https://your-gateway/v1/apps -H "Authorization: Bearer sk-your-api-key"
+curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-api-key"
 ```
 
 ```json
 {
-  "object": "apps",
+  "object": "service_accounts",
   "month": "2026-10",
-  "apps": [
+  "service_accounts": [
     {"username": "billing-etl", "daily_limit_usd": 50.0, "legacy_key": false,
      "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5,
                "models": [
@@ -226,8 +226,9 @@ curl https://your-gateway/v1/apps -H "Authorization: Bearer sk-your-api-key"
 }
 ```
 
-- 服務帳號是給程式用的帳號（批次工作、服務），由管理員指派給你。它以前叫 app 帳號，所以路徑和欄位名稱還是 `apps`；舊的帳號名稱是 `app_...`，新的可以是任何名稱。
-- `apps` 列出你名下的服務帳號（沒有的話是空陣列），各自有自己的每日上限和本月用量：就是 dashboard 的 *Service accounts* 分頁。
+- 服務帳號是給程式用的帳號（批次工作、服務），由管理員指派給你。它以前叫 app 帳號：舊的帳號名稱是 `app_...`，新的可以是任何名稱。
+- `GET /v1/apps` 是這個端點的舊名稱，仍然可用，內容相同，只是放在 `"object": "apps"` 和 `apps` 欄位下；新的 client 請讀 `/v1/service-accounts`。
+- `service_accounts` 列出你名下的服務帳號（沒有的話是空陣列），各自有自己的每日上限和本月用量：就是 dashboard 的 *Service accounts* 分頁。
 - `month.models` 是當月依模型拆開的用量：每個模型和後端一列，順序和 dashboard 相同，加總等於當月合計。服務帳號用過的後端都會列出，和你自己的權限無關。
 - 不包含服務帳號的 API key，任何端點都不會回傳 key。要查看或重新產生，請到 dashboard 的 *Service accounts* 分頁。
 
@@ -304,7 +305,7 @@ curl https://your-gateway/v1/settings -H "Authorization: Bearer sk-your-api-key"
 - gateway 不知道你目前設了什麼：請和自己的 settings.json 比對。
 - 欄位會隨 gateway 的設定和你的權限改變，需要時再讀，不要留副本。回應裡不會有 key，而且這個端點只能讀：要不要套用、怎麼套用由工具決定。
 
-狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/apps`、`/v1/notices`、`/v1/settings`，合起來就是 dashboard 上看得到的資訊，加上工具設定 client 所需要的資料。它們在額度用完時一樣可以查，都不計費，也都不會回傳 API key：key 只會在登入之後交出（見下一節，或 dashboard）。
+狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings`，合起來就是 dashboard 上看得到的資訊，加上工具設定 client 所需要的資料。它們在額度用完時一樣可以查，都不計費，也都不會回傳 API key：key 只會在登入之後交出（見下一節，或 dashboard）。
 
 ## 從 terminal 工具登入
 
@@ -321,7 +322,7 @@ curl -X POST https://your-gateway/auth/api-key -H "Authorization: Bearer $AUTHCE
 {"object": "api_key", "username": "alice", "api_key": "sk-your-api-key", "legacy_key": false}
 ```
 
-3. 之後它就和其他 client 一樣用 API key：呼叫模型，以及讀 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/apps`、`/v1/notices`、`/v1/settings`。access token 不會再用到，其他端點也不接受它，用完就丟。
+3. 之後它就和其他 client 一樣用 API key：呼叫模型，以及讀 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings`。access token 不會再用到，其他端點也不接受它，用完就丟。
 
 - 拿到的永遠是你現有的 key。在第二台機器登入，不會讓第一台的 key 失效。
 - 第一次登入會建立帳號，和第一次開 dashboard 一樣。

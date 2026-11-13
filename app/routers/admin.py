@@ -70,7 +70,6 @@ from app.models.schema import (
     IpAllowRule,
     User,
     UsageLog,
-    has_legacy_service_name,
     service_account_clause,
     is_legacy_api_key,
     legacy_api_key_clause,
@@ -1865,13 +1864,13 @@ def create_user_api(
 
     _reject_retired_limits(body)
     _reject_retired_admin_flag(body)
-    # What kind of account: "is_service_account" says so. Without it, a name
-    # of the older ``app_*`` form still makes a service account, as it did
-    # when the name was the test (scripts written then keep working).
-    if "is_service_account" in body:
-        is_service = _strict_bool(body["is_service_account"], "is_service_account")
-    else:
-        is_service = has_legacy_service_name(username)
+    # What kind of account: "is_service_account" says so, and nothing else
+    # does. A name starting with ``app_`` makes a person's account like any
+    # other name (it made an app account when the name was the test).
+    is_service = (
+        _strict_bool(body["is_service_account"], "is_service_account")
+        if "is_service_account" in body else False
+    )
     if is_service:
         _service_account_name(username)
     # Service accounts start waived from the concurrency limit; an explicit
@@ -2554,7 +2553,7 @@ def export_user_backend_costs_csv(
                 u["username"],
                 u["display_name"],
                 u["org_code"],
-                "app" if u["is_app"] else "user",
+                "service_account" if u["is_service_account"] else "user",
                 u["requests"],
                 u["input_tokens"],
                 u["output_tokens"],

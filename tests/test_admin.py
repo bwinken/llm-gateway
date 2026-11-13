@@ -11,13 +11,13 @@ class TestCreateUserAPI:
     def test_create_app_account(self, client, db_session, admin_user):
         resp = client.post(
             "/admin/users",
-            json={"username": "app_my_service", "daily_limit_usd": 50.0},
+            json={"username": "my-service", "is_service_account": True, "daily_limit_usd": 50.0},
             headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),
         )
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is True
-        assert data["username"] == "app_my_service"
+        assert data["username"] == "my-service" and data["is_service_account"] is True
         assert data["api_key"].startswith("sk-")
         assert data["daily_limit_usd"] == 50.0
 

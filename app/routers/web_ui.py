@@ -184,7 +184,7 @@ _BACKEND_LABELS = {"vllm": "On-Prem", "azure": "Azure", "bedrock": "AWS Bedrock"
 
 def _owned_service_accounts(session: Session, user: User) -> list[dict]:
     """The dashboard's *Service accounts* tab: the accounts ``user`` owns
-    (``stats.get_owned_apps_summary``, the data ``GET /v1/apps`` serves), by
+    (``stats.get_owned_apps_summary``, the data ``GET /v1/service-accounts`` serves), by
     name in natural order, each model row with its share of that account's
     month. Every row is shown, whatever cloud access the viewer has: it is
     the service account's bill, not the viewer's."""

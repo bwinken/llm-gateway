@@ -54,7 +54,7 @@ graph LR
 | `GET` | `/v1/me`、`/me` | 呼叫者的權限(地端 / Azure / AWS)與各後端今日額度。驗證時不做每日額度 429，額度用完也能查 | 直接回傳 | — |
 | `GET` | `/v1/status` | 呼叫者看得到的模型與 `state`(地端 `up` / `down`,雲端 `unchecked`)、負載、計費價格(`model_catalog.visible_models`)。驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
 | `GET` | `/v1/usage` | 呼叫者每個本地日的用量(`?days=`,1 到 90,預設 7)以及今天、本月各模型用量,經 `usage_rollup.aggregate` 讀取。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `GET` | `/v1/apps` | 呼叫者名下的服務帳號、每日上限與本月用量(`stats.get_owned_apps_summary`),不含 key。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
+| `GET` | `/v1/service-accounts` | 呼叫者名下的服務帳號、每日上限與本月用量(合計與各模型)(`stats.get_owned_apps_summary`),不含 key。`GET /v1/apps` 是舊名稱,仍然可用,同樣的資料放在 `apps` 欄位下。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
 | `GET` | `/v1/notices` | 呼叫者尚未處理的 client 通知,以及以 `{set, unset}` 表示的 patch(`client_rules.notices_for` / `combined_for`)。唯讀;驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
 | `GET` | `/v1/settings` | 工具幫呼叫者設定 client 時可以提供的設定:每個變數的說明、`default` 與 `options`,依 tier(帳號的雲端權限)而不同,來自 admin 的 `client_settings.json`(`client_settings.fields_for`)。唯讀;驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
 | `POST` | `/v1/chat/completions`、`/chat/completions` | Chat 對話生成 | `vllm_forward_chat_completions`(vLLM) / `azure_forward_chat_completions`(Azure) / `bedrock_forward_chat_completions`(Bedrock) | `llm`, `vlm` |
@@ -266,7 +266,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | 方法 | 路徑 | 說明 |
 |---|---|---|
 | `GET` | `/admin/users` | 列出所有使用者（遮罩後的 `api_key`、`daily_limit_usd`、`cloud_daily_limit_usd`、`concurrency_waived`、`owner_ids`、`display_name`、`org_code`） |
-| `POST` | `/admin/users` | 建立使用者（JSON body：`username`、`daily_limit_usd`、`cloud_daily_limit_usd` — `null` 表示依預設值、`is_service_account` — JSON boolean；沒給時，舊式的 `app_*` 名稱仍會建立成服務帳號、`concurrency_waived` — 必須是 JSON boolean，服務帳號預設為 true、`owner_ids`）。username 重複回 409；回應含完整 `api_key` |
+| `POST` | `/admin/users` | 建立使用者（JSON body：`username`、`daily_limit_usd`、`cloud_daily_limit_usd` — `null` 表示依預設值、`is_service_account` — JSON boolean，沒給就是 false，不論名稱（`app_` 開頭不再代表服務帳號）、`concurrency_waived` — 必須是 JSON boolean，服務帳號預設為 true、`owner_ids`）。username 重複回 409；回應含完整 `api_key` |
 | `PATCH` | `/admin/users/{id}` | 更新使用者（`daily_limit_usd`、`cloud_daily_limit_usd`、`owner_ids` — 整份替換 owner 清單、`concurrency_waived` — 必須是 JSON boolean） |
 | `GET` | `/admin/api/anomalies` | gateway 每小時異常掃描（`app/services/anomaly_scan.py`）寫入的異常紀錄（`?status=new` 為預設，或 `acknowledged`、`resolved`、`all`；`?limit=50`，上限 200） |
 | `POST` | `/admin/api/anomalies/{id}/ack` | 將異常標為 `acknowledged` |

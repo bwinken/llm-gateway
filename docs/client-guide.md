@@ -68,7 +68,7 @@ Windows users can get a pre-configured Claude Code installer from the **Setup** 
 | `GET /v1/me`, `/me` | Your access (on-prem / Azure / AWS) and today's budget: limit, spent, remaining, reset time. Answers even when the budget is spent. See [Checking your quota](#checking-your-quota) |
 | `GET /v1/status` | The models you can use and whether each is up, with load and price. See [Model status](#model-status) |
 | `GET /v1/usage` | Your usage per day, and today and this month by model. See [Usage history](#usage-history) |
-| `GET /v1/apps` | The service accounts you own, with their limits and this month's usage. See [Service accounts](#service-accounts) |
+| `GET /v1/service-accounts` | The service accounts you own, with their limits and this month's usage. See [Service accounts](#service-accounts) |
 | `GET /v1/notices` | What the dashboard asks you to fix in your client's settings. See [Notices](#notices) |
 | `GET /v1/settings` | The client settings a tool can set up for you, each with a description, the suggested value and the other options for your account. See [Settings](#settings) |
 | `POST /auth/api-key` | Your API key for an AuthCenter access token: how a terminal tool signs in. See [Signing in from a terminal tool](#signing-in-from-a-terminal-tool) |
@@ -206,14 +206,14 @@ curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-ap
 ## Service accounts
 
 ```bash
-curl https://your-gateway/v1/apps -H "Authorization: Bearer sk-your-api-key"
+curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-api-key"
 ```
 
 ```json
 {
-  "object": "apps",
+  "object": "service_accounts",
   "month": "2026-10",
-  "apps": [
+  "service_accounts": [
     {"username": "billing-etl", "daily_limit_usd": 50.0, "legacy_key": false,
      "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5,
                "models": [
@@ -226,8 +226,9 @@ curl https://your-gateway/v1/apps -H "Authorization: Bearer sk-your-api-key"
 }
 ```
 
-- A service account is an account for a program (a batch job, a service) that an administrator assigned to you. They used to be called app accounts, which is why the route and the keys say `apps`; older ones are named `app_...`, newer ones anything.
-- `apps` lists the ones you own (empty when you own none), each with its own daily limit and its usage this month: the dashboard's *Service accounts* tab.
+- A service account is an account for a program (a batch job, a service) that an administrator assigned to you. They used to be called app accounts: older ones are named `app_...`, newer ones anything.
+- `GET /v1/apps` is this endpoint's older name. It still answers, with the same accounts under `"object": "apps"` and the key `apps`; new clients read `/v1/service-accounts`.
+- `service_accounts` lists the ones you own (empty when you own none), each with its own daily limit and its usage this month: the dashboard's *Service accounts* tab.
 - `month.models` is that month by model: one row per model and backend, in the dashboard's order, adding up to the month's totals. Every backend the service account used is listed, whatever your own access.
 - A service account's API key is not included, and no endpoint returns a key. See or regenerate it on the dashboard's *Service accounts* tab.
 
@@ -304,7 +305,7 @@ curl https://your-gateway/v1/settings -H "Authorization: Bearer sk-your-api-key"
 - The gateway does not know what you have set now: compare with your own settings.json.
 - The fields change with the gateway's configuration and your access, so read them when you need them rather than keeping a copy. Never a key, and read-only: applying a value is up to the tool.
 
-`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps`, `/v1/notices` and `/v1/settings` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows, and what a tool needs to set a client up. All of them answer when your budget is spent, none is billed, and none returns an API key: a key is only ever handed out for a sign-in (next section, or the dashboard).
+`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` and `/v1/settings` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows, and what a tool needs to set a client up. All of them answer when your budget is spent, none is billed, and none returns an API key: a key is only ever handed out for a sign-in (next section, or the dashboard).
 
 ## Signing in from a terminal tool
 
@@ -321,7 +322,7 @@ curl -X POST https://your-gateway/auth/api-key -H "Authorization: Bearer $AUTHCE
 {"object": "api_key", "username": "alice", "api_key": "sk-your-api-key", "legacy_key": false}
 ```
 
-3. From then on it uses the API key, like every other client: for the models, and for `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/apps`, `/v1/notices` and `/v1/settings`. The access token is not needed again and nothing else accepts it; throw it away.
+3. From then on it uses the API key, like every other client: for the models, and for `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` and `/v1/settings`. The access token is not needed again and nothing else accepts it; throw it away.
 
 - You always get your existing key. Signing in on a second machine does not change the key on the first.
 - A first sign-in creates your account, as a first visit to the dashboard does.

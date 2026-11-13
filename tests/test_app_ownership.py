@@ -63,6 +63,7 @@ class TestCreateWithOwner:
             "/admin/users",
             json={
                 "username": "app_new_service",
+                "is_service_account": True,
                 "owner_ids": [owner_user.id],
             },
             headers=web_auth_header(sub=admin_user.username, scopes=["admin"]),

@@ -4,10 +4,10 @@ Build an xlsx workbook from a MonthlyReport (see app.services.analytics).
 Sheets:
   1. Summary          — one row per month (reqs, tokens, cost, DAU/MAU)
   2. By Department    — (month × org_code) rows
-  3. By App           — (month × app account) rows, with owners
+  3. By Service Account — (month × service account) rows, with owners
   4. Top 10 Users     — (month × rank 1–10) rows with previous-month rank delta
   5. Cost by Backend  — (month × account) rows with the cost split across
-                        On-prem (vLLM) / Azure / AWS Bedrock, humans and apps
+                        On-prem (vLLM) / Azure / AWS Bedrock, people and service accounts
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def _build_summary(ws: Worksheet, report: MonthlyReport) -> None:
     ).font = Font(bold=True, size=13)
     ws.cell(
         row=2, column=1,
-        value="DAU = daily distinct human users (averaged over days in month); MAU = distinct human users in month. Apps excluded.",
+        value="DAU = daily distinct human users (averaged over days in month); MAU = distinct human users in month. Service accounts excluded.",
     ).font = _META_FONT
 
     headers = [
@@ -104,19 +104,19 @@ def _build_by_department(ws: Worksheet, report: MonthlyReport) -> None:
     ws.freeze_panes = "A2"
 
 
-def _build_by_app(ws: Worksheet, report: MonthlyReport) -> None:
-    ws.title = "By App"
+def _build_by_service_account(ws: Worksheet, report: MonthlyReport) -> None:
+    ws.title = "By Service Account"
     headers = [
-        "Month", "App", "Department", "Owners", "Requests",
+        "Month", "Service Account", "Department", "Owners", "Requests",
         "Input Tokens", "Output Tokens", "Cost (USD)",
     ]
     _write_header(ws, 1, headers)
 
     row = 2
     for bd in report.breakdowns:
-        for a in bd.by_app:
+        for a in bd.by_service_account:
             ws.cell(row=row, column=1, value=bd.month)
-            ws.cell(row=row, column=2, value=a["app"])
+            ws.cell(row=row, column=2, value=a["service_account"])
             ws.cell(row=row, column=3, value=a["org_code"])
             ws.cell(row=row, column=4, value=", ".join(a["owners"]))
             ws.cell(row=row, column=5, value=a["requests"])
@@ -135,7 +135,7 @@ def _build_top_users(ws: Worksheet, report: MonthlyReport, limit: int = 10) -> N
         row=1, column=1,
         value=(
             "Δ Rank: negative = moved up, positive = moved down, blank = new entrant. "
-            "Apps excluded."
+            "Service accounts excluded."
         ),
     ).font = _META_FONT
 
@@ -173,7 +173,7 @@ def _build_cost_by_backend(ws: Worksheet, report: MonthlyReport) -> None:
         row=1, column=1,
         value=(
             "Per-account cost split by serving backend. Includes both human "
-            "users and app_* accounts (see Type). Total = On-prem + Azure + AWS."
+            "users and service accounts (see Type). Total = On-prem + Azure + AWS."
         ),
     ).font = _META_FONT
 
@@ -192,7 +192,7 @@ def _build_cost_by_backend(ws: Worksheet, report: MonthlyReport) -> None:
             ws.cell(row=row, column=2, value=u["username"])
             ws.cell(row=row, column=3, value=u["display_name"])
             ws.cell(row=row, column=4, value=u["org_code"])
-            ws.cell(row=row, column=5, value="App" if u["is_app"] else "User")
+            ws.cell(row=row, column=5, value="Service account" if u["is_service_account"] else "User")
             ws.cell(row=row, column=6, value=u["requests"])
             ws.cell(row=row, column=7, value=u["input_tokens"])
             ws.cell(row=row, column=8, value=u["output_tokens"])
@@ -211,7 +211,7 @@ def build_workbook(report: MonthlyReport) -> bytes:
     wb = Workbook()
     _build_summary(wb.active, report)
     _build_by_department(wb.create_sheet(), report)
-    _build_by_app(wb.create_sheet(), report)
+    _build_by_service_account(wb.create_sheet(), report)
     _build_top_users(wb.create_sheet(), report)
     _build_cost_by_backend(wb.create_sheet(), report)
 

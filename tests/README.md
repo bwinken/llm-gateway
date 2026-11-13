@@ -447,7 +447,7 @@ flag granting nothing. `TestOverBudget` pins that it still answers once the budg
 and `x-api-key`; `TestConcurrency` the reported concurrency mode. Every
 response is checked for `null`s (`_no_nulls`).
 
-### `test_status_usage.py` — `GET /v1/status`, `/v1/usage`, `/v1/apps`, `/v1/notices`, `/v1/settings`
+### `test_status_usage.py` — `GET /v1/status`, `/v1/usage`, `/v1/service-accounts` (and `/v1/apps`), `/v1/notices`, `/v1/settings`
 
 What the dashboard shows an account, by API key. `TestAuth`: each needs a
 key, refuses a disabled account, answers once the budget is spent and
@@ -623,10 +623,10 @@ Service accounts can have human owners. Tests cover:
 
 | Test class | What it covers |
 |---|---|
-| `TestNaming` | The form keeps the name as typed (no `app_` prefix), refuses malformed and taken names; the API takes `is_service_account`, and without it a name of the old `app_*` form still makes one (older scripts); the field wins over the name and must be a boolean; the listing shows it |
+| `TestNaming` | The form keeps the name as typed (no `app_` prefix), refuses malformed and taken names; the API makes a service account only when `is_service_account` is true, whatever the name (an `app_` name without it is a person's account), and the field must be a boolean; the listing shows it |
 | `TestNoSignIn` | An SSO token whose `sub` is a service account is refused on the dashboard and gets no key from `POST /auth/api-key`; the account's own key works; a person named `app_...` still signs in |
 | `TestTreatedAsOne` | A service account without the prefix sits in the admin's Service accounts table, is not counted as a person, is on the service leaderboard and is never mailed |
-| `TestDashboardTab` | No tab without a service account; owners get a tab of its own with one card per account in natural order; this month's usage per model in the one model order with each model's share; last month's left out; "No usage this month"; each account's own figures; the same figures as `/v1/apps`; the owner regenerates its key, others get 403 |
+| `TestDashboardTab` | No tab without a service account; owners get a tab of its own with one card per account in natural order; this month's usage per model in the one model order with each model's share; last month's left out; "No usage this month"; each account's own figures; the same figures as `/v1/service-accounts`; the owner regenerates its key, others get 403 |
 
 ### `test_disable_user.py` — User disable + Azure access flags
 
@@ -658,7 +658,7 @@ lists / acks / resolves (admin only) and the admin page shows open anomalies.
 | Test class | What it covers |
 |---|---|
 | `TestParsing` | `parse_ym("2026-04")` round-trip; invalid month raises; `iter_months(start, end)` is inclusive; cross-year iteration; reversed range raises |
-| `TestMonthlyReport` | Summary counts DAU/MAU only for human users (service accounts excluded); department breakdown excludes them; the By App sheet lists only service accounts; user ranking excludes them |
+| `TestMonthlyReport` | Summary counts DAU/MAU only for human users (service accounts excluded); department breakdown excludes them; the By Service Account sheet lists only service accounts; user ranking excludes them |
 | `TestByUserBackend` | Per-user cost split across vLLM / Azure / Bedrock: pivoted per user, service accounts flagged, sorted by total, columns sum to the total, empty month |
 | `TestTopUsersDelta` | Rank movement between months (e.g., user moved from #5 → #2); new entrant after a month of absence |
 | `TestExportEndpoint` | `GET /admin/api/export/usage.xlsx`: admin can download (including the cost-by-backend sheet), non-admin denied, invalid `month` → 400, reversed range → 400, range > 12 months → 400 |

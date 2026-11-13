@@ -93,19 +93,18 @@ class TestNaming:
         account = _get(db_session, "nightly-report")
         assert account.is_service_account is True and account.concurrency_waived is True
 
-    def test_scripts_from_before_keep_working(self, client, db_session, admin_user):
-        # Without the field, a name of the old form still makes a service
-        # account, as it did when the name was the test; any other name a person.
-        assert client.post("/admin/users", json={"username": "app_etl"}, headers=_admin(admin_user)).status_code == 200
-        assert client.post("/admin/users", json={"username": "newhire"}, headers=_admin(admin_user)).status_code == 200
-        assert _get(db_session, "app_etl").is_service_account is True
-        person = _get(db_session, "newhire")
-        assert person.is_service_account is False and person.concurrency_waived is False
+    @pytest.mark.parametrize("name", ["app_etl", "newhire"])
+    def test_the_name_decides_nothing(self, client, db_session, admin_user, name):
+        # Without the field the API makes a person's account, whatever the
+        # name: an app_ prefix no longer makes a service account.
+        assert client.post("/admin/users", json={"username": name}, headers=_admin(admin_user)).status_code == 200
+        account = _get(db_session, name)
+        assert account.is_service_account is False and account.concurrency_waived is False
 
-    def test_the_field_wins_over_the_name(self, client, db_session, admin_user):
-        client.post("/admin/users", json={"username": "app_person", "is_service_account": False},
+    def test_an_app_name_can_still_be_a_service_account(self, client, db_session, admin_user):
+        client.post("/admin/users", json={"username": "app_etl", "is_service_account": True},
                     headers=_admin(admin_user))
-        assert _get(db_session, "app_person").is_service_account is False
+        assert _get(db_session, "app_etl").is_service_account is True
 
     def test_the_field_is_a_boolean(self, client, db_session, admin_user):
         resp = client.post("/admin/users", json={"username": "x", "is_service_account": "yes"},

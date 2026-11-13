@@ -49,7 +49,7 @@ def _no_nulls(value) -> bool:
     return value is not None
 
 
-PATHS = ["/v1/status", "/v1/usage", "/v1/apps", "/v1/notices", "/v1/settings"]
+PATHS = ["/v1/status", "/v1/usage", "/v1/service-accounts", "/v1/apps", "/v1/notices", "/v1/settings"]
 
 
 class TestAuth:
@@ -343,6 +343,22 @@ class TestApps:
         _update(db_session, test_user, can_use_azure=False, can_use_bedrock=False)
         (app,) = self._apps(client).json()["apps"]
         assert [m["backend"] for m in app["month"]["models"]] == ["azure"]
+
+    def test_service_accounts_is_the_route_and_apps_its_older_name(self, client, db_session, test_user):
+        etl = self._app(db_session, test_user, "billing-etl", is_service_account=True)
+        _spend(db_session, etl, "2", backend="azure", model="azure-gpt-4")
+        resp = client.get("/v1/service-accounts", headers=auth_header())
+        assert resp.status_code == 200 and _no_nulls(resp.json())
+        body = resp.json()
+        assert body["object"] == "service_accounts" and set(body) == {"object", "month", "service_accounts"}
+        (account,) = body["service_accounts"]
+        assert account["username"] == "billing-etl" and account["month"]["models"][0]["model"] == "azure-gpt-4"
+        # The older route gives the same accounts and figures, under "apps".
+        old = self._apps(client).json()
+        assert old["object"] == "apps" and old["apps"] == body["service_accounts"] and old["month"] == body["month"]
+        assert "sk-billing-etl-secret" not in resp.text
+        for method in ("post", "put", "delete"):
+            assert getattr(client, method)("/v1/service-accounts", headers=auth_header()).status_code == 405
 
     def test_an_apps_key_is_never_returned(self, client, db_session, test_user):
         # A leaked personal key must not open the app accounts behind it.

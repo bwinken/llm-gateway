@@ -25,7 +25,7 @@ class MonthBreakdown:
     month: str                                     # "YYYY-MM"
     summary: dict                                   # totals + DAU/MAU
     by_department: list[dict]
-    by_app: list[dict]
+    by_service_account: list[dict]
     user_ranking: list[dict]                        # full human ranking (for top-N + delta)
     by_user_backend: list[dict] = field(default_factory=list)  # per-user cost split by backend
 
@@ -93,7 +93,7 @@ class _UserInfo:
     username: str
     display_name: str
     org_code: str
-    is_app: bool = False   # a service account ("app" in the report's keys)
+    is_service_account: bool = False
 
 
 def _load_users(session: Session) -> dict[int, _UserInfo]:
@@ -131,7 +131,7 @@ def _daily_active_humans(
     per_day: dict[date, int] = {}
     for day, uid in aggregate(session, start, end, ("day", "user_id")):
         info = users.get(int(uid))
-        if info is not None and not info.is_app:
+        if info is not None and not info.is_service_account:
             per_day[day] = per_day.get(day, 0) + 1
     return [n for _, n in sorted(per_day.items())]
 
@@ -140,7 +140,7 @@ def _summary(
     usage: dict[int, dict], users: dict[int, _UserInfo],
     daily_counts: list[int], start: date,
 ) -> dict:
-    # Totals over everything (humans + apps)
+    # Totals over everything (humans + service accounts)
     days_in_month = calendar.monthrange(start.year, start.month)[1]
     avg_dau = (sum(daily_counts) / days_in_month) if days_in_month else 0.0
     return {
@@ -150,7 +150,7 @@ def _summary(
         "cost_usd": round(sum(u["cost"] for u in usage.values()), 6),
         "distinct_users": len(usage),
         # MAU = distinct human users with activity this month
-        "mau": sum(1 for uid in usage if uid in users and not users[uid].is_app),
+        "mau": sum(1 for uid in usage if uid in users and not users[uid].is_service_account),
         "dau_avg": round(avg_dau, 2),
         "dau_peak": max(daily_counts, default=0),
         "active_days": len(daily_counts),
@@ -162,7 +162,7 @@ def _by_department(usage: dict[int, dict], users: dict[int, _UserInfo]) -> list[
     depts: dict[str, dict] = {}
     for uid, u in usage.items():
         info = users.get(uid)
-        if info is None or info.is_app:
+        if info is None or info.is_service_account:
             continue
         name = info.org_code or "Unknown"
         d = depts.setdefault(name, {
@@ -180,13 +180,13 @@ def _by_department(usage: dict[int, dict], users: dict[int, _UserInfo]) -> list[
     return out
 
 
-def _by_app(session: Session, usage: dict[int, dict], users: dict[int, _UserInfo]) -> list[dict]:
+def _by_service_account(session: Session, usage: dict[int, dict], users: dict[int, _UserInfo]) -> list[dict]:
     app_ids = sorted(
-        (uid for uid in usage if uid in users and users[uid].is_app),
+        (uid for uid in usage if uid in users and users[uid].is_service_account),
         key=lambda uid: usage[uid]["cost"], reverse=True,
     )
 
-    # Resolve owners per app (small second query, only for the apps in this month)
+    # Resolve owners per service account (small second query, only for those in this month)
     owners_by_app: dict[int, list[str]] = {}
     if app_ids:
         owner_rows = session.exec(
@@ -199,8 +199,8 @@ def _by_app(session: Session, usage: dict[int, dict], users: dict[int, _UserInfo
 
     return [
         {
-            "app_id": uid,
-            "app": users[uid].username,
+            "service_account_id": uid,
+            "service_account": users[uid].username,
             "org_code": users[uid].org_code,
             "owners": owners_by_app.get(uid, []),
             "requests": usage[uid]["requests"],
@@ -215,7 +215,7 @@ def _by_app(session: Session, usage: dict[int, dict], users: dict[int, _UserInfo
 def _user_ranking(usage: dict[int, dict], users: dict[int, _UserInfo]) -> list[dict]:
     """Full ranked list of human users by cost for the month."""
     humans = sorted(
-        (uid for uid in usage if uid in users and not users[uid].is_app),
+        (uid for uid in usage if uid in users and not users[uid].is_service_account),
         key=lambda uid: (-usage[uid]["cost"], uid),
     )
     return [
@@ -237,8 +237,8 @@ def _user_ranking(usage: dict[int, dict], users: dict[int, _UserInfo]) -> list[d
 def _by_user_backend(usage: dict[int, dict], users: dict[int, _UserInfo]) -> list[dict]:
     """Per-user cost/token/request split by serving backend for one month.
 
-    Covers BOTH human users and app_* accounts (the export needs a complete
-    billing picture); `is_app` lets consumers separate them. One row per
+    Covers BOTH human users and service accounts (the export needs a complete
+    billing picture); `is_service_account` lets consumers separate them. One row per
     user with `vllm_cost_usd` / `azure_cost_usd` / `bedrock_cost_usd`
     columns pivoted from the `usage_logs.backend` tag, sorted by total cost
     descending.
@@ -249,7 +249,7 @@ def _by_user_backend(usage: dict[int, dict], users: dict[int, _UserInfo]) -> lis
             "username": users[uid].username,
             "display_name": users[uid].display_name,
             "org_code": users[uid].org_code,
-            "is_app": users[uid].is_app,
+            "is_service_account": users[uid].is_service_account,
             "requests": u["requests"],
             "input_tokens": u["input_tokens"],
             "output_tokens": u["output_tokens"],
@@ -274,7 +274,7 @@ def compute_month(
         month=f"{year:04d}-{month:02d}",
         summary=_summary(usage, users, _daily_active_humans(session, start, end, users), start),
         by_department=_by_department(usage, users),
-        by_app=_by_app(session, usage, users),
+        by_service_account=_by_service_account(session, usage, users),
         user_ranking=_user_ranking(usage, users),
         by_user_backend=_by_user_backend(usage, users),
     )

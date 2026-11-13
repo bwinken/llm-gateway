@@ -544,16 +544,37 @@ def usage_history(
     }
 
 
-@router.get("/v1/apps")
-def owned_apps(user: User = Depends(get_current_user_unmetered)):
-    """The service accounts the caller owns (accounts for programs, formerly
-    "app accounts": the route and its keys keep that name), with each one's
-    daily limit and this month's usage, in total and per model: the
-    dashboard's *Service accounts* tab.
+def _owned_service_account_rows(user: User) -> list[dict]:
+    """The service accounts ``user`` owns, by name in natural order, as the
+    account endpoints give them: never a key."""
+    accounts = sorted(get_owned_apps(user), key=lambda account: natural_key(account["username"]))
+    return [
+        {
+            "username": account["username"],
+            "daily_limit_usd": max(0.0, float(account["daily_limit_usd"])),
+            "legacy_key": account["legacy_key"],
+            "month": {
+                "requests": account["monthly_reqs"],
+                "input_tokens": account["monthly_input"],
+                "output_tokens": account["monthly_output"],
+                "cost_usd": _usd(account["monthly_cost"]),
+                "models": [_model_usage_row(r) for r in account["models"]],
+            },
+        }
+        for account in accounts
+    ]
+
+
+@router.get("/v1/service-accounts")
+def owned_service_accounts(user: User = Depends(get_current_user_unmetered)):
+    """The service accounts the caller owns (accounts for programs, assigned
+    by an admin), with each one's daily limit and this month's usage, in
+    total and per model: the dashboard's *Service accounts* tab.
 
     ``month.models`` has one row per model and backend, in the dashboard's
     order (as ``month.models`` of ``/v1/usage``), and adds up to the
-    month's totals. Nothing is left out of it: it is that account's bill.
+    month's totals. Nothing is left out of it: it is that account's bill,
+    whatever cloud access the caller has.
 
     A service account's API key is **not** part of it, and no API-key
     endpoint returns one: a leaked personal key must not open every service
@@ -563,25 +584,23 @@ def owned_apps(user: User = Depends(get_current_user_unmetered)):
 
     Answers once the daily limit is spent. Plain ``def`` (database read).
     """
-    apps = sorted(get_owned_apps(user), key=lambda app: natural_key(app["username"]))
+    return {
+        "object": "service_accounts",
+        "month": local_month_start().strftime("%Y-%m"),
+        "service_accounts": _owned_service_account_rows(user),
+    }
+
+
+@router.get("/v1/apps")
+def owned_apps(user: User = Depends(get_current_user_unmetered)):
+    """``/v1/service-accounts`` under its first name, from when service
+    accounts were called app accounts: the same accounts and figures under
+    ``apps``. Kept for clients built against it; new ones read
+    ``/v1/service-accounts``. Plain ``def`` (database read)."""
     return {
         "object": "apps",
         "month": local_month_start().strftime("%Y-%m"),
-        "apps": [
-            {
-                "username": app["username"],
-                "daily_limit_usd": max(0.0, float(app["daily_limit_usd"])),
-                "legacy_key": app["legacy_key"],
-                "month": {
-                    "requests": app["monthly_reqs"],
-                    "input_tokens": app["monthly_input"],
-                    "output_tokens": app["monthly_output"],
-                    "cost_usd": _usd(app["monthly_cost"]),
-                    "models": [_model_usage_row(r) for r in app["models"]],
-                },
-            }
-            for app in apps
-        ],
+        "apps": _owned_service_account_rows(user),
     }
 
 

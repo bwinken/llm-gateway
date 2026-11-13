@@ -52,15 +52,15 @@ def legacy_api_key_clause():
 
 # Service accounts used to be called app accounts and were told apart by
 # this prefix of their name. The prefix decides nothing any more
-# (``users.is_service_account`` does); it only marks the names that the
-# migration turned into service accounts, and that the admin API still
-# creates as one when no kind is given, as scripts written for it expect.
+# (``users.is_service_account`` does): it only marks the names the
+# migration turned into service accounts, and the dashboard skips it when
+# it picks an account's initials.
 LEGACY_SERVICE_PREFIX = "app_"
 
 
 def has_legacy_service_name(username: str) -> bool:
-    """Named the way app accounts were (``app_*``). Not a test of what an
-    account is: read ``User.is_service_account`` for that."""
+    """Named the way app accounts were (``app_*``). For display only, never
+    a test of what an account is: read ``User.is_service_account`` for that."""
     return username.startswith(LEGACY_SERVICE_PREFIX)
 
 
