@@ -625,17 +625,21 @@ def _owner_names(raw: object) -> list[str]:
     return list(dict.fromkeys(name.strip() for name in str(raw or "").split(",") if name.strip()))
 
 
-def _owners(session: Session, names: list[str]) -> list[User]:
+def _owners(session: Session, names: list[str], already: frozenset[int] = frozenset()) -> list[User]:
     """The accounts behind ``names``, checked as owners of a service
     account: each must exist and be a person. A service account cannot own
-    one (it has no dashboard to see it on). 400 naming what is wrong."""
+    one (it has no dashboard to see it on). 400 naming what is wrong.
+
+    ``already`` holds the ids of the account's current owners: an
+    assignment made before this rule existed is never refused, so editing
+    the list cannot take an existing owner away by accident."""
     if not names:
         return []
     found = {u.username: u for u in session.exec(select(User).where(User.username.in_(names))).all()}  # type: ignore[attr-defined]
     unknown = [name for name in names if name not in found]
     if unknown:
         raise HTTPException(status_code=400, detail=f"User(s) not found: {', '.join(unknown)}")
-    service = [name for name in names if found[name].is_service_account]
+    service = [name for name in names if found[name].is_service_account and found[name].id not in already]
     if service:
         raise HTTPException(
             status_code=400,
@@ -645,7 +649,11 @@ def _owners(session: Session, names: list[str]) -> list[User]:
     return [found[name] for name in names]
 
 
-def _owners_by_id(session: Session, raw: object) -> list[User]:
+def _current_owner_ids(session: Session, account_id: int) -> frozenset[int]:
+    return frozenset(session.exec(select(AppOwner.owner_id).where(AppOwner.app_id == account_id)).all())
+
+
+def _owners_by_id(session: Session, raw: object, already: frozenset[int] = frozenset()) -> list[User]:
     """``owner_ids`` of the JSON API, checked like ``_owners``."""
     if raw in (None, []):
         return []
@@ -656,7 +664,7 @@ def _owners_by_id(session: Session, raw: object) -> list[User]:
     unknown = [str(oid) for oid in ids if oid not in found]
     if unknown:
         raise HTTPException(status_code=400, detail=f"User id(s) not found: {', '.join(unknown)}")
-    return _owners(session, [found[oid].username for oid in ids])
+    return _owners(session, [found[oid].username for oid in ids], already)
 
 
 def _service_account_or_400(target: User) -> None:
@@ -750,7 +758,7 @@ async def update_user_owner(
     _service_account_or_400(target)
 
     form = await request.form()
-    owners = _owners(session, _owner_names(form.get("owner_usernames")))
+    owners = _owners(session, _owner_names(form.get("owner_usernames")), _current_owner_ids(session, user_id))
 
     session.execute(delete(AppOwner).where(AppOwner.app_id == user_id))
     for owner in owners:
@@ -2008,8 +2016,11 @@ def update_user_api(
     if "concurrency_waived" in body:
         target.concurrency_waived = _strict_bool(body["concurrency_waived"], "concurrency_waived")
     if "owner_ids" in body:
-        owners = _owners_by_id(session, body["owner_ids"])
-        if owners:
+        current = _current_owner_ids(session, user_id)
+        owners = _owners_by_id(session, body["owner_ids"], current)
+        # A person's account gets no new owner; one it already has may stay
+        # (or be taken away) like any other.
+        if any(owner.id not in current for owner in owners):
             _service_account_or_400(target)
         session.execute(delete(AppOwner).where(AppOwner.app_id == user_id))
         for owner in owners:

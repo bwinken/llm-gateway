@@ -380,3 +380,80 @@ class TestOwners:
         assert 'data-owner-picker data-saved="alice,bob"' in body
         assert 'data-name="alice"' in body and 'data-name="bob"' in body
         assert 'name="owner_usernames" value="alice,bob"' in body
+
+
+class TestAssignmentsLast:
+    """An assignment stays until an admin takes it away, or the person it
+    was given to is deleted."""
+
+    def _owner_names(self, db_session: Session, account: User) -> list[str]:
+        db_session.expire_all()
+        return sorted(db_session.exec(
+            select(User.username).join(AppOwner, AppOwner.owner_id == User.id).where(AppOwner.app_id == account.id)
+        ).all())
+
+    def test_what_was_assigned_before_is_still_there(self, client, db_session, test_user):
+        # Assignments made when these were app accounts are rows of the same
+        # table; nothing about the rename touches them.
+        old = _service(db_session, "app_report_bot", test_user)
+        page = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
+        assert 'data-service-account="app_report_bot"' in page
+        assert self._owner_names(db_session, old) == [test_user.username]
+
+    def test_adding_an_owner_keeps_the_others(self, client, db_session, admin_user, test_user):
+        db_session.add(User(username="bob", api_key="sk-bob"))
+        db_session.commit()
+        etl = _service(db_session, "billing-etl", test_user)
+        # What the picker sends: everyone, the new one included.
+        resp = client.post(f"/admin/users/{etl.id}/owner", data={"owner_usernames": "testuser,bob"}, headers=_admin(admin_user))
+        assert resp.status_code == 200
+        assert self._owner_names(db_session, etl) == ["bob", "testuser"]
+
+    def test_an_owner_from_before_the_rule_is_not_refused(self, client, db_session, admin_user, test_user):
+        # A service account was never meant to own one, but if one does from
+        # before, editing the list must not fail or drop it.
+        odd = _service(db_session, "app_old_owner")
+        etl = _service(db_session, "billing-etl", odd)
+        resp = client.post(f"/admin/users/{etl.id}/owner", data={"owner_usernames": "app_old_owner,testuser"},
+                           headers=_admin(admin_user))
+        assert resp.status_code == 200
+        assert self._owner_names(db_session, etl) == ["app_old_owner", "testuser"]
+        resp = client.patch(f"/admin/users/{etl.id}", json={"owner_ids": [odd.id, test_user.id]}, headers=_admin(admin_user))
+        assert resp.status_code == 200 and self._owner_names(db_session, etl) == ["app_old_owner", "testuser"]
+
+    def test_deleting_a_person_ends_their_assignments_only(self, client, db_session, admin_user, test_user):
+        bob = User(username="bob", api_key="sk-bob")
+        db_session.add(bob)
+        db_session.commit()
+        db_session.refresh(bob)
+        etl = _service(db_session, "billing-etl", test_user, bob)
+        report = _service(db_session, "nightly-report", bob)
+        _spend(db_session, etl, "2")
+        resp = client.post(f"/admin/users/{bob.id}/delete", headers={**_admin(admin_user), "Accept": "application/json"})
+        assert resp.status_code == 200, resp.text
+        # Bob's assignments are gone with him; the accounts, their keys and
+        # the other owner are untouched.
+        assert self._owner_names(db_session, etl) == [test_user.username]
+        assert self._owner_names(db_session, report) == []
+        assert _get(db_session, "billing-etl").api_key == "sk-billing-etl-key"
+        assert _get(db_session, "nightly-report") is not None
+        page = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
+        assert 'data-service-account="billing-etl"' in page and "$2.0000" in page
+
+    def test_someone_who_returns_under_the_same_name_owns_nothing(self, client, db_session, admin_user, test_user):
+        bob = User(username="bob", api_key="sk-bob")
+        db_session.add(bob)
+        db_session.commit()
+        db_session.refresh(bob)
+        _service(db_session, "billing-etl", bob)
+        client.post(f"/admin/users/{bob.id}/delete", headers={**_admin(admin_user), "Accept": "application/json"})
+        # A new sign-in recreates the account, without what the old one was given.
+        page = client.get("/dashboard", headers=web_auth_header(sub="bob"))
+        assert page.status_code == 200 and 'data-tab="service"' not in page.text
+        assert db_session.exec(select(AppOwner)).all() == []
+
+    def test_deleting_a_service_account_ends_its_assignments(self, client, db_session, admin_user, test_user):
+        etl = _service(db_session, "billing-etl", test_user)
+        client.post(f"/admin/users/{etl.id}/delete", headers={**_admin(admin_user), "Accept": "application/json"})
+        assert db_session.exec(select(AppOwner)).all() == []
+        assert 'data-tab="service"' not in client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
