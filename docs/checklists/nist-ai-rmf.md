@@ -12,8 +12,8 @@
 | GOVERN 2 問責架構 | 🏢 | admin 操作都留在 `audit_log` | 寫明各項決定的負責人（模型上架、guardrail 政策、風險接受） |
 | GOVERN 3 人力多元與可及性 | 🏢 | | |
 | GOVERN 4 風險文化 | 🏢 | client rules 與 dashboard 提醒是對使用者的溝通管道 | |
-| GOVERN 5 與相關 AI 行為者的互動 | ⬜ | | N-8（使用者回報管道） |
-| GOVERN 6 第三方軟體、資料與供應鏈 | 🟡 | 相依套件掃描（pip-audit、dependabot）；雲端供應商的金鑰與區域 | AUD-4（供應商條款、模型來源與授權）；N-5 |
+| GOVERN 5 與相關 AI 行為者的互動 | ⬜ | | CMP-11（使用者回報管道） |
+| GOVERN 6 第三方軟體、資料與供應鏈 | 🟡 | 相依套件掃描（pip-audit、dependabot）；雲端供應商的金鑰與區域 | AUD-4（供應商條款、模型來源與授權）；CMP-9 |
 
 ## MAP　釐清情境
 
@@ -29,10 +29,10 @@
 
 | 類別 | 狀態 | Gateway 現況 / 證據 | 待辦 |
 |---|---|---|---|
-| MEASURE 1 選定並採用量測方法與指標 | 🟡 | 已有指標：延遲（p50 / p95、TTFT）、錯誤率、guardrail 判定、用量、異常偵測 | N-3（訂目標值） |
-| MEASURE 2 評估可信賴特性 | 🟡 | 安全：Qwen3Guard（地端、使用者最新一輪、monitor）。可靠：健康檢查、failover。隱私：log 遮蔽 | 雲端沒有篩檢（GRD-3）；輸出沒有檢查（GRD-5）；PII（GRD-1）；模型品質評估（N-7） |
-| MEASURE 3 持續追蹤已識別的風險 | 🟡 | 每週 guardrail 報告、每小時異常偵測 | AUD-3 讓每項風險有檢視日期；N-2 |
-| MEASURE 4 量測成效的回饋 | ⬜ | 沒有誤判回報；guardrail 的準確度沒有人工抽樣 | GRD-7；N-8 |
+| MEASURE 1 選定並採用量測方法與指標 | 🟡 | 已有指標：延遲（p50 / p95、TTFT）、錯誤率、guardrail 判定、用量、異常偵測 | REL-2（訂目標值） |
+| MEASURE 2 評估可信賴特性 | 🟡 | 安全：Qwen3Guard（地端、使用者最新一輪、monitor）。可靠：健康檢查、failover。隱私：log 遮蔽 | 雲端沒有篩檢（GRD-3）；輸出沒有檢查（GRD-5）；PII（GRD-1）；模型品質評估（AUD-5） |
+| MEASURE 3 持續追蹤已識別的風險 | 🟡 | 每週 guardrail 報告、每小時異常偵測 | AUD-3 讓每項風險有檢視日期；REL-1 |
+| MEASURE 4 量測成效的回饋 | ⬜ | 沒有誤判回報；guardrail 的準確度沒有人工抽樣 | GRD-7；CMP-11 |
 
 ## MANAGE　管理
 
@@ -41,7 +41,7 @@
 | MANAGE 1 風險排序、回應與處理 | 🟡 | roadmap 有排序；已決定的風險接受有三項 | AUD-3 |
 | MANAGE 2 效益最大化、負面影響最小化的策略 | 🟡 | 可用的手段：停用帳號、模型下架、guardrail `block`、預算上限、IP allowlist | GRD-7（何時從 monitor 切到 block）；CMP-5 |
 | MANAGE 3 第三方風險管理 | 🟡 | 雲端限流時的同後端 fallback；雲端權限逐帳號開啟；雲端費用上限 | AUD-4；GRD-1、GRD-2（送出前檢查） |
-| MANAGE 4 風險處置、回應、復原與溝通計畫 | ⬜ | 備份與還原演練有；事件處理與對使用者的溝通沒有 | CMP-5；HA-10；N-3 |
+| MANAGE 4 風險處置、回應、復原與溝通計畫 | ⬜ | 備份與還原演練有；事件處理與對使用者的溝通沒有 | CMP-5；HA-10；REL-2 |
 
 ## 生成式 AI profile（NIST AI 600-1）列出的風險，和 gateway 的關係
 

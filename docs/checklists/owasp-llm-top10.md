@@ -10,14 +10,14 @@
 |---|---|---|---|
 | LLM01 Prompt Injection | 🟡 | 直接攻擊在地端有偵測；間接注入沒有 | GRD-4 |
 | LLM02 Sensitive Information Disclosure | 🟡 | gateway 自己不洩漏；使用者送出的內容沒有檢查 | GRD-1、GRD-2 |
-| LLM03 Supply Chain | 🟡 | Python 套件有掃描；模型來源與映像沒有 | AUD-4、N-5 |
+| LLM03 Supply Chain | 🟡 | Python 套件有掃描；模型來源與映像沒有 | AUD-4、CMP-9 |
 | LLM04 Data and Model Poisoning | ➖ | 不訓練、不微調 | AUD-4 記錄模型來源 |
 | LLM05 Improper Output Handling | 🟡 | gateway 不解讀輸出；輸出沒有檢查 | GRD-5 |
 | LLM06 Excessive Agency | 🟡 | 工具在 client 端執行；gateway 只能檢查 client 設定 | client rules |
 | LLM07 System Prompt Leakage | ➖ | gateway 不注入 system prompt | |
 | LLM08 Vector and Embedding Weaknesses | ➖ | embeddings / rerank 只是轉送；RAG 在 client 端 | |
 | LLM09 Misinformation | 🏢 | gateway 無法判斷正確性 | 使用政策 |
-| LLM10 Unbounded Consumption | ✅ | 預算、雲端上限、併發限制、throttle | N-9 |
+| LLM10 Unbounded Consumption | ✅ | 預算、雲端上限、併發限制、throttle | REL-3 |
 
 ## LLM01　Prompt Injection
 
@@ -49,7 +49,7 @@
 | 相依套件弱點掃描 | ✅ | pip-audit（PR、push、每週）、dependabot | |
 | 相依套件版本鎖定 | ✅ | `uv.lock`，CI 與映像都用 `--locked` | |
 | 程式庫裡沒有機密 | ✅ | gitleaks（新 commit；每週掃完整歷史） | |
-| 容器映像與 OS 套件掃描 | ⬜ | | N-5 |
+| 容器映像與 OS 套件掃描 | ⬜ | | CMP-9 |
 | 模型來源與完整性（權重從哪裡下載、有沒有驗證） | ⬜ | vLLM 主機上的事，gateway 不知道 | AUD-4 |
 | 模型授權條款 | ⬜ | | AUD-4 |
 | 雲端模型版本變更的掌握 | 🟡 | 別名 → 實際模型 / 部署在設定裡，變更進稽核（只記欄位名稱） | CMP-4 |
@@ -59,7 +59,7 @@
 | 檢查點 | 狀態 | 現況 / 證據 | 待辦 |
 |---|---|---|---|
 | 訓練 / 微調資料的管控 | ➖ | 不訓練、不微調 | 之後若做微調或 RAG，重新盤點 |
-| 使用的模型是否可信 | 🏢 | | AUD-4；N-7（上架清單） |
+| 使用的模型是否可信 | 🏢 | | AUD-4；AUD-5（上架清單） |
 
 ## LLM05　Improper Output Handling
 
@@ -107,7 +107,7 @@
 | 每個帳號的併發上限 | 🟡 | 功能有，地端與雲端分開計；預設 `off` | ❓ 確認正式環境的模式 |
 | 單一請求的大小上限 | ✅ | nginx `client_max_body_size 50m` | |
 | 猜 key 的防護 | ✅ | 失敗認證 throttle（依不同的錯誤 key 計數） | 每 worker 各算（HA-5） |
-| 異常用量偵測 | ✅ | 每小時：成本暴增、非上班時間、爆量、行為變化（只偵測、不阻擋） | N-2（通知） |
-| 每分鐘請求數 / token 數的限制 | ⬜ | 沒有；靠每日預算與併發上限間接限制 | 視 N-9 壓測結果決定要不要做 |
-| 整體容量保護（GPU 排隊） | 🟡 | 看得到 vLLM 排隊數；滿載時沒有主動拒絕或排隊機制 | N-9 |
+| 異常用量偵測 | ✅ | 每小時：成本暴增、非上班時間、爆量、行為變化（只偵測、不阻擋） | REL-1（通知） |
+| 每分鐘請求數 / token 數的限制 | ⬜ | 沒有；靠每日預算與併發上限間接限制 | 視 REL-3 壓測結果決定要不要做 |
+| 整體容量保護（GPU 排隊） | 🟡 | 看得到 vLLM 排隊數；滿載時沒有主動拒絕或排隊機制 | REL-3 |
 | 模型被大量查詢以複製（model extraction） | ➖ | 開源模型本來就公開；雲端模型由供應商防護 | |

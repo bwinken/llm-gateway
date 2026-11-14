@@ -48,7 +48,7 @@
 | 歷史訊息、system prompt 的篩檢 | ➖ | 刻意只看最新一輪（舊的當時已經看過） | |
 | 輸出內容檢查 | ⬜ | | GRD-5 |
 | 公司自訂政策（關鍵字、主題） | ⬜ | Qwen3Guard 的政策是固定的 | GRD-6 |
-| 誤判申訴 | ⬜ | | GRD-7、N-8 |
+| 誤判申訴 | ⬜ | | GRD-7、CMP-11 |
 | Guard 模型不可用時的處置 | ✅ | fail-open（已決定維持，風險接受） | AUD-3 |
 | Guard 模型的備援 | ⬜ | 單一位址 | HA-11 階段 |
 | 換用其他 guard 模型 | 🟡 | 要改寫 `build_guard_request` / `parse_qwen3guard` | 未排 |
@@ -119,7 +119,7 @@
 | 失敗認證 throttle | ✅ | 每個 worker 各算 | HA-5 |
 | 雲端權限逐帳號開啟 | ✅ | `can_use_azure` / `can_use_bedrock` | |
 | 帳號停用 | ✅ | `is_disabled`（手動） | |
-| 離職者自動停用 | ⬜ | | N-1 |
+| 離職者自動停用 | ⬜ | | CMP-7 |
 | 長期未用的 key 自動停用 | ⬜ | | CMP-3（已決定要做） |
 | Key 強制效期 | ⬜ | | CMP-3（已決定先不做） |
 | Key 以 hash 儲存 | ⬜ | | CMP-2（已決定：風險接受） |
