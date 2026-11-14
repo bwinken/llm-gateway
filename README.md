@@ -82,6 +82,7 @@ Azure and Bedrock models go in `[azure_models.*]` and `[bedrock_models.*]`; pric
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `AUTH_BASE_URL`, `AUTH_CENTER_APP_ID`, `AUTH_CENTER_PUBLIC_KEY_PATH` | Web-UI login: JWT issuer, audience and public key |
+| `SSO_PROVIDER`, `KEYCLOAK_ISSUER_URL`, `KEYCLOAK_CLIENT_ID` | Sign in through Keycloak instead of AuthCenter (`SSO_PROVIDER=keycloak`; default `authcenter`). See [deploy/README.md](deploy/README.md#switching-sso-to-keycloak) |
 | `AZURE_HTTP_PROXY`, `BEDROCK_HTTP_PROXY` | HTTP proxy for cloud traffic (on-prem traffic is never proxied) |
 | `BEDROCK_REGION`, `BEDROCK_AWS_ACCESS_KEY_ID`, `BEDROCK_AWS_SECRET_ACCESS_KEY` | AWS settings shared by every Bedrock model |
 | `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | Turn on [Langfuse](https://langfuse.com) tracing (the weekly reports need it) |
@@ -192,6 +193,8 @@ The gateway does not work without these. Their built-in values are placeholders.
 | `AUTH_BASE_URL` | AuthCenter: the JWT issuer. Web-UI and terminal sign-in fail without it |
 | `AUTH_CENTER_APP_ID` | AuthCenter: the JWT audience (placeholder `llm_gateway`) |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | AuthCenter's RS256 public key (placeholder `./keys/public.pem`) |
+
+With `SSO_PROVIDER=keycloak` the three `AUTH_*` are not read; `KEYCLOAK_ISSUER_URL` (the realm URL) is required instead, and the gateway does not start without it.
 
 ### Required by a feature
 

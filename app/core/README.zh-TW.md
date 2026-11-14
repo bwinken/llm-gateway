@@ -41,6 +41,7 @@ graph TD
 | `AUTH_CENTER_APP_ID` | `str` | `.env` | JWT audience 驗證值 |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | `str` | `.env` | RS256 公鑰路徑 |
 | `AUTH_BASE_URL` | `str` | `.env` | JWT issuer 驗證值（預設 `auth-center`） |
+| `SSO_PROVIDER` | 環境變數 | `.env` | SSO 提供者：`authcenter`（預設）或 `keycloak`。由 `auth.sso_provider()` 在呼叫時讀取；`keycloak` 時改讀 `KEYCLOAK_*`（`app/core/keycloak.py`），不讀上面三個 `AUTH_*` |
 | `APP_CONFIG` | `dict` | `config.toml` `[app]` | App 層級設定：`default_daily_limit_usd`、`cloud_daily_limit_usd`、`cloud_budget_fallback`、`concurrency_limit_mode` / `concurrency_limit`、`ip_allowlist_mode`、`support_bot_url` / `install_guide_url`。請透過下方 getter 讀取 |
 | `MODEL_ROUTING` | `dict[str, dict]` | `config.toml` `[models.<type>.*]` | vLLM 路由表：alias → `{base_url, real_model, api_key, type}`，加上可選的 per-model 欄位 |
 | `PRICING_MAP` | `dict[str, dict]` | `config.toml` `[pricing]` | 定價表：type → `{input_price_per_1m, output_price_per_1m}`（包含 `_default`） |
@@ -118,7 +119,8 @@ Browser → nginx → oauth2-proxy (驗證 session cookie)
 | 函式 | 回傳 | 說明 |
 |---|---|---|
 | `get_web_user(security_scopes, request, session, credentials)` | `User` | FastAPI `Security` dependency：解析 JWT，檢查 scope，自動建立新使用者；若 `user.is_disabled` 則丟出 `AccountDisabledError`（admin 免檢查）。使用 `Depends(get_session)`，web/admin router 可以這樣用 |
-| `_decode_jwt(token)` | `dict \| None` | RS256 解碼 + audience/issuer 驗證（5 秒 leeway） |
+| `_decode_jwt(token)` | `dict \| None` | 唯一的 SSO token 檢查。AuthCenter（預設）：RS256 解碼 + audience/issuer 驗證（5 秒 leeway）。`SSO_PROVIDER=keycloak` 時改走 `keycloak.decode`，回傳相同形狀的 payload |
+| `sso_provider()` / `check_sso_settings()` | `str` / `None` | 呼叫時讀取 `SSO_PROVIDER`；設定值不認得、或 Keycloak 沒有 `KEYCLOAK_ISSUER_URL` 時，lifespan 拒絕啟動 |
 | `_load_public_key()` | `str` | 讀取公鑰，mtime 改變時重新讀取（輪替金鑰不必重啟） |
 | `_sync_user(session, username, display_name, org_code)` | `User` | 查找或建立使用者（新使用者額度為 `get_default_daily_limit()`），同步 IdP 欄位 |
 | `AccountDisabledError(username)` | 例外類別 | 由 `get_web_user` 與 `deps.py` 的每個 API key dependency 在 `user.is_disabled=True` 時丟出。`app/main.py` 內的全域 handler 在 `Accept: text/html` 時 render `templates/disabled.html`，其他則回 JSON 403 |

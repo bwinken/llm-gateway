@@ -63,7 +63,10 @@ services:
       OAUTH2_PROXY_COOKIE_SECURE: "${OAUTH2_COOKIE_SECURE:-true}"
       OAUTH2_PROXY_COOKIE_SAMESITE: "lax"
       OAUTH2_PROXY_COOKIE_NAME: "${OAUTH2_COOKIE_NAME:-_llm_gw_oauth2}"
-      OAUTH2_PROXY_COOKIE_REFRESH: "1h"
+      # 必須短於 SSO 發的 access token 壽命：oauth2-proxy 到這個時間才換新 token，
+      # 過期的 token 送到 Gateway 會是 401。AuthCenter 用預設的 1h；Keycloak 的
+      # access token 預設只有 5 分鐘，要在 deploy/.env 設 OAUTH2_COOKIE_REFRESH=4m。
+      OAUTH2_PROXY_COOKIE_REFRESH: "${OAUTH2_COOKIE_REFRESH:-1h}"
 
       # ─── 監聽 ───
       OAUTH2_PROXY_HTTP_ADDRESS: "0.0.0.0:4180"
