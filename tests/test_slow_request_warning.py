@@ -17,7 +17,7 @@ import pytest
 
 from app.core.logger import logger
 from app.models.schema import User
-from app.services import vllm_proxy
+from app.services import billing
 from tests.conftest import auth_header, make_httpx_response
 
 
@@ -35,8 +35,8 @@ def _user() -> User:
 
 
 def _log(latency_ms):
-    with patch("app.services.vllm_proxy.request_latency_ms", return_value=latency_ms):
-        vllm_proxy._log_usage(_user(), "test-llm", "llm", 1200, 34, "/v1/chat/completions", backend="azure")
+    with patch("app.services.billing.request_latency_ms", return_value=latency_ms):
+        billing._log_usage(_user(), "test-llm", "llm", 1200, 34, "/v1/chat/completions", backend="azure")
 
 
 def _slow_lines(lines):
@@ -46,15 +46,15 @@ def _slow_lines(lines):
 class TestThreshold:
     def test_default_threshold_is_120s(self, monkeypatch):
         monkeypatch.delenv("SLOW_REQUEST_WARN_S", raising=False)
-        assert vllm_proxy._slow_request_threshold_s() == 120.0
+        assert billing._slow_request_threshold_s() == 120.0
 
     def test_env_overrides(self, monkeypatch):
         monkeypatch.setenv("SLOW_REQUEST_WARN_S", "45")
-        assert vllm_proxy._slow_request_threshold_s() == 45.0
+        assert billing._slow_request_threshold_s() == 45.0
 
     def test_garbage_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("SLOW_REQUEST_WARN_S", "soon")
-        assert vllm_proxy._slow_request_threshold_s() == 120.0
+        assert billing._slow_request_threshold_s() == 120.0
 
 
 class TestWarningLine:
@@ -97,7 +97,7 @@ class TestWarningLine:
 
     def test_hook_failure_never_breaks_billing(self, warnings, monkeypatch):
         monkeypatch.delenv("SLOW_REQUEST_WARN_S", raising=False)
-        with patch("app.services.vllm_proxy._warn_if_slow", side_effect=RuntimeError("boom")):
+        with patch("app.services.billing._warn_if_slow", side_effect=RuntimeError("boom")):
             _log(latency_ms=130_000.0)  # must not raise
         assert any("slow-request hook failed" in line for line in warnings)
 
@@ -117,7 +117,7 @@ class TestEndToEnd:
             return make_httpx_response(200, downstream)
 
         client.__httpx_mock__.post = _post
-        with patch("app.services.vllm_proxy.request_latency_ms", return_value=61_000.0):
+        with patch("app.services.billing.request_latency_ms", return_value=61_000.0):
             resp = client.post(
                 "/v1/chat/completions",
                 json={"model": "test-llm", "messages": [{"role": "user", "content": "hi"}]},

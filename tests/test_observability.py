@@ -124,12 +124,12 @@ class TestLogError:
     """Failed requests must produce a Langfuse error generation (no DB write)."""
 
     def test_emits_error_generation(self):
-        import app.services.vllm_proxy as vp
+        from app.services import billing
 
         captured = {}
-        with patch("app.services.vllm_proxy.get_langfuse", return_value=MagicMock()), \
-             patch("app.services.vllm_proxy.record_generation", lambda rec: captured.update(rec=rec)):
-            vp._log_error(
+        with patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.record_generation", lambda rec: captured.update(rec=rec)):
+            billing._log_error(
                 SimpleNamespace(id=7, username="bob", display_name="Bob"),
                 {"messages": []}, "upstream boom", 502, "qwen", "/v1/messages", "llm",
             )
@@ -140,11 +140,11 @@ class TestLogError:
         assert rec.output_tokens == 0
 
     def test_noop_when_langfuse_unconfigured(self):
-        import app.services.vllm_proxy as vp
+        from app.services import billing
 
-        with patch("app.services.vllm_proxy.get_langfuse", return_value=None), \
-             patch("app.services.vllm_proxy.record_generation") as rg:
-            vp._log_error(
+        with patch("app.services.billing.get_langfuse", return_value=None), \
+             patch("app.services.billing.record_generation") as rg:
+            billing._log_error(
                 SimpleNamespace(id=7, username="bob", display_name="Bob"),
                 {}, "boom", 500, "qwen", "/v1/messages", "llm",
             )
@@ -351,7 +351,7 @@ class TestEmitObservationIO:
     """Phase 2: _emit_observation attaches input/output ONLY when capture is on."""
 
     def _emit(self, *, capture, output_payload, input_payload):
-        import app.services.vllm_proxy as vp
+        from app.services import billing
         from app.services import observability as obs
 
         captured = {}
@@ -359,10 +359,10 @@ class TestEmitObservationIO:
         if input_payload is not None:
             obs.set_io_input(input_payload)
         zero = Decimal("0")
-        with patch("app.services.vllm_proxy.get_langfuse", return_value=MagicMock()), \
-             patch("app.services.vllm_proxy.record_generation", lambda rec: captured.update(rec=rec)), \
-             patch("app.services.vllm_proxy.capture_io_enabled", return_value=capture):
-            vp._emit_observation(
+        with patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.record_generation", lambda rec: captured.update(rec=rec)), \
+             patch("app.services.billing.capture_io_enabled", return_value=capture):
+            billing._emit_observation(
                 SimpleNamespace(id=42, username="alice", display_name="Alice"),
                 "qwen", "llm", 100, 5, "/v1/messages",
                 {"real_model": "r"}, 0, "vllm",
@@ -542,7 +542,7 @@ class TestNativeAnthropicCapture:
     """Native /v1/messages SSE → the assistant turn, for I/O capture."""
 
     def test_reassembles_every_streamed_field(self):
-        from app.services.vllm_proxy import _NativeAnthropicCapture
+        from app.services.downstream import _NativeAnthropicCapture
 
         cap = _NativeAnthropicCapture()
         events = [

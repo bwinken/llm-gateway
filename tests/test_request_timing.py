@@ -191,8 +191,8 @@ class TestThroughTheProxies:
         captured = []
         app = RequestMetaMiddleware(client.app)
         with patch(getter, return_value=upstream_client), \
-             patch("app.services.vllm_proxy.get_langfuse", return_value=MagicMock()), \
-             patch("app.services.vllm_proxy.record_generation", captured.append), \
+             patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.record_generation", captured.append), \
              TestClient(app) as tc:
             resp = tc.post(path, json=body, headers=auth_header())
             resp.read()

@@ -326,10 +326,10 @@ class TestScreening:
         with patch("app.services.guardrail.get_guardrail_settings", return_value=_settings()), \
              patch("app.services.guardrail.get_guardrail_client",
                    return_value=_guard_client(side_effect=slow_guard)), \
-             patch("app.services.vllm_proxy.get_langfuse", return_value=MagicMock()), \
-             patch("app.services.vllm_proxy.get_request_meta", return_value=_FakeMeta.meta), \
+             patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.get_request_meta", return_value=_FakeMeta.meta), \
              patch("app.services.guardrail.set_guardrail_result", _FakeMeta.stash), \
-             patch("app.services.vllm_proxy.record_generation", recs.append), \
+             patch("app.services.billing.record_generation", recs.append), \
              self._post_ok(client):
             _FakeMeta.reset()
             assert _chat(client).status_code == 200
@@ -542,13 +542,13 @@ class TestLangfuseFields:
         assert "empty_turn" not in names and "guardrail_action" in names
 
     def test_usage_seam_reads_the_stashed_verdict(self, test_user):
-        from app.services import vllm_proxy
+        from app.services import billing
         captured = {}
         meta = {"start_monotonic": 0.0, "guardrail": {"status": "safe", "action": "pass"}}
-        with patch("app.services.vllm_proxy.get_langfuse", return_value=MagicMock()), \
-             patch("app.services.vllm_proxy.get_request_meta", return_value=meta), \
-             patch("app.services.vllm_proxy.record_generation", lambda rec: captured.update(rec=rec)):
-            vllm_proxy._log_usage(test_user, "test-llm", "llm", 10, 5, "/v1/chat/completions")
+        with patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.get_request_meta", return_value=meta), \
+             patch("app.services.billing.record_generation", lambda rec: captured.update(rec=rec)):
+            billing._log_usage(test_user, "test-llm", "llm", 10, 5, "/v1/chat/completions")
         assert captured["rec"].guardrail == {"status": "safe", "action": "pass"}
 
 

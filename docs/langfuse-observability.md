@@ -67,7 +67,8 @@ uv run pytest tests/ -v                   # full suite (must stay green)
 app/services/observability.py   → NEW. Langfuse client lifecycle (init in lifespan,
                                    flush on shutdown) + record_generation() helper +
                                    pure mapping/redaction functions.
-app/services/vllm_proxy.py       → call observability.record_generation() at the
+app/services/vllm_proxy.py       → (the seam has since moved to app/services/billing.py)
+                                   call observability.record_generation() at the
                                    existing _log_usage seam; gate stream I/O
                                    accumulation on LANGFUSE_CAPTURE_IO.
 app/services/azure_proxy.py      → same, at its _log_usage seams.

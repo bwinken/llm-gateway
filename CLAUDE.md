@@ -32,7 +32,9 @@ docker build -f deploy/migration/Dockerfile -t llm-gateway:dev .   # gateway ima
 | `app/core/browser_security.py` | CORS policy (no credentials) and `CrossSiteRequestGuard` for the cookie-authenticated `/admin`, `/dashboard` writes |
 | `app/core/server_state.py` | Shared / Azure / Bedrock / health httpx clients, health and metrics caches |
 | `app/routers/` | `v1_api` (`/v1/*`, unified dispatch), `azure_api` (`/azure/v1/*`), `aws_api` (`/aws/v1/*`), `web_ui` (dashboard, setup), `admin`, `health_api`, `auth_api` (`POST /auth/api-key`: an AuthCenter token for the account's API key, how a terminal tool signs in) |
-| `app/services/vllm_proxy.py` | vLLM forwarding, failover, SSE pump, `_log_usage` (billing + Langfuse seam) |
+| `app/services/vllm_proxy.py` | vLLM forwarding, failover |
+| `app/services/billing.py` | `_log_usage` (the billing + Langfuse seam of all three backends), `_log_error`, cost calculation, slow-request lines |
+| `app/services/downstream.py` | What the backends share on a downstream call: stream / non-stream timeouts, the SSE pump, `_release_stream`, the native Anthropic stream relay |
 | `app/services/azure_proxy.py`, `bedrock_proxy.py` | Cloud forwarding; translation via `responses_adapter.py` / `converse_adapter.py` |
 | `app/services/anthropic_adapter.py` | Anthropic Messages ↔ OpenAI chat (the internal pivot format) |
 | `app/services/usage_rollup.py` | `usage_daily` rollup: `aggregate` (the read path for every multi-day report), the in-app `rollup_loop` |
@@ -105,8 +107,9 @@ Each of these has broken production or a test before. The parenthesized test pin
 
 **Side effects never break a request**
 - Billing (`_log_usage`), Langfuse, Prometheus metrics, slow-request logging and the concurrency store are wrapped so their failure can't fail the request. The concurrency store fails **open**. The blind `except Exception` around them is intentional.
+- Code two backends need goes in `billing.py` or `downstream.py`, never in one backend's proxy: `azure_proxy` and `bedrock_proxy` import nothing from `vllm_proxy`, and the two shared modules import no proxy (`tests/test_proxy_layering.py`).
 - Every user-traffic httpx client is built with `event_hooks=UPSTREAM_EVENT_HOOKS` (phase timing); the health client is not. A new client without them silently drops `gateway_overhead_ms` / `upstream_ttfb_ms` for its backend (`test_request_timing.py`).
-- `_log_usage` is the single billing and observability seam. Debug and metadata calls (`render`, `tokenize`, `count_tokens`) must never reach it.
+- `_log_usage` (`billing.py`) is the single billing and observability seam. Debug and metadata calls (`render`, `tokenize`, `count_tokens`) must never reach it.
 - Prometheus labels never carry a user identity or a client-sent string: `model` goes through `metrics._model_label` (unknown → `other`). Per-user numbers belong in `usage_logs`, not in a label (`test_unknown_model_is_reported_as_other`).
 - The Langfuse `usage_details` always carries an explicit `total` = input + output. `input` already includes the cached tokens, so without it Langfuse sums every key and counts cache reads twice (`TestSystemOneObservability`).
 
@@ -279,13 +282,14 @@ One paragraph each. Follow the link for the full behavior.
 Tests use in-memory SQLite with `StaticPool` (all connections share one DB), set up in `tests/conftest.py`:
 
 - `os.environ["DATABASE_URL"] = "sqlite://"` is set before any app import.
-- The `_patch_all` autouse fixture patches the routing/pricing maps, every httpx client getter, every module-level `engine` (including `app.services.concurrency.engine`, `app.services.usage_rollup.engine`, `app.services.scheduler.engine` and `app.services.client_rules.engine`), `is_alive`, and the JWT decoder.
+- The `_patch_all` autouse fixture patches the routing/pricing maps, every httpx client getter, every module-level `engine` (including `app.services.billing.engine`, `app.services.concurrency.engine`, `app.services.usage_rollup.engine`, `app.services.scheduler.engine` and `app.services.client_rules.engine`), `is_alive`, and the JWT decoder.
 - The `client` fixture builds a test app with a no-op lifespan (no health loop, no lease heartbeat, no rollup or job loops) and mounts every router. Tests run the rollup and jobs explicitly (`usage_rollup.advance(db_session, now=...)`, `scheduler.run_if_due(job)`). Use it with `auth_header()` (API key) or `web_auth_header(sub=..., scopes=["admin"])` (JWT).
 - Mock downstreams on `client.__httpx_mock__.post` (non-stream) or `.send` (stream; `FakeStreamResponse`, `FakeBedrockStreamResponse`).
 
 Pitfalls:
 - **Never let a test trigger a real `save_config()`.** It writes `config.toml` and `reload_config()` mutates the patched `TEST_*` dicts in place, emptying them for every later test. Wrap happy-path `PUT /admin/api/config` in `with patch("app.routers.admin.save_config"):` (pattern: `tests/test_models_endpoint.py::TestAdminConfigMetadataValidation`). `TestAzureFallback` in `test_azure_api.py` deliberately mutates `TEST_AZURE_MODELS`; keep the autouse patch pointing at the same dict.
 - The shared httpx mock's `reset_mock()` does **not** clear `side_effect`, and some tests replace its methods. Use `patch.object(client.__httpx_mock__, "post", side_effect=...)` and assert on the mock you patched, never on the shared one.
+- Patch a name in the module that looks it up. The billing seam's (`get_langfuse`, `record_generation`, `request_latency_ms`, `get_request_meta`, `engine`, `_submit_background`) are `app.services.billing.*`, whichever backend the request used. `capture_io_enabled` is asked by the proxy (to collect the output) and by the seam (to attach it): a test turning I/O capture on patches both.
 - Import `app.routers.*` inside test functions, never at a test module's top level. `_build_test_app` imports the routers under its config patches; a collection-time import binds them to the real config and the page silently renders the wrong models.
 - Walk routes with `fastapi.routing.iter_route_contexts(app.routes)` (full path, methods, dependant incl. router-level dependencies). FastAPI ≥ 0.16x keeps included routers nested, so a walk over `app.routes` finds no API routes and passes vacuously; give such a test a positive assertion (`test_every_cookie_authenticated_write_is_under_a_guarded_prefix`).
 - The concurrency limit defaults to `off`. Tests that exercise it patch `app.core.deps.get_concurrency_settings`.

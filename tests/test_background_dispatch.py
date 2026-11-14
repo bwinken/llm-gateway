@@ -12,7 +12,7 @@ import asyncio
 import contextvars
 import threading
 
-from app.services.vllm_proxy import _submit_background
+from app.services.billing import _submit_background
 
 
 class TestSubmitBackground:

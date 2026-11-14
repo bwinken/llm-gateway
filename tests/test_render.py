@@ -469,7 +469,7 @@ class TestRenderIsNotObserved:
             make_httpx_response(200, {"token_ids": [1, 2, 3], "model": "real-llm-v1"})
         )
 
-        with patch("app.services.vllm_proxy.record_generation") as rec, \
+        with patch("app.services.billing.record_generation") as rec, \
                 patch("app.services.vllm_proxy._log_usage") as log_usage:
             resp = client.post(
                 "/v1/chat/completions/render",
@@ -490,7 +490,7 @@ class TestRenderIsNotObserved:
         generation, so it must not show up as one in Langfuse."""
         client.__httpx_mock__.post = _make_post_coro_raise(Exception("boom"))
 
-        with patch("app.services.vllm_proxy.record_generation") as rec, \
+        with patch("app.services.billing.record_generation") as rec, \
                 patch("app.services.vllm_proxy._log_error") as log_error:
             resp = client.post(
                 "/v1/chat/completions/render",

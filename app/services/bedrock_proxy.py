@@ -63,6 +63,8 @@ from app.core.server_state import get_bedrock_client
 from app.models.schema import User
 from app.services.anthropic_adapter import (
     AnthropicStreamTranslator,
+    _anthropic_content_chars,
+    _approx_token_count,
     anthropic_request_io,
     anthropic_to_openai_request,
     empty_turn_warning,
@@ -97,21 +99,17 @@ from app.services.rate_limit_fallback import (
 )
 from app.services.reasoning_effort import apply_to_anthropic_body, apply_to_openai_body
 from app.services.redact import downstream_error_detail, summarize_body
-from app.services.vllm_proxy import (
-    _SSE_MAX_IDLE,
+from app.services.billing import _log_error, _log_usage, _warn_if_slow_headers
+from app.services.downstream import (
     _ANTHROPIC_PING_EVENT,
-    _SSE_PING_INTERVAL,
     _NON_STREAM_TIMEOUT,
+    _SSE_MAX_IDLE,
+    _SSE_PING_INTERVAL,
     _STREAM_TIMEOUT,
-    _anthropic_content_chars,
-    _approx_token_count,
     _error_response,
-    _log_error,
-    _log_usage,
     _next_queued,
     _relay_native_anthropic_sse,
     _release_stream,
-    _warn_if_slow_headers,
 )
 
 import asyncio
@@ -384,7 +382,7 @@ async def _pump_bedrock_events(
 ):
     """Run a ConverseStream request as a background task and yield events.
 
-    The binary-framing sibling of ``vllm_proxy._pump_sse_lines``:
+    The binary-framing sibling of ``downstream._pump_sse_lines``:
     reads raw bytes, feeds them through ``EventStreamDecoder``, and yields
 
       ('ping', None)                    — ping_interval s of downstream silence
@@ -446,7 +444,7 @@ async def _pump_bedrock_events(
             if kind in ("done", "err"):
                 return
     finally:
-        # Detached, cancellation-proof cleanup — see vllm_proxy._release_stream.
+        # Detached, cancellation-proof cleanup — see downstream._release_stream.
         await _release_stream(task, resp_holder)
 
 
