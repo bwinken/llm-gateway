@@ -67,7 +67,7 @@ class Check:
     detect: Callable[[Facts], bool]
     title: str                           # default notice title (what the user reads)
     message: str                         # default notice text
-    # Default settings patch, as NAME=value lines (see client_rules.parse_env):
+    # Default settings patch, as NAME=value lines (see client_patch.parse_env):
     # for everyone, and what Azure / AWS accounts get on top.
     env: str = ""
     env_azure: str = ""

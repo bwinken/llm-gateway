@@ -15,7 +15,7 @@ graph TD
     timeutil["timeutil.py<br/>Local-day helpers"] --> deps
     auth --> |AccountDisabledError| deps
     auth --> |Security: get_web_user| WebUI["routers/web_ui.py"]
-    auth --> |Security: get_web_user| Admin["routers/admin.py<br/>(Web UI + REST API)"]
+    auth --> |Security: get_web_user| Admin["routers/admin/<br/>(Web UI + REST API)"]
     deps --> |get_current_user / limited_current_user<br/>check_cloud_budget| LLM_API["routers/v1_api.py"]
     deps --> |require_azure_access / limited_azure_access| AzureAPI["routers/azure_api.py"]
     deps --> |require_bedrock_access / limited_bedrock_access| AwsAPI["routers/aws_api.py"]

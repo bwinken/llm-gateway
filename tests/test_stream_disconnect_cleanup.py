@@ -26,7 +26,7 @@ import anyio
 import pytest
 
 from app.services.bedrock_proxy import _pump_bedrock_events
-from app.services.vllm_proxy import _pump_sse_lines
+from app.services.downstream import _pump_sse_lines
 
 
 class _HttpcoreLikeResponse:

@@ -395,11 +395,14 @@ def _build_test_app() -> FastAPI:
 # 3.11 caps those at 20 — this list is past that.
 _ALL_PATCHES = [
     lambda: patch("app.services.vllm_proxy.MODEL_ROUTING", TEST_MODEL_ROUTING),
-    lambda: patch("app.services.vllm_proxy.PRICING_MAP", TEST_PRICING_MAP),
     lambda: patch("app.services.vllm_proxy.FALLBACK_MAP", TEST_FALLBACK_MAP),
     lambda: patch("app.services.vllm_proxy.get_client", return_value=_mock_httpx_client),
-    lambda: patch("app.services.vllm_proxy.engine", _test_engine),
-    lambda: patch("app.services.vllm_proxy._submit_background", _inline_background),
+    # The billing seam (app/services/billing.py) prices from its own view of
+    # the maps and writes usage_logs through its own engine, off the loop.
+    lambda: patch("app.services.billing.MODEL_ROUTING", TEST_MODEL_ROUTING),
+    lambda: patch("app.services.billing.PRICING_MAP", TEST_PRICING_MAP),
+    lambda: patch("app.services.billing.engine", _test_engine),
+    lambda: patch("app.services.billing._submit_background", _inline_background),
     # ensure_azure_budget / ensure_bedrock_budget (unified /v1 dispatch) open
     # their own session on this module-level engine — point it at the test DB.
     lambda: patch("app.core.deps.engine", _test_engine),
@@ -433,6 +436,7 @@ _ALL_PATCHES = [
     lambda: patch("app.services.guardrail.get_guardrail_settings", return_value=dict(GUARDRAIL_OFF)),
     lambda: patch("app.services.ip_allowlist.engine", _test_engine),
     lambda: patch("app.services.client_rules.engine", _test_engine),
+    lambda: patch("app.services.client_mail.engine", _test_engine),
     # /v1/settings reads a per-site file: tests see the shipped example, never a
     # developer's own client_settings.json (tests of the file patch this again).
     lambda: patch("app.services.client_settings.SETTINGS_PATH", Path("/nonexistent/client_settings.json")),
@@ -444,11 +448,13 @@ _ALL_PATCHES = [
 def _patch_all():
     """Apply all patches for every test."""
     import app.services.vllm_proxy  # noqa: F811 — ensure module is loaded before patching
+    import app.services.billing  # noqa: F401 — same, for the maps / engine / background patches
     import app.services.concurrency  # noqa: F401 — same, for the lease-store engine patch
     import app.services.usage_rollup  # noqa: F401 — same, for the rollup engine patch
     import app.services.scheduler  # noqa: F401 — same, for the job-claim engine patch
     import app.services.guardrail  # noqa: F401 — same, for the settings patch
     import app.services.client_rules as client_rules  # same, for the engine patch
+    import app.services.client_mail  # noqa: F401 — same, for the mail job's engine patch
     import app.services.ip_allowlist as ip_allowlist  # same, for the engine / settings patches
     from contextlib import ExitStack
 

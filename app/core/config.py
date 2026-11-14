@@ -972,7 +972,7 @@ def set_cloud_budget_fallback(enabled: bool) -> None:
 
 
 # Client rules: mail everyone who still has something open on the 1st of
-# each month (admin panel → Clients; app/services/client_rules.queue_monthly).
+# each month (admin panel → Clients; app/services/client_mail.queue_monthly).
 _CLIENT_MONTHLY_MAIL_KEY = "client_rules_monthly_mail"
 
 

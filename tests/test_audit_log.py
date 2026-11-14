@@ -90,7 +90,7 @@ class TestWhatIsRecorded:
         body = client.get("/admin/api/config", headers=_hdr(admin_user)).json()
         body["azure_models"]["azure-gpt-4"]["deployment"] = "new-deploy"
         body["azure_models"]["azure-gpt-4"]["api_key"] = "brand-new-secret"
-        with patch("app.routers.admin.save_config"):
+        with patch("app.routers.admin.model_config.save_config"):
             assert client.put("/admin/api/config", json=body, headers=_hdr(admin_user)).status_code == 200
         [e] = _entries(db_session)
         d = _detail(e)

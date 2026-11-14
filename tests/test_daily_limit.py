@@ -163,7 +163,7 @@ class TestAdminLimitValidation:
         assert resp.status_code == 400
 
     def test_default_limit_rejects_inf(self, client, admin_user):
-        with patch("app.routers.admin.set_default_daily_limit") as saved:
+        with patch("app.routers.admin.settings.set_default_daily_limit") as saved:
             resp = client.post(
                 "/admin/default-limit", data={"new_default": "inf"},
                 headers=self._hdr(admin_user), follow_redirects=False,

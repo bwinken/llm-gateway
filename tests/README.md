@@ -20,7 +20,7 @@ that work:
 | Mechanism | What it does |
 |---|---|
 | In-memory SQLite + `StaticPool` | `DATABASE_URL=sqlite://` is set before any app import; all connections share one DB, and tables are dropped and recreated per test by the `db_session` fixture |
-| `_patch_all` autouse fixture | Applies `_ALL_PATCHES` (an `ExitStack`, since the list is past CPython 3.11's 20-nested-`with` cap) for every test: the routing / pricing / fallback maps (`MODEL_ROUTING`, `PRICING_MAP`, `FALLBACK_MAP`, `AZURE_MODELS`, `AZURE_FALLBACK_MAP`, `BEDROCK_MODELS`, `BEDROCK_FALLBACK_MAP`, plus the `get_*_snapshot` getters); every user-traffic httpx client getter (shared, Azure, Bedrock, in the proxies and in `server_state`) → one shared `AsyncMock`; every module-level `engine` (`vllm_proxy`, `deps`, `concurrency`, `usage_rollup`, `scheduler`) → the test engine; `is_alive` → `True`; `_decode_jwt` → an HS256 test decoder; and `_submit_background` → an inline write so `usage_logs` assertions don't race the executor thread |
+| `_patch_all` autouse fixture | Applies `_ALL_PATCHES` (an `ExitStack`, since the list is past CPython 3.11's 20-nested-`with` cap) for every test: the routing / pricing / fallback maps (`MODEL_ROUTING`, `PRICING_MAP`, `FALLBACK_MAP`, `AZURE_MODELS`, `AZURE_FALLBACK_MAP`, `BEDROCK_MODELS`, `BEDROCK_FALLBACK_MAP`, plus the `get_*_snapshot` getters); every user-traffic httpx client getter (shared, Azure, Bedrock, in the proxies and in `server_state`) → one shared `AsyncMock`; every module-level `engine` (`billing`, `deps`, `concurrency`, `usage_rollup`, `scheduler`) → the test engine; `is_alive` → `True`; `_decode_jwt` → an HS256 test decoder; and `_submit_background` → an inline write so `usage_logs` assertions don't race the executor thread |
 | `_build_test_app` | Imports the routers under the config patches and builds a `FastAPI` app with a no-op lifespan (no DB init, no health loop, no lease heartbeat, no rollup or job loops, no real httpx clients). Mounts every router: `health_api`, `web_ui`, `v1_api`, `azure_api`, `aws_api`, `admin`, and registers the production `AccountDisabledError` handler |
 
 ### What runs real vs. what's swapped
@@ -98,7 +98,7 @@ For non-stream HTTP mocks, set `client.__httpx_mock__.post = AsyncMock(return_va
 
 ### Pitfalls
 
-- **Never let a test trigger a real `save_config()`.** It writes `config.toml`, and `reload_config()` mutates the patched `TEST_*` dicts in place, emptying them for every later test. Wrap a happy-path `PUT /admin/api/config` in `with patch("app.routers.admin.save_config"):` (pattern: `test_models_endpoint.py::TestAdminConfigMetadataValidation`). `TestAzureFallback` in `test_azure_api.py` deliberately mutates `TEST_AZURE_MODELS`; keep the autouse patch pointing at the same dict.
+- **Never let a test trigger a real `save_config()`.** It writes `config.toml`, and `reload_config()` mutates the patched `TEST_*` dicts in place, emptying them for every later test. Wrap a happy-path `PUT /admin/api/config` in `with patch("app.routers.admin.model_config.save_config"):` (pattern: `test_models_endpoint.py::TestAdminConfigMetadataValidation`). `TestAzureFallback` in `test_azure_api.py` deliberately mutates `TEST_AZURE_MODELS`; keep the autouse patch pointing at the same dict.
 - The shared httpx mock's `reset_mock()` does **not** clear `side_effect`, and some tests replace its methods. Use `patch.object(client.__httpx_mock__, "post", side_effect=...)` and assert on the mock you patched, never on the shared one.
 - Import `app.routers.*` inside test functions, never at a test module's top level. `_build_test_app` imports the routers under its config patches; a collection-time import binds them to the real config and pages silently render the wrong models.
 - The concurrency limit defaults to `off`. Tests that exercise it patch `app.core.deps.get_concurrency_settings`.
@@ -493,6 +493,21 @@ audited. Every response is checked for `null`s.
 
 `test_pg_concurrent_acquire_respects_limit` (PostgreSQL only, `CONCURRENCY_TEST_PG_URL`) checks that `FOR UPDATE` admits exactly `limit` concurrent acquirers.
 
+### `test_admin_package.py` — the layout of `app/routers/admin/`
+
+The package exports `router` and nothing else (so a stale
+`patch("app.routers.admin.<name>")` fails instead of patching nothing); every
+module in the directory is imported by it and registers on the one router;
+`/client-rules/<fixed>` is registered before `/client-rules/{rule_id}`.
+
+### `test_service_layering.py` — which service module may import which
+
+`azure_proxy` and `bedrock_proxy` import nothing from `vllm_proxy`; `billing`
+and `downstream` import no proxy; all three backends call the same
+`billing._log_usage` / `_log_error`. `client_patch` ← `client_rules` ←
+`client_mail` depend one way, `client_patch` reads no database, and
+`client_settings` imports neither the rules nor their mail.
+
 ### `test_background_dispatch.py` — `_submit_background`
 
 The rest of the suite inlines this seam (usage-log write and Langfuse
@@ -771,4 +786,4 @@ switch.
 2. For non-stream endpoints, set `client.__httpx_mock__.post = AsyncMock(return_value=make_httpx_response(...))`. For SSE, set `client.__httpx_mock__.send` (`FakeStreamResponse`, or `FakeBedrockStreamResponse` for Bedrock). Prefer `patch.object(client.__httpx_mock__, ...)` when you need `side_effect` (see *Pitfalls*).
 3. If you need a new mock model, add it to `TEST_MODEL_ROUTING` (vLLM), `TEST_AZURE_MODELS` (Azure) or `TEST_BEDROCK_MODELS` (Bedrock) in `conftest.py`. The patches in `_patch_all` will pick it up automatically.
 4. Use `db_session` directly only if the test needs to seed extra rows (e.g., usage logs, app owners) — most tests just rely on the implicit `test_user` row.
-5. Import `app.routers.*` inside the test function, and patch `app.routers.admin.save_config` around any `PUT /admin/api/config` that would succeed.
+5. Import `app.routers.*` inside the test function, and patch `app.routers.admin.model_config.save_config` around any `PUT /admin/api/config` that would succeed.

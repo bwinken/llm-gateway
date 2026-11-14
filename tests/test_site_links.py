@@ -20,7 +20,7 @@ class TestUpdateSiteLinks:
     """POST /admin/site-links (JWT admin auth)."""
 
     def test_set_both_urls(self, client, db_session, admin_user):
-        with patch("app.routers.admin.set_site_links") as mock_set:
+        with patch("app.routers.admin.settings.set_site_links") as mock_set:
             resp = client.post(
                 "/admin/site-links",
                 data={
@@ -38,7 +38,7 @@ class TestUpdateSiteLinks:
 
     def test_empty_values_allowed(self, client, db_session, admin_user):
         """Empty fields clear the links (hides the UI elements)."""
-        with patch("app.routers.admin.set_site_links") as mock_set:
+        with patch("app.routers.admin.settings.set_site_links") as mock_set:
             resp = client.post(
                 "/admin/site-links",
                 data={"support_bot_url": "", "install_guide_url": ""},
@@ -49,7 +49,7 @@ class TestUpdateSiteLinks:
         mock_set.assert_called_once_with(support_bot_url="", install_guide_url="")
 
     def test_relative_url_allowed(self, client, db_session, admin_user):
-        with patch("app.routers.admin.set_site_links") as mock_set:
+        with patch("app.routers.admin.settings.set_site_links") as mock_set:
             resp = client.post(
                 "/admin/site-links",
                 data={"support_bot_url": "/setup", "install_guide_url": ""},
@@ -60,7 +60,7 @@ class TestUpdateSiteLinks:
         mock_set.assert_called_once_with(support_bot_url="/setup", install_guide_url="")
 
     def test_javascript_url_rejected(self, client, db_session, admin_user):
-        with patch("app.routers.admin.set_site_links") as mock_set:
+        with patch("app.routers.admin.settings.set_site_links") as mock_set:
             resp = client.post(
                 "/admin/site-links",
                 data={
@@ -74,7 +74,7 @@ class TestUpdateSiteLinks:
         mock_set.assert_not_called()
 
     def test_non_admin_forbidden(self, client, db_session):
-        with patch("app.routers.admin.set_site_links") as mock_set:
+        with patch("app.routers.admin.settings.set_site_links") as mock_set:
             resp = client.post(
                 "/admin/site-links",
                 data=_LINKS,

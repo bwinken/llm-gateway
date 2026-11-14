@@ -14,7 +14,7 @@ import httpx
 
 from app.core.server_state import is_alive as real_is_alive, set_alive
 from app.services import health
-from app.services.vllm_proxy import _next_queued, _pump_sse_lines
+from app.services.downstream import _next_queued, _pump_sse_lines
 
 
 class _StalledResponse:
@@ -95,7 +95,7 @@ class TestNextQueued:
         async def scenario():
             q: asyncio.Queue = asyncio.Queue()
             q.put_nowait("a")
-            with patch("app.services.vllm_proxy.asyncio.wait_for") as wait_for:
+            with patch("app.services.downstream.asyncio.wait_for") as wait_for:
                 item = await _next_queued(q, 10.0)
             return item, wait_for.called
 

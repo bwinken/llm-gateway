@@ -102,7 +102,7 @@ class TestAdminConfigMetadataValidation:
         # project's config.toml and (via reload_config) pop our test-fixture
         # AZURE_MODELS entries — that pollution silently breaks any later
         # test that relies on the Azure fixture being intact.
-        with patch("app.routers.admin.save_config"):
+        with patch("app.routers.admin.model_config.save_config"):
             return client.put(
                 "/admin/api/config",
                 json=body,
@@ -179,7 +179,7 @@ class TestAdminAzureFallbackValidation:
 
     def _put(self, client, admin_user, azure_fallback):
         body = {**self.BASE_BODY, "azure_fallback": azure_fallback}
-        with patch("app.routers.admin.save_config"):
+        with patch("app.routers.admin.model_config.save_config"):
             return client.put(
                 "/admin/api/config",
                 json=body,

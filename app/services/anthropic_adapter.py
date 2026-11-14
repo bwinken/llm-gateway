@@ -1161,3 +1161,34 @@ def anthropic_error(message: str, err_type: str = "api_error") -> dict[str, Any]
         "type": "error",
         "error": {"type": err_type, "message": message},
     }
+
+
+def _anthropic_content_chars(content: list) -> tuple[int, int]:
+    """(text_chars, thinking_chars) over Anthropic content blocks."""
+    text_chars = sum(
+        len(b.get("text", "")) for b in content
+        if isinstance(b, dict) and b.get("type") == "text"
+    )
+    thinking_chars = sum(
+        len(b.get("thinking", "")) for b in content
+        if isinstance(b, dict) and b.get("type") == "thinking"
+    )
+    return text_chars, thinking_chars
+
+
+def _approx_token_count(messages: list[dict[str, Any]]) -> int:
+    """Rough fallback token estimate (~4 chars per token) used only when the
+    downstream tokenizer is unavailable."""
+    total_chars = 0
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    total_chars += len(part.get("text", ""))
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            total_chars += len(fn.get("name", "")) + len(fn.get("arguments", ""))
+    return max(1, total_chars // 4)

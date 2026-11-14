@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from app.services.vllm_proxy import _calc_cost, _calc_cost_breakdown
+from app.services.billing import _calc_cost, _calc_cost_breakdown
 
 
 class TestCalcCostBasics:

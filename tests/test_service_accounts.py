@@ -173,17 +173,17 @@ class TestTreatedAsOne:
 
     def test_never_mailed(self, db_session, test_user):
         from app.models.schema import ClientViolation
-        from app.services import client_rules
+        from app.services import client_mail, client_rules
 
         _service(db_session, "billing-etl")
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         for name in ("billing-etl", test_user.username):
             db_session.add(ClientViolation(rule_id="CC001", username=name, first_seen_at=now, last_seen_at=now))
         db_session.commit()
-        assert client_rules.mail_all_targets(db_session, only_unmailed=False) == [test_user.username]
-        assert [name for name, _ in client_rules.due_list(db_session)] == []
+        assert client_mail.mail_all_targets(db_session, only_unmailed=False) == [test_user.username]
+        assert [name for name, _ in client_mail.due_list(db_session)] == []
         rows = client_rules.violations(db_session, "CC001")
-        assert [v.username for v in client_rules.mailable(db_session, rows)] == [test_user.username]
+        assert [v.username for v in client_mail.mailable(db_session, rows)] == [test_user.username]
 
 
 class TestDashboardTab:
@@ -296,10 +296,10 @@ class TestOwners:
     def test_a_handful_at_most(self, client, db_session, admin_user):
         from app.routers import admin
 
-        for i in range(admin.OWNER_SEARCH_LIMIT + 5):
+        for i in range(admin.users.OWNER_SEARCH_LIMIT + 5):
             db_session.add(User(username=f"team{i:02d}", api_key=f"sk-team{i}"))
         db_session.commit()
-        assert len(self._search(client, admin_user, "team")) == admin.OWNER_SEARCH_LIMIT
+        assert len(self._search(client, admin_user, "team")) == admin.users.OWNER_SEARCH_LIMIT
 
     def test_the_search_is_the_admins(self, client, test_user):
         resp = client.get("/admin/api/owner-search", params={"q": "a"}, headers=web_auth_header(sub=test_user.username))

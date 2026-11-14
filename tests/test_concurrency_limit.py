@@ -654,7 +654,7 @@ class TestAdmin:
         return h
 
     def test_set_limit(self, client, admin_user):
-        with patch("app.routers.admin.set_concurrency_settings") as save:
+        with patch("app.routers.admin.settings.set_concurrency_settings") as save:
             resp = client.post(
                 "/admin/concurrency-limit", data={"mode": "enforce", "limit": "4"},
                 headers=self._hdr(admin_user), follow_redirects=False,
@@ -663,7 +663,7 @@ class TestAdmin:
         save.assert_called_once_with("enforce", 4)
 
     def test_set_limit_json(self, client, admin_user):
-        with patch("app.routers.admin.set_concurrency_settings"):
+        with patch("app.routers.admin.settings.set_concurrency_settings"):
             resp = client.post(
                 "/admin/concurrency-limit", data={"mode": "monitor", "limit": "6"},
                 headers=self._hdr(admin_user, json=True),
@@ -672,7 +672,7 @@ class TestAdmin:
         assert resp.json() == {"ok": True, "mode": "monitor", "limit": 6, "cloud_limit": 10}
 
     def test_set_cloud_limit(self, client, admin_user):
-        with patch("app.routers.admin.set_concurrency_settings") as save:
+        with patch("app.routers.admin.settings.set_concurrency_settings") as save:
             resp = client.post(
                 "/admin/concurrency-limit", data={"mode": "enforce", "limit": "2", "cloud_limit": "12"},
                 headers=self._hdr(admin_user, json=True),
@@ -682,7 +682,7 @@ class TestAdmin:
 
     @pytest.mark.parametrize("cloud_limit", ["0", "-3", "2.5", "many"])
     def test_set_cloud_limit_rejects(self, client, admin_user, cloud_limit):
-        with patch("app.routers.admin.set_concurrency_settings") as save:
+        with patch("app.routers.admin.settings.set_concurrency_settings") as save:
             resp = client.post(
                 "/admin/concurrency-limit",
                 data={"mode": "enforce", "limit": "2", "cloud_limit": cloud_limit},
@@ -701,13 +701,13 @@ class TestAdmin:
         {"limit": "4"},
     ])
     def test_set_limit_rejects(self, client, admin_user, form):
-        with patch("app.routers.admin.set_concurrency_settings") as save:
+        with patch("app.routers.admin.settings.set_concurrency_settings") as save:
             resp = client.post("/admin/concurrency-limit", data=form, headers=self._hdr(admin_user))
         assert resp.status_code == 400
         save.assert_not_called()
 
     def test_requires_admin(self, client, test_user):
-        with patch("app.routers.admin.set_concurrency_settings") as save:
+        with patch("app.routers.admin.settings.set_concurrency_settings") as save:
             resp = client.post(
                 "/admin/concurrency-limit", data={"mode": "off", "limit": "4"},
                 headers=web_auth_header(sub=test_user.username),
@@ -756,7 +756,7 @@ class TestAdmin:
 
     def test_admin_page_renders_card(self, client, admin_user, test_user):
         _add_lease(test_user.id)
-        with patch("app.routers.admin.get_concurrency_settings", return_value=("monitor", 6)):
+        with patch("app.routers.admin.page.get_concurrency_settings", return_value=("monitor", 6)):
             resp = client.get("/admin", headers=self._hdr(admin_user))
         assert resp.status_code == 200
         assert "Concurrency Limit" in resp.text

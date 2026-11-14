@@ -594,7 +594,7 @@ class TestAdminConfigValidation:
             },
             "pricing": {},
         }
-        with patch("app.routers.admin.save_config") as saved:
+        with patch("app.routers.admin.model_config.save_config") as saved:
             resp = client.put(
                 "/admin/api/config", json=payload,
                 headers=web_auth_header(scopes=["admin"]),

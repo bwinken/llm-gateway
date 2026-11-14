@@ -488,9 +488,10 @@ class TestSystemOneObservability:
         client.__httpx_mock__.post, _ = _capturing_post(make_httpx_response(200, _decider_body(
             {"input_tokens": 40, "cached_tokens": 200, "output_tokens": 0}
         )))
-        with patch("app.services.vllm_proxy.get_langfuse", return_value=MagicMock()), \
-             patch("app.services.vllm_proxy.record_generation", records.append), \
-             patch("app.services.vllm_proxy.capture_io_enabled", return_value=capture_io):
+        with patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.record_generation", records.append), \
+             patch("app.services.vllm_proxy.capture_io_enabled", return_value=capture_io), \
+             patch("app.services.billing.capture_io_enabled", return_value=capture_io):
             assert _post_decision(client).status_code == 200
         assert len(records) == 1
         return records[0]
@@ -517,8 +518,8 @@ class TestSystemOneObservability:
     def test_downstream_error_recorded(self, client, test_user):
         records = []
         client.__httpx_mock__.post, _ = _capturing_post(make_httpx_response(422, {"detail": "bad"}))
-        with patch("app.services.vllm_proxy.get_langfuse", return_value=MagicMock()), \
-             patch("app.services.vllm_proxy.record_generation", records.append):
+        with patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.record_generation", records.append):
             assert _post_decision(client).status_code == 422
 
         assert len(records) == 1

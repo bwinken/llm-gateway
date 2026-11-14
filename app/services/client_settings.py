@@ -61,7 +61,7 @@ from typing import Any
 from app.core import config
 from app.core.logger import logger
 from app.services import model_catalog
-from app.services.client_rules import API_KEY_ENV, API_KEY_ENV_RETIRED
+from app.services.client_patch import API_KEY_ENV, API_KEY_ENV_RETIRED
 
 CLIENT = "claude-code"
 

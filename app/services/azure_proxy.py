@@ -65,15 +65,13 @@ from app.services.observability import (
     mark_first_output,
     set_io_input,
 )
-from app.services.vllm_proxy import (
+from app.services.anthropic_adapter import _approx_token_count
+from app.services.billing import _log_error, _log_usage, _warn_if_slow_headers
+from app.services.downstream import (
     _ANTHROPIC_PING_EVENT,
     _NON_STREAM_TIMEOUT,
     _STREAM_TIMEOUT,
-    _approx_token_count,
     _error_response,
-    _log_error,
-    _log_usage,
-    _warn_if_slow_headers,
     _pump_sse_lines,
 )
 

@@ -61,7 +61,7 @@ class TestAzure:
     def test_slow_headers_logged_with_phase_and_fields(self, client, warnings, monkeypatch):
         monkeypatch.setenv("SLOW_REQUEST_WARN_S", "60")
         _arm_azure(client)
-        with patch("app.services.vllm_proxy.request_latency_ms", return_value=130_000.0):
+        with patch("app.services.billing.request_latency_ms", return_value=130_000.0):
             resp = _post_azure_stream(client)
         assert resp.status_code == 200
 
@@ -85,7 +85,7 @@ class TestAzure:
     def test_zero_disables(self, client, warnings, monkeypatch):
         monkeypatch.setenv("SLOW_REQUEST_WARN_S", "0")
         _arm_azure(client)
-        with patch("app.services.vllm_proxy.request_latency_ms", return_value=999_000.0):
+        with patch("app.services.billing.request_latency_ms", return_value=999_000.0):
             resp = _post_azure_stream(client)
         assert resp.status_code == 200
         assert _headers_lines(warnings) == []
@@ -97,7 +97,7 @@ class TestBedrock:
         mock = client.__httpx_mock__
         mock.build_request = MagicMock(return_value=None)
         mock.send = AsyncMock(return_value=FakeBedrockStreamResponse(_stream_events(["hi"])))
-        with patch("app.services.vllm_proxy.request_latency_ms", return_value=61_000.0):
+        with patch("app.services.billing.request_latency_ms", return_value=61_000.0):
             resp = client.post(
                 "/aws/v1/messages",
                 json={"model": "bedrock-claude", "stream": True, "max_tokens": 32,
@@ -118,7 +118,7 @@ class TestVllm:
         mock.build_request = MagicMock(return_value=httpx.Request(
             "POST", "http://mock-llm:8000/v1/chat/completions"))
         mock.send = AsyncMock(return_value=FakeStreamResponse(_OPENAI_SSE))
-        with patch("app.services.vllm_proxy.request_latency_ms", return_value=75_000.0):
+        with patch("app.services.billing.request_latency_ms", return_value=75_000.0):
             resp = client.post(
                 "/v1/chat/completions",
                 json={"model": "test-llm", "stream": True,

@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 
-from app.services import vllm_proxy
+from app.services import downstream
 from tests.conftest import (
     FakeBedrockStreamResponse,
     FakeStreamResponse,
@@ -28,15 +28,15 @@ from tests.test_aws_api import _stream_events
 
 class TestStreamTimeoutValue:
     def test_every_phase_is_bounded(self):
-        t = vllm_proxy._STREAM_TIMEOUT
+        t = downstream._STREAM_TIMEOUT
         assert t.connect is not None
         assert t.write is not None
         assert t.pool is not None
         assert t.read is not None, "time-to-headers must have a ceiling"
 
     def test_headers_ceiling_matches_non_stream_and_beats_nginx(self):
-        assert vllm_proxy._STREAM_TIMEOUT.read == vllm_proxy._NON_STREAM_TIMEOUT
-        assert vllm_proxy._STREAM_TIMEOUT.read < 300.0  # nginx proxy_read_timeout
+        assert downstream._STREAM_TIMEOUT.read == downstream._NON_STREAM_TIMEOUT
+        assert downstream._STREAM_TIMEOUT.read < 300.0  # nginx proxy_read_timeout
 
 
 def _timeout_passed_to_build_request(mock: MagicMock) -> httpx.Timeout:
@@ -49,7 +49,7 @@ def _timeout_passed_to_build_request(mock: MagicMock) -> httpx.Timeout:
 def _assert_bounded(timeout) -> None:
     assert isinstance(timeout, httpx.Timeout), timeout
     assert timeout.read is not None, "pre-flight wait for headers is unbounded"
-    assert timeout.read == vllm_proxy._NON_STREAM_TIMEOUT
+    assert timeout.read == downstream._NON_STREAM_TIMEOUT
     assert timeout.connect is not None and timeout.pool is not None
 
 

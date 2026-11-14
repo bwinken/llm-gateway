@@ -290,7 +290,7 @@ class TestAdminEndpoint:
         return web_auth_header(sub=admin_user.username, scopes=["admin"])
 
     def test_enable_form_redirects(self, client, db_session, admin_user):
-        with patch("app.routers.admin.set_cloud_budget_fallback") as mock_set:
+        with patch("app.routers.admin.settings.set_cloud_budget_fallback") as mock_set:
             resp = client.post(
                 "/admin/cloud-budget-fallback",
                 data={"enabled": "on"},
@@ -302,7 +302,7 @@ class TestAdminEndpoint:
 
     def test_unchecked_checkbox_disables(self, client, db_session, admin_user):
         """A browser omits an unchecked checkbox from the form body."""
-        with patch("app.routers.admin.set_cloud_budget_fallback") as mock_set:
+        with patch("app.routers.admin.settings.set_cloud_budget_fallback") as mock_set:
             resp = client.post(
                 "/admin/cloud-budget-fallback",
                 data={},
@@ -321,7 +321,7 @@ class TestAdminEndpoint:
         POST arrived empty and every click saved the flag as off.
         """
         headers = {**self._hdr(admin_user), "Accept": "application/json"}
-        with patch("app.routers.admin.set_cloud_budget_fallback") as mock_set:
+        with patch("app.routers.admin.settings.set_cloud_budget_fallback") as mock_set:
             resp = client.post(
                 "/admin/cloud-budget-fallback",
                 data={"enabled": "off"},
@@ -334,7 +334,7 @@ class TestAdminEndpoint:
 
     def test_json_reply_for_in_place_toggle(self, client, db_session, admin_user):
         headers = {**self._hdr(admin_user), "Accept": "application/json"}
-        with patch("app.routers.admin.set_cloud_budget_fallback") as mock_set:
+        with patch("app.routers.admin.settings.set_cloud_budget_fallback") as mock_set:
             resp = client.post(
                 "/admin/cloud-budget-fallback",
                 data={"enabled": "on"},
@@ -346,7 +346,7 @@ class TestAdminEndpoint:
         mock_set.assert_called_once_with(True)
 
     def test_non_admin_forbidden(self, client, db_session, test_user):
-        with patch("app.routers.admin.set_cloud_budget_fallback") as mock_set:
+        with patch("app.routers.admin.settings.set_cloud_budget_fallback") as mock_set:
             resp = client.post(
                 "/admin/cloud-budget-fallback",
                 data={"enabled": "on"},

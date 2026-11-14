@@ -80,7 +80,7 @@ The budget hero stays at the top; the lower half is split into two tabs (**Model
 
 ## `/admin` — Admin Panel
 
-**File**: `admin.html` ← `admin.py`
+**File**: `admin.html` ← `admin/page.py`
 **Permission**: JWT scope includes `admin`
 
 Above the tab bar: only the **Needs attention** strip, a `<details>` that is one line of counts when folded (open on Overview, folded on the other tabs; it follows the `gw:tab` event), so the tab bar is on screen when the page opens. Below it, the shared `_admin_tabs.html` bar with **Overview / Users / Clients / Security / Settings** (in-page tabs via `gwTabs('adminTabs', 'adminTab')`) and **Models**, a link to the separate `/admin/models` page. Tab badges: Users shows "N blocked" / "N near limit" (else the account count); Settings shows "limit: monitor|enforce" while the concurrency limit is on.
@@ -141,7 +141,7 @@ The same router also serves JSON endpoints that the page does not use: `GET` / `
 
 ## `/admin/models` — Model Config
 
-**File**: `admin_models.html` ← `admin.py`
+**File**: `admin_models.html` ← `admin/model_config.py`
 **Permission**: JWT scope includes `admin`
 
 Master–detail editor over `GET` / `PUT /admin/api/config`, rendered under the same `_admin_tabs.html` bar (Overview / Users / Clients / Security / Settings link back to `/admin#<tab>`; Models is active). It is a separate page on purpose: its URL hash is the selection, and its unsaved-changes guard must fire on navigation.

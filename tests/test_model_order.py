@@ -157,7 +157,7 @@ class TestDisplayOrderConfig:
             "fallback": {},
             "display_order": display_order,
         }
-        with patch("app.routers.admin.save_config") as saved:
+        with patch("app.routers.admin.model_config.save_config") as saved:
             resp = client.put("/admin/api/config", json=body,
                               headers=web_auth_header(sub=admin_user.username, scopes=["admin"]))
         return resp, saved
