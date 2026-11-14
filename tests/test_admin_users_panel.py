@@ -261,7 +261,7 @@ class TestAdminPage:
         clock (the previous month for the first 8 hours of the 1st), and the
         export picker from toISOString, which put "From" a month early east
         of UTC."""
-        with patch("app.routers.admin.local_month_start", return_value=date(2026, 3, 1)):
+        with patch("app.routers.admin.page.local_month_start", return_value=date(2026, 3, 1)):
             body = client.get("/admin", headers=_hdr(admin_user)).text
         assert "March 2026" in body
         assert 'value="2025-10" max="2026-03"' in body  # From: 5 months back

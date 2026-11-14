@@ -614,8 +614,8 @@ class TestAdmin:
 
     def test_save(self, client, admin_user):
         stored = dict(GUARDRAIL_OFF, api_key="old-key", api_key_set=True)
-        with patch("app.routers.admin.get_guardrail_settings", return_value=stored), \
-             patch("app.routers.admin.set_guardrail_settings") as save:
+        with patch("app.routers.admin.security.get_guardrail_settings", return_value=stored), \
+             patch("app.routers.admin.security.set_guardrail_settings") as save:
             resp = client.post(
                 "/admin/guardrail", data=_form(),
                 headers={**web_auth_header(sub="admin", scopes=["admin"]), "Accept": "application/json"},
@@ -631,8 +631,8 @@ class TestAdmin:
 
     def test_unticked_enabled_and_cleared_key(self, client, admin_user):
         stored = dict(GUARDRAIL_OFF, api_key="old-key", api_key_set=True)
-        with patch("app.routers.admin.get_guardrail_settings", return_value=stored), \
-             patch("app.routers.admin.set_guardrail_settings") as save:
+        with patch("app.routers.admin.security.get_guardrail_settings", return_value=stored), \
+             patch("app.routers.admin.security.set_guardrail_settings") as save:
             client.post("/admin/guardrail", data=_form(enabled="off", clear_api_key="on"),
                         headers=web_auth_header(sub="admin", scopes=["admin"]))
         v = save.call_args.args[0]
@@ -643,7 +643,7 @@ class TestAdmin:
         {"action": "nuke"}, {"rule:Violent": "explode"}, {"max_input_chars": "5"},
     ])
     def test_rejects_bad_values(self, client, admin_user, over):
-        with patch("app.routers.admin.set_guardrail_settings") as save:
+        with patch("app.routers.admin.security.set_guardrail_settings") as save:
             resp = client.post("/admin/guardrail", data=_form(**over),
                                headers=web_auth_header(sub="admin", scopes=["admin"]))
         assert resp.status_code == 400

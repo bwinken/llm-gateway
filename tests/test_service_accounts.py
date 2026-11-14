@@ -296,10 +296,10 @@ class TestOwners:
     def test_a_handful_at_most(self, client, db_session, admin_user):
         from app.routers import admin
 
-        for i in range(admin.OWNER_SEARCH_LIMIT + 5):
+        for i in range(admin.users.OWNER_SEARCH_LIMIT + 5):
             db_session.add(User(username=f"team{i:02d}", api_key=f"sk-team{i}"))
         db_session.commit()
-        assert len(self._search(client, admin_user, "team")) == admin.OWNER_SEARCH_LIMIT
+        assert len(self._search(client, admin_user, "team")) == admin.users.OWNER_SEARCH_LIMIT
 
     def test_the_search_is_the_admins(self, client, test_user):
         resp = client.get("/admin/api/owner-search", params={"q": "a"}, headers=web_auth_header(sub=test_user.username))

@@ -63,7 +63,7 @@ class TestSetupPageSwitch:
         from app import main
         from app.routers import admin, web_ui
 
-        for env in (web_ui.templates.env, admin.templates.env, main._templates.env):
+        for env in (web_ui.templates.env, admin.common.templates.env, main._templates.env):
             assert callable(env.globals["setup_page_enabled"])
             assert callable(env.globals["get_site_links"])
         admin_headers = web_auth_header(sub="admin", scopes=["admin"])

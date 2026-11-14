@@ -21,7 +21,7 @@ graph LR
         web_ui["web_ui.py<br/>/ • /dashboard • /setup"]
         health_api["health_api.py<br/>/healthz • /readyz<br/>(no auth)"]
         auth_api["auth_api.py<br/>POST /auth/api-key<br/>(AuthCenter token → API key)"]
-        admin["admin.py<br/>/admin"]
+        admin["admin/<br/>/admin"]
     end
 
     v1_api -->|default| vllm_proxy["services/vllm_proxy.py"]
@@ -205,7 +205,9 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 
 ---
 
-## `admin.py` — Admin Panel + Admin API
+## `admin/` — Admin Panel + Admin API
+
+The package is one router (`common.py`: the `/admin` prefix, the admin scope, the template environment and the helpers several tabs share). `page.py` renders `GET /admin`; the routes are in one module per tab of that page, `overview.py`, `users.py`, `clients.py`, `security.py`, `settings.py`, and `model_config.py` for the Models page. A module registers its routes when the package imports it (`__init__.py`).
 
 **Auth**: Router-level `Security(get_web_user, scopes=["admin"])` — all `/admin/*` endpoints (including REST API) use JWT auth
 

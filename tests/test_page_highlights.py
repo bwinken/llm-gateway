@@ -142,7 +142,7 @@ class TestPages:
         assert "12 queued · busy" in body
 
     def test_admin_all_clear(self, client, admin_user):
-        with patch("app.routers.admin.is_alive", return_value=True), patch("app.routers.admin.get_metrics", return_value=None):
+        with patch("app.routers.admin.page.is_alive", return_value=True), patch("app.routers.admin.page.get_metrics", return_value=None):
             body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
         assert "All clear" in body
         assert "Needs attention" not in body
@@ -153,8 +153,8 @@ class TestPages:
         db_session.commit()
         _spend(db_session, test_user, 10.5)
         with (
-            patch("app.routers.admin.is_alive", side_effect=lambda url: url != "http://mock-embed:8080/v1"),
-            patch("app.routers.admin.get_metrics", return_value=None),
+            patch("app.routers.admin.page.is_alive", side_effect=lambda url: url != "http://mock-embed:8080/v1"),
+            patch("app.routers.admin.page.get_metrics", return_value=None),
         ):
             body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
         assert "Needs attention" in body
@@ -183,9 +183,9 @@ class TestTabs:
         db_session.commit()
         _spend(db_session, test_user, 11)
         with (
-            patch("app.routers.admin.is_alive", return_value=True),
-            patch("app.routers.admin.get_metrics", return_value=None),
-            patch("app.routers.admin.get_concurrency_settings", return_value=("monitor", 8)),
+            patch("app.routers.admin.page.is_alive", return_value=True),
+            patch("app.routers.admin.page.get_metrics", return_value=None),
+            patch("app.routers.admin.page.get_concurrency_settings", return_value=("monitor", 8)),
         ):
             body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
         for name in ("overview", "users", "clients", "security", "settings"):
@@ -228,8 +228,8 @@ class TestTabs:
 
     def test_all_clear_strip_has_nothing_to_open(self, client, admin_user):
         with (
-            patch("app.routers.admin.is_alive", return_value=True),
-            patch("app.routers.admin.get_metrics", return_value=None),
+            patch("app.routers.admin.page.is_alive", return_value=True),
+            patch("app.routers.admin.page.get_metrics", return_value=None),
         ):
             body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
         strip = _attention_strip(body)

@@ -43,7 +43,7 @@ def _get(client, admin) -> dict:
 
 
 def _put(client, admin, body: dict):
-    with patch("app.routers.admin.save_config") as save:
+    with patch("app.routers.admin.model_config.save_config") as save:
         resp = client.put("/admin/api/config", json=body, headers=_hdr(admin))
     return resp, save
 

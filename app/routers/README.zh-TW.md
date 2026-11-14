@@ -20,7 +20,7 @@ graph LR
         aws_api["aws_api.py<br/>/aws/v1/*<br/>(Bedrock-only)"]
         web_ui["web_ui.py<br/>/ • /dashboard • /setup"]
         health_api["health_api.py<br/>/healthz • /readyz<br/>(免認證)"]
-        admin["admin.py<br/>/admin"]
+        admin["admin/<br/>/admin"]
     end
 
     v1_api -->|預設| vllm_proxy["services/vllm_proxy.py"]
@@ -204,7 +204,9 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 ---
 
-## `admin.py` — 管理面板 + Admin API
+## `admin/` — 管理面板 + Admin API
+
+這個 package 只有一個 router（`common.py`：`/admin` 前綴、admin scope、樣板環境，以及多個分頁共用的小函式）。`page.py` 產生 `GET /admin`；路由依該頁的分頁各放一個模組：`overview.py`、`users.py`、`clients.py`、`security.py`、`settings.py`，Models 頁則是 `model_config.py`。模組在 package 匯入它時註冊自己的路由（`__init__.py`）。
 
 **認證**：Router 層統一 `Security(get_web_user, scopes=["admin"])`，所有 `/admin/*` 端點（含 REST API）皆走 JWT 認證
 

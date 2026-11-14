@@ -451,7 +451,7 @@ class TestAdminValidation:
             "fallback": {},
             "azure_models": azure_models,
         }
-        with patch("app.routers.admin.save_config"):
+        with patch("app.routers.admin.model_config.save_config"):
             return client.put(
                 "/admin/api/config",
                 json=body,

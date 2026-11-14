@@ -25,7 +25,7 @@ BEDROCK = {
 
 def _put(client, admin_user, **body):
     payload = {"models": VLLM, "pricing": PRICING, "fallback": {}, **body}
-    with patch("app.routers.admin.save_config") as save:
+    with patch("app.routers.admin.model_config.save_config") as save:
         resp = client.put(
             "/admin/api/config",
             json=payload,

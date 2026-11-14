@@ -80,7 +80,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 
 ## `/admin` — 管理面板
 
-**檔案**：`admin.html` ← `admin.py`
+**檔案**：`admin.html` ← `admin/page.py`
 **權限**：JWT scope 含 `admin`
 
 分頁列上方只有 **Needs attention** 摘要列：一個 `<details>`，收合時是一行統計（在 Overview 預設展開、其他分頁預設收合，跟著 `gw:tab` 事件切換），所以頁面一打開就看得到分頁列。下方是共用的 `_admin_tabs.html` 分頁列：**Overview / Users / Clients / Security / Settings**（透過 `gwTabs('adminTabs', 'adminTab')` 在頁內切換），以及 **Models**（連到獨立的 `/admin/models` 頁面）。分頁標籤：Users 顯示「N blocked」/「N near limit」（否則顯示帳號總數）；並行上限開啟時 Settings 顯示「limit: monitor|enforce」。
@@ -141,7 +141,7 @@ Actions 欄的每個按鈕都會先要求確認。原地更新的切換按鈕（
 
 ## `/admin/models` — 模型設定
 
-**檔案**：`admin_models.html` ← `admin.py`
+**檔案**：`admin_models.html` ← `admin/model_config.py`
 **權限**：JWT scope 含 `admin`
 
 建構在 `GET` / `PUT /admin/api/config` 之上的主從式（master–detail）編輯器，上方使用同一個 `_admin_tabs.html` 分頁列（Overview / Users / Clients / Security / Settings 連回 `/admin#<tab>`；Models 為作用中）。刻意做成獨立頁面：它的 URL hash 就是目前選取的項目，而且未儲存變更的離頁警告必須在換頁時觸發。

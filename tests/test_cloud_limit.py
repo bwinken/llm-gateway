@@ -220,7 +220,7 @@ class TestAdmin:
         return web_auth_header(sub=admin_user.username, scopes=["admin"])
 
     def test_set_and_clear_the_cap(self, client, admin_user):
-        with patch("app.routers.admin.set_cloud_daily_limit") as mock_set:
+        with patch("app.routers.admin.settings.set_cloud_daily_limit") as mock_set:
             for form, expected in (({"new_cloud_limit": "30"}, 30.0), ({"new_cloud_limit": ""}, None)):
                 resp = client.post("/admin/cloud-limit", data=form,
                                    headers=self._hdr(admin_user), follow_redirects=False)
@@ -228,7 +228,7 @@ class TestAdmin:
                 assert mock_set.call_args.args == (expected,)
 
     def test_invalid_cap_rejected(self, client, admin_user):
-        with patch("app.routers.admin.set_cloud_daily_limit") as mock_set:
+        with patch("app.routers.admin.settings.set_cloud_daily_limit") as mock_set:
             resp = client.post("/admin/cloud-limit", data={"new_cloud_limit": "-1"},
                                headers=self._hdr(admin_user), follow_redirects=False)
         assert resp.status_code == 400

@@ -376,7 +376,7 @@ class TestAdmin:
 
     def test_settings_save_the_mode(self, client_at, admin_user):
         api, headers = self._admin(client_at, admin_user)
-        with patch("app.routers.admin.set_ip_allowlist_settings") as save:
+        with patch("app.routers.admin.security.set_ip_allowlist_settings") as save:
             assert api.post("/admin/ip-allowlist", headers=headers, data={"mode": "monitor"}).status_code == 200
             assert api.post("/admin/ip-allowlist", headers=headers, data={"mode": "block"}).status_code == 400
         save.assert_called_once_with("monitor")
@@ -430,7 +430,7 @@ class TestSpecialAccess:
         db_session.commit()
 
     def test_overview_counts_users_and_apps_separately(self, client, db_session, admin_user):
-        from app.routers.admin import _special_access_summary
+        from app.routers.admin.users import _special_access_summary
 
         self._seed(db_session)
         summary = {s["key"]: (s["users"], s["apps"]) for s in _special_access_summary(db_session)}

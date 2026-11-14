@@ -1723,19 +1723,19 @@ class TestMonthlyReminder:
         body = client.get("/admin", headers=headers).text
         switch = body.split('id="client-rules-monthly"', 1)[1][:1500]
         assert ">Turn on<" in switch and 'name="enabled" value="on"' in switch
-        with patch("app.routers.admin.set_client_monthly_mail") as save:        # never a real config write in tests
+        with patch("app.routers.admin.clients.set_client_monthly_mail") as save:        # never a real config write in tests
             resp = client.post("/admin/client-rules/monthly-mail", data={"enabled": "on"}, headers=_admin(admin_user))
             assert resp.json() == {"ok": True, "enabled": True} and save.call_args.args == (True,)
             client.post("/admin/client-rules/monthly-mail", data={"enabled": "off"}, headers=_admin(admin_user))
             assert save.call_args.args == (False,)
         assert mail_on == []                                                    # the click itself sends nothing
-        with patch("app.routers.admin.get_client_monthly_mail", return_value=True):
+        with patch("app.routers.admin.clients.get_client_monthly_mail", return_value=True):
             switch = client.get("/admin", headers=headers).text.split('id="client-rules-monthly"', 1)[1][:1500]
         assert ">Turn off<" in switch and "Next:" in switch
 
     def test_only_admins_can_switch_it(self, client, test_user):
         headers = {**web_auth_header(sub=test_user.username), "Accept": "application/json"}
-        with patch("app.routers.admin.set_client_monthly_mail") as save:
+        with patch("app.routers.admin.clients.set_client_monthly_mail") as save:
             assert client.post("/admin/client-rules/monthly-mail", data={"enabled": "on"}, headers=headers).status_code in (401, 403)
         save.assert_not_called()
 

@@ -486,7 +486,7 @@ class TestConfigAndAdmin:
             "bedrock-nova": {**TEST_BEDROCK_MODELS["bedrock-nova"], "native_messages": True},
         }
         save = MagicMock()
-        with patch("app.routers.admin.save_config", save):
+        with patch("app.routers.admin.model_config.save_config", save):
             resp = self._put(client, models)
         assert resp.status_code == 400
         assert "native_messages needs a Claude model_id" in resp.json()["detail"]
@@ -494,7 +494,7 @@ class TestConfigAndAdmin:
 
     def test_admin_accepts_native_on_claude_model(self, client):
         models = {"bedrock-native": dict(NATIVE_ENTRY)}
-        with patch("app.routers.admin.save_config") as save:
+        with patch("app.routers.admin.model_config.save_config") as save:
             resp = self._put(client, models)
         assert resp.status_code == 200, resp.text
         assert save.call_args.args[5]["bedrock-native"]["native_messages"] is True
