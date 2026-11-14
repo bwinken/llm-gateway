@@ -11,6 +11,8 @@
 - **決定**：已經定案的做法與日期（沒有這一行表示還沒決定）
 - **狀態**：`未開始` / `評估中` / `進行中` / `完成`
 
+各框架與面向的逐項盤點（有沒有漏）在 [checklists/](checklists/README.md)，包含盤點時新發現、還沒排進這份 roadmap 的缺口（N-1 ~ N-11）。
+
 新增項目放在所屬主題下；主題完成後整段移到最下方的「已完成」。標示 **⚠ 牽動規則** 的項目會改變 [CLAUDE.md](../CLAUDE.md) *Rules* 裡的某一條，動工前要先決定是否修改那條規則，並同步更新文件與釘住它的測試。
 
 ## 現況（2026-11-14）
@@ -225,14 +227,16 @@
 | 相依套件弱點掃描、secret 掃描 | `.github/workflows/security.yml`（pip-audit、gitleaks） |
 | CORS 不帶 credentials、跨站寫入防護 | `browser_security.py` |
 
-### CMP-1　控制項對照表 — 階段 2 · 未開始
+### CMP-1　控制項對照表 — 階段 2 · 進行中
 
-- **方向**：在 `docs/compliance/` 下各框架一份對照表，每列：控制項 → gateway 的做法（程式 / 設定位置）→ 證據（哪個報表、log、表格）→ 缺口（連到本 roadmap 的編號）。初步對照：
+- **進度（2026-11-14）**：初版已盤點，在 [checklists/](checklists/README.md)：ISO 27001、ISO 42001、NIST AI RMF、OWASP LLM Top 10 各一份。剩下的工作是補上標為 🏢（組織層級）與 ❓（待確認）的項目，以及對照標準原文核對編號與名稱。
+
+- **方向**：在 `docs/checklists/` 下各框架一份對照表，每列：控制項 → gateway 的做法（程式 / 設定位置）→ 證據（哪個報表、log、表格）→ 缺口（連到本 roadmap 的編號）。初步對照：
   - **ISO 27001:2022 Annex A**：5.15 / 5.18 存取控制與存取權（SSO、API key、AUD-2）、5.17 認證資訊（CMP-3）、8.2 特權存取（admin scope）、8.8 技術弱點（pip-audit）、8.10 資訊刪除（CMP-6）、8.11 資料遮罩與 8.12 資料外洩防護（GRD-1、GRD-2）、8.13 備份（已有）、8.14 備援（HA 主題）、8.15 日誌與 8.16 監控（audit log、異常偵測、Prometheus）、8.24 密碼學（CMP-2）、8.32 變更管理（CMP-4）、5.24 ~ 5.27 事件管理（CMP-5）、5.30 營運持續（HA、還原演練）。
   - **ISO 42001 Annex A**：A.4 AI 系統資源（模型與後端清冊，AUD-4）、A.5 影響評估（AUD-4）、A.6 生命週期中的運作與監控（Langfuse、週報）、A.8 對利害關係人的資訊（dashboard 公告、client notices）、A.9 AI 系統的使用（預算、guardrail、使用政策）、A.10 第三方（Azure、AWS 供應商管理）。
   - **NIST AI RMF**：GOVERN（角色與權限、政策）、MAP（AI 系統清冊與使用情境，AUD-4）、MEASURE（guardrail 判定率、錯誤率、延遲：週報）、MANAGE（block 模式、模型下架、事件處理 CMP-5）。
   - **OWASP LLM Top 10（2025）**：LLM01 Prompt Injection（部分：Qwen3Guard 的 Jailbreak 類別只看使用者最新一輪 → GRD-4）、LLM02 Sensitive Information Disclosure（部分：log 已遮蔽；請求內容無 PII 處理 → GRD-1、GRD-2）、LLM03 Supply Chain（pip-audit、gitleaks；模型來源未記錄 → AUD-4）、LLM04 Data and Model Poisoning（gateway 不訓練模型，記錄模型來源即可）、LLM05 Improper Output Handling（輸出未檢查 → GRD-5；實際的輸出處理在 client 端）、LLM06 Excessive Agency（tool 執行在 client 端，gateway 看不到，寫明不在範圍）、LLM07 System Prompt Leakage（gateway 不注入 system prompt，風險低）、LLM08 Vector and Embedding Weaknesses（embeddings / rerank 直接轉送，RAG 在 client 端）、LLM09 Misinformation（不在 gateway 範圍）、LLM10 Unbounded Consumption（已涵蓋：每日預算、雲端上限、併發限制、throttle）。
-- 對照表要隨程式變更維護：可以在 CLAUDE.md 加一條「改到對照表引用的控制，要同步更新 `docs/compliance/`」。
+- 對照表要隨程式變更維護：可以在 CLAUDE.md 加一條「改到對照表引用的控制，要同步更新 `docs/checklists/`」。
 
 ### CMP-2　機密資料加密 — 階段 2 · 未開始
 
@@ -290,12 +294,12 @@
 
 ### AUD-3　風險登錄表 — 階段 2 · 未開始
 
-- **方向**：`docs/compliance/risk-register.md`（或組織既有的風險管理工具）：每項風險的描述、可能性、衝擊、現有控制（連到程式）、殘餘風險、處置（降低 / 接受 / 移轉）、負責人、檢視日期。初始內容可以從本 roadmap 的缺口和 CLAUDE.md *Rules* 整理而來，例如：PG 單點故障（HA-1）、明文 key（CMP-2）、guardrail fail-open（GRD-8）、雲端流量未篩檢（GRD-3）、資料送往境外雲端（GRD-1）。
+- **方向**：`docs/checklists/risk-register.md`（或組織既有的風險管理工具）：每項風險的描述、可能性、衝擊、現有控制（連到程式）、殘餘風險、處置（降低 / 接受 / 移轉）、負責人、檢視日期。初始內容可以從本 roadmap 的缺口和 CLAUDE.md *Rules* 整理而來，例如：PG 單點故障（HA-1）、明文 key（CMP-2）、guardrail fail-open（GRD-8）、雲端流量未篩檢（GRD-3）、資料送往境外雲端（GRD-1）。
 
 ### AUD-4　AI 系統清冊與影響評估 — 階段 3 · 未開始
 
 - **現況**：模型清單在 `config.toml`（`[models.*]`、`[azure_models.*]`、`[bedrock_models.*]`），對使用者的檢視在 `model_catalog`；沒有記錄模型來源、授權、用途限制、資料所在區域。
-- **方向**：從設定自動產出清冊（別名、實際模型、後端、區域、上線日期、使用量），再加上人工維護的欄位（供應商、授權條款、資料是否離開公司、允許 / 禁止的用途、評估日期）。影響評估（ISO 42001 A.5、NIST MAP）以每個模型或每種用途一份，範本放在 `docs/compliance/`。
+- **方向**：從設定自動產出清冊（別名、實際模型、後端、區域、上線日期、使用量），再加上人工維護的欄位（供應商、授權條款、資料是否離開公司、允許 / 禁止的用途、評估日期）。影響評估（ISO 42001 A.5、NIST MAP）以每個模型或每種用途一份，範本放在 `docs/checklists/`。
 
 ---
 
