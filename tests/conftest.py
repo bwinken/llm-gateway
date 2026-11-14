@@ -436,6 +436,7 @@ _ALL_PATCHES = [
     lambda: patch("app.services.guardrail.get_guardrail_settings", return_value=dict(GUARDRAIL_OFF)),
     lambda: patch("app.services.ip_allowlist.engine", _test_engine),
     lambda: patch("app.services.client_rules.engine", _test_engine),
+    lambda: patch("app.services.client_mail.engine", _test_engine),
     # /v1/settings reads a per-site file: tests see the shipped example, never a
     # developer's own client_settings.json (tests of the file patch this again).
     lambda: patch("app.services.client_settings.SETTINGS_PATH", Path("/nonexistent/client_settings.json")),
@@ -453,6 +454,7 @@ def _patch_all():
     import app.services.scheduler  # noqa: F401 — same, for the job-claim engine patch
     import app.services.guardrail  # noqa: F401 — same, for the settings patch
     import app.services.client_rules as client_rules  # same, for the engine patch
+    import app.services.client_mail  # noqa: F401 — same, for the mail job's engine patch
     import app.services.ip_allowlist as ip_allowlist  # same, for the engine / settings patches
     from contextlib import ExitStack
 

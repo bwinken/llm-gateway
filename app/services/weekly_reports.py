@@ -34,7 +34,7 @@ wrong.
 A report is one mail to all its recipients, so there is no burst to pace.
 Recipients are mailboxes of the company domain only, like test mail: the
 gateway cannot be made to mail usage figures or account names elsewhere.
-Every attempt is written to the mail log (``client_rules.record_mail``),
+Every attempt is written to the mail log (``client_mail.record_mail``),
 one row per recipient.
 """
 
@@ -53,7 +53,7 @@ from sqlmodel import Session, select
 from app.core.logger import logger
 from app.core.timeutil import LOCAL_TZ
 from app.models.schema import ReportSchedule
-from app.services import client_rules, langfuse_reader, mailer, report_content
+from app.services import client_mail, langfuse_reader, mailer, report_content
 from app.services.report_content import Period, Rendered, week_of
 from app.services.scheduler import Job, env_seconds
 
@@ -262,7 +262,7 @@ def send(
     subject = subject_prefix + rendered.subject
     ok, error = mailer.send(recipients, subject, rendered.html, rendered.images)
     for address in recipients:
-        client_rules.record_mail(
+        client_mail.record_mail(
             session, address=address, subject=subject, ok=ok, error=error, rule_ids=[f"report:{name}"],
             kind=kind, actor=actor,
         )

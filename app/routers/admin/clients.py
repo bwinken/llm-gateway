@@ -17,14 +17,14 @@ from app.core.database import get_session
 from app.core.logger import logger
 from app.models.schema import User
 from app.routers.admin.common import _local_label, _wants_json, router
-from app.services import audit, client_checks, client_rules, client_settings, mailer
+from app.services import audit, client_checks, client_mail, client_patch, client_rules, client_settings, mailer
 
 
 # ── Client rules (app/services/client_rules.py; the checks are code, in client_checks.py) ──
 
 def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
     rows = client_rules.violations(session, rule.id)
-    mailable = {v.username for v in client_rules.mailable(session, rows)}
+    mailable = {v.username for v in client_mail.mailable(session, rows)}
     check = rule.check
     return {
         "id": rule.id, "name": rule.name, "description": check.description, "enabled": rule.enabled,
@@ -36,9 +36,9 @@ def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
         "ever_accounts": seen["accounts"] if seen else 0,
         "stale": client_rules.is_stale(rule, seen),
         "title": rule.title, "message": rule.message,
-        "patch": client_rules.env_lines(client_rules.load_env(rule.patch)),
-        "patch_azure": client_rules.env_lines(client_rules.load_env(rule.patch_azure)),
-        "patch_aws": client_rules.env_lines(client_rules.load_env(rule.patch_aws)),
+        "patch": client_patch.env_lines(client_patch.load_env(rule.patch)),
+        "patch_azure": client_patch.env_lines(client_patch.load_env(rule.patch_azure)),
+        "patch_aws": client_patch.env_lines(client_patch.load_env(rule.patch_aws)),
         "has_patch": bool(rule.patch or rule.patch_azure or rule.patch_aws),
         "action": rule.action, "email_subject": rule.email_subject,
         "auto_email": rule.auto_email, "email_repeat_days": rule.email_repeat_days,
@@ -54,7 +54,7 @@ def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
                 # It said so, then violated again: open, and a new case for mail.
                 "reopened": _local_label(v.resolved_at) if v.resolved_at and not client_rules.is_resolved(v) else "",
                 # An admin asked for a mail that has not gone out yet.
-                "queued": client_rules.is_queued(v),
+                "queued": client_mail.is_queued(v),
             }
             for v in rows
         ],
@@ -106,17 +106,17 @@ def _client_rules_view(session: Session, admin_user: User) -> dict:
         "stale_days": client_rules.STALE_DAYS,
         "versions": client_rules.version_overview(session),
         # What every non-empty patch also sets (a constant in client_checks.py).
-        "baseline": client_rules.env_lines(client_rules.baseline_env()),
+        "baseline": client_patch.env_lines(client_rules.baseline_env()),
         "mail": mailer.status(),
-        "mail_pace": {**client_rules.mail_pace(), "waiting": len(client_rules.due_accounts(session))},
-        "monthly": {**client_rules.monthly_mail(), "enabled": get_client_monthly_mail()},
+        "mail_pace": {**client_mail.mail_pace(), "waiting": len(client_mail.due_accounts(session))},
+        "monthly": {**client_mail.monthly_mail(), "enabled": get_client_monthly_mail()},
         # The card's "mail everyone" buttons: accounts with anything open, under any rule.
         "mail_all": {
-            "open": len(client_rules.mail_all_targets(session, only_unmailed=False)),
-            "unmailed": len(client_rules.mail_all_targets(session, only_unmailed=True)),
+            "open": len(client_mail.mail_all_targets(session, only_unmailed=False)),
+            "unmailed": len(client_mail.mail_all_targets(session, only_unmailed=True)),
         },
         "my_address": mailer.address_for(admin_user.username),
-        "mail_log": _mail_log_view(client_rules.mail_log(session)),
+        "mail_log": _mail_log_view(client_mail.mail_log(session)),
         "actions": client_rules.ACTIONS,
         "window_days": client_rules.WINDOW_DAYS,
     }
@@ -183,10 +183,10 @@ def send_client_rules_mail_all(
     if not mailer.is_enabled():
         raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
     unmailed_only = only_unmailed == "on"
-    queued = client_rules.request_mail_all(session, unmailed_only)
+    queued = client_mail.request_mail_all(session, unmailed_only)
     if queued:
-        background.add_task(client_rules.send_batch)
-    pace = client_rules.mail_pace()
+        background.add_task(client_mail.send_batch)
+    pace = client_mail.mail_pace()
     logger.info(
         "Client rule mail queued for every rule | accounts={} only_unmailed={} admin={}",
         queued, unmailed_only, admin_user.username,
@@ -212,7 +212,7 @@ def client_rules_mail_log(
     gateway tried to send (test mail included), with the address and how it
     ended. ``status`` = ``sent`` / ``failed`` / ``test``; ``q`` matches the
     account or the address."""
-    return JSONResponse(_mail_log_view(client_rules.mail_log(session, status.strip().lower(), q, page)))
+    return JSONResponse(_mail_log_view(client_mail.mail_log(session, status.strip().lower(), q, page)))
 
 
 @router.post("/client-rules/mail-test-all")
@@ -231,14 +231,14 @@ def test_client_rules_mail_all(
     if not mailer.in_company_domain(to):
         raise HTTPException(status_code=400, detail=f"Test mail goes to @{mailer.settings()['domain']} addresses only.")
     try:
-        subject, body, rule_ids = client_rules.render_digest_preview(
+        subject, body, rule_ids = client_mail.render_digest_preview(
             session, to.partition("@")[0], audience.strip().lower() or "local",
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     subject = "[TEST] " + subject
     ok, error = mailer.send(to, subject, body)
-    client_rules.record_mail(
+    client_mail.record_mail(
         session, address=to, subject=subject, rule_ids=rule_ids, kind="test", ok=ok, error=error,
         actor=admin_user.username,
     )
@@ -272,10 +272,10 @@ def test_client_rule_mail(
         env = client_rules.effective_env(draft, *client_rules.audience_flags(audience.strip().lower() or "local"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    subject, body = client_rules.render_mail(draft, to.partition("@")[0], env)
+    subject, body = client_mail.render_mail(draft, to.partition("@")[0], env)
     subject = "[TEST] " + subject
     ok, error = mailer.send(to, subject, body)
-    client_rules.record_mail(
+    client_mail.record_mail(
         session, address=to, subject=subject, rule_ids=[rule.id], kind="test", ok=ok, error=error,
         actor=admin_user.username,
     )
@@ -391,7 +391,7 @@ def send_client_rule_mail(
     """Queue a mail to the accounts currently violating a check: those not
     mailed yet (default) or all of them. Mail never goes out as one burst:
     the first batch is sent after this reply and the mail job sends the
-    rest, a batch per run (``client_rules.mail_pace``). Each account's state
+    rest, a batch per run (``client_mail.mail_pace``). Each account's state
     (queued, sent, error) shows in the check's list."""
     rule = _client_rule_or_404(session, rule_id)
     if rule.deprecated:
@@ -399,10 +399,10 @@ def send_client_rule_mail(
     if not mailer.is_enabled():
         raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
     unmailed_only = only_unmailed == "on"
-    queued = client_rules.request_mail(session, rule.id, unmailed_only)
+    queued = client_mail.request_mail(session, rule.id, unmailed_only)
     if queued:
-        background.add_task(client_rules.send_batch)
-    pace = client_rules.mail_pace()
+        background.add_task(client_mail.send_batch)
+    pace = client_mail.mail_pace()
     logger.info(
         "Client rule mail queued | id={} accounts={} only_unmailed={} admin={}",
         rule.id, queued, unmailed_only, admin_user.username,
@@ -427,7 +427,7 @@ def preview_client_rule_patch(
     ``local``, ``azure`` or ``aws``; ``fmt``: ``bat`` for Windows, ``sh``
     for Linux / macOS), for the admin to check."""
     rule = _client_rule_or_404(session, rule_id)
-    if fmt not in client_rules.PATCH_FORMATS:
+    if fmt not in client_patch.PATCH_FORMATS:
         raise HTTPException(status_code=404, detail="No such patch format.")
     try:
         env = client_rules.effective_env(rule, *client_rules.audience_flags(audience))
@@ -437,7 +437,7 @@ def preview_client_rule_patch(
         raise HTTPException(status_code=404, detail="This check has no settings patch for that audience.")
     filename = f"claude-code-patch-{rule.id}-{audience}.{fmt}"
     return Response(
-        content=client_rules.render_patch(fmt, f"{rule.id} {rule.name}", env, filename).encode("utf-8"),
+        content=client_patch.render_patch(fmt, f"{rule.id} {rule.name}", env, filename).encode("utf-8"),
         media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

@@ -189,7 +189,7 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 | `GET` | `/dashboard/client-rules/all/patch.{bat,sh}` | The account's one settings patch: everything it has open, merged (`client_rules.combined_for`). There is no download per check. 404 when there is nothing to apply (a browser is redirected to `/dashboard`: mail links here) |
 | `POST` | `/dashboard/client-rules/{rule_id}/resolved` | *I've applied it*: hide this notice until the gateway sees the problem again. JSON with `Accept: application/json` |
 | `POST` | `/dashboard/client-rules/all/resolved` | *I've applied everything*: the same for every open notice |
-| `GET` | `/dashboard/api-key/patch.{bat,sh}` | The caller's own key as a settings patch: sets `ANTHROPIC_AUTH_TOKEN`, removes `ANTHROPIC_API_KEY` (`client_rules.key_env`). What to run after regenerating. `Cache-Control: no-store`, recorded in the audit log |
+| `GET` | `/dashboard/api-key/patch.{bat,sh}` | The caller's own key as a settings patch: sets `ANTHROPIC_AUTH_TOKEN`, removes `ANTHROPIC_API_KEY` (`client_patch.key_env`). What to run after regenerating. `Cache-Control: no-store`, recorded in the audit log |
 | `GET` | `/setup` | Claude Code installer page (Windows). 404, like the installer download, with `SETUP_PAGE_ENABLED=false` |
 
 ### Dashboard Data Sources

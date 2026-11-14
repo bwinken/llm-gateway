@@ -30,7 +30,7 @@ from app.core.database import get_session
 from app.core.logger import logger
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ, local_month_start, seconds_until_local_midnight
-from app.services import client_rules
+from app.services import client_patch, client_rules
 from app.services.model_catalog import (
     catalog_keys,
     hidden_cloud_backends as _hidden_cloud_backends,
@@ -433,8 +433,8 @@ def dashboard(
             client_notices=_client_notices(session, user),
             client_combined=_client_combined(session, user),
             client_notice_days=client_rules.WINDOW_DAYS,
-            api_key_env=client_rules.API_KEY_ENV,
-            api_key_env_retired=client_rules.API_KEY_ENV_RETIRED,
+            api_key_env=client_patch.API_KEY_ENV,
+            api_key_env_retired=client_patch.API_KEY_ENV_RETIRED,
             server_groups=server_groups,
             claude_code_available=claude_code_available,
             azure_access=user.can_use_azure or user.is_admin,
@@ -568,7 +568,7 @@ def client_rules_patch_all(
     (Linux / macOS). There is no per-check download: one notice or five, it
     is the same single script. Mail links here too, so a browser arriving
     with nothing left to apply is sent to the dashboard instead of a 404."""
-    if fmt not in client_rules.PATCH_FORMATS:
+    if fmt not in client_patch.PATCH_FORMATS:
         raise HTTPException(status_code=404, detail="No such patch format.")
     combined = client_rules.combined_for(session, user)
     if combined is None or not combined["env"]:
@@ -577,7 +577,7 @@ def client_rules_patch_all(
         raise HTTPException(status_code=404, detail="No settings patch for this account.")
     filename = f"claude-code-patch.{fmt}"
     name = "fixes for " + ", ".join(combined["covered"])
-    return _script_response(client_rules.render_patch(fmt, name, combined["env"], filename), filename)
+    return _script_response(client_patch.render_patch(fmt, name, combined["env"], filename), filename)
 
 
 @router.post("/dashboard/client-rules/all/resolved")
@@ -620,16 +620,16 @@ def api_key_patch(
     user: User = Security(get_web_user, scopes=["read"]),
 ):
     """A script that puts the account's current API key into Claude Code
-    (``client_rules.key_env``: ``ANTHROPIC_AUTH_TOKEN`` set in the ``env``
+    (``client_patch.key_env``: ``ANTHROPIC_AUTH_TOKEN`` set in the ``env``
     block of settings.json, the older ``ANTHROPIC_API_KEY`` removed, nothing
     else), as ``patch.bat`` or ``patch.sh``: what a user runs on each
     machine after regenerating the key. Only ever the caller's own key; the
     download is in the audit log (``audit._AUDITED_READS``) and never cached."""
-    if fmt not in client_rules.PATCH_FORMATS:
+    if fmt not in client_patch.PATCH_FORMATS:
         raise HTTPException(status_code=404, detail="No such patch format.")
     filename = f"claude-code-key.{fmt}"
-    script = client_rules.render_patch(
-        fmt, f"your API key - {client_rules.API_KEY_ENV}", client_rules.key_env(user.api_key), filename,
+    script = client_patch.render_patch(
+        fmt, f"your API key - {client_patch.API_KEY_ENV}", client_patch.key_env(user.api_key), filename,
     )
     logger.info("API key patch downloaded | user={} format={}", user.username, fmt)
     return _script_response(script, filename, secret=True)

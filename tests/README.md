@@ -500,11 +500,13 @@ The package exports `router` and nothing else (so a stale
 module in the directory is imported by it and registers on the one router;
 `/client-rules/<fixed>` is registered before `/client-rules/{rule_id}`.
 
-### `test_proxy_layering.py` — shared code stays out of the proxies
+### `test_service_layering.py` — which service module may import which
 
 `azure_proxy` and `bedrock_proxy` import nothing from `vllm_proxy`; `billing`
 and `downstream` import no proxy; all three backends call the same
-`billing._log_usage` / `_log_error`.
+`billing._log_usage` / `_log_error`. `client_patch` ← `client_rules` ←
+`client_mail` depend one way, `client_patch` reads no database, and
+`client_settings` imports neither the rules nor their mail.
 
 ### `test_background_dispatch.py` — `_submit_background`
 
