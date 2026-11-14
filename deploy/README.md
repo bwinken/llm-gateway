@@ -190,6 +190,60 @@ With both off, a failed request logs the **shape** of the body — fields presen
 - **Failed-auth throttle.** `AUTH_FAIL_DISTINCT_KEYS` / `AUTH_FAIL_WINDOW_S` / `AUTH_LOCKOUT_S` (default 10 distinct invalid keys in 600 s → 429 for 900 s). It keys on the client address, so uvicorn must trust nginx's forwarded headers; loopback is never locked, which is what you would see if it didn't.
 - **Dependency and secret scanning** run in GitHub Actions (`.github/workflows/security.yml`). For Dependabot to open security-fix PRs, turn on *Dependabot security updates* in the repository's Settings → Code security.
 
+## Switching SSO to Keycloak
+
+The gateway signs people in through AuthCenter unless `.env` says `SSO_PROVIDER=keycloak`. The switch changes who signs the web UI's access token and nothing else: accounts, API keys, limits and usage stay, and API clients (who use an API key) notice nothing. It has two halves that go together, oauth2-proxy (`deploy/.env`) and the gateway (`.env`); between the two the web UI answers 401.
+
+**1. In Keycloak (realm admin)**
+
+| What | Setting |
+|---|---|
+| Client | OpenID Connect, *Client authentication* on, *Standard flow*; valid redirect URI `https://<domain>/oauth2/callback`. Its ID is `KEYCLOAK_CLIENT_ID` / `OAUTH2_CLIENT_ID` |
+| Permissions | Two **client roles** on that client: `read` (may use the web UI and sign in from a terminal tool) and `admin` (the admin pages). To give everyone `read`, add it to the realm's default roles. Realm roles are not read |
+| Usernames | A person's Keycloak username must equal their gateway username: that is how their account is found. Keycloak lowercases usernames, so check first: `SELECT username FROM users WHERE username <> lower(username) AND NOT is_service_account;`. A name that differs signs in to a new, empty account |
+| Who may choose a username | Nobody but the directory: keep *User registration* and *Edit username* off (*Realm settings* → *Login*). Whoever can take a username gets that account, API key included |
+| Org code (optional) | A *User Attribute* mapper on the client's dedicated scope: token claim `org_code`, added to the access token. IP allowlist rules by org code need it |
+| Access token lifespan | Note it (*Realm settings* → *Tokens*, default 5 min): step 2 needs a shorter refresh |
+
+**2. oauth2-proxy (`deploy/.env`)**
+
+```bash
+OIDC_ISSUER_URL=https://keycloak.company.com/realms/company
+OAUTH2_CLIENT_ID=llm_gateway
+OAUTH2_CLIENT_SECRET=<the client's secret>
+# Shorter than the access token lifespan, or the web UI turns 401 once the
+# first token expires. (Not set = 1h, what AuthCenter uses.)
+OAUTH2_COOKIE_REFRESH=4m
+```
+
+**3. Gateway (`.env`)**
+
+```bash
+SSO_PROVIDER=keycloak
+KEYCLOAK_ISSUER_URL=https://keycloak.company.com/realms/company   # the same realm URL
+KEYCLOAK_CLIENT_ID=llm_gateway
+# KEYCLOAK_CA_FILE=/etc/ssl/company-ca.pem     # Keycloak certificate from an internal CA
+# KEYCLOAK_JWKS_URL=...                        # Keycloak reached at another address than the issuer's
+```
+
+The gateway reads the realm's signing keys from Keycloak itself (`<issuer>/protocol/openid-connect/certs`), so its host must reach Keycloak; there is no key file to copy and `keys/public.pem` is no longer read. It refuses to start with `SSO_PROVIDER=keycloak` and no issuer.
+
+**4. Apply both**
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d    # container hosts: bash deploy/migration/compose.sh up -d
+systemctl --user restart llm-gateway
+```
+
+Everyone signs in again. Then check: the dashboard opens under your existing account (same API key), `/admin` opens for an account with the `admin` client role and answers 403 for one without it.
+
+- **`upstream sent too big header`** in the nginx error log: Keycloak's tokens and cookies are larger. Add the three `proxy_buffer*` lines shown in the nginx example above `location = /oauth2/auth`.
+- **401 on every page after a few minutes**: `OAUTH2_COOKIE_REFRESH` is not shorter than the access token lifespan.
+- **401 right away**: the gateway log says why (`JWT issuer mismatch`: `KEYCLOAK_ISSUER_URL` is not the token's `iss`; `Keycloak signing keys not read`: the gateway cannot reach Keycloak or does not trust its certificate; `JWT audience mismatch`: `KEYCLOAK_CLIENT_ID` is not the client oauth2-proxy uses).
+- **403 `Insufficient scope`**: the account lacks the client role `read`.
+- **Terminal tools** (`POST /auth/api-key`) then send a Keycloak access token. A tool with its own (public) client needs an *Audience* mapper adding the gateway's client to `aud`, and the gateway client's roles in its tokens.
+- **Going back**: remove `SSO_PROVIDER` from `.env`, restore the AuthCenter values in `deploy/.env` (and remove `OAUTH2_COOKIE_REFRESH`), apply both again.
+
 ## Database Backup
 
 `deploy/backup-db.sh` takes an online backup: `pg_dump` reads the whole database in one snapshot, so the dump is consistent and the gateway keeps serving. It only blocks schema changes, so never run it alongside `alembic upgrade` / `setup.sh` (the script refuses while an `alembic upgrade` is running).
@@ -305,7 +359,7 @@ docker compose -f deploy/docker-compose.yml up -d
 
 `.env` is read by the systemd unit (`EnvironmentFile`); restart the gateway after editing it. [`.env.example`](../.env.example) documents every variable, and the root [README](../README.md#env-environment) has a table with defaults. In short:
 
-- **Core**: `DATABASE_URL`, `APP_TITLE`, and the web-UI JWT settings `AUTH_BASE_URL`, `AUTH_CENTER_APP_ID`, `AUTH_CENTER_PUBLIC_KEY_PATH`
+- **Core**: `DATABASE_URL`, `APP_TITLE`, and the web-UI JWT settings `AUTH_BASE_URL`, `AUTH_CENTER_APP_ID`, `AUTH_CENTER_PUBLIC_KEY_PATH` (or `SSO_PROVIDER=keycloak` with `KEYCLOAK_*`; see [Switching SSO to Keycloak](#switching-sso-to-keycloak))
 - **Cloud network**: `AZURE_HTTP_PROXY` / `BEDROCK_HTTP_PROXY` and `AZURE_INSECURE` / `BEDROCK_INSECURE` (see Proxy Configuration)
 - **Bedrock shared credentials**: `BEDROCK_REGION`, `BEDROCK_AWS_ACCESS_KEY_ID`, `BEDROCK_AWS_SECRET_ACCESS_KEY`, used by every `[bedrock_models.*]` entry that doesn't set its own. Kept here so the secret never reaches `config.toml` or the admin page.
 - **Budgets**: `ENFORCE_DAILY_LIMIT=false` is a gateway-wide soft mode (overruns are logged, not rejected). There is no per-user "unlimited": a user limit of `0` is a $0 budget.

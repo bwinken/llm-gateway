@@ -41,6 +41,7 @@ Parses `config.toml` and `.env`, producing global configuration objects. `config
 | `AUTH_CENTER_APP_ID` | `str` | `.env` | JWT audience validation value |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | `str` | `.env` | RS256 public key path |
 | `AUTH_BASE_URL` | `str` | `.env` | JWT issuer validation value (default `auth-center`) |
+| `SSO_PROVIDER` | env | `.env` | The SSO provider: `authcenter` (default) or `keycloak`. Read at call time by `auth.sso_provider()`; with `keycloak` the `KEYCLOAK_*` settings are read (`app/core/keycloak.py`) and the three `AUTH_*` above are not |
 | `APP_CONFIG` | `dict` | `config.toml` `[app]` | App-level settings: `default_daily_limit_usd`, `cloud_daily_limit_usd`, `cloud_budget_fallback`, `concurrency_limit_mode` / `concurrency_limit`, `ip_allowlist_mode`, `support_bot_url` / `install_guide_url`. Read through the getters below |
 | `MODEL_ROUTING` | `dict[str, dict]` | `config.toml` `[models.<type>.*]` | vLLM routing table: alias → `{base_url, real_model, api_key, type}` plus optional per-model fields |
 | `PRICING_MAP` | `dict[str, dict]` | `config.toml` `[pricing]` | Pricing table: type → `{input_price_per_1m, output_price_per_1m}` (with `_default` entry) |
@@ -118,7 +119,8 @@ Browser → nginx → oauth2-proxy (validates session cookie)
 | Function | Returns | Description |
 |---|---|---|
 | `get_web_user(security_scopes, request, session, credentials)` | `User` | FastAPI `Security` dependency: decodes JWT, checks scopes, auto-creates new users; raises `AccountDisabledError` if `user.is_disabled` (admins bypass). Uses `Depends(get_session)`, which is fine for the web/admin routers |
-| `_decode_jwt(token)` | `dict \| None` | RS256 decode + audience/issuer validation (5 s leeway) |
+| `_decode_jwt(token)` | `dict \| None` | The one SSO token check. AuthCenter (default): RS256 decode + audience/issuer validation (5 s leeway). With `SSO_PROVIDER=keycloak`: `keycloak.decode`, which returns the same payload shape |
+| `sso_provider()` / `check_sso_settings()` | `str` / `None` | `SSO_PROVIDER` read at call time; the lifespan's refusal to start on an unknown provider or a Keycloak without `KEYCLOAK_ISSUER_URL` |
 | `_load_public_key()` | `str` | Reads the public key, re-reading when its mtime changes (key rotation without restart) |
 | `_sync_user(session, username, display_name, org_code)` | `User` | Find or create user (new users get `get_default_daily_limit()`), sync IdP fields |
 | `AccountDisabledError(username)` | exception | Raised by `get_web_user` and by every API-key dependency in `deps.py` when `user.is_disabled=True`. Caught by a global handler in `app/main.py` that renders `templates/disabled.html` for `Accept: text/html` requests and returns JSON 403 otherwise |

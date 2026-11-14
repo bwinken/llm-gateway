@@ -6,6 +6,11 @@ With oauth2-proxy in front of nginx, the flow is:
 
 This module decodes the JWT from the Authorization header (injected by nginx)
 and returns the authenticated user.
+
+Who signs that JWT is ``SSO_PROVIDER`` (``.env``): ``authcenter`` (the
+default) or ``keycloak``. Only ``_decode_jwt`` knows the difference: both
+providers' tokens come out of it as the same payload (``sub``, ``scopes``,
+``display_name``, ``org_code``), so everything after it is one code path.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, SecurityScopes
 from sqlmodel import Session, select
 
+from app.core import keycloak
 from app.core.config import AUTH_BASE_URL, AUTH_CENTER_APP_ID, AUTH_CENTER_PUBLIC_KEY_PATH, get_default_daily_limit
 from app.core.database import get_session
 from app.core.logger import logger
@@ -56,8 +62,50 @@ def _load_public_key() -> str:
     return _pk_cache[1]
 
 
+SSO_PROVIDERS = ("authcenter", "keycloak")
+
+
+def sso_provider() -> str:
+    """Whose tokens the gateway accepts: ``SSO_PROVIDER``, read at call time.
+    Unset or empty is AuthCenter."""
+    return os.getenv("SSO_PROVIDER", "").strip().lower() or "authcenter"
+
+
+def check_sso_settings() -> None:
+    """Refuse to start on an SSO setting that cannot work, instead of
+    starting and answering 401 to every sign-in. Called from the lifespan."""
+    provider = sso_provider()
+    if provider not in SSO_PROVIDERS:
+        raise RuntimeError(
+            f"SSO_PROVIDER={provider!r} is not one of {', '.join(SSO_PROVIDERS)}."
+        )
+    if provider == "keycloak":
+        missing = keycloak.missing_settings()
+        if missing:
+            raise RuntimeError(f"SSO_PROVIDER=keycloak needs {', '.join(missing)} in .env.")
+        s = keycloak.settings()
+        logger.info("SSO provider: Keycloak | issuer={} client={}", s["issuer"], s["client_id"])
+    else:
+        logger.info("SSO provider: AuthCenter | issuer={} audience={}", AUTH_BASE_URL, AUTH_CENTER_APP_ID)
+
+
 def _decode_jwt(token: str) -> dict | None:
-    """Decode and verify a JWT from AuthCenter. Returns payload or None."""
+    """Decode and verify an access token of the configured SSO provider.
+    Returns the payload (``sub``, ``scopes``, ``display_name``, ``org_code``
+    / ``org_id``) or None.
+
+    The one token check there is: the web UI, ``POST /auth/api-key`` and the
+    audit log's actor all go through it, so a provider is switched here and
+    nowhere else.
+    """
+    provider = sso_provider()
+    if provider == "keycloak":
+        return keycloak.decode(token)
+    if provider != "authcenter":
+        # The lifespan refuses to start like this; a token must never be
+        # checked by a provider the setting did not name.
+        logger.error("SSO_PROVIDER={!r} is not a known provider: sign-in refused", provider)
+        return None
     try:
         return jwt.decode(
             token,

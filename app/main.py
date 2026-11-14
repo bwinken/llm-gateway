@@ -37,6 +37,9 @@ _templates.env.globals["setup_page_enabled"] = setup_page_enabled
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting {}...", APP_TITLE)
+    # A wrong SSO_PROVIDER or a Keycloak without its issuer stops the start.
+    from app.core.auth import check_sso_settings
+    check_sso_settings()
     init_db()
     await init_client()
 

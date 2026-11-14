@@ -189,6 +189,60 @@ scrape_configs:
 - **驗證失敗節流。** `AUTH_FAIL_DISTINCT_KEYS` / `AUTH_FAIL_WINDOW_S` / `AUTH_LOCKOUT_S`（預設 600 秒內 10 把不同的錯誤 key → 封鎖 900 秒，回 429）。依來源位址判斷，所以 uvicorn 必須信任 nginx 轉送的 header；loopback 永不封鎖，若沒設定好，所有請求都會變成 loopback，節流也就形同關閉。
 - **套件與密鑰掃描** 在 GitHub Actions 執行（`.github/workflows/security.yml`）。要讓 Dependabot 自動開安全修補 PR，需到 repo 的 Settings → Code security 打開 *Dependabot security updates*。
 
+## 將 SSO 換成 Keycloak
+
+`.env` 沒有設 `SSO_PROVIDER=keycloak` 時，gateway 一律用 AuthCenter 登入。切換只改變「Web UI 的 access token 由誰簽發」：帳號、API key、額度與用量都不動，使用 API key 的 client 完全不受影響。切換分兩半，要一起做：oauth2-proxy（`deploy/.env`）與 gateway（`.env`）；只換了一半的期間 Web UI 會回 401。
+
+**1. Keycloak 端（realm 管理員）**
+
+| 項目 | 設定 |
+|---|---|
+| Client | OpenID Connect，開啟 *Client authentication*，使用 *Standard flow*；valid redirect URI 填 `https://<domain>/oauth2/callback`。它的 ID 就是 `KEYCLOAK_CLIENT_ID` / `OAUTH2_CLIENT_ID` |
+| 權限 | 在這個 client 上建兩個 **client role**：`read`（可以用 Web UI、可以從終端機工具登入）與 `admin`（管理頁）。要讓所有人都有 `read`，把它加進 realm 的 default roles。gateway 不讀 realm role |
+| 使用者名稱 | 每個人在 Keycloak 的 username 必須和在 gateway 的 username 相同，帳號就是靠它對應的。Keycloak 會把 username 轉成小寫，請先檢查：`SELECT username FROM users WHERE username <> lower(username) AND NOT is_service_account;`。名稱不同的人登入後會是一個全新的空帳號 |
+| 誰能決定 username | 只有目錄服務：*Realm settings* → *Login* 的 *User registration* 與 *Edit username* 都保持關閉。能拿到某個 username 的人，就拿到那個帳號，包含它的 API key |
+| 部門代碼（選用） | 在 client 的 dedicated scope 加一個 *User Attribute* mapper：token claim 名稱 `org_code`，加進 access token。以部門代碼設的 IP 白名單規則需要它 |
+| Access token 壽命 | 記下來（*Realm settings* → *Tokens*，預設 5 分鐘）：第 2 步的更新間隔要比它短 |
+
+**2. oauth2-proxy（`deploy/.env`）**
+
+```bash
+OIDC_ISSUER_URL=https://keycloak.company.com/realms/company
+OAUTH2_CLIENT_ID=llm_gateway
+OAUTH2_CLIENT_SECRET=<client 的 secret>
+# 要比 access token 的壽命短，否則第一張 token 過期後 Web UI 就會變成 401。
+#（不設 = 1h，AuthCenter 用的值。）
+OAUTH2_COOKIE_REFRESH=4m
+```
+
+**3. Gateway（`.env`）**
+
+```bash
+SSO_PROVIDER=keycloak
+KEYCLOAK_ISSUER_URL=https://keycloak.company.com/realms/company   # 同一個 realm 網址
+KEYCLOAK_CLIENT_ID=llm_gateway
+# KEYCLOAK_CA_FILE=/etc/ssl/company-ca.pem     # Keycloak 的憑證由內部 CA 簽發時
+# KEYCLOAK_JWKS_URL=...                        # gateway 連 Keycloak 的位址和 issuer 不同時
+```
+
+Gateway 會直接向 Keycloak 讀取 realm 的簽章金鑰（`<issuer>/protocol/openid-connect/certs`），所以 gateway 主機必須連得到 Keycloak；不需要複製金鑰檔，`keys/public.pem` 也不再被讀取。設了 `SSO_PROVIDER=keycloak` 卻沒有 issuer 時，gateway 不會啟動。
+
+**4. 兩邊一起套用**
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d    # 容器部署的主機：bash deploy/migration/compose.sh up -d
+systemctl --user restart llm-gateway
+```
+
+所有人都要重新登入。接著確認：儀表板是你原本的帳號（API key 沒變）；有 `admin` client role 的帳號打得開 `/admin`，沒有的帳號得到 403。
+
+- **nginx error log 出現 `upstream sent too big header`**：Keycloak 的 token 與 cookie 比較大。照 nginx 範例裡 `location = /oauth2/auth` 上方的說明加上那三行 `proxy_buffer*`。
+- **幾分鐘後每一頁都變成 401**：`OAUTH2_COOKIE_REFRESH` 沒有比 access token 的壽命短。
+- **一登入就是 401**：gateway 的 log 會寫原因（`JWT issuer mismatch`：`KEYCLOAK_ISSUER_URL` 和 token 的 `iss` 不同；`Keycloak signing keys not read`：gateway 連不到 Keycloak 或不信任它的憑證；`JWT audience mismatch`：`KEYCLOAK_CLIENT_ID` 不是 oauth2-proxy 用的那個 client）。
+- **403 `Insufficient scope`**：這個帳號沒有 client role `read`。
+- **終端機工具**（`POST /auth/api-key`）之後要送 Keycloak 的 access token。工具若用自己的（public）client，需要一個 *Audience* mapper 把 gateway 的 client 加進 `aud`，並讓它的 token 帶有 gateway client 的 role。
+- **換回去**：把 `.env` 的 `SSO_PROVIDER` 拿掉、`deploy/.env` 還原成 AuthCenter 的值（並拿掉 `OAUTH2_COOKIE_REFRESH`），兩邊再套用一次。
+
 ## 資料庫備份
 
 `deploy/backup-db.sh` 做線上備份：`pg_dump` 在一個快照裡讀完整個資料庫，備份內容一致，gateway 不用停。它只會擋住改表結構的動作，所以不要和 `alembic upgrade` / `setup.sh` 同時跑（偵測到 `alembic upgrade` 正在執行時，腳本會拒絕執行）。
@@ -304,7 +358,7 @@ docker compose -f deploy/docker-compose.yml up -d
 
 `.env` 由 systemd unit 讀入（`EnvironmentFile`），修改後要重啟 gateway。[`.env.example`](../.env.example) 說明了每個變數，根目錄 [README](../README.zh-TW.md) 的環境變數表列有預設值。摘要如下：
 
-- **核心**：`DATABASE_URL`、`APP_TITLE`，以及 Web UI 的 JWT 設定 `AUTH_BASE_URL`、`AUTH_CENTER_APP_ID`、`AUTH_CENTER_PUBLIC_KEY_PATH`
+- **核心**：`DATABASE_URL`、`APP_TITLE`，以及 Web UI 的 JWT 設定 `AUTH_BASE_URL`、`AUTH_CENTER_APP_ID`、`AUTH_CENTER_PUBLIC_KEY_PATH`（或 `SSO_PROVIDER=keycloak` 搭配 `KEYCLOAK_*`；見[將 SSO 換成 Keycloak](#將-sso-換成-keycloak)）
 - **雲端網路**：`AZURE_HTTP_PROXY` / `BEDROCK_HTTP_PROXY` 與 `AZURE_INSECURE` / `BEDROCK_INSECURE`（見「Proxy 設定」）
 - **Bedrock 共用憑證**：`BEDROCK_REGION`、`BEDROCK_AWS_ACCESS_KEY_ID`、`BEDROCK_AWS_SECRET_ACCESS_KEY`，供沒有自行設定的 `[bedrock_models.*]` 使用。放在這裡是為了讓 secret 永遠不會進到 `config.toml` 或管理頁面。
 - **預算**：`ENFORCE_DAILY_LIMIT=false` 是整個 gateway 的寬鬆模式（超支只記 log、不擋請求）。沒有單一使用者的「無上限」：使用者額度設 `0` 就是 $0 預算。

@@ -82,6 +82,7 @@ Azure 與 Bedrock 模型放在 `[azure_models.*]`、`[bedrock_models.*]`；價�
 |---|---|
 | `DATABASE_URL` | PostgreSQL 連線字串 |
 | `AUTH_BASE_URL`、`AUTH_CENTER_APP_ID`、`AUTH_CENTER_PUBLIC_KEY_PATH` | Web UI 登入：JWT 的 issuer、audience 與公鑰 |
+| `SSO_PROVIDER`、`KEYCLOAK_ISSUER_URL`、`KEYCLOAK_CLIENT_ID` | 改用 Keycloak 登入（`SSO_PROVIDER=keycloak`；預設 `authcenter`）。見 [deploy/README.zh-TW.md](deploy/README.zh-TW.md#將-sso-換成-keycloak) |
 | `AZURE_HTTP_PROXY`、`BEDROCK_HTTP_PROXY` | 雲端流量用的 HTTP proxy（地端流量不會走 proxy） |
 | `BEDROCK_REGION`、`BEDROCK_AWS_ACCESS_KEY_ID`、`BEDROCK_AWS_SECRET_ACCESS_KEY` | 所有 Bedrock 模型共用的 AWS 設定 |
 | `LANGFUSE_HOST`、`LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY` | 啟用 [Langfuse](https://langfuse.com) 追蹤（週報需要它） |
@@ -192,6 +193,8 @@ Gateway 會讀取的所有變數，分成三組：一定要設的、某個功能
 | `AUTH_BASE_URL` | AuthCenter：JWT 的 issuer。沒設的話 Web UI 與終端機工具都無法登入 |
 | `AUTH_CENTER_APP_ID` | AuthCenter：JWT 的 audience（佔位值 `llm_gateway`） |
 | `AUTH_CENTER_PUBLIC_KEY_PATH` | AuthCenter 的 RS256 公鑰（佔位值 `./keys/public.pem`） |
+
+設了 `SSO_PROVIDER=keycloak` 之後不再讀這三個 `AUTH_*`，改為必填 `KEYCLOAK_ISSUER_URL`（realm 的網址）；沒填的話 gateway 不會啟動。
 
 ### 功能需要的
 
