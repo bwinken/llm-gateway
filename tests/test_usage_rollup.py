@@ -81,6 +81,7 @@ def _reports(session, users) -> dict:
     return {
         "overview": stats.get_monthly_overview(session),
         "dau": stats.get_dau_trends(session),
+        "spend": stats.get_spend_trends(session),
         "daily": stats.get_daily_trends(session, users["alice"].id),
         "monthly": stats.get_user_monthly_summary(session, users["alice"].id),
         "models": stats.get_model_breakdown(session, users["alice"].id),

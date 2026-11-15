@@ -33,6 +33,7 @@ from app.core.timeutil import LOCAL_TZ, local_month_start, seconds_until_local_m
 from app.services import client_patch, client_rules
 from app.services.model_catalog import (
     catalog_keys,
+    fallback_target,
     hidden_cloud_backends as _hidden_cloud_backends,
     resolve_prices as _resolve_prices,
     usage_row_key,
@@ -313,6 +314,7 @@ def dashboard(
                 "name": model_name,
                 "base_url": base_url,
                 "alive": is_alive(base_url),
+                "falls_back_to": None if is_alive(base_url) else fallback_target(model_name),
                 "display_name": route.get("display_name", ""),
                 "context_window": route.get("context_window"),
                 "max_output_tokens": route.get("max_output_tokens"),

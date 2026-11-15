@@ -12,6 +12,7 @@ from typing import Any
 from app.core import config
 from app.core.server_state import get_metrics, is_alive
 from app.models.schema import User
+from app.services import model_fallback
 from app.services.model_order import catalog_key, positions, type_rank, unknown_key
 
 # ``usage_logs.backend`` → the name the account endpoints use (``/v1/me``).
@@ -122,6 +123,31 @@ def usable_models(user: User) -> list[dict[str, Any]]:
     return rows
 
 
+def fallback_target(alias: str) -> str | None:
+    """The on-prem model that serves requests for ``alias`` while its server
+    is down, by the request path's own rule (``model_fallback.pick``, with
+    the types the endpoints for that model accept). None when no stand-in is
+    up, or when it is a hidden model (its name is not for accounts to see).
+    """
+    routing = config.get_model_routing_snapshot()
+    entry = routing.get(alias)
+    if entry is None:
+        return None
+    picked = model_fallback.pick(
+        alias,
+        model_fallback.allowed_types_for(entry.get("type", "llm")),
+        routing,
+        dict(config.FALLBACK_MAP),
+        is_alive,
+    )
+    if not picked:
+        return None
+    target, route, how = picked
+    if how == "best_effort" or target == alias or route.get("hidden"):
+        return None
+    return target
+
+
 def visible_models(user: User) -> list[dict[str, Any]]:
     """Every model ``user`` can see, in display order: on-prem first, then
     the cloud backends the account may use; hidden entries left out.
@@ -133,7 +159,9 @@ def visible_models(user: User) -> list[dict[str, Any]]:
     ``state`` is ``up`` / ``down`` for on-prem servers (the health loop's
     view, per worker), with ``running`` / ``waiting`` when the server's
     ``/metrics`` answered, and ``unchecked`` for cloud models, which the
-    gateway does not probe. No value is ever None: absent keys are omitted.
+    gateway does not probe. A ``down`` row names ``falls_back_to``, the model
+    its requests go to meanwhile, when one is up and not hidden
+    (``fallback_target``). No value is ever None: absent keys are omitted.
     """
     pricing_map = config.get_pricing_snapshot()
     order = _positions()
@@ -156,6 +184,10 @@ def visible_models(user: User) -> list[dict[str, Any]]:
             if backend == "vllm":
                 base_url = entry["base_url"]
                 row["state"] = "up" if is_alive(base_url) else "down"
+                if row["state"] == "down":
+                    target = fallback_target(alias)
+                    if target:
+                        row["falls_back_to"] = target
                 load = get_metrics(base_url) or {}
                 for key in ("running", "waiting"):
                     if load.get(key) is not None:

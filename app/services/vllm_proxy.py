@@ -45,6 +45,7 @@ from app.services.anthropic_adapter import (
     openai_to_anthropic_response,
     summarize_request_shape,
 )
+from app.services import model_fallback
 from app.services.billing import _log_error, _log_usage, _warn_if_slow_headers
 from app.services.downstream import (
     _ANTHROPIC_PING_EVENT,
@@ -94,27 +95,16 @@ def _resolve_model(
     else:
         reason = f"model '{model_name}' not found or wrong type for {allowed_types}"
 
-    # Configured fallback: check FALLBACK_MAP first
-    for at in allowed_types:
-        fb_alias = FALLBACK_MAP.get(at)
-        if fb_alias and fb_alias != model_name and fb_alias in MODEL_ROUTING:
-            fb_route = MODEL_ROUTING[fb_alias]
-            if is_alive(fb_route["base_url"]):
-                logger.warning("{} - falling back to configured fallback '{}'", reason, fb_alias)
-                return fb_alias, fb_route, reason
-
-    # Auto fallback: first alive model with compatible type
-    routing_snapshot = dict(MODEL_ROUTING)
-    for fb_name, fb_route in routing_snapshot.items():
-        if fb_route["type"] in allowed_types and is_alive(fb_route["base_url"]):
+    picked = model_fallback.pick(model_name, allowed_types, MODEL_ROUTING, FALLBACK_MAP, is_alive)
+    if picked:
+        fb_name, fb_route, how = picked
+        if how == "configured":
+            logger.warning("{} - falling back to configured fallback '{}'", reason, fb_name)
+        elif how == "auto":
             logger.warning("{} - falling back to '{}'", reason, fb_name)
-            return fb_name, fb_route, reason
-
-    # No alive server — best effort: use any model with compatible type
-    for fb_name, fb_route in routing_snapshot.items():
-        if fb_route["type"] in allowed_types:
+        else:
             logger.warning("{} - no alive server, best-effort fallback to '{}'", reason, fb_name)
-            return fb_name, fb_route, reason
+        return fb_name, fb_route, reason
 
     raise HTTPException(
         status_code=400,

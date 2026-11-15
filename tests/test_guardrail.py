@@ -612,6 +612,21 @@ class TestAdmin:
         assert "Guardrail" in resp.text and "Qwen3Guard-Gen" in resp.text
         assert "app/services/guardrail.py" in resp.text
 
+    def test_category_rules_say_what_they_do_under_each_action(self, client, admin_user):
+        # Under Monitor nothing is refused: a category set to block must not
+        # read as if it would be; the stored value stays "block".
+        def page(action):
+            stored = dict(GUARDRAIL_OFF, action=action, category_rules={"Violent": "block"})
+            with patch("app.routers.admin.security.get_guardrail_settings", return_value=stored):
+                return client.get("/admin", headers=web_auth_header(sub="admin", scopes=["admin"])).text
+
+        monitor = page("monitor")
+        assert '<option value="block" selected>would block</option>' in monitor
+        assert "Action is Monitor: nothing is refused." in monitor
+        block = page("block")
+        assert '<option value="block" selected>block</option>' in block
+        assert ">would block</option>" not in block
+
     def test_save(self, client, admin_user):
         stored = dict(GUARDRAIL_OFF, api_key="old-key", api_key_set=True)
         with patch("app.routers.admin.security.get_guardrail_settings", return_value=stored), \

@@ -397,6 +397,11 @@ def status() -> dict[str, Any]:
         "names": [field.name for field in fields],   # the file's order, for the preview
         "unknown_models": unknown_models(fields),
         "preview": preview(),
+        # Suggestions for the card's form editor: every chat model alias an
+        # account with both clouds could be offered. Validation stays parse's.
+        "models": sorted(_models(_account(True, True))[1]),
+        "tiers": list(TIERS),
+        "kinds": list(KINDS),
     }
 
 

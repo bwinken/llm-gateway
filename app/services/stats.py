@@ -150,6 +150,31 @@ def get_dau_trends(session: Session, days: int = 30) -> list[dict]:
     return [{"date": day.isoformat(), "dau": n} for day, n in sorted(per_day.items())]
 
 
+SPEND_BACKENDS = ("vllm", "azure", "bedrock")
+
+
+def get_spend_trends(session: Session, days: int = 30) -> list[dict]:
+    """Estimated spend of all accounts per local day and backend for the last
+    ``days`` days, today included, every day present (zeros on quiet days:
+    the chart's axis is evenly spaced). Read through ``aggregate``, so the
+    same with or without the rollup. A backend outside ``SPEND_BACKENDS``
+    counts in ``total`` only."""
+    first = local_today() - timedelta(days=days - 1)
+    by_day: dict[str, dict] = {}
+    for (day, backend), entry in aggregate(session, first, _tomorrow(), ("day", "backend")).items():
+        row = by_day.setdefault(day.isoformat(), {b: 0.0 for b in SPEND_BACKENDS} | {"total": 0.0})
+        cost = float(entry["cost_usd"])
+        if backend in SPEND_BACKENDS:
+            row[backend] += cost
+        row["total"] += cost
+    out = []
+    for i in range(days):
+        day = (first + timedelta(days=i)).isoformat()
+        row = by_day.get(day) or {b: 0.0 for b in SPEND_BACKENDS} | {"total": 0.0}
+        out.append({"date": day, **{k: round(v, 4) for k, v in row.items()}})
+    return out
+
+
 def get_monthly_all_users_usage(
     session: Session, user_ids: Iterable[int] | None = None,
 ) -> dict[int, dict]:
@@ -324,13 +349,18 @@ def get_model_breakdown(
 
 
 def get_today_totals(session: Session) -> dict:
-    """All-account totals for today (local day): cost, requests, and how many
-    people (app accounts excluded) made at least one request."""
+    """All-account totals for today (local day): cost (and its Azure / AWS
+    parts), requests, and how many people (app accounts excluded) made at
+    least one request."""
     today_start = local_day_start_utc()
+    azure_case = sa_case((UsageLog.backend == "azure", UsageLog.cost_usd), else_=0)
+    bedrock_case = sa_case((UsageLog.backend == "bedrock", UsageLog.cost_usd), else_=0)
     row = session.exec(
         select(
             func.coalesce(func.sum(UsageLog.cost_usd), 0),
             func.count(UsageLog.id),
+            func.coalesce(func.sum(azure_case), 0),
+            func.coalesce(func.sum(bedrock_case), 0),
         ).where(UsageLog.created_at >= today_start)
     ).first()
     # Distinct users first, counted outside: lets PostgreSQL hash the
@@ -348,6 +378,8 @@ def get_today_totals(session: Session) -> dict:
         "cost": round(float(row[0]), 4) if row else 0.0,
         "requests": int(row[1]) if row else 0,
         "active_users": int(active or 0),
+        "azure_cost": round(float(row[2]), 4) if row else 0.0,
+        "bedrock_cost": round(float(row[3]), 4) if row else 0.0,
     }
 
 

@@ -1,0 +1,150 @@
+{# The account drawer: GET /admin/users/{id}/detail, opened from a name in the
+   Users / Service accounts tables or a leaderboard (admin.html:
+   data-um-detail). Read-only; the key itself only through the logged
+   key window. #}
+{% from "_admin_macros.html" import format_token, money %}
+{% set u = d.user %}
+{% set BACKEND = {'vllm': ('On-prem', '#3dd68c'), 'azure': ('Azure', '#a78bfa'), 'bedrock': ('AWS', '#ff9933')} %}
+<div class="ud" data-ud-user="{{ u.id }}">
+    <header class="ud-head">
+        <div class="flex items-start gap-3 min-w-0">
+            <div class="h-10 w-10 rounded-lg flex-shrink-0 flex items-center justify-center font-bold {{ 'bg-[rgba(99,152,255,0.1)] text-ab' if u.is_service_account else 'bg-[rgba(167,139,250,0.1)] text-av' }}">
+                {{ u.username[:1]|upper }}
+            </div>
+            <div class="min-w-0">
+                <h2 id="udTitle" class="text-base font-semibold text-t1 truncate">{{ u.display_name or u.username }}</h2>
+                <div class="text-xs text-t4 font-mono truncate">
+                    {{ u.username }}{% if u.org_code %} · {{ u.org_code }}{% endif %}{% if d.created %} · since {{ d.created[:10] }}{% endif %}
+                </div>
+                <div class="flex flex-wrap gap-1 mt-1.5">
+                    {% if u.is_service_account %}<span class="gw-badge">Service</span>{% else %}<span class="gw-badge gw-badge-muted">User</span>{% endif %}
+                    {% if u.is_disabled %}<span class="gw-badge gw-badge-off">Disabled</span>{% endif %}
+                    {% if u.can_use_azure %}<span class="gw-badge" style="color:#cab9ff;background:rgba(167,139,250,0.12);border-color:rgba(167,139,250,0.3)">Azure</span>{% endif %}
+                    {% if u.can_use_bedrock %}<span class="gw-badge" style="color:#ffcb8a;background:rgba(255,153,51,0.1);border-color:rgba(255,153,51,0.3)">AWS</span>{% endif %}
+                    {% if u.concurrency_waived %}<span class="gw-badge gw-badge-muted">Concurrency waived</span>{% endif %}
+                </div>
+            </div>
+        </div>
+        <button type="button" class="gw-btn gw-btn-ghost text-sm px-2 py-1" data-ud-close aria-label="Close">&times;</button>
+    </header>
+
+    <section class="ud-sec">
+        <h3 class="ud-h">Today</h3>
+        <div class="flex items-baseline justify-between">
+            <span class="text-2xl font-mono font-bold text-t1">{{ money(d.today.total_cost_usd) }}</span>
+            <span class="text-xs text-t4">of ${{ '%g'|format(u.daily_limit_usd) }} daily limit · {{ d.today.total_requests }} requests</span>
+        </div>
+        {% set pct = d.limit_share if d.limit_share is not none else 100 %}
+        <div class="ud-bar mt-2"><div style="width:{{ [pct, 100]|min }}%;background:{{ '#ff5c5c' if pct >= 100 else '#f5a623' if pct >= 80 else '#3dd68c' }}"></div></div>
+        <div class="text-[11px] text-t4 mt-1">
+            {% if d.limit_share is none %}$0 budget: every request is refused.
+            {% elif pct >= 100 %}<span class="text-ar">Limit reached: requests get 429 until local midnight.</span>
+            {% else %}{{ '%.0f'|format(pct) }}% used{% endif %}
+        </div>
+        {% if d.cloud %}
+        <div class="text-xs text-t3 mt-2">
+            Cloud today <span class="font-mono text-t2">{{ money(d.cloud_spent) }}</span>
+            {% if d.cloud_limit is none %}· no cloud cap
+            {% else %}of <span class="font-mono">${{ '%g'|format(d.cloud_limit) }}</span>{% if u.cloud_daily_limit_usd is none %} <span class="text-t4">(default)</span>{% endif %}{% endif %}
+        </div>
+        {% endif %}
+    </section>
+
+    <section class="ud-sec">
+        <div class="flex items-baseline justify-between">
+            <h3 class="ud-h">Last 30 days</h3>
+            <span class="text-xs text-t4"><span class="font-mono text-t2">{{ money(d.total_30d) }}</span> · {{ d.requests_30d }} requests · active {{ d.active_days }} d</span>
+        </div>
+        {# Daily spend as bars, drawn here: no chart library for 30 rectangles. #}
+        {% set peak = (d.trend | map(attribute='cost') | max) or 0 %}
+        <svg class="ud-spark" viewBox="0 0 300 64" preserveAspectRatio="none" role="img" aria-label="Daily spend, last 30 days">
+            {% for day in d.trend %}
+            {% set h = (day.cost / peak * 60) if peak else 0 %}
+            <rect x="{{ loop.index0 * 10 + 1 }}" y="{{ 64 - ([h, 1.5 if day.reqs else 0]|max) }}" width="8"
+                  height="{{ [h, 1.5 if day.reqs else 0]|max }}" rx="1.5"
+                  fill="{{ '#3dd68c' if loop.last else 'rgba(61,214,140,0.45)' }}"><title>{{ day.date }}: ${{ '%.4f'|format(day.cost) }} · {{ day.reqs }} requests</title></rect>
+            {% endfor %}
+        </svg>
+        <div class="flex justify-between text-[10px] font-mono text-t4"><span>{{ d.trend[0].date[5:] }}</span><span>today</span></div>
+
+        {% if d.models %}
+        <table class="ud-table mt-3">
+            <thead><tr><th>Model</th><th class="text-right">Reqs</th><th class="text-right">Cost</th><th style="width:30%">Share</th></tr></thead>
+            <tbody>
+            {% for m in d.models %}
+            {% set b = BACKEND.get(m.backend, (m.backend, '#868da0')) %}
+            <tr>
+                <td class="truncate" style="max-width:11rem"><span class="inline-block w-2 h-2 rounded-full mr-1.5" style="background:{{ b[1] }}" title="{{ b[0] }}"></span><code class="text-t1">{{ m.model }}</code></td>
+                <td class="text-right font-mono text-t3">{{ m.requests }}</td>
+                <td class="text-right font-mono text-t2">{{ money(m.cost) }}</td>
+                <td><div class="ud-bar ud-bar-thin"><div style="width:{{ m.share }}%;background:{{ b[1] }}"></div></div></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% if d.more_models %}<div class="text-[11px] text-t4 mt-1">and {{ d.more_models }} more</div>{% endif %}
+        {% else %}
+        <div class="text-xs text-t4 mt-2">No requests in the last 30 days.</div>
+        {% endif %}
+    </section>
+
+    <section class="ud-sec">
+        <h3 class="ud-h">Client notices <span class="text-t4 font-normal normal-case">last 15 days</span></h3>
+        {% for v in d.violations %}
+        <div class="flex items-center gap-2 text-xs py-1">
+            <code class="text-[10px] px-1 rounded {{ 'text-t4 bg-n3' if v.resolved else 'text-aa' }}" style="{{ '' if v.resolved else 'background:rgba(245,166,35,0.1)' }}">{{ v.rule_id }}</code>
+            <span class="{{ 'text-t4' if v.resolved else 'text-t2' }} flex-1 truncate">{{ v.name }}</span>
+            <span class="text-t4 font-mono whitespace-nowrap">{{ d.local_label(v.last_seen_at)[5:16] }}</span>
+            <span class="whitespace-nowrap {{ 'text-ag' if v.resolved else 'text-aa' }}">{{ 'fixed' if v.resolved else 'open' }}</span>
+        </div>
+        {% else %}
+        <div class="text-xs text-t4">None.</div>
+        {% endfor %}
+        {% if d.anomalies %}
+        <h3 class="ud-h mt-3">Usage anomalies</h3>
+        {% for a in d.anomalies %}
+        <div class="flex items-center gap-2 text-xs py-1">
+            <span class="{{ 'text-ar' if a.severity == 'critical' else 'text-aa' if a.severity == 'warning' else 'text-t3' }}">{{ a.severity }}</span>
+            <span class="text-t2 flex-1">{{ a.rule | replace('_', ' ') }}</span>
+            <span class="text-t4 font-mono">{{ a.at[5:16] }}</span>
+            <span class="text-t4">{{ a.status }}</span>
+        </div>
+        {% endfor %}
+        {% endif %}
+    </section>
+
+    <section class="ud-sec">
+        <div class="flex items-center justify-between">
+            <h3 class="ud-h">API key</h3>
+            <button type="button" class="gw-btn gw-btn-ghost text-xs px-2.5 py-1" data-username="{{ u.username }}" data-uid="{{ u.id }}" onclick="showKeyModal(this)">View key</button>
+        </div>
+        <dl class="ud-dl">
+            <dt>Issued</dt><dd>{{ d.key_issued or 'before tracking began' }}</dd>
+            <dt>Last used</dt><dd class="{{ 'text-aa' if d.key_stale }}">{{ d.key_last_used or 'never' }} <span class="text-t4">({{ d.key_use }})</span></dd>
+        </dl>
+        {% if d.key_stale %}<div class="text-[11px] text-aa mt-1">Unused for 90 days or more: a candidate for the access review.</div>{% endif %}
+        {% if d.key_legacy %}<div class="text-[11px] text-aa mt-1">Older-format key: regenerating gives a 256-bit one.</div>{% endif %}
+        {% if u.is_service_account %}
+        <div class="text-xs text-t3 mt-2">Owners: {% if d.related %}<span class="font-mono text-t2">{{ d.related | join(', ') }}</span>{% else %}<span class="text-aa">nobody</span>{% endif %}</div>
+        {% elif d.related %}
+        <div class="text-xs text-t3 mt-2">Owns: <span class="font-mono text-t2">{{ d.related | join(', ') }}</span></div>
+        {% endif %}
+    </section>
+
+    <section class="ud-sec">
+        <h3 class="ud-h">Recent changes and activity</h3>
+        {% for r in d.audit %}
+        <div class="ud-audit">
+            <span class="text-t4 font-mono whitespace-nowrap">{{ r.at[5:16] }}</span>
+            <span class="text-t2 truncate" title="{{ r.method }} {{ r.path }}{% if r.summary %} · {{ r.summary }}{% endif %}">
+                {{ r.route | replace('/admin/users/{user_id}/', '') | replace('/admin/users/{user_id}', 'account') }}
+                {% if r.summary %}<span class="text-t4"> · {{ r.summary }}</span>{% endif %}
+            </span>
+            <span class="text-t4 truncate">{{ r.actor or '—' }}</span>
+            <span class="font-mono {{ 'text-t4' if r.status < 400 else 'text-ar' }}">{{ r.status }}</span>
+        </div>
+        {% else %}
+        <div class="text-xs text-t4">Nothing recorded.</div>
+        {% endfor %}
+    </section>
+</div>

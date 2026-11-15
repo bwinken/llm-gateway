@@ -521,6 +521,26 @@ def violations(session: Session, rule_id: str, now: datetime | None = None) -> l
     ).all())
 
 
+def account_violations(session: Session, username: str, now: datetime | None = None) -> list[dict[str, Any]]:
+    """One account's violations inside the window, newest first, for the
+    admin's account drawer: every check it tripped, open or reported fixed
+    (``is_resolved``), with the check's admin label (retired ones included)."""
+    names = {check.id: check.name for check in client_checks.CHECKS}
+    rows = session.exec(
+        select(ClientViolation)
+        .where(ClientViolation.username == username, ClientViolation.last_seen_at >= _active_since(now))
+        .order_by(ClientViolation.last_seen_at.desc())  # type: ignore[attr-defined]
+    ).all()
+    return [
+        {
+            "rule_id": row.rule_id, "name": names.get(row.rule_id, row.rule_id),
+            "last_seen_at": row.last_seen_at, "client_version": row.client_version,
+            "resolved": is_resolved(row), "mailed_at": row.mailed_at,
+        }
+        for row in rows
+    ]
+
+
 def history(session: Session, now: datetime | None = None) -> dict[str, dict[str, Any]]:
     """Per violation id, over all time: how many accounts ever had one, when
     the last one was seen and how many days ago. For judging when a check
