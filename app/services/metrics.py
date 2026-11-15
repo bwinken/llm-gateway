@@ -7,7 +7,7 @@ Off (the default) every function here is a no-op that never imports
 On, ``GET /metrics`` serves the gateway's own counters and histograms:
 
   llm_gateway_requests_total{endpoint,backend,model,status}
-  llm_gateway_tokens_total{backend,model,kind}          kind: input|output|cache_read
+  llm_gateway_tokens_total{backend,model,kind}          kind: input|output|cache_read|cache_write
   llm_gateway_cost_usd_total{backend,model}
   llm_gateway_request_duration_seconds{endpoint,backend,model}
   llm_gateway_ttft_seconds{backend,model}               streams only
@@ -208,6 +208,7 @@ def observe_request(
     endpoint: str, backend: str, model: str,
     input_tokens: int, output_tokens: int, cached_tokens: int, cost: float,
     latency_ms: float | None, timing: dict[str, Any] | None,
+    cache_write_tokens: int = 0,
 ) -> None:
     """One completed (billed) request, from the ``_log_usage`` seam."""
     try:
@@ -221,6 +222,8 @@ def observe_request(
         tokens.labels(backend, label, "output").inc(max(output_tokens, 0))
         if cached_tokens:
             tokens.labels(backend, label, "cache_read").inc(max(cached_tokens, 0))
+        if cache_write_tokens:
+            tokens.labels(backend, label, "cache_write").inc(max(cache_write_tokens, 0))
         m["cost"].labels(backend, label).inc(max(float(cost), 0.0))
         if latency_ms is not None:
             m["duration"].labels(endpoint, backend, label).observe(latency_ms / 1000.0)

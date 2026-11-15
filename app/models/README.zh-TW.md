@@ -255,10 +255,11 @@ classDiagram
 ```
 cost_usd = (uncached_input_tokens × input_price_per_1m
             + cached_input_tokens × cached_input_price_per_1m
+            + cache_write_tokens × cache_write_input_price_per_1m
             + output_tokens × output_price_per_1m) / 1,000,000
 ```
 
-價格來自 `config.toml`：先看模型本身的覆寫值，其次 `[pricing.<type>]`，最後 `[pricing]`。只有在設定了 `cached_input_price_per_1m` 且 backend 回報快取命中時，快取的輸入 token 才以該價格計費；否則所有輸入一律以 `input_price_per_1m` 計費。
+價格來自 `config.toml`：先看模型本身的覆寫值，其次 `[pricing.<type>]`，最後 `[pricing]`。只有在設定了 `cached_input_price_per_1m` 且 backend 回報快取命中時，快取的輸入 token 才以該價格計費；否則所有輸入一律以 `input_price_per_1m` 計費。快取寫入（cache write）的 token 同理，以 `cache_write_input_price_per_1m` 計費（目前只有 Bedrock native Messages 路徑會回報）；`uncached_input_tokens` 是扣掉兩者後剩下的部分。
 
 ### 索引
 

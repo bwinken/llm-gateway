@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -276,7 +277,27 @@ class TestNativeNonStream:
         args, kwargs = log_usage.call_args
         assert args[1:6] == ("bedrock-native", "llm", 1060, 7, "/aws/v1/messages")
         assert kwargs["cached_tokens"] == 1000
+        assert kwargs["cache_write_tokens"] == 50
         assert kwargs["backend"] == "bedrock"
+
+    def test_cache_writes_bill_at_the_cache_write_price(self, client, native_entry):
+        native_entry.update({
+            "input_price_per_1m": 3.0, "output_price_per_1m": 15.0,
+            "cached_input_price_per_1m": 0.3, "cache_write_input_price_per_1m": 3.75,
+        })
+        usage = {"input_tokens": 10, "cache_read_input_tokens": 1000,
+                 "cache_creation_input_tokens": 50, "output_tokens": 7}
+        fake_post, _ = _capture_post(make_httpx_response(200, _message(usage=usage)))
+        with patch.object(client.__httpx_mock__, "post", side_effect=fake_post), \
+             patch("app.services.billing._log_usage_sync") as write:
+            resp = _post_messages(client, {
+                "model": "bedrock-native", "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hi"}],
+            })
+        assert resp.status_code == 200
+        cost = write.call_args.args[6]
+        # 10 * 3 + 1000 * 0.3 + 50 * 3.75 + 7 * 15, per million
+        assert cost == (Decimal("30") + Decimal("300") + Decimal("187.5") + Decimal("105")) / 1_000_000
 
     def test_aws_shaped_error_is_wrapped_in_anthropic_shape(self, client, native_entry):
         fake_post, _ = _capture_post(make_httpx_response(400, {"message": "messages: field required"}))
@@ -336,6 +357,7 @@ class TestNativeStream:
         # 4 uncached + 100 cache reads + 20 cache writes; output from message_delta.
         assert args[3:5] == (124, 9)
         assert kwargs["cached_tokens"] == 100
+        assert kwargs["cache_write_tokens"] == 20
 
     def test_truncated_stream_ends_with_overloaded_error(self, client, native_entry):
         resp, _, _ = self._stream(client, SSE_LINES[:9])

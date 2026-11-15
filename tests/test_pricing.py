@@ -96,3 +96,46 @@ class TestCostBreakdown:
         assert bd["output"] == Decimal("3000") / 1_000_000
         assert bd["cache_read_input_tokens"] == Decimal("0")
         assert bd["total"] == _calc_cost(route, "llm", 1000, 500)
+
+
+class TestCacheWritePricing:
+    """`cache_write_input_price_per_1m`: what writing the prompt cache costs."""
+
+    ROUTE = {
+        "input_price_per_1m": 3.0,
+        "output_price_per_1m": 15.0,
+        "cached_input_price_per_1m": 0.3,
+        "cache_write_input_price_per_1m": 3.75,
+    }
+
+    def test_writes_bill_at_their_own_price(self):
+        # 10_000 input: 6_000 cache reads, 2_000 cache writes, 2_000 uncached
+        #   uncached 2_000 * 3 = 6_000; reads 6_000 * 0.3 = 1_800;
+        #   writes 2_000 * 3.75 = 7_500; output 1_000 * 15 = 15_000
+        bd = _calc_cost_breakdown(self.ROUTE, "llm", 10_000, 1_000,
+                                  cached_tokens=6_000, cache_write_tokens=2_000)
+        assert bd["cache_read_input_tokens"] == Decimal("1800") / 1_000_000
+        assert bd["cache_creation_input_tokens"] == Decimal("7500") / 1_000_000
+        assert bd["input"] == Decimal("15300") / 1_000_000
+        assert bd["total"] == Decimal("30300") / 1_000_000
+        assert bd["total"] == _calc_cost(self.ROUTE, "llm", 10_000, 1_000,
+                                         cached_tokens=6_000, cache_write_tokens=2_000)
+
+    def test_no_write_price_charges_full_input(self):
+        route = {k: v for k, v in self.ROUTE.items() if k != "cache_write_input_price_per_1m"}
+        with_writes = _calc_cost_breakdown(route, "llm", 10_000, 0, cache_write_tokens=2_000)
+        without = _calc_cost_breakdown(route, "llm", 10_000, 0)
+        assert with_writes == without
+        assert "cache_creation_input_tokens" not in with_writes
+
+    def test_writes_clamped_to_what_reads_leave(self):
+        # 10_000 input, 8_000 reads, a bogus 99_999 writes → 2_000 writes
+        cost = _calc_cost(self.ROUTE, "llm", 10_000, 0,
+                          cached_tokens=8_000, cache_write_tokens=99_999)
+        assert cost == (Decimal("8000") * Decimal("0.3") + Decimal("2000") * Decimal("3.75")) / 1_000_000
+
+    def test_write_price_without_input_and_output_override_is_ignored(self):
+        # Like the cached price, a per-model write price only applies on top
+        # of a per-model input + output pair; otherwise type pricing applies.
+        route = {"cache_write_input_price_per_1m": 100.0}
+        assert _calc_cost(route, "llm", 1_000_000, 0, cache_write_tokens=1_000_000) == Decimal("0.50")

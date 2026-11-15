@@ -369,6 +369,7 @@ Pure-function tests on `_calc_cost`, independent of any router.
 |---|---|
 | `TestCalcCostBasics` | Per-model `input_price_per_1m` / `output_price_per_1m` override; fallback to per-type `[pricing.<type>]` when the route carries no override |
 | `TestCachedTokenPricing` | `cached_tokens` billed at the discounted `cached_input_price_per_1m` with the uncached remainder at full input price; no cached price → full input rate even when `cached_tokens` is passed; `cached_tokens=0` is a no-op; cached count clamped to total input (never negative); the vLLM path is unaffected since it never passes `cached_tokens` |
+| `TestCacheWritePricing` | `cache_write_tokens` billed at `cache_write_input_price_per_1m` beside cache reads at the cached price and the rest at full input; no write price → full input rate and no `cache_creation_input_tokens` cost key; writes clamped into what the reads leave; a write price without a per-model input + output pair is ignored |
 | `TestCostBreakdown` | `_calc_cost_breakdown` (Langfuse `costDetails`) components sum to `_calc_cost`'s total, with and without a cached rate |
 
 ### `test_daily_limit.py` — Daily spend cap

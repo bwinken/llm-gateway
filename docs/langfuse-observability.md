@@ -102,8 +102,8 @@ class GenerationRecord:
     model_alias: str         # user-facing alias  -> Langfuse `model`
     real_model: str          # downstream model/deployment -> metadata
     model_type: str          # llm | vlm | embedding | reranker | systemone | ...
-    usage: dict              # {"input": int, "output": int, "cache_read_input_tokens": int, "total": int}
-    cost: dict               # {"input": Decimal, "output": Decimal, "cache_read_input_tokens": Decimal, "total": Decimal}
+    usage: dict              # {"input": int, "output": int, "cache_read_input_tokens": int, "cache_creation_input_tokens": int?, "total": int}
+    cost: dict               # {"input": Decimal, "output": Decimal, "cache_read_input_tokens": Decimal, "cache_creation_input_tokens": Decimal?, "total": Decimal}
     model_parameters: dict   # {temperature, top_p, max_tokens, reasoning_effort, stream}
     fallback_reason: str | None
     req_shape: dict          # {msgs, asst, asst_thinking, asst_empty}
