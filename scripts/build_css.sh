@@ -79,6 +79,7 @@ build() {
     # config and the version, so every machine builds the same bytes.
     "$BIN" --config "$CONFIG" --input "$INPUT" --output "$1" --minify 2>"$ROOT/.cache/tailwind.log" || {
         cat "$ROOT/.cache/tailwind.log" >&2
+        rm -f "$1"
         exit 1
     }
 }
@@ -97,6 +98,9 @@ if [ "$check" = 1 ]; then
 fi
 
 mkdir -p "$(dirname "$OUTPUT")"
-build "$OUTPUT"
+# Into a temporary file first: a failed build leaves the committed stylesheet
+# as it was, never half written.
+build "$OUTPUT.tmp"
+mv "$OUTPUT.tmp" "$OUTPUT"
 echo "Built app/static/css/tailwind.css ($(wc -c < "$OUTPUT" | tr -d ' ') bytes)."
 echo "Commit it together with the template change."

@@ -88,7 +88,7 @@ rsync -a --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
 systemctl --user restart llm-gateway
 ```
 
-> Nothing to build: the pages' stylesheet, Chart.js and fonts are committed under `app/static/` and copied with the rest. Only someone who changed a template rebuilds the stylesheet, before committing ([docs/frontend-build.md](../docs/frontend-build.md)).
+> Nothing to build: the pages' stylesheet, Chart.js and fonts are committed under `app/static/` and copied with the rest. Only someone who changed a template rebuilds the stylesheet, before committing ([docs/frontend-build.md](../docs/frontend-build.md)). `setup.sh` also asks in Step 1 whether to rebuild it (default no).
 >
 > `config.toml`, `.env`, `keys/`, and `deploy/.env` are never overwritten. If a systemd unit or timer under `deploy/` changed, run `setup.sh` instead, which reinstalls them.
 

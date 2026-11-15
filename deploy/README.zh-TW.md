@@ -82,12 +82,14 @@ bash deploy/setup.sh      # 保留既有設定；更新程式碼 + 依賴、遷�
 ```bash
 git pull
 rsync -a --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
-    --exclude='config.toml' --exclude='.env' --exclude='keys/' \
+    --exclude='config.toml' --exclude='.env' --exclude='keys/' --exclude='.cache/' \
     ./ ~/opt/llm-gateway/
 (cd ~/opt/llm-gateway && uv run alembic upgrade head)   # 重啟前一定要先遷移
 systemctl --user restart llm-gateway
 ```
 
+> 不需要 build：網頁的樣式表、Chart.js 和字型都已 commit 在 `app/static/`，會跟著一起複製。只有改了模板的人要在 commit 前重新產生樣式表（[docs/frontend-build.md](../docs/frontend-build.md)）。`setup.sh` 的 Step 1 也會問要不要重新 build，預設不要。
+>
 > `config.toml`、`.env`、`keys/`、`deploy/.env` 不會被覆蓋。若 `deploy/` 下的 systemd unit 或 timer 有變動，請改跑 `setup.sh`，它會重新安裝。
 
 ## 服務管理

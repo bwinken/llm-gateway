@@ -155,6 +155,20 @@ systemctl --user restart llm-gateway
 
 伺服器上**不用**執行 `build_css.sh`：build 好的檔案已經在 `git pull` 拉下來的內容裡，`rsync` 會把 `app/static/` 一起複製過去。
 
+### 用 `deploy/setup.sh` 部署時
+
+`setup.sh` 的 Step 1 會問：
+
+```
+? 要重新 build 網頁樣式表嗎？ [y/N]:
+```
+
+- **一般直接按 Enter（= 不要）**：使用 repo 裡已經 build 好的樣式表。
+- **輸入 `y`**：只有你在這份程式碼裡改過模板、卻還沒重新 build 時才需要。它會在來源目錄執行 `scripts/build_css.sh`，接著的複製步驟會把新的樣式表一起帶過去。
+  - 結果和 repo 裡的一樣：會顯示「內容和 repo 裡的一樣，不用 commit」。
+  - 結果不一樣：會提醒你把 `app/static/css/tailwind.css` 連同模板一起 commit。不然下次別人部署時，又會拿到舊的樣式表。
+  - build 失敗（例如這台機器連不到 github.com）：只會顯示警告，部署照常繼續，使用 repo 裡的樣式表。
+
 重點是：沒有多出來的步驟。
 
 ### 容器部署（deploy/migration）
