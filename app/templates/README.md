@@ -83,7 +83,7 @@ The budget hero stays at the top; the lower half is split into two tabs (**Model
 **File**: `admin.html` ← `admin/page.py`
 **Permission**: JWT scope includes `admin`
 
-Above the tab bar: only the **Needs attention** strip, a `<details>` that is one line of counts when folded (open on Overview, folded on the other tabs; it follows the `gw:tab` event), so the tab bar is on screen when the page opens. Below it, the shared `_admin_tabs.html` bar with **Overview / Users / Clients / Security / Settings** (in-page tabs via `gwTabs('adminTabs', 'adminTab')`) and **Models**, a link to the separate `/admin/models` page. Tab badges: Users shows "N blocked" / "N near limit" (else the account count); Settings shows "limit: monitor|enforce" while the concurrency limit is on.
+Above the tab bar: only the **Needs attention** strip, a `<details>` that is one line of counts when folded (open on Overview, folded on the other tabs; it follows the `gw:tab` event), so the tab bar is on screen when the page opens. Below it, the shared `_admin_tabs.html` bar with **Overview / Users / Clients / Security / Limits / Settings** (in-page tabs via `gwTabs('adminTabs', 'adminTab')`) and **Models**, a link to the separate `/admin/models` page. Tab badges: Users shows "N blocked" / "N near limit" (else the account count); Limits shows "limit: monitor|enforce" while the concurrency limit is on.
 
 ### Page Sections
 
@@ -97,10 +97,10 @@ Above the tab bar: only the **Needs attention** strip, a `<details>` that is one
 | **Department Usage** | Overview | Usage grouped by org_code: Users, Cost, Input / Output Tokens, Reqs; client-side pager past 15 rows |
 | **Export Usage Report** | Overview | Month range (max 24 months) → **Download xlsx** (`GET /admin/api/export/usage.xlsx`, 4 sheets) or **Backend costs (CSV)** (`GET /admin/api/export/user-backend-costs.csv`, one row per month × account with On-prem / Azure / Bedrock cost columns) |
 | **User Management** | Users | Users / Service accounts sub-toggle (each service account row has the owner picker: who it is assigned to, saved on every change), server-side search (`q`, ILIKE on username / display_name / org_code), server-side pagination (`limit/offset`, `app_limit/app_offset`), **Export Users (CSV)** (`GET /admin/api/export/users.csv`). Users table: User, API Key (View Key, with *used N d ago* / *never used* — amber past 90 days — and *old format* for keys predating the current format; the tooltip gives the key's issue and last-use dates), Total Spend, Daily Limit (+ *Cloud $*), Actions. Apps table adds an editable Owner column. The status filter includes **Older-format API key** (`legacy_key`) and **Key unused 90+ days** (`stale_key`), for access reviews |
-| **Concurrency Limit** | Settings | Mode (`off` / `monitor` / `enforce`) + per-account limit (≥ 1) → `POST /admin/concurrency-limit`; shows requests in flight, accounts and busiest account. Enforce asks for confirmation |
-| **Default Daily Limit** | Settings | `POST /admin/default-limit` — sets `[app].default_daily_limit_usd` and bulk-bumps any user with `0 < daily_limit_usd < new_floor` up to the floor (users at `daily_limit_usd = 0`, a deliberate $0 budget, are never modified) |
-| **Cloud Daily Limit** | Settings | `POST /admin/cloud-limit` — default cap on each user's combined Azure + AWS spend per day (`[app].cloud_daily_limit_usd`) for users with cloud access and no *Cloud $* of their own. Blank = no default cap; 0 = cloud refused |
-| **Cloud Budget Fallback** | Settings | Checkbox → `POST /admin/cloud-budget-fallback`. When on, a `/v1/*` cloud request over the cloud cap is served on-prem instead of a 429 (the overall daily limit still applies; `/azure/v1/*` and `/aws/v1/*` never fall back) |
+| **Concurrency Limit** | Limits | Mode (`off` / `monitor` / `enforce`) + per-account limit (≥ 1) → `POST /admin/concurrency-limit`; shows requests in flight, accounts and busiest account. Enforce asks for confirmation |
+| **Default Daily Limit** | Limits | `POST /admin/default-limit` — sets `[app].default_daily_limit_usd` and bulk-bumps any user with `0 < daily_limit_usd < new_floor` up to the floor (users at `daily_limit_usd = 0`, a deliberate $0 budget, are never modified) |
+| **Cloud Daily Limit** | Limits | `POST /admin/cloud-limit` — default cap on each user's combined Azure + AWS spend per day (`[app].cloud_daily_limit_usd`) for users with cloud access and no *Cloud $* of their own. Blank = no default cap; 0 = cloud refused |
+| **Cloud Budget Fallback** | Limits | Checkbox → `POST /admin/cloud-budget-fallback`. When on, a `/v1/*` cloud request over the cloud cap is served on-prem instead of a 429 (the overall daily limit still applies; `/azure/v1/*` and `/aws/v1/*` never fall back) |
 | **Create Service Account** | Users | Name (used as typed; no prefix), Daily Limit, Owners (the owner picker: type to search, pick existing people from the matches) → `POST /admin/users/create`, handled in place (errors as a toast, the new row loaded into the table). Service accounts are created concurrency-waived |
 | **Site Links** | Settings | Support Bot URL (floating button on every page) and Install Guide URL (card on `/setup`) → `POST /admin/site-links`. Only `http(s)://` or site-relative URLs; empty hides the element |
 | **Client rules** | Clients | Settings and violators of the built-in checks (`client_checks.py`, CC001…), Claude Code versions in use, *Mail everyone* and *Test the combined mail* (every rule that is on in one mail with one merged patch), the mail log (every mail tried: address, rules, why, sent or failed; filter, search, paging), deprecated / retired checks; see Client rules in `docs/architecture.md`. |
@@ -144,7 +144,7 @@ The same router also serves JSON endpoints that the page does not use: `GET` / `
 **File**: `admin_models.html` ← `admin/model_config.py`
 **Permission**: JWT scope includes `admin`
 
-Master–detail editor over `GET` / `PUT /admin/api/config`, rendered under the same `_admin_tabs.html` bar (Overview / Users / Clients / Security / Settings link back to `/admin#<tab>`; Models is active). It is a separate page on purpose: its URL hash is the selection, and its unsaved-changes guard must fire on navigation.
+Master–detail editor over `GET` / `PUT /admin/api/config`, rendered under the same `_admin_tabs.html` bar (Overview / Users / Clients / Security / Limits / Settings link back to `/admin#<tab>`; Models is active). It is a separate page on purpose: its URL hash is the selection, and its unsaved-changes guard must fire on navigation.
 
 ### Page Sections
 
@@ -215,7 +215,7 @@ Shared framework for all pages:
 
 ### `_admin_tabs.html` — Admin Tab Bar
 
-Included by `admin.html` (`on_admin_page = true`: Overview / Users / Clients / Security / Settings are `data-tab` buttons) and `admin_models.html` (`on_admin_page = false`: they are links to `/admin#<tab>`). The last tab, **Models**, is always a link to `/admin/models`.
+Included by `admin.html` (`on_admin_page = true`: Overview / Users / Clients / Security / Limits / Settings are `data-tab` buttons) and `admin_models.html` (`on_admin_page = false`: they are links to `/admin#<tab>`). The last tab, **Models**, is always a link to `/admin/models`.
 
 ### Partials
 

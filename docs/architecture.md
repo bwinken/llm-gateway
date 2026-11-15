@@ -566,7 +566,7 @@ A row: `created_at` (naive UTC), `actor` (the JWT `sub`; empty when unauthentica
 
 The write runs after the response, in a thread, shielded from client disconnects, and never fails the request: a failed write logs `Audit write failed | ... record={...}`, so the entry survives in the log file; every entry is also logged as `Audit | {...}`. Append-only: the app has no code path that updates or deletes a row, and on PostgreSQL triggers refuse UPDATE, DELETE and TRUNCATE (dropping them is a deliberate DBA act). No retention: the table grows with admin activity only. `actor` is a username, not a foreign key, so `delete_user` never touches it.
 
-The admin **Settings** tab ends with an *Audit Log* card: the newest 20 entries (time in Asia/Taipei, who and from where, route, status, a one-line summary) and *Download CSV (last 365 days)* (`/admin/api/export/audit-log.csv?days=`). `GET /admin/api/audit-log?limit=&before_id=&actor=` pages through the JSON, newest first. `tests/test_audit_log.py`.
+The admin **Security** tab ends with an *Audit Log* card: the newest 20 entries (time in Asia/Taipei, who and from where, route, status, a one-line summary) and *Download CSV (last 365 days)* (`/admin/api/export/audit-log.csv?days=`). `GET /admin/api/audit-log?limit=&before_id=&actor=` pages through the JSON, newest first. `tests/test_audit_log.py`.
 
 <!-- Admin UI and data -->
 
