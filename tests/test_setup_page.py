@@ -66,6 +66,7 @@ class TestSetupPageSwitch:
         for env in (web_ui.templates.env, admin.common.templates.env, main._templates.env):
             assert callable(env.globals["setup_page_enabled"])
             assert callable(env.globals["get_site_links"])
+            assert callable(env.globals["static_url"])  # the stylesheet, Chart.js, fonts
         admin_headers = web_auth_header(sub="admin", scopes=["admin"])
         assert 'href="/setup"' in client.get("/admin", headers=admin_headers).text
         monkeypatch.setenv("SETUP_PAGE_ENABLED", "false")

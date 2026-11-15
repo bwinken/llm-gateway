@@ -41,6 +41,13 @@ confirm() {
     case "$yn" in [nN]*) return 1 ;; *) return 0 ;; esac
 }
 
+# 是否確認（預設 N）：沒必要時不做的事
+confirm_no() {
+    local prompt="$1"
+    read -rp "$(echo -e "${CYAN}?${NC} ${prompt} [y/N]: ")" yn
+    case "$yn" in [yY]*) return 0 ;; *) return 1 ;; esac
+}
+
 # ╔══════════════════════════════════════════════════════════╗
 # ║                     前置檢查                             ║
 # ╚══════════════════════════════════════════════════════════╝
@@ -95,10 +102,34 @@ fi
 # ╚══════════════════════════════════════════════════════════╝
 header "Step 1/9  部署程式碼"
 
+# 網頁樣式表（app/static/css/tailwind.css）已隨程式碼提供，平常不用 build。
+# 只有在這份程式碼裡改過模板（app/templates/）卻沒重新產生時才需要。
+# 在來源目錄 build，下面的 rsync 就會把新的樣式表一起帶過去。
+# 失敗（例如連不到 github.com）不會中斷部署：沿用 repo 裡的樣式表，網站照常運作。
+# 說明：docs/frontend-build.md
+info "網頁樣式表已隨程式碼提供，一般不需要重新 build。"
+info "只有在這份程式碼裡改過 app/templates/ 的 class 時才需要（第一次會從 github.com 下載約 40 MB 的 Tailwind）。"
+if confirm_no "要重新 build 網頁樣式表嗎？"; then
+    if bash "$SCRIPT_DIR/scripts/build_css.sh"; then
+        ok "網頁樣式表已重新 build"
+        if ! git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree &>/dev/null; then
+            :   # 不是 git checkout，無從比較
+        elif git -C "$SCRIPT_DIR" diff --quiet -- app/static/css/tailwind.css; then
+            info "內容和 repo 裡的一樣，不用 commit"
+        else
+            warn "樣式表和 repo 裡的不同：記得把 app/static/css/tailwind.css 連同模板一起 commit"
+        fi
+    else
+        warn "build 失敗，沿用 repo 裡的樣式表（網站照常運作）。排除方式見 docs/frontend-build.md 的「常見問題」"
+    fi
+else
+    info "略過，使用 repo 裡的樣式表"
+fi
+
 mkdir -p "$APP_DIR"
 rsync -a --exclude='.git' --exclude='.venv' --exclude='venv' --exclude='__pycache__' \
     --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' \
-    --exclude='pgdata/' --exclude='.claude/' \
+    --exclude='pgdata/' --exclude='.claude/' --exclude='.cache/' \
     --exclude='config.toml' --exclude='keys/' --exclude='.env' \
     --exclude='deploy/.env' --exclude='deploy/pgdata/' \
     "$SCRIPT_DIR/" "$APP_DIR/"

@@ -133,6 +133,28 @@ class TestStatus:
         total = len(TEST_MODEL_ROUTING)
         assert body["onprem"] == {"total": total, "up": total - 1, "down": ["test-vlm"]}
 
+    def test_a_down_model_names_where_its_requests_go(self, client, test_user):
+        # The request path's own rule (model_fallback.pick): test-vlm down,
+        # chat requests for it go to the first llm / vlm that is up.
+        down = TEST_MODEL_ROUTING["test-vlm"]["base_url"]
+        with patch("app.services.model_catalog.is_alive", side_effect=lambda url: url != down):
+            by_id = {m["id"]: m for m in self._status(client)["models"]}
+        assert by_id["test-vlm"]["falls_back_to"] == "test-llm"
+        assert "falls_back_to" not in by_id["test-llm"]  # up: nothing to say
+
+    def test_no_stand_in_and_hidden_stand_ins_are_not_named(self, client, test_user):
+        llm, vlm = TEST_MODEL_ROUTING["test-llm"]["base_url"], TEST_MODEL_ROUTING["test-vlm"]["base_url"]
+        with patch("app.services.model_catalog.is_alive", side_effect=lambda url: url not in (llm, vlm)):
+            by_id = {m["id"]: m for m in self._status(client)["models"]}
+        assert "falls_back_to" not in by_id["test-vlm"]  # no llm / vlm is up: no promise
+        routing = {**TEST_MODEL_ROUTING, "test-llm": {**TEST_MODEL_ROUTING["test-llm"], "hidden": True}}
+        with (
+            patch("app.core.config.get_model_routing_snapshot", return_value=routing),
+            patch("app.services.model_catalog.is_alive", side_effect=lambda url: url != vlm),
+        ):
+            by_id = {m["id"]: m for m in self._status(client)["models"]}
+        assert "falls_back_to" not in by_id["test-vlm"]  # a hidden alias is never shown
+
     def test_cloud_models_need_access(self, client, db_session, test_user):
         _update(db_session, test_user, can_use_azure=False, can_use_bedrock=False)
         backends = {m["backend"] for m in self._status(client)["models"]}
@@ -751,6 +773,17 @@ class TestClientSetupAdmin:
         import json
 
         return json.dumps({"fields": list(fields)}, indent=2)
+
+    def test_the_card_has_a_form_over_the_same_text(self, client, admin_user):
+        # The form editor writes into the one textarea the server validates;
+        # model aliases are suggestions only (a datalist), never a whitelist.
+        page = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        card = page.split('id="client-setup"')[1].split('<div data-panel="security">')[0]
+        assert 'id="cs-editor"' in card and 'name="settings"' in card
+        assert card.count("<textarea") == 1
+        for alias in ("test-llm", "test-vlm", "azure-gpt-4", "bedrock-claude"):
+            assert f'<option value="{alias}">' in card
+        assert '<option value="test-embedding">' not in card  # chat models only
 
     def test_saving_writes_the_file_the_api_reads(self, client, admin_user, test_user, settings_file):
         text = self._text(_choice_field(), _model_field(default={"azure": "azure-gpt-4"}))

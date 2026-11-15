@@ -333,6 +333,110 @@ def user_table_panel(
     )
 
 
+# ── Account drawer ──
+#
+# Clicking an account's name opens a side panel with what an admin asks
+# about one account: today against its limits, 30 days of spend, what it
+# uses, its client notices and anomalies, its key, and what was changed on it.
+# Read-only and revealing no key, so it is not an audited read.
+
+_DETAIL_DAYS = 30
+_DETAIL_AUDIT_ROWS = 12
+
+
+def _account_detail(session: Session, target: User) -> dict:
+    from app.core.deps import effective_cloud_limit
+    from app.core.timeutil import local_today
+    from app.routers.admin.security import _audit_rows
+    from app.services import client_rules
+    from app.services.stats import get_daily_trends, get_user_daily_summary
+    from app.services.usage_rollup import aggregate
+
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    today = get_user_daily_summary(session, target.id)
+    trend = get_daily_trends(session, target.id, days=_DETAIL_DAYS)
+    first = local_today() - timedelta(days=_DETAIL_DAYS - 1)
+    by_model = aggregate(
+        session, first, local_today() + timedelta(days=1), ("backend", "model"), user_ids=[target.id],
+    )
+    models = sorted(
+        (
+            {"backend": backend, "model": model, "requests": e["requests"],
+             "tokens": e["input_tokens"] + e["output_tokens"], "cost": float(e["cost_usd"])}
+            for (backend, model), e in by_model.items()
+        ),
+        key=lambda m: -m["cost"],
+    )
+    total_30d = sum(m["cost"] for m in models)
+    for m in models:
+        m["share"] = round(m["cost"] / total_30d * 100, 1) if total_30d else 0.0
+
+    cloud = target.can_use_azure or target.can_use_bedrock
+    cloud_limit = effective_cloud_limit(target) if cloud else None
+    cloud_spent = today["azure_cost_usd"] + today["bedrock_cost_usd"]
+
+    if target.is_service_account:
+        related = session.exec(
+            select(User.username).join(AppOwner, AppOwner.owner_id == User.id).where(AppOwner.app_id == target.id)
+        ).all()
+    else:
+        related = session.exec(
+            select(User.username).join(AppOwner, AppOwner.app_id == User.id).where(AppOwner.owner_id == target.id)
+        ).all()
+
+    anomalies = session.exec(
+        select(AnomalyEvent)
+        .where(AnomalyEvent.user_id == target.id, AnomalyEvent.status != "resolved")
+        .order_by(AnomalyEvent.created_at.desc())  # type: ignore[attr-defined]
+        .limit(5)
+    ).all()
+
+    return {
+        "user": target,
+        "today": today,
+        "limit_share": (today["total_cost_usd"] / target.daily_limit_usd * 100) if target.daily_limit_usd else None,
+        "cloud": cloud,
+        "cloud_limit": cloud_limit,
+        "cloud_spent": cloud_spent,
+        "trend": [{"date": d["date"], "cost": d["cost"], "reqs": d["reqs"]} for d in trend],
+        "total_30d": total_30d,
+        "requests_30d": sum(d["reqs"] for d in trend),
+        "active_days": sum(1 for d in trend if d["reqs"]),
+        "models": models[:8],
+        "more_models": max(len(models) - 8, 0),
+        "related": sorted(related),
+        "violations": client_rules.account_violations(session, target.username),
+        "anomalies": [
+            {"rule": a.rule, "severity": a.severity, "status": a.status, "at": _local_label(a.created_at)}
+            for a in anomalies
+        ],
+        "key_use": _key_use_label(target.api_key_last_used_at, now_naive),
+        "key_stale": _is_stale(target, now_naive),
+        "key_legacy": is_legacy_api_key(target.api_key),
+        "key_issued": _local_label(target.api_key_created_at),
+        "key_last_used": _local_label(target.api_key_last_used_at),
+        "created": _local_label(target.created_at),
+        "audit": _audit_rows(session, limit=_DETAIL_AUDIT_ROWS, about=target),
+        "local_label": _local_label,
+    }
+
+
+@router.get("/users/{user_id}/detail", response_class=HTMLResponse)
+def user_detail_panel(
+    request: Request,
+    user_id: int,
+    session: Session = Depends(get_session),
+):
+    """The account drawer as an HTML fragment. Plain ``def``: it reads
+    usage (``aggregate``) and must not block the event loop."""
+    target = session.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="No such account.")
+    return templates.TemplateResponse(
+        request, "_admin_user_detail.html", {"request": request, "d": _account_detail(session, target)},
+    )
+
+
 _SERVICE_ACCOUNT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 

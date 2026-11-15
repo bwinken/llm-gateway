@@ -4,8 +4,12 @@
 
 {% block head %}
 <style>
-    /* Granted / waived state of the per-account toggles (Azure, AWS, Waive). */
-    .gw-grant.is-on { font-weight: 700; }
+    /* Granted / waived state of the per-account toggles (Azure, AWS, Waive):
+       a check mark and a solid border when on, a dashed border when off, so
+       the state reads without telling the colours apart. */
+    .gw-grant { border-style: dashed; color: #868da0; }
+    .gw-grant.is-on { font-weight: 700; border-style: solid; }
+    .gw-grant.is-on::before { content: "\2713"; margin-right: 4px; }
     .gw-grant-azure.is-on   { background: rgba(167,139,250,0.18); border-color: rgba(167,139,250,0.4); color: #cab9ff; }
     .gw-grant-bedrock.is-on { background: rgba(255,153,51,0.15);  border-color: rgba(255,153,51,0.4);  color: #ffcb8a; }
     .gw-grant-waive.is-on   { background: rgba(52,211,153,0.15);  border-color: rgba(52,211,153,0.4);  color: #86efac; }
@@ -21,6 +25,52 @@
     .gw-badge.hidden { display: none; }
     /* A disabled account's row reads as inactive; its controls stay usable. */
     .um-row.is-disabled .um-dim { opacity: 0.45; }
+    /* Segmented switch (Client setup: Form / JSON), as on the dashboard. */
+    .gw-chtab { padding: 4px 12px; font-size: 12px; font-weight: 500; border-radius: 7px; color: #868da0; cursor: pointer; border: none; background: none; }
+    .gw-chtab-on { background: #1f2029; color: #eef0f4; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+    /* Guardrail category rules: the colour says what the rule does now. */
+    .gr-rule[data-gr-rule="block"] { color: #ff8a8a; border-color: rgba(255,92,92,0.3); }
+    .gr-rule[data-gr-rule="block"].is-monitor { color: #f5a623; border-color: rgba(245,166,35,0.3); }
+    .gr-rule[data-gr-rule="flag"] { color: #f5a623; }
+    .gr-rule[data-gr-rule="ignore"] { color: #868da0; }
+    /* Account drawer (GET /admin/users/{id}/detail). */
+    #udBackdrop { position: fixed; inset: 0; z-index: 70; background: rgba(5,6,10,0.55); }
+    #udDrawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 71; width: min(34rem, 100vw); overflow-y: auto;
+                background: #16171e; border-left: 1px solid rgba(255,255,255,0.07); box-shadow: -16px 0 40px rgba(0,0,0,0.45);
+                transform: translateX(100%); transition: transform .18s ease-out; }
+    #udDrawer.is-open { transform: none; }
+    .ud-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px 14px;
+               background: #16171e; border-bottom: 1px solid rgba(255,255,255,0.05); }
+    .ud-sec { padding: 14px 20px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .ud-h { font-size: 11px; font-weight: 700; color: #868da0; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+    .ud-bar { height: 6px; border-radius: 999px; background: #262731; overflow: hidden; }
+    .ud-bar > div { height: 100%; border-radius: 999px; }
+    .ud-bar-thin { height: 4px; }
+    .ud-spark { width: 100%; height: 64px; margin-top: 8px; display: block; }
+    .ud-table { width: 100%; font-size: 12px; border-collapse: collapse; table-layout: fixed; }
+    .ud-table th { font-size: 10px; font-weight: 600; color: #4e5569; text-transform: uppercase; text-align: left; padding: 4px 6px; }
+    .ud-table th.text-right { text-align: right; }
+    .ud-table td { padding: 5px 6px; border-top: 1px solid rgba(255,255,255,0.03); }
+    .ud-dl { display: grid; grid-template-columns: 6rem 1fr; gap: 3px 10px; font-size: 12px; margin-top: 4px; }
+    .ud-dl dt { color: #4e5569; }
+    .ud-dl dd { color: #c4c9d4; font-family: "JetBrains Mono", monospace; font-size: 11px; }
+    .ud-audit { display: grid; grid-template-columns: 6.5rem 1fr 6rem 2.2rem; gap: 8px; font-size: 11px; padding: 4px 0;
+                border-top: 1px solid rgba(255,255,255,0.03); align-items: baseline; }
+    .um-name { color: inherit; font: inherit; text-align: left; cursor: pointer; border-bottom: 1px dashed transparent; }
+    .um-name:hover, .um-name:focus-visible { color: #6398ff; border-bottom-color: rgba(99,152,255,0.5); outline: none; }
+    /* Row ⋯ menu: opens to the left of the button, over the row's own
+       toggles, so the table card (overflow hidden, sideways scroll) never
+       clips it, whichever row it is. */
+    .um-more { position: relative; }
+    .um-more > summary { list-style: none; }
+    .um-more > summary::-webkit-details-marker { display: none; }
+    .um-menu { position: absolute; right: calc(100% + 6px); top: 50%; transform: translateY(-50%); z-index: 5; display: flex; gap: 4px;
+               padding: 4px; border-radius: 10px; white-space: nowrap;
+               background: #1f2029; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+    .um-menu-item { display: block; padding: 4px 10px; border-radius: 6px; font-size: .75rem; color: #c4c9d4; }
+    .um-menu-item:hover, .um-menu-item:focus-visible { background: rgba(255,255,255,0.06); outline: none; }
+    .um-menu-danger { color: #ff8a8a; }
+    .um-menu-danger:hover, .um-menu-danger:focus-visible { background: rgba(255,92,92,0.12); }
     [data-um-panel].is-loading { opacity: 0.55; pointer-events: none; transition: opacity 0.15s; }
     .um-flash-ok  { box-shadow: 0 0 0 2px rgba(52,211,153,0.85) !important; }
     .um-flash-err { box-shadow: 0 0 0 2px rgba(248,113,113,0.9) !important; }
@@ -230,13 +280,23 @@ function anomalyAction(id, action) {
         <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums">{{ today_totals.active_users }}</dd>
         <div class="mt-1 text-xs text-t4">{{ user_total }} accounts total</div>
     </div>
+    {# In-flight requests are counted only while the concurrency limit runs;
+       with it off, the tile shows today's cloud spend instead of a dash. #}
+    {% if concurrency_mode != 'off' %}
     <div class="gw-card gw-stat relative p-5" style="--accent:linear-gradient(90deg,#34d399,#3dd68c)">
-        <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Chat / responses / messages requests running right now (counted only while the concurrency limit is Monitor or Enforce)">In flight now</dt>
-        <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums">{{ concurrency_in_flight.total if concurrency_in_flight is not none and concurrency_mode != 'off' else '—' }}</dd>
+        <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Chat / responses / messages requests running right now">In flight now</dt>
+        <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums">{{ concurrency_in_flight.total if concurrency_in_flight is not none else '—' }}</dd>
         <div class="mt-1 text-xs text-t4">
-            {% if concurrency_mode == 'off' %}tracking off{% elif concurrency_in_flight is not none %}busiest account {{ concurrency_in_flight.peak_user }} / {{ concurrency_limit }} local · {{ concurrency_in_flight.peak_cloud_user }} / {{ concurrency_cloud_limit }} cloud{% endif %}
+            {% if concurrency_in_flight is not none %}busiest account {{ concurrency_in_flight.peak_user }} / {{ concurrency_limit }} local · {{ concurrency_in_flight.peak_cloud_user }} / {{ concurrency_cloud_limit }} cloud{% else %}unavailable{% endif %}
         </div>
     </div>
+    {% else %}
+    <div class="gw-card gw-stat relative p-5" data-stat="cloud-today" style="--accent:linear-gradient(90deg,#a78bfa,#ff9933)">
+        <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Azure + AWS Bedrock spend of all accounts today, estimated at the configured prices">Cloud spend today</dt>
+        <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums tracking-tight">{{ money(today_totals.azure_cost + today_totals.bedrock_cost) }}</dd>
+        <div class="mt-1 text-xs text-t4 font-mono"><span style="color:#a78bfa">Azure</span> {{ money(today_totals.azure_cost) }} · <span style="color:#ff9933">AWS</span> {{ money(today_totals.bedrock_cost) }}</div>
+    </div>
+    {% endif %}
     <div class="gw-card gw-stat relative p-5 col-span-2 lg:col-span-1" style="--accent:linear-gradient(90deg,#f5a623,#ff9933)">
         <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">{{ month_label }}</dt>
         <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums tracking-tight">{{ money(monthly_total_cost) }}</dd>
@@ -244,8 +304,25 @@ function anomalyAction(id, action) {
     </div>
 </div>
 
-{# ── DAU Trend ── #}
-<div class="mb-8 gw-anim gw-d2">
+{# ── Spend by backend and daily active users, last 30 days ── #}
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8 gw-anim gw-d2">
+    <div class="gw-card overflow-hidden lg:col-span-2">
+        <div class="px-5 py-3 flex items-center justify-between gap-3" style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <div class="flex items-center gap-3">
+                <h3 class="text-xs font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="Estimated: tokens at the configured prices (notional for on-prem models), per Asia/Taipei day.">Estimated spend</h3>
+                <span class="text-[11px] text-t4">Last 30 days</span>
+            </div>
+            <div class="flex items-center gap-3 text-[11px] text-t3">
+                <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-sm" style="background:#3dd68c"></span>On-prem</span>
+                <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-sm" style="background:#a78bfa"></span>Azure</span>
+                <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-sm" style="background:#ff9933"></span>AWS</span>
+                <span class="font-mono text-t2">{{ money(spend_data | sum(attribute='total')) }}</span>
+            </div>
+        </div>
+        <div class="p-5" style="height:220px">
+            <canvas id="spendChart" aria-label="Estimated spend per day by backend, last 30 days" role="img"></canvas>
+        </div>
+    </div>
     <div class="gw-card overflow-hidden">
         <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid rgba(255,255,255,0.04)">
             <div class="flex items-center gap-3">
@@ -257,7 +334,7 @@ function anomalyAction(id, action) {
                 <span class="text-lg font-bold font-mono text-t1">{{ today_dau }}</span>
             </div>
         </div>
-        <div class="p-5" style="height:180px">
+        <div class="p-5" style="height:220px">
             <canvas id="dauChart"></canvas>
         </div>
     </div>
@@ -286,7 +363,7 @@ function anomalyAction(id, action) {
                                 <div class="h-7 w-7 rounded-lg bg-[rgba(99,152,255,0.1)] flex items-center justify-center text-ab font-bold text-xs">
                                     {{ u.username[4:][:2]|upper if u.username|length > 4 else u.username[0]|upper }}
                                 </div>
-                                <span class="text-sm font-medium text-t1">{{ u.username }}</span>
+                                <button type="button" class="um-name text-sm font-medium text-t1" data-um-detail="{{ u.id }}">{{ u.username }}</button>
                             </div>
                         </td>
                         <td class="text-right text-sm font-mono font-medium text-t1">{{ money(u.monthly_cost) }}</td>
@@ -325,7 +402,7 @@ function anomalyAction(id, action) {
                                     {{ u.username[0]|upper }}
                                 </div>
                                 <div>
-                                    <span class="text-sm font-medium text-t1">{{ u.display_name or u.username }}</span>
+                                    <button type="button" class="um-name text-sm font-medium text-t1" data-um-detail="{{ u.id }}">{{ u.display_name or u.username }}</button>
                                     {% if u.org_code %}
                                     <span class="ml-1 text-[10px] text-t4 bg-n3 px-1 py-0.5 rounded">{{ u.org_code }}</span>
                                     {% endif %}
@@ -953,6 +1030,15 @@ function submitExportCsv() {
     <p class="text-xs text-ar mb-3{{ '' if cs.error else ' hidden' }}" id="cs-error">{% if cs.error %}The file on disk is not in force (the last good one is): {{ cs.error }}{% endif %}</p>
     <p class="text-xs mb-3{{ '' if cs.unknown_models else ' hidden' }}" id="cs-unknown" style="color:#f5a623">{% if cs.unknown_models %}Not a chat model of this gateway, so skipped for every account: {{ cs.unknown_models | join(', ') }}{% endif %}</p>
     <form action="/admin/client-settings" method="POST" id="cs-form">
+        {# Two views of one document: the form edits the JSON in the
+           textarea, which is what is posted and what the server validates
+           (client_settings.parse). Without JS only the textarea shows. #}
+        <div class="bg-n1 p-1 rounded-lg inline-flex items-center gap-0.5 mb-3 hidden" id="cs-views" role="tablist">
+            <button type="button" class="gw-chtab gw-chtab-on" data-cs-view="form" role="tab" aria-selected="true">Form</button>
+            <button type="button" class="gw-chtab" data-cs-view="json" role="tab" aria-selected="false">JSON</button>
+        </div>
+        <div id="cs-editor" class="space-y-3 hidden"></div>
+        <datalist id="cs-models">{% for m in cs.models %}<option value="{{ m }}"></option>{% endfor %}</datalist>
         <textarea name="settings" rows="22" spellcheck="false" aria-label="Client settings (JSON)" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ cs.text }}</textarea>
         <div class="flex flex-wrap items-center gap-3 mt-3">
             <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
@@ -1175,7 +1261,7 @@ function submitExportCsv() {
             <div>
                 <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
                        data-tip="Monitor: nothing is refused and nothing waits: the guard runs in the background alongside the model call; what the policy would block is recorded as guardrail_action=flag. Block: the request waits for the verdict and blocked ones get a 400 with the message below.">Action</label>
-                <select name="action" class="gw-input text-sm py-1.5 px-2">
+                <select name="action" class="gw-input text-sm py-1.5 px-2" data-gr-action>
                     <option value="monitor" {{ 'selected' if g.action == 'monitor' else '' }}>Monitor — record only (default)</option>
                     <option value="block" {{ 'selected' if g.action == 'block' else '' }}>Block — refuse with 400</option>
                 </select>
@@ -1217,13 +1303,21 @@ function submitExportCsv() {
         <div>
             <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
                    data-tip="Per category the guard reports. Block: refused when Action is Block (recorded as flag under Monitor). Flag: recorded as would-block, never refused. Ignore: treated as safe (still recorded with its category). When several categories are reported, the strictest rule wins.">Category rules</label>
+            {# What a rule does depends on Action: under Monitor nothing is
+               refused, so "block" reads "would block" there (the stored value
+               stays "block"). The note and the labels follow the Action
+               select as it changes, before saving. #}
+            <p class="text-[11px] mb-2 {{ 'text-aa' if g.action == 'monitor' else 'text-t4' }}" data-gr-note>
+                {% if g.action == 'monitor' %}Action is Monitor: nothing is refused. A category set to block is only recorded (guardrail_action=flag).
+                {% else %}Action is Block: categories set to block are refused with a 400.{% endif %}
+            </p>
             <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-x-6 gap-y-1.5">
                 {% for cat in guardrail_categories %}
                 <div class="flex items-center justify-between gap-2">
                     <span class="text-xs text-t3">{{ cat }}</span>
-                    <select name="rule:{{ cat }}" class="gw-input text-xs py-1 px-1.5">
+                    <select name="rule:{{ cat }}" class="gw-input text-xs py-1 px-1.5 gr-rule" data-gr-rule="{{ g.rules[cat] }}">
                         {% for r in guardrail_rules %}
-                        <option value="{{ r }}" {{ 'selected' if g.rules[cat] == r else '' }}>{{ r }}</option>
+                        <option value="{{ r }}" {{ 'selected' if g.rules[cat] == r else '' }}>{{ 'would block' if r == 'block' and g.action == 'monitor' else r }}</option>
                         {% endfor %}
                     </select>
                 </div>
@@ -1511,7 +1605,11 @@ function submitExportCsv() {
 <script>gwTabs('adminTabs', 'adminTab');</script>
 
 {# ── API Key Modal ── #}
-<div id="keyModal" class="fixed inset-0 z-50 hidden" role="dialog" aria-modal="true" aria-labelledby="keyModalTitle">
+{# Account drawer, filled by the script from GET /admin/users/{id}/detail. #}
+<div id="udBackdrop" class="hidden"></div>
+<aside id="udDrawer" role="dialog" aria-modal="true" aria-labelledby="udTitle" aria-hidden="true"></aside>
+
+<div id="keyModal" class="fixed inset-0 hidden" style="z-index:80" role="dialog" aria-modal="true" aria-labelledby="keyModalTitle">
     <div class="gw-overlay fixed inset-0" onclick="closeKeyModal()"></div>
     <div class="fixed inset-0 flex items-center justify-center p-4">
         <div class="gw-modal w-full max-w-lg relative" onclick="event.stopPropagation()">
@@ -1931,6 +2029,81 @@ function submitExportCsv() {
         });
     })();
 
+    /* ── Guardrail: category rules follow Action ── */
+    (function() {
+        var form = document.getElementById('guardrail-form');
+        if (!form) return;
+        var action = form.querySelector('[data-gr-action]'), note = form.querySelector('[data-gr-note]');
+        var block = form.querySelector('input[name="block_message"]');
+        function paint() {
+            var monitor = action.value === 'monitor';
+            form.querySelectorAll('select.gr-rule').forEach(function(sel) {
+                sel.dataset.grRule = sel.value;
+                sel.classList.toggle('is-monitor', monitor);
+                sel.querySelector('option[value="block"]').textContent = monitor ? 'would block' : 'block';
+            });
+            note.textContent = monitor
+                ? 'Action is Monitor: nothing is refused. A category set to block is only recorded (guardrail_action=flag).'
+                : 'Action is Block: categories set to block are refused with a 400.';
+            note.className = 'text-[11px] mb-2 ' + (monitor ? 'text-aa' : 'text-t4');
+            if (block) block.classList.toggle('opacity-50', monitor);
+        }
+        action.addEventListener('change', paint);
+        form.addEventListener('change', function(e) { if (e.target.matches('select.gr-rule')) paint(); });
+        paint();
+    })();
+
+    /* ── Account drawer ──
+       A name in the Users / Service accounts tables or a leaderboard opens
+       GET /admin/users/{id}/detail in a side panel. Esc, the × or a click
+       beside it closes it and gives focus back to the name. */
+    (function() {
+        var drawer = document.getElementById('udDrawer'), backdrop = document.getElementById('udBackdrop');
+        var opener = null, seq = 0;
+        // Overlays live directly under <body>: base.html gives every child of
+        // <body> its own stacking context, which would put the page's
+        // content (drawer included) under the fixed navbar. The key window
+        // goes too, so it opens above the drawer.
+        [backdrop, drawer, document.getElementById('keyModal')].forEach(function(el) { document.body.appendChild(el); });
+        function close() {
+            if (!drawer.classList.contains('is-open')) return;
+            drawer.classList.remove('is-open');
+            backdrop.classList.add('hidden');
+            drawer.setAttribute('aria-hidden', 'true');
+            if (opener) opener.focus();
+        }
+        function open(id, from) {
+            opener = from;
+            var mine = ++seq;
+            drawer.innerHTML = '<div class="p-6 text-sm text-t4">Loading…</div>';
+            drawer.classList.add('is-open');
+            drawer.setAttribute('aria-hidden', 'false');
+            backdrop.classList.remove('hidden');
+            fetch('/admin/users/' + encodeURIComponent(id) + '/detail', { headers: { 'Accept': 'text/html' } })
+                .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+                .then(function(html) {
+                    if (mine !== seq) return;  // a slower answer for an account closed since
+                    drawer.innerHTML = html;
+                    var btn = drawer.querySelector('[data-ud-close]');
+                    if (btn) btn.focus();
+                })
+                .catch(function(err) {
+                    if (mine !== seq) return;
+                    drawer.innerHTML = '<div class="p-6 text-sm text-ar">Could not load this account (' + err.message + ').</div>';
+                });
+        }
+        document.addEventListener('click', function(e) {
+            var t = e.target.closest && e.target.closest('[data-um-detail]');
+            if (t) { e.preventDefault(); return open(t.dataset.umDetail, t); }
+            if (e.target.closest && e.target.closest('[data-ud-close]')) return close();
+            if (e.target === backdrop) close();
+        });
+        document.addEventListener('keydown', function(e) {
+            // The key window opens above the drawer; let it take Esc first.
+            if (e.key === 'Escape' && document.getElementById('keyModal').classList.contains('hidden')) close();
+        });
+    })();
+
     /* ── Per-account actions, in place ──
        Every row form carries data-action. One delegated handler confirms
        when the action needs it, POSTs with Accept: application/json and
@@ -1975,10 +2148,7 @@ function submitExportCsv() {
         function paintDisabled(form, off) {
             var btn = form.querySelector('button'), row = form.closest('tr');
             form.dataset.granted = off ? 'true' : 'false';
-            btn.textContent = off ? 'Enable' : 'Disable';
-            btn.title = off ? 'Disabled — click to enable' : 'Active — click to disable';
-            btn.classList.toggle('gw-btn-warn', off);
-            btn.classList.toggle('gw-btn-ghost', !off);
+            btn.textContent = off ? 'Enable account' : 'Disable account';
             row.classList.toggle('is-disabled', off);
             row.querySelector('.um-disabled-badge').classList.toggle('hidden', !off);
         }
@@ -2011,15 +2181,57 @@ function submitExportCsv() {
                 return flash(form.querySelector('.op'), true);
             }
             var input = form.querySelector('input:not([type=hidden])');
-            if (action === 'limit') input.value = data.daily_limit_usd;
-            if (action === 'cloud-limit') input.value = data.cloud_daily_limit_usd == null ? '' : data.cloud_daily_limit_usd;
+            if (action === 'limit') {
+                input.value = data.daily_limit_usd;
+                gwToast(name + ': daily limit $' + data.daily_limit_usd + '.', 'ok');
+            }
+            if (action === 'cloud-limit') {
+                input.value = data.cloud_daily_limit_usd == null ? '' : data.cloud_daily_limit_usd;
+                gwToast(name + ': ' + (data.cloud_daily_limit_usd == null ? 'cloud cap follows the default.' : 'cloud cap $' + data.cloud_daily_limit_usd + '.'), 'ok');
+            }
+            input.dataset.saved = input.value;
             flash(input, true);
         }
+
+        /* Amounts save themselves: Enter (the form's own implicit submit) or
+           leaving a changed field; Esc puts back what is saved. Nothing is
+           posted when the value is what is already saved. */
+        document.addEventListener('change', function(e) {
+            var input = e.target;
+            if (!input.matches || !input.matches('[data-autosave]')) return;
+            if (input.form && input.value !== input.dataset.saved) input.form.requestSubmit();
+        });
+        document.addEventListener('keydown', function(e) {
+            var input = e.target;
+            if (e.key !== 'Escape' || !input.matches || !input.matches('[data-autosave]')) return;
+            input.value = input.dataset.saved || '';
+            input.blur();
+        });
+
+        function closeMenus(except) {
+            document.querySelectorAll('details[data-um-more][open]').forEach(function(d) { if (d !== except) d.open = false; });
+        }
+        // One menu open at a time; a click elsewhere or Esc closes it.
+        document.addEventListener('toggle', function(e) {
+            var d = e.target;
+            if (!d.matches || !d.matches('details[data-um-more]') || !d.open) return;
+            closeMenus(d);
+            var first = d.querySelector('.um-menu button');
+            if (first) first.focus({ preventScroll: true });
+        }, true);
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest || !e.target.closest('details[data-um-more]')) closeMenus(null);
+        });
+        document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeMenus(null); });
 
         document.addEventListener('submit', function(e) {
             var form = e.target, action = form.dataset && form.dataset.action;
             if (!action) return;
             e.preventDefault();
+            var amount = form.querySelector('input[data-autosave]');
+            if (amount && (form.dataset.busy || amount.value === amount.dataset.saved)) return;
+            var menu = form.closest('details[data-um-more]');
+            if (menu) menu.open = false;
             confirmFor(form, action).then(function(ok) {
                 if (!ok) return;
                 // Serialize before disabling anything: disabled controls are
@@ -2027,20 +2239,71 @@ function submitExportCsv() {
                 var body = new URLSearchParams(new FormData(form));
                 var btn = form.querySelector('button[type="submit"]');
                 if (btn) btn.disabled = true;
+                form.dataset.busy = '1';
                 gwPost(form.action, body)
                     .then(function(data) { apply(form, action, data); })
                     .catch(function(err) {
                         if (action === 'owner') gwOwnerPicker.revert(form);  // show what is really saved
+                        if (amount) amount.value = amount.dataset.saved || '';  // show what is really saved
                         flash(form.querySelector(action === 'owner' ? '.op' : 'input:not([type=hidden])'), false);
                         gwToast(form.closest('tr').dataset.username + ': ' + err.message, 'error');
                     })
-                    .then(function() { if (btn) btn.disabled = false; });
+                    .then(function() { if (btn) btn.disabled = false; delete form.dataset.busy; });
             });
         });
     })();
 </script>
 
 <script>
+(function(){
+    // Stacked per backend; the day's total (the sum of the three) is in the
+    // tooltip footer, not a fourth colour.
+    var raw = {{ spend_data | tojson }};
+    var ctx = document.getElementById('spendChart');
+    if (!ctx) return;
+    var last = raw.length - 1;
+    function series(key, label, color) {
+        return {
+            label: label, data: raw.map(function(d){ return d[key]; }), stack: 'spend',
+            backgroundColor: raw.map(function(_, i){ return i === last ? color : color + 'b3'; }),
+            borderRadius: 2, barPercentage: 0.75,
+        };
+    }
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: raw.map(function(d){ return d.date.slice(5); }),
+            datasets: [series('vllm', 'On-prem', '#3dd68c'), series('azure', 'Azure', '#a78bfa'), series('bedrock', 'AWS', '#ff9933')]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#1f2029', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
+                    titleColor: '#eef0f4', bodyColor: '#c4c9d4', footerColor: '#eef0f4', cornerRadius: 8, padding: 10,
+                    bodyFont: { family: 'JetBrains Mono', size: 11 }, footerFont: { family: 'JetBrains Mono', size: 11 },
+                    callbacks: {
+                        title: function(items){ var i = items[0].dataIndex; return raw[i].date + (i === last ? ' · today' : ''); },
+                        label: function(c){ return ' ' + c.dataset.label + '  $' + c.parsed.y.toFixed(2); },
+                        footer: function(items){ return 'Total  $' + raw[items[0].dataIndex].total.toFixed(2); }
+                    }
+                }
+            },
+            scales: {
+                x: { stacked: true, grid: { display: false }, border: { display: false },
+                     ticks: { color: '#4e5569', font: { size: 10, family: 'JetBrains Mono' }, maxRotation: 0, autoSkip: true, maxTicksLimit: 10 } },
+                // A floor under the axis width: Chart.js measures (and caches) the
+                // labels before the mono font is in, and cut off the "$".
+                y: { stacked: true, beginAtZero: true, grid: { color: 'rgba(255,255,255,0.03)' }, border: { display: false },
+                     afterFit: function(scale){ scale.width = Math.max(scale.width, 52); },
+                     ticks: { color: '#4e5569', font: { size: 10, family: 'JetBrains Mono' }, callback: function(v){ return '$' + v; } } }
+            }
+        }
+    });
+})();
+
 (function(){
     var raw = {{ dau_data | tojson }};
     var labels = raw.map(function(d){ return d.date.slice(5); });
@@ -2080,7 +2343,7 @@ function submitExportCsv() {
             scales: {
                 x: {
                     grid: { display: false },
-                    ticks: { color: '#4e5569', font: { size: 10, family: 'JetBrains Mono' }, maxRotation: 0, autoSkip: true, maxTicksLimit: 10 },
+                    ticks: { color: '#4e5569', font: { size: 10, family: 'JetBrains Mono' }, maxRotation: 0, autoSkip: true, maxTicksLimit: 5 },
                     border: { display: false }
                 },
                 y: {
@@ -2389,6 +2652,203 @@ function submitExportCsv() {
         // when the admin comes back to this page later.
         if (saved && typeof saved.y === 'number' && Date.now() - saved.t < 30000) window.scrollTo(0, saved.y);
     })();
+    /* ── Client setup: the form editor ──
+       Edits the parsed JSON document and writes it back into the textarea
+       (sync), keeping every key it does not know (_readme, _notes...). A
+       per-tier value shows one row per tier key; "everyone" alone is written
+       as a plain value, as a person would. The server is the validator. */
+    window.gwClientSetupEditor = function(form, box, TIERS) {
+        var root = document.getElementById('cs-editor'), views = document.getElementById('cs-views');
+        var TIER_LABEL = { everyone: 'Everyone', azure: 'Azure', aws: 'AWS', both: 'Azure + AWS' };
+        var doc = null, mode = 'form';
+
+        function el(tag, attrs, kids) {
+            var n = document.createElement(tag);
+            Object.keys(attrs || {}).forEach(function(k) {
+                if (k === 'text') n.textContent = attrs[k];
+                else if (k === 'class') n.className = attrs[k];
+                else if (k.slice(0, 2) === 'on') n.addEventListener(k.slice(2), attrs[k]);
+                else n.setAttribute(k, attrs[k]);
+            });
+            (kids || []).forEach(function(c) { if (c) n.appendChild(c); });
+            return n;
+        }
+        function input(value, onInput, attrs) {
+            var a = Object.assign({ type: 'text', class: 'gw-input text-xs py-1 px-2 w-full' }, attrs || {});
+            var n = el('input', a);
+            n.value = value == null ? '' : value;
+            n.addEventListener('input', function() { onInput(n.value); });
+            return n;
+        }
+        function small(text, cls) { return el('span', { class: 'text-[11px] ' + (cls || 'text-t4'), text: text }); }
+        function btn(text, onClick, title, cls) {
+            return el('button', { type: 'button', class: 'gw-btn gw-btn-ghost text-xs px-2 py-0.5 ' + (cls || ''), text: text, title: title || text, 'aria-label': title || text, onclick: onClick });
+        }
+        // A value as {tier: value}, and back (everyone alone = plain).
+        function tiers(v) { return v != null && typeof v === 'object' && !Array.isArray(v) ? v : (v == null ? {} : { everyone: v }); }
+        function untier(t) {
+            var keys = TIERS.filter(function(k) { return k in t; });
+            if (!keys.length) return undefined;
+            if (keys.length === 1 && keys[0] === 'everyone') return t.everyone;
+            var out = {}; keys.forEach(function(k) { out[k] = t[k]; }); return out;
+        }
+
+        // One tiered block: a row per tier key present, "+ tier" to add one.
+        function tiered(field, key, editOne, emptyValue, note) {
+            var wrap = el('div', { class: 'space-y-1.5' });
+            function draw() {
+                wrap.textContent = '';
+                var t = tiers(field[key]);
+                TIERS.forEach(function(tier) {
+                    if (!(tier in t)) return;
+                    var row = el('div', { class: 'flex items-start gap-2' }, [
+                        el('span', { class: 'text-[11px] text-t3 w-20 pt-1.5 flex-shrink-0', text: TIER_LABEL[tier] }),
+                        el('div', { class: 'flex-1 min-w-0' }, [editOne(t[tier], function(v) { t[tier] = v; field[key] = untier(t); })]),
+                        btn('×', function() { delete t[tier]; field[key] = untier(t); draw(); }, 'Remove the ' + TIER_LABEL[tier] + ' value')
+                    ]);
+                    wrap.appendChild(row);
+                });
+                var missing = TIERS.filter(function(k) { return !(k in t); });
+                if (missing.length) {
+                    var pickTier = el('select', { class: 'gw-input text-[11px] py-0.5 px-1', 'aria-label': 'Add a value for a tier' },
+                        [el('option', { value: '', text: Object.keys(t).length ? '+ value for a tier…' : '+ set a value…' })].concat(
+                            missing.map(function(k) { return el('option', { value: k, text: TIER_LABEL[k] }); })));
+                    pickTier.addEventListener('change', function() {
+                        if (!pickTier.value) return;
+                        t[pickTier.value] = emptyValue(); field[key] = untier(t); draw();
+                    });
+                    wrap.appendChild(el('div', { class: 'flex items-center gap-2' }, [pickTier, note ? small(note) : null]));
+                }
+            }
+            draw();
+            return wrap;
+        }
+
+        function choiceOptions(list, set) {
+            var box = el('div', { class: 'space-y-1' });
+            function draw() {
+                box.textContent = '';
+                list.forEach(function(opt, i) {
+                    var o = typeof opt === 'object' ? opt : { value: opt };
+                    list[i] = o;
+                    box.appendChild(el('div', { class: 'grid gap-1.5', style: 'grid-template-columns: 7rem 10rem 1fr auto' }, [
+                        input(o.value, function(v) { o.value = v; set(list); }, { placeholder: 'value', class: 'gw-input text-xs font-mono py-1 px-2 w-full' }),
+                        input(o.label, function(v) { if (v) o.label = v; else delete o.label; set(list); }, { placeholder: 'label' }),
+                        input(o.description, function(v) { if (v) o.description = v; else delete o.description; set(list); }, { placeholder: 'description (optional)' }),
+                        btn('×', function() { list.splice(i, 1); set(list); draw(); }, 'Remove this option')
+                    ]));
+                });
+                box.appendChild(btn('+ option', function() { list.push({ value: '' }); set(list); draw(); }, 'Add an option'));
+            }
+            draw();
+            return box;
+        }
+        function modelOptions(list, set) {
+            return input((list || []).join(', '), function(v) {
+                set(v.split(',').map(function(x) { return x.trim(); }).filter(Boolean));
+            }, { placeholder: 'model aliases, comma-separated', class: 'gw-input text-xs font-mono py-1 px-2 w-full', list: 'cs-models' });
+        }
+
+        function fieldCard(f, i, fields) {
+            var isModel = f.type === 'model';
+            var head = el('div', { class: 'flex flex-wrap items-center gap-2' }, [
+                el('div', { class: 'w-72' }, [input(f.name, function(v) { f.name = v; }, { placeholder: 'ENV_VARIABLE_NAME', class: 'gw-input text-xs font-mono py-1 px-2 w-full', 'aria-label': 'Variable name' })]),
+                el('div', { class: 'w-48' }, [input(f.label, function(v) { if (v) f.label = v; else delete f.label; }, { placeholder: 'Label', 'aria-label': 'Label' })]),
+                (function() {
+                    var sel = el('select', { class: 'gw-input text-xs py-1 px-2', 'aria-label': 'Type' },
+                        [el('option', { value: 'model', text: 'model' }), el('option', { value: 'choice', text: 'choice' })]);
+                    sel.value = f.type || 'choice';
+                    sel.addEventListener('change', function() { f.type = sel.value; delete f.options; draw(); });
+                    return sel;
+                })(),
+                el('span', { class: 'flex-1' }),
+                btn('↑', function() { if (i) { fields.splice(i - 1, 0, fields.splice(i, 1)[0]); draw(); } }, 'Move up'),
+                btn('↓', function() { if (i < fields.length - 1) { fields.splice(i + 1, 0, fields.splice(i, 1)[0]); draw(); } }, 'Move down'),
+                btn('Remove', function() {
+                    gwConfirm('Remove the field ' + (f.name || '(unnamed)') + '? Nothing is saved until you press Save.', { okLabel: 'Remove', danger: true })
+                        .then(function(yes) { if (yes) { fields.splice(i, 1); draw(); } });
+                }, 'Remove this field', 'text-ar')
+            ]);
+            var desc = el('textarea', { rows: '2', class: 'gw-input text-xs py-1 px-2 w-full', placeholder: 'What the variable is for (required)', 'aria-label': 'Description' });
+            desc.value = f.description || '';
+            desc.addEventListener('input', function() { f.description = desc.value; });
+
+            var dflt = tiered(f, 'default', function(v, set) {
+                return input(v, set, isModel ? { list: 'cs-models', class: 'gw-input text-xs font-mono py-1 px-2 w-full', placeholder: 'model alias' } : { class: 'gw-input text-xs font-mono py-1 px-2 w-full', placeholder: 'value' });
+            }, function() { return ''; }, isModel ? 'none: the gateway\'s fallback LLM' : null);
+            var opts = tiered(f, 'options', function(v, set) {
+                return isModel ? modelOptions(v, set) : choiceOptions(Array.isArray(v) ? v : [], set);
+            }, function() { return []; }, isModel ? 'none: every chat model the account can see' : 'a choice needs options');
+
+            return el('div', { class: 'rounded-lg p-3 space-y-2', style: 'background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05)', 'data-cs-field': '' }, [
+                head, desc,
+                el('div', { class: 'grid grid-cols-1 lg:grid-cols-2 gap-3' }, [
+                    el('div', {}, [small('DEFAULT', 'text-t4 font-semibold tracking-wider'), dflt]),
+                    el('div', {}, [small('OPTIONS', 'text-t4 font-semibold tracking-wider'), opts])
+                ])
+            ]);
+        }
+
+        function draw() {
+            root.textContent = '';
+            var fields = doc.fields;
+            fields.forEach(function(f, i) { root.appendChild(fieldCard(f, i, fields)); });
+            root.appendChild(btn('+ Add a field', function() {
+                fields.push({ name: '', label: '', description: '', type: 'choice', default: '', options: [] });
+                draw();
+                var last = root.querySelectorAll('[data-cs-field]');
+                last[last.length - 1].querySelector('input').focus();
+            }, 'Add a field', 'px-3 py-1'));
+        }
+        function setMode(m) {
+            if (m === 'form' && !load()) return;   // the JSON does not parse: stay
+            if (m === 'json' && mode === 'form') write();
+            mode = m;
+            views.querySelectorAll('[data-cs-view]').forEach(function(b) {
+                var on = b.dataset.csView === m;
+                b.classList.toggle('gw-chtab-on', on); b.setAttribute('aria-selected', on);
+            });
+            root.classList.toggle('hidden', m !== 'form');
+            box.classList.toggle('hidden', m !== 'json');
+        }
+        function load() {
+            try {
+                var parsed = JSON.parse(box.value);
+                if (!parsed || !Array.isArray(parsed.fields)) throw new Error('the document needs a "fields" list');
+                doc = parsed;
+            } catch (err) {
+                gwToast('The JSON cannot be shown as a form: ' + err.message, 'error');
+                return false;
+            }
+            draw();
+            return true;
+        }
+        function write() {
+            // Keep the key order a person reads: name, label, description, type, default, options.
+            var ORDER = ['name', 'label', 'description', 'type', 'default', 'options'];
+            var out = Object.assign({}, doc, { fields: doc.fields.map(function(f) {
+                var o = {};
+                ORDER.forEach(function(k) { if (f[k] !== undefined && f[k] !== '') o[k] = f[k]; });
+                Object.keys(f).forEach(function(k) { if (ORDER.indexOf(k) < 0) o[k] = f[k]; });
+                return o;
+            }) });
+            box.value = JSON.stringify(out, null, 2) + '\n';
+        }
+
+        views.classList.remove('hidden');
+        views.addEventListener('click', function(e) {
+            var b = e.target.closest('[data-cs-view]');
+            if (b) setMode(b.dataset.csView);
+        });
+        if (load()) setMode('form'); else setMode('json');
+        return {
+            // Before a save: the form's state into the textarea.
+            sync: function() { if (mode === 'form') write(); return true; },
+            // After a save or reset: the server's text back into the form.
+            reload: function() { if (mode === 'form') load(); }
+        };
+    };
+
     /* ── Client setup: save / reset the settings file in place, repaint the per-tier preview ── */
     (function() {
         var card = document.getElementById('client-setup');
@@ -2437,6 +2897,7 @@ function submitExportCsv() {
         function paint(data) {
             paintPreview(data.preview, data.names);
             box.value = data.text;
+            editor.reload();
             resetBtn.classList.toggle('hidden', !data.customized);
             document.getElementById('cs-error').classList.add('hidden');
             var unknown = document.getElementById('cs-unknown');
@@ -2450,8 +2911,10 @@ function submitExportCsv() {
         }
 
         paintPreview({{ cs.preview | tojson }}, {{ cs.names | tojson }});
+        var editor = gwClientSetupEditor(form, box, {{ cs.tiers | tojson }});
         form.addEventListener('submit', function(e) {
             e.preventDefault();
+            if (!editor.sync()) return;
             gwPost(form.action, new FormData(form)).then(function(data) {
                 paint(data);
                 gwToast('Client setup saved: ' + data.fields + (data.fields === 1 ? ' field.' : ' fields.'), 'ok');

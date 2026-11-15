@@ -27,7 +27,9 @@
             </div>
             <div>
                 <div class="text-sm font-medium text-t1">
-                    {{ u.display_name or u.username }}
+                    {# Opens the account drawer (admin.html: data-um-detail, GET /admin/users/{id}/detail). #}
+                    <button type="button" class="um-name" data-um-detail="{{ u.id }}"
+                            title="Usage, notices and history of {{ u.username }}">{{ u.display_name or u.username }}</button>
                     {% if u.display_name and u.display_name != u.username %}
                     <span class="ml-1 text-xs text-t4 font-mono">{{ u.username }}</span>
                     {% endif %}
@@ -76,9 +78,9 @@
         <form action="/admin/users/{{ u.id }}/limit" method="POST" data-action="limit" class="flex items-center gap-2">
             <span class="text-t4 text-sm">$</span>
             <input type="number" step="0.1" min="0" name="new_limit" value="{{ u.daily_limit_usd }}"
-                   aria-label="Daily limit of {{ u.username }} (USD)"
-                   class="gw-input w-20 text-sm font-mono py-1 px-2">
-            <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
+                   data-autosave data-saved="{{ u.daily_limit_usd }}"
+                   aria-label="Daily limit of {{ u.username }} (USD)" title="Enter or leave the field to save; Esc to undo"
+                   class="gw-input w-24 text-sm font-mono py-1 px-2">
         </form>
         {# Always rendered, hidden without cloud access: granting Azure / AWS
            in place has to be able to reveal it without a reload. #}
@@ -88,10 +90,10 @@
             <span class="text-xs text-t3">Cloud $</span>
             <input type="number" step="0.1" min="0" name="new_cloud_limit"
                    value="{{ u.cloud_daily_limit_usd if u.cloud_daily_limit_usd is not none else '' }}"
+                   data-autosave data-saved="{{ u.cloud_daily_limit_usd if u.cloud_daily_limit_usd is not none else '' }}"
                    placeholder="{{ ('%g'|format(cloud_daily_limit)) ~ ' (default)' if cloud_daily_limit is not none else 'no cap' }}"
-                   aria-label="Cloud daily limit of {{ u.username }} (USD)"
+                   aria-label="Cloud daily limit of {{ u.username }} (USD)" title="Enter or leave the field to save; Esc to undo"
                    class="gw-input w-36 text-sm font-mono py-1 px-2">
-            <button type="submit" class="gw-btn gw-btn-ghost text-xs py-1 px-2">Save</button>
         </form>
     </td>
     {# Wraps onto a second line rather than being cut off at the card's edge. #}
@@ -102,16 +104,20 @@
             {{ toggle_form(u, 'waive', 'toggle-concurrency-waive', u.concurrency_waived, 'Waive',
                            'Concurrency limit waived — click to apply it', 'Concurrency limit applies — click to waive') }}
             {% if not u.is_self %}
-            <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-action="disable"
-                  data-granted="{{ 'true' if u.is_disabled else 'false' }}">
-                <button type="submit" class="gw-btn text-xs px-2.5 py-1 {{ 'gw-btn-warn' if u.is_disabled else 'gw-btn-ghost' }}"
-                        title="{{ 'Disabled — click to enable' if u.is_disabled else 'Active — click to disable' }}">
-                    {{ 'Enable' if u.is_disabled else 'Disable' }}
-                </button>
-            </form>
-            <form action="/admin/users/{{ u.id }}/delete" method="POST" data-action="delete">
-                <button type="submit" class="gw-btn gw-btn-danger text-xs px-2.5 py-1">Delete</button>
-            </form>
+            {# The rare, heavy actions sit behind one ⋯ button, away from the
+               toggles: a <details>, so it opens without JS too. #}
+            <details class="um-more" data-um-more>
+                <summary class="gw-btn gw-btn-ghost text-xs px-2 py-1" title="More actions" aria-label="More actions for {{ u.username }}">&#8943;</summary>
+                <div class="um-menu" role="menu">
+                    <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-action="disable"
+                          data-granted="{{ 'true' if u.is_disabled else 'false' }}">
+                        <button type="submit" class="um-menu-item" role="menuitem">{{ 'Enable account' if u.is_disabled else 'Disable account' }}</button>
+                    </form>
+                    <form action="/admin/users/{{ u.id }}/delete" method="POST" data-action="delete">
+                        <button type="submit" class="um-menu-item um-menu-danger" role="menuitem">Delete account&hellip;</button>
+                    </form>
+                </div>
+            </details>
             {% endif %}
         </div>
     </td>

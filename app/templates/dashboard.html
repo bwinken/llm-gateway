@@ -327,7 +327,7 @@
                         {% elif s.waiting > 0 %}
                         <span class="ml-2 px-1.5 py-0.5 rounded font-semibold" style="background:rgba(245,166,35,0.12);color:#f5a623">{{ s.waiting }} queued</span>
                         {% else %}<span class="ml-2 text-t4">no queue</span>{% endif %}
-                        {% elif not s.alive %}<span class="text-ar">unavailable: falls back to another model</span>
+                        {% elif not s.alive %}<span class="text-ar">unavailable</span>{% if s.falls_back_to %} <span class="text-t3">· requests go to <code class="text-t2">{{ s.falls_back_to }}</code></span>{% else %} <span class="text-t3">· no stand-in is up</span>{% endif %}
                         {% else %}<span class="text-t4">—</span>{% endif %}
                     </td>
                     <td class="whitespace-nowrap text-right text-[11px] font-mono text-t3">
@@ -396,8 +396,8 @@
     <div class="flex items-center justify-between mb-6">
         <h3 class="text-base font-semibold text-t1">Usage Trend <span class="text-t4 font-normal text-sm ml-1">Last 30 Days</span></h3>
         <div class="bg-n1 p-1 rounded-lg inline-flex items-center gap-0.5">
-            <button id="btnShowReqs" onclick="switchChart('reqs')" class="gw-chtab gw-chtab-on">Requests</button>
-            <button id="btnShowCost" onclick="switchChart('cost')" class="gw-chtab">Cost (USD)</button>
+            <button id="btnShowCost" onclick="switchChart('cost')" class="gw-chtab gw-chtab-on" aria-pressed="true">Cost (USD)</button>
+            <button id="btnShowReqs" onclick="switchChart('reqs')" class="gw-chtab" aria-pressed="false">Requests</button>
         </div>
     </div>
     <div class="w-full h-72"><canvas id="trendChart"></canvas></div>
@@ -416,38 +416,27 @@
     const dataCost = trendData.map(d => d.cost);
     const dataReqs = trendData.map(d => d.reqs);
 
-    const gR = ctx.createLinearGradient(0, 0, 0, 280);
-    gR.addColorStop(0, 'rgba(99,152,255,0.12)'); gR.addColorStop(1, 'rgba(99,152,255,0)');
-    const gC = ctx.createLinearGradient(0, 0, 0, 280);
-    gC.addColorStop(0, 'rgba(61,214,140,0.12)'); gC.addColorStop(1, 'rgba(61,214,140,0)');
-
-    // Small dots, with today's point (the last one) emphasized.
+    // One bar per local day: a day's total is a count, not a point on a
+    // curve, and a smoothed line drew rises and dips between days that never
+    // happened. Cost comes first because the budget is in dollars.
     const lastIdx = labels.length - 1;
-    function pointStyle(color) {
-        return {
-            pointRadius: c => c.dataIndex === lastIdx ? 4.5 : 2,
-            pointHoverRadius: 6,
-            pointBackgroundColor: color,
-            pointBorderColor: c => c.dataIndex === lastIdx ? '#eef0f4' : color,
-            pointBorderWidth: c => c.dataIndex === lastIdx ? 2 : 0,
-        };
+    function barColors(color, todayColor) {
+        return labels.map((_, i) => i === lastIdx ? todayColor : color);
     }
     const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     function dayTitle(iso) {
         const d = new Date(iso + 'T00:00:00');
         return iso + ' (' + WEEKDAYS[d.getDay()] + ')' + (iso === labels[lastIdx] ? ' · today' : '');
     }
+    const BAR = { borderRadius: 3, maxBarThickness: 28, categoryPercentage: 0.8, barPercentage: 0.9 };
 
     const chart = new Chart(ctx, {
-        type: 'line',
+        type: 'bar',
         data: {
             labels: labels,
             datasets: [
-                // 'monotone' keeps the curve smooth without overshooting:
-                // the default cubic spline bulged above peaks and dipped
-                // below real values between points (even towards zero).
-                { label: 'Requests', data: dataReqs, borderColor: '#6398ff', backgroundColor: gR, borderWidth: 2, yAxisID: 'yReqs', cubicInterpolationMode: 'monotone', tension: 0.3, fill: true, ...pointStyle('#6398ff') },
-                { label: 'Cost (USD)', data: dataCost, borderColor: '#3dd68c', backgroundColor: gC, borderWidth: 2, yAxisID: 'yCost', cubicInterpolationMode: 'monotone', tension: 0.3, fill: true, hidden: true, ...pointStyle('#3dd68c') }
+                { label: 'Cost (USD)', data: dataCost, backgroundColor: barColors('rgba(61,214,140,0.45)', '#3dd68c'), hoverBackgroundColor: '#3dd68c', yAxisID: 'yCost', ...BAR },
+                { label: 'Requests', data: dataReqs, backgroundColor: barColors('rgba(99,152,255,0.45)', '#6398ff'), hoverBackgroundColor: '#6398ff', yAxisID: 'yReqs', hidden: true, ...BAR }
             ]
         },
         options: {
@@ -455,21 +444,29 @@
             interaction: { mode: 'index', intersect: false },
             plugins: {
                 legend: { display: false },
-                tooltip: { callbacks: { title: items => dayTitle(items[0].label) }, backgroundColor: '#1f2029', borderColor: 'rgba(255,255,255,0.06)', borderWidth: 1, titleColor: '#eef0f4', bodyColor: '#c4c9d4', padding: 12, cornerRadius: 8, bodyFont: { family: 'JetBrains Mono', size: 12 }, titleFont: { family: 'Plus Jakarta Sans', size: 13, weight: '600' } }
+                tooltip: { callbacks: {
+                    title: items => dayTitle(items[0].label),
+                    label: c => c.dataset.yAxisID === 'yCost' ? ' $' + Number(c.raw).toFixed(4) : ' ' + c.raw + ' requests',
+                }, backgroundColor: '#1f2029', borderColor: 'rgba(255,255,255,0.06)', borderWidth: 1, titleColor: '#eef0f4', bodyColor: '#c4c9d4', padding: 12, cornerRadius: 8, bodyFont: { family: 'JetBrains Mono', size: 12 }, titleFont: { family: 'Plus Jakarta Sans', size: 13, weight: '600' } }
             },
             scales: {
                 // MM/DD, unrotated, about one label per 4 days.
                 x: { grid: { display: false }, ticks: { color: '#4e5569', font: { family: 'JetBrains Mono', size: 11 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8, callback: function(v) { return this.getLabelForValue(v).slice(5).replace('-', '/'); } }, border: { display: false } },
-                yReqs: { type: 'linear', display: true, position: 'left', beginAtZero: true, grid: { color: 'rgba(255,255,255,0.025)' }, ticks: { color: '#4e5569', precision: 0, font: { family: 'JetBrains Mono', size: 11 } }, border: { display: false }, title: { display: true, text: 'Requests', color: '#4e5569' } },
-                yCost: { type: 'linear', display: false, position: 'left', beginAtZero: true, grid: { color: 'rgba(255,255,255,0.025)' }, ticks: { color: '#4e5569', font: { family: 'JetBrains Mono', size: 11 }, callback: function(v) { return '$' + v; } }, border: { display: false } }
+                // A floor under the axis width: Chart.js measures (and caches) the
+                // labels before the mono font is in, and cut off the "$".
+                yCost: { afterFit: function(scale) { scale.width = Math.max(scale.width, 52); }, type: 'linear', display: true, position: 'left', beginAtZero: true, grid: { color: 'rgba(255,255,255,0.025)' }, ticks: { color: '#4e5569', font: { family: 'JetBrains Mono', size: 11 }, callback: function(v) { return '$' + v; } }, border: { display: false } },
+                yReqs: { type: 'linear', display: false, position: 'left', beginAtZero: true, grid: { color: 'rgba(255,255,255,0.025)' }, ticks: { color: '#4e5569', precision: 0, font: { family: 'JetBrains Mono', size: 11 } }, border: { display: false } }
             }
         }
     });
 
     function switchChart(mode) {
-        var bR = document.getElementById('btnShowReqs'), bC = document.getElementById('btnShowCost');
-        if (mode === 'reqs') { bR.className='gw-chtab gw-chtab-on'; bC.className='gw-chtab'; chart.getDatasetMeta(0).hidden=false; chart.getDatasetMeta(1).hidden=true; chart.options.scales.yReqs.display=true; chart.options.scales.yCost.display=false; }
-        else { bC.className='gw-chtab gw-chtab-on'; bR.className='gw-chtab'; chart.getDatasetMeta(0).hidden=true; chart.getDatasetMeta(1).hidden=false; chart.options.scales.yReqs.display=false; chart.options.scales.yCost.display=true; }
+        var cost = mode === 'cost';
+        var bC = document.getElementById('btnShowCost'), bR = document.getElementById('btnShowReqs');
+        bC.className = 'gw-chtab' + (cost ? ' gw-chtab-on' : ''); bC.setAttribute('aria-pressed', cost);
+        bR.className = 'gw-chtab' + (cost ? '' : ' gw-chtab-on'); bR.setAttribute('aria-pressed', !cost);
+        chart.getDatasetMeta(0).hidden = !cost; chart.getDatasetMeta(1).hidden = cost;
+        chart.options.scales.yCost.display = cost; chart.options.scales.yReqs.display = !cost;
         chart.update();
     }
 </script>
@@ -525,6 +522,7 @@
                 {% for m in g.rows %}
                 <tr>
                     <td class="whitespace-nowrap">
+                        <span class="inline-block w-2.5 h-2.5 rounded-sm mr-2 align-middle" style="background:{{ bcolor }}"></span>
                         <code class="text-sm font-mono font-medium text-t1">{{ m.model }}</code>
                         {% if m.type %}<span class="text-[10px] text-t4 ml-1.5">{{ m.type }}</span>{% endif %}
                     </td>
@@ -593,7 +591,7 @@
             var rows = g.rows.slice().sort(function (a, b) { return b.cost_usd - a.cost_usd; });
             var shown = rows.length <= ramp.length ? rows : rows.slice(0, ramp.length - 1);
             shown.forEach(function (r, i) {
-                slices.push({ label: r.model + ' · ' + g.label, cost: r.cost_usd, share: r.share, color: ramp[i] });
+                slices.push({ label: r.model + ' · ' + g.label, cost: r.cost_usd, share: r.share, color: ramp[i], keys: [g.backend + '|' + r.model] });
             });
             if (rows.length > ramp.length) {
                 var rest = rows.slice(ramp.length - 1);
@@ -601,11 +599,21 @@
                     label: 'Other · ' + g.label,
                     cost: rest.reduce(function (a, r) { return a + r.cost_usd; }, 0),
                     share: rest.reduce(function (a, r) { return a + r.share; }, 0),
-                    color: ramp[ramp.length - 1]
+                    color: ramp[ramp.length - 1],
+                    keys: rest.map(function (r) { return g.backend + '|' + r.model; })
                 });
             }
         });
         return slices;
+    }
+
+    // The table is the ring's legend: each model row carries its slice's
+    // colour (folded rows the "Other" slice's). Chart.js's own legend could
+    // not fit beside a 280 px ring and silently dropped whole backends.
+    function mbSliceColors() {
+        var colors = {};
+        mbSlices().forEach(function (s) { s.keys.forEach(function (k) { colors[k] = s.color; }); });
+        return colors;
     }
 
     var mbCenterPlugin = {
@@ -646,16 +654,14 @@
                 responsive: true, maintainAspectRatio: false, cutout: '62%',
                 layout: { padding: 6 },
                 plugins: {
-                    legend: {
-                        position: 'bottom',
-                        labels: { color: '#868da0', boxWidth: 10, boxHeight: 10, padding: 8, font: { family: 'Plus Jakarta Sans', size: 11 } }
-                    },
+                    legend: { display: false },
                     tooltip: {
                         backgroundColor: '#1f2029', borderColor: 'rgba(255,255,255,0.06)', borderWidth: 1,
                         titleColor: '#eef0f4', bodyColor: '#c4c9d4', padding: 12, cornerRadius: 8,
                         bodyFont: { family: 'JetBrains Mono', size: 12 },
                         titleFont: { family: 'Plus Jakarta Sans', size: 13, weight: '600' },
                         callbacks: {
+                            title: function (items) { return items[0].label; },
                             label: function (item) {
                                 var s = mbSlices()[item.dataIndex];
                                 return ' $' + s.cost.toFixed(4) + ' (' + s.share.toFixed(1) + '%)';
@@ -668,9 +674,12 @@
         });
     }
 
-    // Mirrors the server-rendered table markup above — keep the two in sync.
+    // Mirrors the server-rendered table markup above, plus each row's slice
+    // colour (a swatch and the share bar), which only the script knows: it
+    // re-renders the table on load. Keep the two in sync.
     function mbRenderTable() {
         var html = '';
+        var colors = mbSliceColors();
         mbGroups.forEach(function (g) {
             var dot = MB_DOT[g.backend] || '#868da0';
             html += '<tr style="background:rgba(255,255,255,0.015)">'
@@ -681,7 +690,9 @@
                 + '<td class="py-1.5 text-right text-[11px] font-mono font-medium text-t2">$' + g.cost_usd.toFixed(4) + '</td>'
                 + '<td class="py-1.5"></td></tr>';
             g.rows.forEach(function (m) {
+                var color = colors[g.backend + '|' + m.model] || dot;
                 html += '<tr><td class="whitespace-nowrap">'
+                    + '<span class="inline-block w-2.5 h-2.5 rounded-sm mr-2 align-middle" style="background:' + color + '"></span>'
                     + '<code class="text-sm font-mono font-medium text-t1">' + mbEsc(m.model) + '</code>'
                     + (m.type ? '<span class="text-[10px] text-t4 ml-1.5">' + mbEsc(m.type) + '</span>' : '')
                     + '</td>'
@@ -691,7 +702,7 @@
                     + '<td class="text-right text-sm font-mono text-t2">$' + m.cost_usd.toFixed(4) + '</td>'
                     + '<td><div class="flex items-center gap-2">'
                     + '<div class="flex-1 rounded-full h-1.5 overflow-hidden bg-n3" style="min-width:60px">'
-                    + '<div class="h-1.5 rounded-full" style="width: ' + m.share + '%; background:' + dot + '"></div></div>'
+                    + '<div class="h-1.5 rounded-full" style="width: ' + m.share + '%; background:' + color + '"></div></div>'
                     + '<span class="text-[11px] font-mono text-t4 tabular-nums" style="min-width:38px;text-align:right">' + m.share + '%</span>'
                     + '</div></td></tr>';
             });
@@ -733,6 +744,7 @@
         mbFetch();
     }
 
+    mbRenderTable();
     mbRenderChart();
 </script>
 <style>@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }</style>

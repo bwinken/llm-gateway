@@ -128,11 +128,65 @@ class CrossSiteRequestGuard:
         await self.app(scope, receive, send)
 
 
+# ── Content-Security-Policy on the site's own pages ──
+#
+# Every page loads its stylesheet, scripts and fonts from this site
+# (app/static, app/core/static_assets.py), so the browser is told to run no
+# script and load no style or font from anywhere else: a template that slips
+# a CDN link back in is blocked, and so is a script injected from another
+# origin into a page that shows API keys. The pages still carry inline
+# <script> blocks and onclick= handlers, hence 'unsafe-inline'; dropping it
+# needs those moved into files first. data: images are the favicon and the
+# weekly report preview's charts. FastAPI's own /docs and /redoc load their
+# viewer from a CDN and are left without the header.
+CONTENT_SECURITY_POLICY = "; ".join((
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self'",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+))
+_CSP_EXEMPT_PATHS = ("/docs", "/redoc")
+
+
+class ContentSecurityPolicy:
+    """Pure-ASGI middleware: adds ``Content-Security-Policy`` to HTML
+    responses. It only touches the response start, never the body, so
+    streams pass through untouched; API responses (JSON, SSE) get nothing."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("path", "").startswith(_CSP_EXEMPT_PATHS):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_csp(message):
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers") or [])
+                content_type = next((v for k, v in headers if k.lower() == b"content-type"), b"")
+                if content_type.startswith(b"text/html") and not any(
+                    k.lower() == b"content-security-policy" for k, _ in headers
+                ):
+                    headers.append((b"content-security-policy", CONTENT_SECURITY_POLICY.encode("latin-1")))
+                    message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_csp)
+
+
 def add_browser_security(app: FastAPI) -> None:
-    """Install the CORS policy and the cross-site guard on ``app``.
+    """Install the CORS policy, the cross-site guard and the pages' CSP on ``app``.
 
     The guard is added first so it runs inside CORS: a refused request still
     gets CORS headers and the browser reports a 403 rather than a CORS error.
     """
+    app.add_middleware(ContentSecurityPolicy)
     app.add_middleware(CrossSiteRequestGuard)
     app.add_middleware(CORSMiddleware, **CORS_OPTIONS)

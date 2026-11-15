@@ -27,12 +27,14 @@ from app.core.config import (
     setup_page_enabled,
 )
 from app.core.database import get_session
+from app.core.static_assets import static_url
 from app.core.logger import logger
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ, local_month_start, seconds_until_local_midnight
 from app.services import client_patch, client_rules
 from app.services.model_catalog import (
     catalog_keys,
+    fallback_target,
     hidden_cloud_backends as _hidden_cloud_backends,
     resolve_prices as _resolve_prices,
     usage_row_key,
@@ -62,6 +64,8 @@ templates.env.globals["get_site_links"] = get_site_links
 # Same for the Setup page switch (SETUP_PAGE_ENABLED): the navbar link is on
 # every page.
 templates.env.globals["setup_page_enabled"] = setup_page_enabled
+# And the URLs of the pages' own stylesheet, scripts and fonts.
+templates.env.globals["static_url"] = static_url
 _SETUP_DIR = Path(__file__).resolve().parent.parent.parent / "setup"
 
 
@@ -313,6 +317,7 @@ def dashboard(
                 "name": model_name,
                 "base_url": base_url,
                 "alive": is_alive(base_url),
+                "falls_back_to": None if is_alive(base_url) else fallback_target(model_name),
                 "display_name": route.get("display_name", ""),
                 "context_window": route.get("context_window"),
                 "max_output_tokens": route.get("max_output_tokens"),

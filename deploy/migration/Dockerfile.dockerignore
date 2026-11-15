@@ -27,6 +27,8 @@ backup/
 
 # Development
 .git/
+# Tailwind's standalone binary (scripts/build_css.sh): 40 MB the image never runs
+.cache/
 .github/
 .venv/
 venv/

@@ -382,6 +382,8 @@ def _build_test_app() -> FastAPI:
     test_app.include_router(azure_api.router)
     test_app.include_router(aws_api.router)
     test_app.include_router(admin.router)
+    from app.core import static_assets
+    static_assets.mount(test_app)
 
     return test_app
 

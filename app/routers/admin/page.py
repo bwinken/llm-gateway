@@ -48,6 +48,7 @@ from app.services.stats import (
     get_today_totals,
     summarize_server_status,
     get_dau_trends,
+    get_spend_trends,
     get_monthly_overview,
 )
 
@@ -90,6 +91,7 @@ def admin_page(
         export_from = (export_from - timedelta(days=1)).replace(day=1)
 
     dau_data = get_dau_trends(session)
+    spend_data = get_spend_trends(session)
     today_dau = dau_data[-1]["dau"] if dau_data else 0
     dept_usage = overview["departments"]
 
@@ -187,6 +189,7 @@ def admin_page(
             "anomaly_usernames": anomaly_usernames,
             "current_year": month_start.year,
             "dau_data": dau_data,
+            "spend_data": spend_data,
             "today_dau": today_dau,
             "default_daily_limit": get_default_daily_limit(),
             "cloud_daily_limit": get_cloud_daily_limit(),

@@ -18,3 +18,6 @@ deploy/migration/drill.env
 deploy/migration/*.log
 deploy/migration/.state/
 /.migration-drill
+
+# Tailwind standalone program, downloaded by scripts/build_css.sh
+/.cache/

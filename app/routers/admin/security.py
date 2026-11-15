@@ -345,15 +345,26 @@ def _audit_summary(detail: dict) -> str:
 
 def _audit_rows(
     session: Session, *, limit: int, actor: str = "", before_id: int | None = None,
-    since: datetime | None = None,
+    since: datetime | None = None, about: User | None = None,
 ) -> list[dict]:
+    """Newest first. ``about`` keeps the rows that concern one account:
+    the admin's changes to it (``/admin/users/<id>/...``) and what it did
+    itself (``actor``)."""
     import json as _json
+
+    from sqlalchemy import or_
 
     from app.models.schema import AuditLog
 
     q = select(AuditLog)
     if actor:
         q = q.where(AuditLog.actor == actor)
+    if about is not None:
+        q = q.where(or_(
+            AuditLog.path == f"/admin/users/{about.id}",
+            AuditLog.path.like(f"/admin/users/{about.id}/%"),  # type: ignore[attr-defined]
+            AuditLog.actor == about.username,
+        ))
     if before_id is not None:
         q = q.where(AuditLog.id < before_id)  # type: ignore[operator]
     if since is not None:

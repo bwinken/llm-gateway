@@ -1,0 +1,5 @@
+/* The input of scripts/build_css.sh. The page's own styles stay in the
+   templates' <style> blocks; this file only asks for Tailwind's three layers. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

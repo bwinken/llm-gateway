@@ -41,6 +41,13 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
+      # app/static/css/tailwind.css is built from the templates' class names
+      # and committed (servers only git pull). This fails a change that edits
+      # a template without rebuilding it: run `bash scripts/build_css.sh` and
+      # commit the result. Downloads Tailwind's pinned standalone program.
+      - name: Stylesheet up to date
+        run: bash scripts/build_css.sh --check
+
       # No config.toml in the checkout (it is gitignored — it holds real
       # downstream URLs and API keys). app/core/config.py falls back to
       # config.toml.example, which tests/test_config_fallback.py validates.

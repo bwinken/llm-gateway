@@ -2,7 +2,7 @@
 
 [中文版](README.zh-TW.md)
 
-All pages are protected by oauth2-proxy + nginx `auth_request` — users must complete SSO login first. Pages are rendered with Jinja2 templates + Tailwind CSS (CDN) + Chart.js.
+All pages are protected by oauth2-proxy + nginx `auth_request` — users must complete SSO login first. Pages are rendered with Jinja2 templates + Tailwind CSS (built into `app/static/css/tailwind.css`) + Chart.js, all served from this site.
 
 ## Page Overview
 
@@ -211,7 +211,7 @@ Shared framework for all pages:
 - **Support Bot button** — floating bottom-right link, rendered only when `support_bot_url` is set (Admin → Site Links); read through the `get_site_links` template global
 - **`gwTabs(barId, storageKey)`** — page tabs: buttons `data-tab="x"` in the bar, panels `data-panel="x"` (several panels may share a name). Active tab comes from the URL hash, else `sessionStorage[storageKey]` (form POSTs redirect to a URL without the hash), else the first tab. Fires a `resize` event after each switch so charts in a hidden tab get sized
 - **Tooltips** — any element with `gw-tip` + `data-tip` (`gw-tip-wide` for long text)
-- **CDN** — Tailwind CSS, Chart.js, Plus Jakarta Sans + JetBrains Mono fonts
+- **Assets** — Tailwind CSS, Chart.js, Plus Jakarta Sans + JetBrains Mono fonts, all under `app/static/` and linked with `static_url(...)`. Nothing loads from a CDN. After adding a class to a template run `bash scripts/build_css.sh` and commit the stylesheet ([docs/frontend-build.md](../../docs/frontend-build.md))
 
 ### `_admin_tabs.html` — Admin Tab Bar
 

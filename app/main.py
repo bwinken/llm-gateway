@@ -22,6 +22,7 @@ from app.core.config import APP_TITLE, get_site_links, setup_page_enabled
 from app.core.database import init_db
 from app.core.logger import logger
 from app.core.server_state import close_client, init_client
+from app.core import static_assets
 from app.routers import admin, auth_api, aws_api, azure_api, health_api, v1_api, web_ui
 from app.services import metrics
 from app.services.health import health_check_loop
@@ -31,6 +32,7 @@ _templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "te
 # links (support bot / install guide) — same global as the router templates.
 _templates.env.globals["get_site_links"] = get_site_links
 _templates.env.globals["setup_page_enabled"] = setup_page_enabled
+_templates.env.globals["static_url"] = static_assets.static_url
 
 
 @asynccontextmanager
@@ -167,3 +169,5 @@ app.include_router(v1_api.router)
 app.include_router(azure_api.router)
 app.include_router(aws_api.router)
 app.include_router(admin.router)
+# The pages' stylesheet, Chart.js and fonts (app/core/static_assets.py).
+static_assets.mount(app)

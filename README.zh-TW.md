@@ -98,8 +98,8 @@ Azure 與 Bedrock 模型放在 `[azure_models.*]`、`[bedrock_models.*]`；價�
 
 | 分頁 | 在這裡做什麼 |
 |---|---|
-| **Overview** | 查看花費、請求數與活躍使用者；檢視用量異常；匯出每月費用報表 |
-| **Users** | 設定預算與雲端上限、授權 Azure 或 AWS、停用帳號、建立服務帳號、查看或重新產生 key |
+| **Overview** | 查看各 backend 的花費、請求數與活躍使用者；檢視用量異常；匯出每月費用報表 |
+| **Users** | 設定預算與雲端上限、授權 Azure 或 AWS、停用帳號、建立服務帳號、查看或重新產生 key；點帳號名稱可看該帳號的用量、通知、key 與變更紀錄 |
 | **Clients** | 選擇要偵測哪些 client 問題、怎麼通知使用者、給他們什麼設定 patch；查看受影響的人和寄出的信 |
 | **Security** | IP allowlist、prompt guardrail、稽核紀錄 |
 | **Settings** | 預設預算、並行上限、雲端上限用完時的處理方式、週報信、網站連結 |
@@ -278,5 +278,6 @@ CI 會在每個 pull request 跑這兩項，另外還有相依套件稽核與金
 | [架構](docs/architecture.md) | 每個子系統的詳細行為 |
 | [部署](deploy/README.zh-TW.md) | 正式環境設定、備份、升級 |
 | [Langfuse](docs/langfuse-observability.md) | 可觀測性設計 |
+| [網頁前端檔案](docs/frontend-build.md) | 改了模板之後怎麼重新產生樣式表，一步一步說明 |
 | [Migrations](alembic/README.zh-TW.md) | 資料庫 schema 變更 |
 | 各套件說明 | [core](app/core/README.zh-TW.md) · [routers](app/routers/README.zh-TW.md) · [models](app/models/README.zh-TW.md) · [templates](app/templates/README.zh-TW.md) · [tests](tests/README.md) |
