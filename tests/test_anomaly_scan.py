@@ -89,6 +89,22 @@ class TestBurstRate:
 
 class TestOffHours:
 
+    FLOOR = 5
+
+    def _night(self, session, user, n):
+        night = local_day_start_utc() + timedelta(hours=2)      # 02:00 local
+        for _ in range(n):
+            _log(session, user, when=night)
+
+    def _day(self, session, user, days_ago, n):
+        noon = local_day_start_utc() - timedelta(days=days_ago) + timedelta(hours=12)
+        for _ in range(n):
+            _log(session, user, when=noon)
+
+    def _scopes(self, session):
+        with patch("app.services.anomaly_scan.OFF_HOURS_MIN_REQUESTS", self.FLOOR):
+            return [(f["scope"], f["observed"], f["baseline"]) for f in detect_off_hours(session, NOW)]
+
     def test_counts_only_local_night_requests_of_humans(self, db_session):
         night_owl = _seed_user(db_session, "night_owl")
         day_worker = _seed_user(db_session, "day_worker")
@@ -106,6 +122,41 @@ class TestOffHours:
         assert [(f["scope"], f["observed"]) for f in findings] == [
             (f"user:{night_owl.id}", OFF_HOURS_MIN_REQUESTS + 1),
         ]
+
+    def test_a_night_no_bigger_than_the_accounts_busy_day_is_ordinary(self, db_session):
+        """Someone who runs agents overnight has days this large: nothing new."""
+        heavy = _seed_user(db_session, "heavy")
+        for d in range(1, 6):
+            self._day(db_session, heavy, d, 40)
+        self._night(db_session, heavy, 30)
+        db_session.commit()
+        assert self._scopes(db_session) == []
+
+    def test_a_night_bigger_than_the_accounts_busy_day_is_flagged(self, db_session):
+        light = _seed_user(db_session, "light")
+        for d in range(1, 6):
+            self._day(db_session, light, d, 8)
+        self._night(db_session, light, 30)
+        db_session.commit()
+        assert self._scopes(db_session) == [(f"user:{light.id}", 30, 8)]
+
+    def test_one_exceptional_day_does_not_become_the_standard(self, db_session):
+        """The busy day is the 90th percentile, so with ten days or more a
+        single outlier (an earlier incident) does not excuse the next one."""
+        u = _seed_user(db_session, "once")
+        for d in range(1, 11):
+            self._day(db_session, u, d, 8)
+        self._day(db_session, u, 11, 100)
+        self._night(db_session, u, 30)
+        db_session.commit()
+        assert self._scopes(db_session) == [(f"user:{u.id}", 30, 8)]
+
+    def test_below_the_floor_is_never_flagged(self, db_session):
+        u = _seed_user(db_session, "quiet")
+        self._day(db_session, u, 1, 1)
+        self._night(db_session, u, self.FLOOR)
+        db_session.commit()
+        assert self._scopes(db_session) == []
 
 
 class TestDetectAll:

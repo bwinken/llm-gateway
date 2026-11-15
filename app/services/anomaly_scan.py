@@ -12,8 +12,12 @@ Rules (thresholds are module constants, tune freely):
   cost_spike      user's spend today > COST_SPIKE_RATIO × their 30-day daily
                   median (and above COST_SPIKE_FLOOR_USD — tiny accounts
                   don't page anyone)
-  off_hours       human (non app_*) account with > OFF_HOURS_MIN_REQUESTS
-                  requests between 00:00-06:00 local time today
+  off_hours       human account with more requests between 00:00-06:00 local
+                  time today than it makes on a busy whole day (the 90th
+                  percentile of its days in the prior 30), and more than
+                  OFF_HOURS_MIN_REQUESTS. A fixed count cannot do this: an
+                  agent left running makes thousands of requests a night,
+                  which is ordinary for the people who do it
   burst_rate      human account with > BURST_PER_HOUR requests in the last
                   hour (sustained machine-speed usage on a human key)
   behavior_shift  user suddenly using a model_type they never touched in the
@@ -33,6 +37,7 @@ and the remaining rules and the persist step still run.
 from __future__ import annotations
 
 import json
+import math
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from statistics import median
@@ -49,8 +54,8 @@ from app.services.usage_rollup import aggregate
 # ── Tunables ──
 COST_SPIKE_RATIO = 5.0          # today > N × 30d daily median
 COST_SPIKE_FLOOR_USD = 1.0      # ignore spikes below this absolute spend
-OFF_HOURS_MIN_REQUESTS = 300    # 00:00-06:00 local requests to flag a human: an agent loop
-                                # makes 50 in minutes, so working past midnight is not a finding
+OFF_HOURS_MIN_REQUESTS = 300    # never flag a night below this, whatever the account's history
+OFF_HOURS_BUSY_DAY_PCT = 0.90   # the night is compared with this percentile of the account's days
 OFF_HOURS_END = timedelta(hours=6)  # off-hours = local midnight to 06:00
 BURST_PER_HOUR = 600            # sustained ~10 req/min for an hour
 BURST_CRITICAL_PER_HOUR = 1500
@@ -125,6 +130,14 @@ def detect_cost_spike(session: Session, now: datetime) -> list[dict]:
     return findings
 
 
+def _percentile(values: list[int], pct: float) -> int:
+    """Nearest-rank percentile; with fewer than ten values that is the largest."""
+    if not values:
+        return 0
+    ordered = sorted(values)
+    return ordered[max(1, math.ceil(len(ordered) * pct)) - 1]
+
+
 def detect_off_hours(session: Session, now: datetime) -> list[dict]:
     humans = _human_user_ids(session)
     day_start = local_day_start_utc()
@@ -136,18 +149,34 @@ def detect_off_hours(session: Session, now: datetime) -> list[dict]:
         .where(UsageLog.created_at < day_start + OFF_HOURS_END)
         .group_by(UsageLog.user_id)
     ).all()
-    counts = {int(uid): int(n) for uid, n in rows if int(uid) in humans}
+    counts = {int(uid): int(n) for uid, n in rows
+              if int(uid) in humans and int(n) > OFF_HOURS_MIN_REQUESTS}
+    if not counts:
+        return []
 
-    return [
-        _finding(
+    # What a busy whole day looks like for each of those accounts. Someone who
+    # runs agents overnight has days of many thousands, so their nights are
+    # nothing new; a night larger than the account's own busy day is.
+    daily: dict[int, list[int]] = defaultdict(list)
+    for (uid, _day), agg in aggregate(session, *_baseline_window(), ("user_id", "day"),
+                                      user_ids=counts).items():
+        daily[int(uid)].append(int(agg["requests"]))
+
+    findings = []
+    for uid, n in counts.items():
+        busy_day = _percentile(daily.get(uid, []), OFF_HOURS_BUSY_DAY_PCT)
+        if n <= busy_day:
+            continue
+        summary = (f"{n} requests between 00:00-06:00 local; a busy whole day for this account is {busy_day}"
+                   if busy_day else
+                   f"{n} requests between 00:00-06:00 local; no usage in the prior {BASELINE_DAYS}d")
+        findings.append(_finding(
             f"user:{uid}", "off_hours", severity="warning",
             window_start=day_start, window_end=now,
-            observed=n, baseline=OFF_HOURS_MIN_REQUESTS, user_id=uid,
-            detail={"summary": f"{n} requests between 00:00-06:00 local",
-                    "username": humans[uid]},
-        )
-        for uid, n in counts.items() if n > OFF_HOURS_MIN_REQUESTS
-    ]
+            observed=n, baseline=busy_day, user_id=uid,
+            detail={"summary": summary, "username": humans[uid]},
+        ))
+    return findings
 
 
 def detect_burst_rate(session: Session, now: datetime) -> list[dict]:
