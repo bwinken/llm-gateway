@@ -188,7 +188,7 @@ class TestTabs:
             patch("app.routers.admin.page.get_concurrency_settings", return_value=("monitor", 8)),
         ):
             body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
-        for name in ("overview", "users", "clients", "security", "settings"):
+        for name in ("overview", "users", "clients", "security", "limits", "settings"):
             assert f'data-tab="{name}"' in body
             assert body.count(f'data-panel="{name}"') == 1
         assert "1 blocked" in body
@@ -207,7 +207,7 @@ class TestTabs:
 
     def test_each_admin_card_is_on_the_tab_it_belongs_to(self, client, admin_user):
         body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
-        starts = {name: body.index(f'data-panel="{name}"') for name in ("overview", "users", "clients", "security", "settings")}
+        starts = {name: body.index(f'data-panel="{name}"') for name in ("overview", "users", "clients", "security", "limits", "settings")}
         order = sorted(starts, key=starts.get)
         end = body.index("gwTabs('adminTabs'")
 
@@ -221,9 +221,11 @@ class TestTabs:
         for card in ('id="ip-allowlist"', ">Guardrail</h2>", ">Audit Log</h2>"):
             assert panel_of(card) == "security", card
         for card in (
-            ">Concurrency Limit</h2>", ">Default Daily Limit</h2>", ">Cloud Daily Limit</h2>", ">Cloud Budget Fallback</h2>",
-            'id="weekly-reports"', ">Site Links</h2>",
+            ">Concurrency Limit</h2>", ">Off-peak hours", ">Default Daily Limit</h2>", ">Cloud Daily Limit</h2>",
+            ">Cloud Budget Fallback</h2>",
         ):
+            assert panel_of(card) == "limits", card
+        for card in ('id="weekly-reports"', ">Site Links</h2>"):
             assert panel_of(card) == "settings", card
 
     def test_all_clear_strip_has_nothing_to_open(self, client, admin_user):
@@ -294,7 +296,7 @@ class TestModelsTab:
         bar_start = body.index('id="adminTabs"')
         bar = body[bar_start:]
         bar = bar[:bar.index("</div>")]
-        for name in ("overview", "users", "clients", "security", "settings"):
+        for name in ("overview", "users", "clients", "security", "limits", "settings"):
             assert f'href="/admin#{name}"' in bar
         assert 'class="gw-tab gw-tab-on" href="/admin/models"' in bar
         # Not sticky here: the page has its own sticky sidebar at top: 80px.

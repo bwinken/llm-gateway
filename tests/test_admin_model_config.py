@@ -128,3 +128,28 @@ class TestAliasUniqueness:
                           bedrock_models={"az1": BEDROCK["br2"]})
         assert resp.status_code == 400
         save.assert_not_called()
+
+
+class TestCacheWritePrice:
+    """`cache_write_input_price_per_1m` is a pricing key like the others: a
+    number ≥ 0, saved with the entry, on every backend."""
+
+    def test_saved_on_a_bedrock_entry(self, client, admin_user):
+        priced = {"br1": {**BEDROCK["br2"], "input_price_per_1m": 3.0, "output_price_per_1m": 15.0,
+                          "cache_write_input_price_per_1m": 3.75}}
+        resp, save = _put(client, admin_user, bedrock_models=priced)
+        assert resp.status_code == 200, resp.text
+        assert save.call_args.args[5]["br1"]["cache_write_input_price_per_1m"] == 3.75
+
+    def test_negative_rejected(self, client, admin_user):
+        bad = {"m1": {**VLLM["m1"], "cache_write_input_price_per_1m": -1}}
+        resp, save = _put(client, admin_user, models=bad)
+        assert resp.status_code == 400
+        assert "cache_write_input_price_per_1m" in resp.json()["detail"]
+        save.assert_not_called()
+
+    def test_not_a_number_rejected(self, client, admin_user):
+        bad = {"br1": {**BEDROCK["br2"], "cache_write_input_price_per_1m": "3.75"}}
+        resp, save = _put(client, admin_user, bedrock_models=bad)
+        assert resp.status_code == 400
+        save.assert_not_called()

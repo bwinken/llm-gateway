@@ -1,7 +1,7 @@
 {# Admin section tabs, shared by /admin and /admin/models.
 
    On /admin (on_admin_page = true) Overview / Users / Clients / Security /
-   Settings are in-page tabs driven by gwTabs() (data-tab buttons), and
+   Limits / Settings are in-page tabs driven by gwTabs() (data-tab buttons), and
    "Models" is a link to the separate Model Config page. On /admin/models
    the same bar is rendered with links back to /admin#<tab>, so they read as one set of tabs while
    Model Config keeps its own page: its URL-hash routing, unsaved-changes
@@ -10,7 +10,7 @@
    Badges render only where their data exists (the /admin context). #}
 {% set models_active = not on_admin_page %}
 <div id="adminTabs" class="gw-tabs {{ 'gw-tabs-static' if models_active }} gw-anim gw-d2" role="tablist">
-    {% for name, label in [('overview', 'Overview'), ('users', 'Users'), ('clients', 'Clients'), ('security', 'Security'), ('settings', 'Settings')] %}
+    {% for name, label in [('overview', 'Overview'), ('users', 'Users'), ('clients', 'Clients'), ('security', 'Security'), ('limits', 'Limits'), ('settings', 'Settings')] %}
     {% if on_admin_page %}
     <button type="button" class="gw-tab" data-tab="{{ name }}" role="tab">
     {% else %}
@@ -26,7 +26,7 @@
             <span class="gw-tab-count gw-tab-count-warn gw-tip" data-tip="Client rules with accounts violating them in the last {{ client_rule_days }} days">{{ client_rule_attention|length }} violated</span>
         {% elif name == 'security' and ip_allowlist is defined and ip_allowlist and ip_allowlist.mode != 'off' %}
             <span class="gw-tab-count gw-tip" data-tip="IP allowlist mode">allowlist: {{ ip_allowlist.mode }}</span>
-        {% elif name == 'settings' and concurrency_mode is defined and concurrency_mode != 'off' %}
+        {% elif name == 'limits' and concurrency_mode is defined and concurrency_mode != 'off' %}
             <span class="gw-tab-count gw-tip" data-tip="Concurrency limit mode">limit: {{ concurrency_mode }}</span>
         {% endif %}
     {% if on_admin_page %}</button>{% else %}</a>{% endif %}

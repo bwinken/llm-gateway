@@ -83,7 +83,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 **檔案**：`admin.html` ← `admin/page.py`
 **權限**：JWT scope 含 `admin`
 
-分頁列上方只有 **Needs attention** 摘要列：一個 `<details>`，收合時是一行統計（在 Overview 預設展開、其他分頁預設收合，跟著 `gw:tab` 事件切換），所以頁面一打開就看得到分頁列。下方是共用的 `_admin_tabs.html` 分頁列：**Overview / Users / Clients / Security / Settings**（透過 `gwTabs('adminTabs', 'adminTab')` 在頁內切換），以及 **Models**（連到獨立的 `/admin/models` 頁面）。分頁標籤：Users 顯示「N blocked」/「N near limit」（否則顯示帳號總數）；並行上限開啟時 Settings 顯示「limit: monitor|enforce」。
+分頁列上方只有 **Needs attention** 摘要列：一個 `<details>`，收合時是一行統計（在 Overview 預設展開、其他分頁預設收合，跟著 `gw:tab` 事件切換），所以頁面一打開就看得到分頁列。下方是共用的 `_admin_tabs.html` 分頁列：**Overview / Users / Clients / Security / Limits / Settings**（透過 `gwTabs('adminTabs', 'adminTab')` 在頁內切換），以及 **Models**（連到獨立的 `/admin/models` 頁面）。分頁標籤：Users 顯示「N blocked」/「N near limit」（否則顯示帳號總數）；並行上限開啟時 Limits 顯示「limit: monitor|enforce」。
 
 ### 頁面區塊
 
@@ -97,10 +97,10 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | **Department Usage** | Overview | 依 org_code 分組：Users、Cost、Input / Output Tokens、Reqs；超過 15 列時前端分頁 |
 | **Export Usage Report** | Overview | 選擇月份區間（最多 24 個月）→ **Download xlsx**（`GET /admin/api/export/usage.xlsx`，4 個工作表）或 **Backend costs (CSV)**（`GET /admin/api/export/user-backend-costs.csv`，每列為「月份 × 帳號」，分 On-prem / Azure / Bedrock 費用欄） |
 | **User Management** | Users | Users / Apps 子切換、後端搜尋（`q`，對 username / display_name / org_code 做 ILIKE）、後端分頁（`limit/offset`、`app_limit/app_offset`）、**Export Users (CSV)**（`GET /admin/api/export/users.csv`）。Users 表格：User、API Key（View Key，下方顯示 *used N d ago* / *never used* — 超過 90 天變琥珀色 — 舊格式 key 另標 *old format*；滑鼠移上去可看 key 的發放與最後使用時間）、Total Spend、Daily Limit（+ *Cloud $*）、Actions。Apps 表格另有可編輯的 Owner 欄。狀態篩選多了 **Older-format API key**（`legacy_key`）與 **Key unused 90+ days**（`stale_key`），供權限審查使用 |
-| **Concurrency Limit** | Settings | 模式（`off` / `monitor` / `enforce`）+ 每帳號上限（≥ 1）→ `POST /admin/concurrency-limit`；顯示目前進行中的請求數、帳號數與最忙的帳號。切到 Enforce 前會要求確認 |
-| **Default Daily Limit** | Settings | `POST /admin/default-limit` — 寫入 `[app].default_daily_limit_usd`，並批次將 `0 < daily_limit_usd < new_floor` 的使用者拉高到新 floor（`daily_limit_usd = 0` 的使用者是刻意設成 $0，不會被改動） |
-| **Cloud Daily Limit** | Settings | `POST /admin/cloud-limit` — 每位使用者每日 Azure + AWS 合計費用的預設上限（`[app].cloud_daily_limit_usd`），套用於有雲端權限且沒有自訂 *Cloud $* 的使用者。留空 = 無預設上限；0 = 拒絕雲端 |
-| **Cloud Budget Fallback** | Settings | 勾選框 → `POST /admin/cloud-budget-fallback`。開啟時，超過雲端上限的 `/v1/*` 雲端請求改由地端模型服務，而非回 429（整體每日上限仍然有效；`/azure/v1/*` 與 `/aws/v1/*` 永不 fallback） |
+| **Concurrency Limit** | Limits | 模式（`off` / `monitor` / `enforce`）+ 每帳號上限（≥ 1）→ `POST /admin/concurrency-limit`；顯示目前進行中的請求數、帳號數與最忙的帳號。切到 Enforce 前會要求確認 |
+| **Default Daily Limit** | Limits | `POST /admin/default-limit` — 寫入 `[app].default_daily_limit_usd`，並批次將 `0 < daily_limit_usd < new_floor` 的使用者拉高到新 floor（`daily_limit_usd = 0` 的使用者是刻意設成 $0，不會被改動） |
+| **Cloud Daily Limit** | Limits | `POST /admin/cloud-limit` — 每位使用者每日 Azure + AWS 合計費用的預設上限（`[app].cloud_daily_limit_usd`），套用於有雲端權限且沒有自訂 *Cloud $* 的使用者。留空 = 無預設上限；0 = 拒絕雲端 |
+| **Cloud Budget Fallback** | Limits | 勾選框 → `POST /admin/cloud-budget-fallback`。開啟時，超過雲端上限的 `/v1/*` 雲端請求改由地端模型服務，而非回 429（整體每日上限仍然有效；`/azure/v1/*` 與 `/aws/v1/*` 永不 fallback） |
 | **Create Service Account** | Users | Name（照輸入的使用，不加前綴）、Daily Limit、Owners（owner 選擇器：輸入即搜尋，從符合的既有使用者中挑選）→ `POST /admin/users/create`，原地處理（錯誤以 toast 顯示，新的一列載入表格）。服務帳號建立時即免除並行上限 |
 | **Site Links** | Settings | Support Bot URL（每頁右下角的浮動按鈕）與 Install Guide URL（`/setup` 上的卡片）→ `POST /admin/site-links`。只接受 `http(s)://` 或站內相對路徑；留空則隱藏 |
 | **Client rules** | Clients | 內建檢查（`client_checks.py`，CC001…）的設定與違規名單、Claude Code 版本分布、*Mail everyone* 與 *Test the combined mail*（所有開啟中的規則列在同一封信、附一份合併 patch）、寄信紀錄（每一封嘗試寄出的信：收件地址、規則、原因、成功或失敗；可篩選、搜尋、分頁）、淘汰中／已退役規則；見 `docs/architecture.md` 的 Client rules。 |
@@ -144,7 +144,7 @@ Actions 欄的每個按鈕都會先要求確認。原地更新的切換按鈕（
 **檔案**：`admin_models.html` ← `admin/model_config.py`
 **權限**：JWT scope 含 `admin`
 
-建構在 `GET` / `PUT /admin/api/config` 之上的主從式（master–detail）編輯器，上方使用同一個 `_admin_tabs.html` 分頁列（Overview / Users / Clients / Security / Settings 連回 `/admin#<tab>`；Models 為作用中）。刻意做成獨立頁面：它的 URL hash 就是目前選取的項目，而且未儲存變更的離頁警告必須在換頁時觸發。
+建構在 `GET` / `PUT /admin/api/config` 之上的主從式（master–detail）編輯器，上方使用同一個 `_admin_tabs.html` 分頁列（Overview / Users / Clients / Security / Limits / Settings 連回 `/admin#<tab>`；Models 為作用中）。刻意做成獨立頁面：它的 URL hash 就是目前選取的項目，而且未儲存變更的離頁警告必須在換頁時觸發。
 
 ### 頁面區塊
 
@@ -215,7 +215,7 @@ Admin 在 auth 階段免檢查停用旗標，因此這頁永遠不會擋到 admi
 
 ### `_admin_tabs.html` — 管理分頁列
 
-由 `admin.html`（`on_admin_page = true`：Overview / Users / Clients / Security / Settings 為 `data-tab` 按鈕）與 `admin_models.html`（`on_admin_page = false`：改為連到 `/admin#<tab>` 的連結）引入。最後一個分頁 **Models** 一律是連到 `/admin/models` 的連結。
+由 `admin.html`（`on_admin_page = true`：Overview / Users / Clients / Security / Limits / Settings 為 `data-tab` 按鈕）與 `admin_models.html`（`on_admin_page = false`：改為連到 `/admin#<tab>` 的連結）引入。最後一個分頁 **Models** 一律是連到 `/admin/models` 的連結。
 
 ### 片段模板（Partials）
 

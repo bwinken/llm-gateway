@@ -10,7 +10,7 @@
 |---|---|---|---|
 | 每個請求記錄 token 與費用 | ✅ | `usage_logs.cost_usd`，請求當下依設定的價格計算；之後改價不影響舊資料 | |
 | 費用依後端區分（地端 / Azure / AWS） | ✅ | `usage_logs.backend` | |
-| 快取 token 的價格 | ✅ | `cached_input_price_per_1m` | |
+| 快取 token 的價格 | ✅ | `cached_input_price_per_1m`（讀取）、`cache_write_input_price_per_1m`（寫入，Bedrock native Messages 回報） | |
 | 每日彙總，報表不掃明細 | ✅ | `usage_daily`、`usage_rollup.aggregate` | |
 | 使用者看自己的用量 | ✅ | dashboard *Usage*；`GET /v1/usage` | |
 | Admin 月報表 | ✅ | `/admin` 月檢視：總計、排行、各部門 | |

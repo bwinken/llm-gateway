@@ -46,46 +46,58 @@ def _calc_cost_breakdown(
     input_tokens: int,
     output_tokens: int,
     cached_tokens: int = 0,
+    cache_write_tokens: int = 0,
 ) -> dict[str, Decimal]:
-    """Return the per-component cost: ``{input, output, cache_read_input_tokens, total}``.
+    """Return the per-component cost: ``{input, output, cache_read_input_tokens,
+    cache_creation_input_tokens, total}``.
 
     Same pricing logic / priority as ``_calc_cost`` (per-model override on
     `route` → per-type → default), but split out so callers (Langfuse
     ``costDetails``) can report the breakdown. ``input`` is the *full* billable
     input cost (uncached portion at full rate + cached portion at the
-    discounted rate); ``cache_read_input_tokens`` is the cached portion's cost
-    on its own, for visibility. ``total`` matches ``_calc_cost`` exactly.
+    discounted rate + cache-write portion at the cache-write rate);
+    ``cache_read_input_tokens`` / ``cache_creation_input_tokens`` are those
+    portions' costs on their own, for visibility (the latter only when a
+    cache-write price applied). ``total`` matches ``_calc_cost`` exactly.
     """
     cached_price = None
+    write_price = None
     if route and "input_price_per_1m" in route and "output_price_per_1m" in route:
-        inp_price = Decimal(str(route["input_price_per_1m"]))
-        out_price = Decimal(str(route["output_price_per_1m"]))
-        if "cached_input_price_per_1m" in route:
-            cached_price = Decimal(str(route["cached_input_price_per_1m"]))
+        prices: dict[str, Any] = route
     else:
-        pricing = PRICING_MAP.get(model_type, PRICING_MAP.get("_default", {}))
-        inp_price = Decimal(str(pricing.get("input_price_per_1m", 0.0)))
-        out_price = Decimal(str(pricing.get("output_price_per_1m", 0.0)))
-        if "cached_input_price_per_1m" in pricing:
-            cached_price = Decimal(str(pricing["cached_input_price_per_1m"]))
+        prices = PRICING_MAP.get(model_type, PRICING_MAP.get("_default", {}))
+    inp_price = Decimal(str(prices.get("input_price_per_1m", 0.0)))
+    out_price = Decimal(str(prices.get("output_price_per_1m", 0.0)))
+    if "cached_input_price_per_1m" in prices:
+        cached_price = Decimal(str(prices["cached_input_price_per_1m"]))
+    if "cache_write_input_price_per_1m" in prices:
+        write_price = Decimal(str(prices["cache_write_input_price_per_1m"]))
 
-    # Clamp cached_tokens into [0, input_tokens] — defends against a
-    # downstream reporting cached > prompt (shouldn't happen, but cheap).
+    # Clamp both portions into the input: cached first, cache writes into
+    # what is left — defends against a downstream reporting more cached or
+    # written tokens than the prompt held (shouldn't happen, but cheap).
     cached = max(0, min(cached_tokens, input_tokens))
+    written = max(0, min(cache_write_tokens, input_tokens - cached))
+    cached_cost = Decimal("0")
+    write_cost = Decimal("0")
+    full_rate = input_tokens
     if cached and cached_price is not None:
-        uncached = input_tokens - cached
         cached_cost = cached * cached_price / 1_000_000
-        input_cost = (uncached * inp_price + cached * cached_price) / 1_000_000
-    else:
-        cached_cost = Decimal("0")
-        input_cost = input_tokens * inp_price / 1_000_000
+        full_rate -= cached
+    if written and write_price is not None:
+        write_cost = written * write_price / 1_000_000
+        full_rate -= written
+    input_cost = full_rate * inp_price / 1_000_000 + cached_cost + write_cost
     output_cost = output_tokens * out_price / 1_000_000
-    return {
+    breakdown = {
         "input": input_cost,
         "output": output_cost,
         "cache_read_input_tokens": cached_cost,
-        "total": input_cost + output_cost,
     }
+    if written and write_price is not None:
+        breakdown["cache_creation_input_tokens"] = write_cost
+    breakdown["total"] = input_cost + output_cost
+    return breakdown
 
 
 def _calc_cost(
@@ -94,19 +106,23 @@ def _calc_cost(
     input_tokens: int,
     output_tokens: int,
     cached_tokens: int = 0,
+    cache_write_tokens: int = 0,
 ) -> Decimal:
     """Total request cost. Lookup priority: per-model override on `route` →
     per-type → default. Thin wrapper over ``_calc_cost_breakdown`` (kept for the
     existing callers and its established behaviour).
 
     `cached_tokens` (a subset of `input_tokens` that hit a prompt cache) is
-    billed at `cached_input_price_per_1m` when that price is configured —
-    used by the Azure path. When no cached price is set, or `cached_tokens` is
-    0, all input tokens are charged at the full input price (the vLLM path
-    never passes `cached_tokens`, so its behaviour is unchanged).
+    billed at `cached_input_price_per_1m` when that price is configured;
+    `cache_write_tokens` (another subset of `input_tokens`: the prompt
+    written to the cache, which Anthropic models charge extra for) at
+    `cache_write_input_price_per_1m`. Without the matching price, or with a
+    count of 0, those tokens are charged at the full input price (the vLLM
+    path never passes either, so its behaviour is unchanged).
     """
     return _calc_cost_breakdown(
-        route, model_type, input_tokens, output_tokens, cached_tokens
+        route, model_type, input_tokens, output_tokens, cached_tokens,
+        cache_write_tokens,
     )["total"]
 
 
@@ -160,6 +176,7 @@ def _emit_observation(
     breakdown: dict[str, Decimal],
     output_payload: Any = None,
     timing: dict[str, Any] | None = None,
+    cache_write_tokens: int = 0,
 ) -> None:
     """Build a GenerationRecord and hand it to Langfuse. No-op when unconfigured."""
     # Short-circuit before building anything when Langfuse is off (cached after
@@ -167,11 +184,13 @@ def _emit_observation(
     if get_langfuse() is None:
         return
     meta = get_request_meta()
-    # `input` already includes the cached tokens, so `total` is explicit:
-    # without it Langfuse sums every key and counts cache reads twice.
+    # `input` already includes the cached and cache-write tokens, so `total`
+    # is explicit: without it Langfuse sums every key and counts them twice.
     usage_details = {"input": input_tokens, "output": output_tokens}
     if cached_tokens:
         usage_details["cache_read_input_tokens"] = cached_tokens
+    if cache_write_tokens:
+        usage_details["cache_creation_input_tokens"] = cache_write_tokens
     usage_details["total"] = input_tokens + output_tokens
     cost_details = {k: float(v) for k, v in breakdown.items()}
     # empty-turn signal only meaningful for chat-like models (embeddings emit 0
@@ -390,6 +409,7 @@ def _log_usage(
     cached_tokens: int = 0,
     backend: str = "vllm",
     output_payload: Any = None,
+    cache_write_tokens: int = 0,
 ) -> None:
     """Fire-and-forget usage logging in a background thread.
 
@@ -397,8 +417,11 @@ def _log_usage(
     behaviour). Azure callers should pass their AZURE_MODELS entry so any
     per-model price override there is honoured at the DB level.
 
-    `cached_tokens` lets the Azure path bill prompt-cache hits at the
+    `cached_tokens` lets the cloud paths bill prompt-cache hits at the
     discounted `cached_input_price_per_1m`; vLLM callers omit it.
+    `cache_write_tokens` (part of `input_tokens`, like `cached_tokens`) bills
+    prompt-cache writes at `cache_write_input_price_per_1m`; only the
+    Bedrock Anthropic paths report them.
 
     `backend` ("vllm" | "azure") is persisted on the usage_logs row (so cloud
     vs on-prem spend can be split for reporting and the daily cloud cap)
@@ -412,7 +435,9 @@ def _log_usage(
     """
     if route is None:
         route = MODEL_ROUTING.get(model, {})
-    breakdown = _calc_cost_breakdown(route, model_type, input_tokens, output_tokens, cached_tokens)
+    breakdown = _calc_cost_breakdown(
+        route, model_type, input_tokens, output_tokens, cached_tokens, cache_write_tokens,
+    )
     cost = breakdown["total"]
 
     # Phase durations for Langfuse and the slow-request line. Read here, on
@@ -429,6 +454,7 @@ def _log_usage(
             user, model, model_type, input_tokens, output_tokens,
             endpoint, route, cached_tokens, backend, breakdown,
             output_payload=output_payload, timing=timing,
+            cache_write_tokens=cache_write_tokens,
         )
     except Exception as exc:  # defensive — must never break logging/billing
         logger.warning("observability hook failed: {}", exc)
@@ -448,7 +474,7 @@ def _log_usage(
     # Prometheus (no-op unless METRICS_ENABLED; never raises).
     metrics.observe_request(
         endpoint, backend, model, input_tokens, output_tokens, cached_tokens,
-        float(cost), latency_ms, timing,
+        float(cost), latency_ms, timing, cache_write_tokens=cache_write_tokens,
     )
 
     _submit_background(

@@ -255,10 +255,11 @@ classDiagram
 ```
 cost_usd = (uncached_input_tokens × input_price_per_1m
             + cached_input_tokens × cached_input_price_per_1m
+            + cache_write_tokens × cache_write_input_price_per_1m
             + output_tokens × output_price_per_1m) / 1,000,000
 ```
 
-Prices come from `config.toml`: the model entry's own override, else `[pricing.<type>]`, else `[pricing]`. Cached input tokens bill at `cached_input_price_per_1m` only when that price is configured and the backend reports cache hits; otherwise all input bills at `input_price_per_1m`.
+Prices come from `config.toml`: the model entry's own override, else `[pricing.<type>]`, else `[pricing]`. Cached input tokens bill at `cached_input_price_per_1m` only when that price is configured and the backend reports cache hits; otherwise all input bills at `input_price_per_1m`. Cache-write tokens work the same way with `cache_write_input_price_per_1m` (only the Bedrock-native Messages path reports them); `uncached_input_tokens` is what is left after both.
 
 ### Indexes
 

@@ -989,21 +989,24 @@ def _native_downstream_headers(
     return headers
 
 
-def _native_usage_tokens(usage: dict[str, Any]) -> tuple[int, int]:
-    """``(input_tokens, cached_tokens)`` for billing, from an Anthropic usage.
+def _native_usage_tokens(usage: dict[str, Any]) -> tuple[int, int, int]:
+    """``(input_tokens, cached_tokens, cache_write_tokens)`` for billing,
+    from an Anthropic usage.
 
     Anthropic's ``input_tokens`` counts only the uncached input after the
     last cache breakpoint; cache reads and cache writes are reported beside
     it. The gateway bills ``input_tokens`` as the whole prompt with cached
-    tokens a subset of it, so all three are added up. Cache writes are
-    billed at the normal input rate (there is no cache-write price).
+    and cache-write tokens subsets of it, so all three are added up. Cache
+    writes are billed at the entry's ``cache_write_input_price_per_1m``
+    when set, else at the normal input rate.
     """
     def _n(key: str) -> int:
         value = usage.get(key)
         return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
     cached = _n("cache_read_input_tokens")
-    return _n("input_tokens") + cached + _n("cache_creation_input_tokens"), cached
+    written = _n("cache_creation_input_tokens")
+    return _n("input_tokens") + cached + written, cached, written
 
 
 _ANTHROPIC_ERROR_TYPES: dict[int, str] = {
@@ -1078,7 +1081,7 @@ async def _non_stream_messages_native(
     data = resp.json()
     data["model"] = alias
     usage = data.get("usage") or {}
-    input_tk, cached_tk = _native_usage_tokens(usage)
+    input_tk, cached_tk, write_tk = _native_usage_tokens(usage)
     output_tk = usage.get("output_tokens", 0) or 0
     text_chars, thinking_chars = _anthropic_content_chars(data.get("content") or [])
     diag = empty_turn_warning(
@@ -1093,7 +1096,8 @@ async def _non_stream_messages_native(
     )
     _log_usage(user, alias, model_type, input_tk, output_tk,
                "/aws/v1/messages", route=route, cached_tokens=cached_tk,
-               backend="bedrock", output_payload=obs_output)
+               backend="bedrock", output_payload=obs_output,
+               cache_write_tokens=write_tk)
     return JSONResponse(content=data, headers=extra_headers or None)
 
 
@@ -1142,10 +1146,11 @@ async def _stream_messages_native(
         return resp
 
     def _bill(usage: dict[str, int], obs_output: Any) -> None:
-        input_tk, cached_tk = _native_usage_tokens(usage)
+        input_tk, cached_tk, write_tk = _native_usage_tokens(usage)
         _log_usage(user, alias, model_type, input_tk, usage.get("output_tokens", 0),
                    "/aws/v1/messages", route=route, cached_tokens=cached_tk,
-                   backend="bedrock", output_payload=obs_output)
+                   backend="bedrock", output_payload=obs_output,
+                   cache_write_tokens=write_tk)
 
     return StreamingResponse(
         _relay_native_anthropic_sse(

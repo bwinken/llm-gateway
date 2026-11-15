@@ -408,7 +408,8 @@ api_key = ""                        # decider's server checks no key
 # is_reasoning = true
 # input_price_per_1m = 3.00
 # output_price_per_1m = 15.00
-# cached_input_price_per_1m = 0.30
+# cached_input_price_per_1m = 0.30        # cache reads
+# cache_write_input_price_per_1m = 3.75   # cache writes (native_messages entries report them)
 # rate_limit_fallback = "claude-haiku"
 
 

@@ -965,7 +965,8 @@ function typeDefaultPrice(type, field) {
 function renderPricingFields(kind, alias, info) {
     const inPh = typeDefaultPrice(info.type, 'input_price_per_1m');
     const outPh = typeDefaultPrice(info.type, 'output_price_per_1m');
-    const cachedTip = 'Blank = cached tokens billed at the full input price. Set to bill prompt-cache hits at a discount.';
+    const cachedTip = 'Blank = cached tokens billed at the full input price. Set to bill prompt-cache hits (cache reads) at a discount.';
+    const writeTip = 'Blank = cache-write tokens billed at the full input price. Set to bill prompt-cache writes at their own rate (Claude charges them above the input price). Only Bedrock Claude entries with native_messages report cache writes.';
     const priceInput = (f, label, ph, tip) => `
         <label class="flex flex-col gap-1">
             <span class="mc-label ${tip ? 'gw-tip gw-tip-wide' : ''}" ${tip ? `data-tip="${escAttr(tip)}"` : ''}>${label}</span>
@@ -973,10 +974,11 @@ function renderPricingFields(kind, alias, info) {
                    placeholder="${escAttr(ph)}" class="gw-input text-sm py-1.5 px-2.5 font-mono">
         </label>`;
     return `
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
             ${priceInput('input_price_per_1m', 'Input $/1M', inPh ? `${inPh} (type default)` : '(type default)')}
             ${priceInput('output_price_per_1m', 'Output $/1M', outPh ? `${outPh} (type default)` : '(type default)')}
-            ${priceInput('cached_input_price_per_1m', 'Cached input $/1M', '(full input price)', cachedTip)}
+            ${priceInput('cached_input_price_per_1m', 'Cached input (cache read) $/1M', '(full input price)', cachedTip)}
+            ${priceInput('cache_write_input_price_per_1m', 'Cache write $/1M', '(full input price)', writeTip)}
         </div>`;
 }
 

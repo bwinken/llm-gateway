@@ -396,6 +396,29 @@ class TestEmitObservationIO:
         assert rec.latency_ms is not None and rec.latency_ms >= 0.0
 
 
+class TestCacheWriteUsageDetails:
+    def test_cache_writes_reported_and_not_double_counted(self):
+        from app.services import billing
+        from app.services import observability as obs
+
+        captured = {}
+        obs.set_request_meta(user_agent="claude-cli", x_app=None, session_id=None)
+        route = {"real_model": "r", "input_price_per_1m": 3.0, "output_price_per_1m": 15.0,
+                 "cache_write_input_price_per_1m": 3.75}
+        breakdown = billing._calc_cost_breakdown(route, "llm", 1000, 5, 0, 400)
+        with patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.record_generation", lambda rec: captured.update(rec=rec)):
+            billing._emit_observation(
+                SimpleNamespace(id=42, username="alice", display_name="Alice"),
+                "claude", "llm", 1000, 5, "/aws/v1/messages", route, 0, "bedrock",
+                breakdown, cache_write_tokens=400,
+            )
+        rec = captured["rec"]
+        assert rec.usage == {"input": 1000, "output": 5,
+                             "cache_creation_input_tokens": 400, "total": 1005}
+        assert rec.cost["cache_creation_input_tokens"] == 400 * 3.75 / 1_000_000
+
+
 class TestRequestMetaMiddleware:
     """Header capture MUST live in the pure-ASGI middleware: a contextvar set
     in the sync get_current_user dependency runs in a threadpool copy and is

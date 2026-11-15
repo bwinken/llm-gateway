@@ -77,12 +77,17 @@ _MODEL_METADATA_KEYS: tuple[str, ...] = (
 # model, they take priority over the per-type [pricing.<type>] block. Old
 # configs without these keys keep working and fall back to the per-type
 # defaults. `cached_input_price_per_1m` is optional on top of those — used
-# by the Azure path to bill prompt-cache hits at a discount; when absent,
+# by the cloud paths to bill prompt-cache hits at a discount; when absent,
 # cached tokens are charged at the full input price.
+# `cache_write_input_price_per_1m` is optional likewise: what writing the
+# prompt to the cache costs (Anthropic models charge it above the input
+# price; reported by the Bedrock Anthropic paths); when absent, cache-write
+# tokens are charged at the full input price.
 _MODEL_PRICING_KEYS: tuple[str, ...] = (
     "input_price_per_1m",
     "output_price_per_1m",
     "cached_input_price_per_1m",
+    "cache_write_input_price_per_1m",
 )
 
 # Optional per-model reasoning-effort compatibility declaration.
