@@ -750,8 +750,18 @@ def record_generation(rec: GenerationRecord) -> None:
 
         client_label = classify_client(rec.user_agent, rec.endpoint, rec.x_app, rec.x_title)
         rec.guardrail = resolve_guardrail(rec.guardrail)
-        # The client is a score (chartable) and a tag (a filter on the
-        # Tracing list): the same label in both.
+        # The client label goes out three times, because each place answers
+        # a different question and none answers all of them:
+        #   version (below)  the one a report groups by. The Metrics API
+        #                    groups observations by a single-valued top-level
+        #                    field only, and tokens, cost and latency are
+        #                    measures of that view alone.
+        #   score            counted per account (the score list carries the
+        #                    trace's user); a score view only has a count.
+        #   tag              a filter on the Tracing list. Grouping by tags
+        #                    gives one row per whole tag set, not per tag.
+        # Metadata can be filtered by but never grouped by, so the label is
+        # not put there.
         tags = [f"backend:{rec.backend}", f"type:{rec.model_type}", f"client:{client_label}"]
         if rec.guardrail and rec.guardrail.get("status"):
             tags.append(f"guardrail:{rec.guardrail['status']}")
@@ -800,6 +810,9 @@ def record_generation(rec: GenerationRecord) -> None:
                 name=rec.endpoint,
                 as_type="generation",
                 model=rec.model_alias,
+                # Nothing of the gateway is versioned per request, so the
+                # generation's version field carries the client label.
+                version=client_label,
                 model_parameters=rec.model_parameters or None,
                 usage_details=rec.usage,
                 cost_details=rec.cost,

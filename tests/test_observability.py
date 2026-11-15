@@ -261,6 +261,23 @@ class TestRecordGeneration:
         assert "client:cline" in seen["tags"]
         assert "backend:vllm" in seen["tags"]
 
+    def test_the_client_is_the_generations_version(self):
+        # What a report groups by: the Metrics API gives tokens, cost and
+        # latency per top-level field of the generation, never per metadata
+        # key, per score value or per single tag.
+        client = MagicMock()
+        with patch("app.services.observability.get_langfuse", return_value=client), \
+             patch("langfuse.propagate_attributes", lambda **kw: contextlib.nullcontext()):
+            record_generation(_make_record(user_agent="OpenAI/Python 1.40.0", x_title="Invoice Bot"))
+            record_generation(_make_record(user_agent="claude-cli/2.1.0 (external, cli)", error="502", is_error=True))
+        first, second = (c.kwargs for c in client.start_observation.call_args_list)
+        assert first["version"] == "invoice-bot"
+        assert "client" not in first["metadata"]
+        # Failed requests too, so an error rate per client can be read.
+        assert second["version"] == "claude-code" and second["level"] == "ERROR"
+        # The endpoint stays where it was.
+        assert first["name"] == "/v1/messages"
+
     def test_captured_io_is_also_written_on_the_trace(self):
         # The Tracing list shows the trace's own input / output, not the
         # generation's: without this the page is blank with capture on.

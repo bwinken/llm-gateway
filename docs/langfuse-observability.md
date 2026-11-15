@@ -156,7 +156,7 @@ that can actually analyse it — confirmed against Langfuse Metrics API v2:
 | `x-session-id` header (if present) | `sessionId` | conversation drill-down |
 | model **alias** | `model` (`providedModelName`) | primary group-by dimension for cost/usage |
 | **endpoint** | generation **`name`** | **groupable** dimension → per-endpoint (per-surface) statistics |
-| **client** (derived: the `X-Title` the client sends, else a known tool such as claude-code / roo-code / codex-cli, else the User-Agent's own product such as openai-python / curl; an endpoint family only without a User-Agent) | **categorical Score `client`** + **tag `client:<label>`** | **statisticable** — `scores-categorical` view gives request distribution per software + day/month trend; the tag filters the Tracing list |
+| **client** (derived: the `X-Title` the client sends, else a known tool such as claude-code / roo-code / codex-cli, else the User-Agent's own product such as openai-python / curl; an endpoint family only without a User-Agent) | generation **`version`** + **categorical Score `client`** + **tag `client:<label>`** | **statisticable** — the observations view groups tokens, cost and latency by `version`; the `scores-categorical` view gives request distribution per software + day/month trend; the tag filters the Tracing list |
 | raw `User-Agent` header | `metadata.user_agent` | calibration / lookup only — **NOT** for statistics |
 | `real_model` / deployment | `metadata.real_model` | reference only |
 | input/output/cached tokens | **`usageDetails`** map | native aggregatable measure |
