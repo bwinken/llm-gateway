@@ -193,6 +193,13 @@ class TestConcurrency:
         with patch("app.routers.v1_api.get_concurrency_settings", return_value=("enforce", 4)):
             assert _me(client)["concurrency"] == {"mode": "enforce", "limit": 4}
 
+    def test_offpeak_hours_reported_when_set(self, client, test_user):
+        hours = {"start": "22:00", "end": "08:00", "weekends": True}
+        with patch("app.routers.v1_api.get_concurrency_settings", return_value=("enforce", 4)), \
+             patch("app.routers.v1_api.get_concurrency_offpeak", return_value=hours), \
+             patch("app.services.concurrency.in_offpeak", return_value=True):
+            assert _me(client)["concurrency"]["offpeak"] == {**hours, "active": True}
+
     def test_waived_user_reports_off(self, client, db_session, test_user):
         _update(db_session, test_user, concurrency_waived=True)
         with patch("app.routers.v1_api.get_concurrency_settings", return_value=("enforce", 4)):
