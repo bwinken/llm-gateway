@@ -280,7 +280,7 @@ One row per `(scope, rule, window_start)`: the scan upserts, so re-running a win
 |---|---|---|---|---|
 | `id` | `INTEGER` | PK, auto-increment | — | Primary key |
 | `scope` | `VARCHAR` | UNIQUE (with `rule`, `window_start`) | — | `user:<id>` for per-account rules, `model:<alias>` for model-level rules |
-| `rule` | `VARCHAR` | UNIQUE (with `scope`, `window_start`) | — | `cost_spike`, `off_hours`, `burst_rate`, `behavior_shift`, `empty_turn_rate` |
+| `rule` | `VARCHAR` | UNIQUE (with `scope`, `window_start`) | — | `cost_spike`, `off_hours`, `burst_rate`, `behavior_shift`, `empty_turn_rate`, `guardrail_unsafe` |
 | `severity` | `VARCHAR` | — | `"warning"` | `info`, `warning`, `critical` |
 | `user_id` | `INTEGER` | FK → `users.id`, INDEX, NULLABLE | `None` | Denormalized copy of the user in `scope`, for joins and display |
 | `model` | `VARCHAR` | NULLABLE | `None` | Denormalized model alias |

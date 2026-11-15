@@ -101,6 +101,9 @@ def admin_page(
     anomaly_rows = session.exec(
         select(AnomalyEvent)
         .where(AnomalyEvent.status.in_(("new", "acknowledged")))  # type: ignore[attr-defined]
+        # "info" findings are a record (the API and the account drawer show
+        # them), not something to act on: they stay out of Needs attention.
+        .where(AnomalyEvent.severity != "info")
         .order_by(AnomalyEvent.status, AnomalyEvent.ratio.desc())  # type: ignore[attr-defined]
         .limit(20)
     ).all()

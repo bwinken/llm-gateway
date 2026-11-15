@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlmodel import Session  # noqa: E402
 
 from app.core.database import engine  # noqa: E402
-from app.services.anomaly_scan import detect_all, persist, prune_resolved  # noqa: E402
+from app.services.anomaly_scan import close_stale, detect_all, persist, prune_resolved  # noqa: E402
 
 
 def main() -> None:
@@ -40,8 +40,10 @@ def main() -> None:
 
         if args.execute:
             created, updated = persist(session, findings)
+            closed = close_stale(session)
             pruned = prune_resolved(session)
-            print(f"[scan] persisted: {created} new, {updated} updated; pruned {pruned} old resolved")
+            print(f"[scan] persisted: {created} new, {updated} updated; "
+                  f"closed {closed} not seen again; pruned {pruned} old resolved")
         else:
             print("[scan] dry-run — nothing written (use --execute to persist)")
 
