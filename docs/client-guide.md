@@ -87,6 +87,20 @@ curl https://your-gateway/v1/rerank \
   -d '{"model": "bge-reranker-v2-m3", "query": "What is AI?", "documents": ["AI is...", "Machine learning is..."]}'
 ```
 
+## Naming your application
+
+The gateway records which program each request came from, so the people running it can see what is in use. A tool is recognised by what it sends anyway (Claude Code, Roo Code, the OpenAI and Anthropic SDKs, `curl`, ...). A program you wrote looks like the SDK it uses, `openai-python` for example, unless it says its name in an `X-Title` header:
+
+```python
+client = OpenAI(
+    base_url="https://your-gateway/v1",
+    api_key="sk-your-api-key",
+    default_headers={"X-Title": "invoice-bot"},
+)
+```
+
+The Anthropic SDK takes `default_headers` the same way; an application built on Claude Code or the Claude Agent SDK sets `ANTHROPIC_CUSTOM_HEADERS="X-Title: invoice-bot"`. Keep the name short and stable: it is stored in lowercase, anything other than letters, digits, `.` and `-` becomes `-`, and it is cut at 40 characters. The header is optional and only labels the request; it changes nothing about access, limits or billing. A program that runs unattended should still have its own [service account](#service-accounts).
+
 ## Checking your quota
 
 ```bash

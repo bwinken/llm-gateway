@@ -15,6 +15,7 @@ import contextvars
 import json
 import os
 import random
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -36,11 +37,13 @@ def set_request_meta(
     user_agent: str | None = None,
     x_app: str | None = None,
     session_id: str | None = None,
+    x_title: str | None = None,
 ) -> None:
     _request_meta.set(
         {
             "user_agent": user_agent,
             "x_app": x_app,
+            "x_title": x_title,
             "session_id": session_id,
             "input_payload": None,
             # Monotonic clock at request entry (set by RequestMetaMiddleware, which
@@ -255,7 +258,8 @@ def get_request_meta() -> dict:
 
 class RequestMetaMiddleware:
     """Pure-ASGI middleware that stashes request headers (User-Agent, x-app,
-    x-session-id) into the request-meta contextvar for the observability hook.
+    x-title, x-session-id) into the request-meta contextvar for the
+    observability hook.
 
     Must be pure ASGI (NOT BaseHTTPMiddleware) and NOT a sync FastAPI
     dependency: a contextvar written in a sync dependency runs in a threadpool
@@ -280,6 +284,7 @@ class RequestMetaMiddleware:
                 user_agent=headers.get("user-agent"),
                 x_app=headers.get("x-app"),
                 session_id=headers.get("x-session-id"),
+                x_title=headers.get("x-title"),
             )
         await self.app(scope, receive, send)
 
@@ -288,7 +293,7 @@ class RequestMetaMiddleware:
 # ---------------------------------------------------------------------------
 
 # OpenAI-style surfaces the gateway exposes that are NOT the Anthropic /v1/messages
-# family. Used to label an unknown client as "openai-compatible".
+# family. Used to label a client without a User-Agent as "openai-compatible".
 _OPENAI_STYLE_PREFIXES = (
     "/v1/chat/completions",
     "/v1/responses",
@@ -299,28 +304,105 @@ _OPENAI_STYLE_PREFIXES = (
 )
 
 
+# The name a client is recorded under is text the client sent, so it is always
+# cut down to this before it reaches Langfuse: lowercase letters, digits, "."
+# and "-", at most _CLIENT_LABEL_MAX characters.
+_CLIENT_LABEL_MAX = 40
+_NOT_LABEL_CHARS = re.compile(r"[^a-z0-9.]+")
+
+# A tool's User-Agent, wherever the marker stands in it → the name it is
+# recorded under. First match wins, so the longer marker comes first.
+_UA_MARKERS = (
+    ("claude-cli", "claude-code"),
+    ("claude-code", "claude-code"),
+    ("roo-code", "roo-code"),
+    ("roocode", "roo-code"),
+    ("roo-cline", "roo-code"),
+    ("kilo-code", "kilo-code"),
+    ("kilocode", "kilo-code"),
+    ("codex_cli_rs", "codex-cli"),
+)
+
+# Different spellings of one client, after _client_slug.
+_CLIENT_ALIASES = {
+    "claude-cli": "claude-code",
+    "roocode": "roo-code",
+    "roo-cline": "roo-code",
+    "kilocode": "kilo-code",
+    "codex-cli-rs": "codex-cli",
+    "asyncopenai-python": "openai-python",
+    "asyncanthropic-python": "anthropic-python",
+    "mozilla": "browser",
+}
+
+# The first product of a User-Agent: ``name`` or ``name/version``.
+_UA_PRODUCT = re.compile(r"^\s*([^\s/()]+)(?:/([^\s()]+))?")
+_UA_VERSION_LIKE = re.compile(r"v?\d")
+
+
+def _client_slug(text: str | None) -> str:
+    """Client-sent text as a label: ``Roo Code`` → ``roo-code``. Empty when
+    nothing usable is left."""
+    slug = _NOT_LABEL_CHARS.sub("-", (text or "").lower()).strip("-.")
+    return slug[:_CLIENT_LABEL_MAX].rstrip("-.")
+
+
+def _ua_product(user_agent: str | None) -> str:
+    """The first product of a User-Agent as a label: ``python-httpx/0.27`` →
+    ``python-httpx``. The OpenAI and Anthropic SDKs put the language where a
+    version would be (``OpenAI/Python 1.40.0``): it is part of the name
+    (``openai-python``)."""
+    match = _UA_PRODUCT.match(user_agent or "")
+    if not match:
+        return ""
+    name, version = match.group(1), match.group(2) or ""
+    if version and not _UA_VERSION_LIKE.match(version):
+        name = f"{name}-{version}"
+    return _client_slug(name)
+
+
 def classify_client(
     user_agent: str | None,
     endpoint: str,
     x_app: str | None = None,
+    x_title: str | None = None,
 ) -> str:
-    """Best-effort label for the software making the request.
+    """The agent or application a request came from, as one label.
 
-    Returns one of: ``claude-code``, ``roo-code``, ``anthropic-sdk``,
-    ``openai-compatible``, ``other``.
+    Every client shows up under a name of its own instead of in a bucket, so
+    the ``client`` score and tag list what really calls the gateway:
 
-    Priority: explicit Claude markers (``x-app: cli`` / UA) → Roo marker →
-    endpoint family. Stays best-effort and is meant to be calibrated against
-    real traffic once observed (raw User-Agent is also stored in metadata).
+    1. The name the client gives itself in ``X-Title`` (the OpenRouter
+       convention, which coding agents such as Roo Code follow, and what an
+       in-house application sets to be told apart from the SDK it is built
+       on): ``Invoice Bot`` → ``invoice-bot``.
+    2. A known tool's marker (``x-app: cli`` or its User-Agent):
+       ``claude-code``, ``roo-code``, ``kilo-code``, ``codex-cli``.
+    3. The User-Agent's first product, whatever it is: ``openai-python``,
+       ``anthropic-js``, ``python-httpx``, ``curl``, ``litellm``...
+    4. No usable User-Agent: the endpoint family (``anthropic-sdk``,
+       ``openai-compatible``), else ``other``.
+
+    The label is the client's own claim, cut to a bounded slug: it is for
+    observability only, never a reason to route, limit or refuse a request.
+    The raw User-Agent is also stored in metadata.
     """
+    declared = _client_slug(x_title)
+    if declared:
+        return _CLIENT_ALIASES.get(declared, declared)
+
     ua = (user_agent or "").lower()
-
-    if (x_app or "").lower() == "cli" or "claude-cli" in ua or "claude-code" in ua:
+    if (x_app or "").lower() == "cli":
         return "claude-code"
-    if "roo" in ua:
-        return "roo-code"
+    for marker, label in _UA_MARKERS:
+        if marker in ua:
+            return label
 
-    # Unknown UA — fall back to the endpoint family.
+    product = _ua_product(user_agent)
+    if product:
+        return _CLIENT_ALIASES.get(product, product)
+
+    # No usable User-Agent: fall back to the endpoint family.
     if endpoint.startswith("/v1/messages"):
         return "anthropic-sdk"
     if any(endpoint.startswith(p) for p in _OPENAI_STYLE_PREFIXES):
@@ -528,6 +610,7 @@ class GenerationRecord:
     timing: dict | None = None          # request_timing(): phase durations
     user_agent: str | None = None
     x_app: str | None = None
+    x_title: str | None = None          # the name the client gives itself (X-Title)
     session_id: str | None = None
     display_name: str | None = None
     error: str | None = None
@@ -665,9 +748,11 @@ def record_generation(rec: GenerationRecord) -> None:
     try:
         from langfuse import propagate_attributes
 
-        client_label = classify_client(rec.user_agent, rec.endpoint, rec.x_app)
+        client_label = classify_client(rec.user_agent, rec.endpoint, rec.x_app, rec.x_title)
         rec.guardrail = resolve_guardrail(rec.guardrail)
-        tags = [f"backend:{rec.backend}", f"type:{rec.model_type}"]
+        # The client is a score (chartable) and a tag (a filter on the
+        # Tracing list): the same label in both.
+        tags = [f"backend:{rec.backend}", f"type:{rec.model_type}", f"client:{client_label}"]
         if rec.guardrail and rec.guardrail.get("status"):
             tags.append(f"guardrail:{rec.guardrail['status']}")
             tags += [f"guardrail_category:{c}" for c in guardrail_categories(rec.guardrail)]

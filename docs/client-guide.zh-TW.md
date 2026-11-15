@@ -87,6 +87,20 @@ curl https://your-gateway/v1/rerank \
   -d '{"model": "bge-reranker-v2-m3", "query": "What is AI?", "documents": ["AI is...", "Machine learning is..."]}'
 ```
 
+## 為你的應用命名
+
+Gateway 會記錄每個請求來自哪個程式，讓維運的人看得到實際有哪些工具在用。現成的工具靠它本來就會送的資訊辨識（Claude Code、Roo Code、OpenAI 和 Anthropic SDK、`curl`…）。你自己寫的程式看起來就是它用的 SDK，例如 `openai-python`，除非它在 `X-Title` 標頭裡報上名字：
+
+```python
+client = OpenAI(
+    base_url="https://your-gateway/v1",
+    api_key="sk-your-api-key",
+    default_headers={"X-Title": "invoice-bot"},
+)
+```
+
+Anthropic SDK 一樣用 `default_headers`；建立在 Claude Code 或 Claude Agent SDK 上的應用則設定 `ANTHROPIC_CUSTOM_HEADERS="X-Title: invoice-bot"`。名稱請簡短而且固定：存下來時會轉成小寫，英數字、`.` 和 `-` 以外的字元都變成 `-`，超過 40 個字元會截斷。這個標頭可以不送，它只是標示請求，不影響權限、上限或計費。無人值守的程式仍然應該有自己的[服務帳號](#服務帳號)。
+
 ## 查詢額度
 
 ```bash
