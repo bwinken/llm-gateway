@@ -14,9 +14,11 @@ from sqlmodel import Session, select
 from app.core.timeutil import local_day_start_utc
 from app.models.schema import AnomalyEvent, UsageLog, User
 from app.services.anomaly_scan import (
-    BURST_PER_HOUR,
     OFF_HOURS_MIN_REQUESTS,
+    OPEN_EXPIRY_DAYS,
+    close_stale,
     detect_all,
+    detect_behavior_shift,
     detect_burst_rate,
     detect_cost_spike,
     detect_empty_turn_rate,
@@ -47,44 +49,127 @@ def _log(session: Session, user: User, *, cost=0.01, out_tokens=100,
     ))
 
 
+def _days(session, user, n_days, *, cost=0.01, per_day=1, first=1):
+    """``per_day`` requests of ``cost`` at noon on each of ``n_days`` local days before today."""
+    for d in range(first, first + n_days):
+        noon = local_day_start_utc() - timedelta(days=d) + timedelta(hours=12)
+        for _ in range(per_day):
+            _log(session, user, cost=cost, when=noon)
+
+
 class TestCostSpike:
+
+    def _found(self, session):
+        return {f["scope"]: f for f in detect_cost_spike(session, NOW)}
 
     def test_spike_detected(self, db_session):
         u = _seed_user(db_session, "spiky")
-        # 30 days of ~$0.20/day baseline
-        for d in range(1, 15):
-            _log(db_session, u, cost=0.2, when=NOW - timedelta(days=d))
-        # today: $3 (15× median, above floor)
+        _days(db_session, u, 14, cost=0.2)
+        # today: $3, fifteen times a busy day and above the floor
         for _ in range(3):
             _log(db_session, u, cost=1.0)
         db_session.commit()
 
-        findings = detect_cost_spike(db_session, NOW)
-        rules = [(f["rule"], f["scope"]) for f in findings]
-        assert ("cost_spike", f"user:{u.id}") in rules
+        finding = self._found(db_session)[f"user:{u.id}"]
+        assert (finding["rule"], finding["severity"], finding["baseline"]) == ("cost_spike", "warning", 0.2)
 
     def test_no_spike_below_floor(self, db_session):
         u = _seed_user(db_session, "tiny")
-        _log(db_session, u, cost=0.05, when=NOW - timedelta(days=2))
-        _log(db_session, u, cost=0.5)  # 10× median but under $1 floor
+        _days(db_session, u, 12, cost=0.05)
+        _log(db_session, u, cost=0.5)  # 10× a busy day but under the $1 floor
         db_session.commit()
         assert detect_cost_spike(db_session, NOW) == []
+
+    def test_the_baseline_is_a_busy_day_not_a_typical_one(self, db_session):
+        """Most days small, a long session now and then: today is another
+        long session. Five times the median, and nothing unusual."""
+        u = _seed_user(db_session, "sessions")
+        _days(db_session, u, 16, cost=0.5)
+        _days(db_session, u, 4, cost=3.0, first=17)      # one day in five is a long one
+        _log(db_session, u, cost=3.5)
+        db_session.commit()
+        assert detect_cost_spike(db_session, NOW) == []
+
+    def test_days_without_usage_are_not_in_the_sample(self, db_session):
+        """Ten days of usage spread over the window is ten samples, however
+        many weekends and days off lie between them."""
+        u = _seed_user(db_session, "parttime")
+        for d in range(2, 42, 4):
+            _days(db_session, u, 1, cost=1.0, first=d)
+        _log(db_session, u, cost=2.5)
+        db_session.commit()
+        finding = self._found(db_session)[f"user:{u.id}"]
+        assert (finding["baseline"], finding["severity"]) == (1.0, "warning")
+
+    def test_critical_needs_the_amount_as_well_as_the_ratio(self, db_session):
+        small = _seed_user(db_session, "small")
+        big = _seed_user(db_session, "big")
+        _days(db_session, small, 12, cost=0.3)
+        _days(db_session, big, 12, cost=2.0)
+        _log(db_session, small, cost=3.0)        # ten times its busy day, and $3
+        _log(db_session, big, cost=12.0)         # six times, and over $10
+        db_session.commit()
+        found = self._found(db_session)
+        assert found[f"user:{small.id}"]["severity"] == "warning"
+        assert found[f"user:{big.id}"]["severity"] == "critical"
+
+    def test_too_little_history_is_judged_by_the_amount_alone(self, db_session):
+        newcomer = _seed_user(db_session, "newcomer")
+        runaway = _seed_user(db_session, "runaway")
+        _days(db_session, newcomer, 3, cost=0.1)
+        _log(db_session, newcomer, cost=12.0)    # 120× three small days: a first real day, not a finding
+        _log(db_session, runaway, cost=25.0)     # no history at all, and a lot of money
+        db_session.commit()
+        found = self._found(db_session)
+        assert list(found) == [f"user:{runaway.id}"]
+        assert found[f"user:{runaway.id}"]["severity"] == "warning"
+
+    def test_service_accounts_are_watched_too(self, db_session):
+        """A leaked service key shows as a spend spike."""
+        app = _seed_user(db_session, "batch-runner", service=True)
+        _days(db_session, app, 12, cost=1.0)
+        _log(db_session, app, cost=5.0)
+        db_session.commit()
+        assert list(self._found(db_session)) == [f"user:{app.id}"]
 
 
 class TestBurstRate:
 
+    LIMIT = 6
+
+    def _found(self, session):
+        with patch("app.services.anomaly_scan.BURST_PER_HOUR", self.LIMIT), \
+             patch("app.services.anomaly_scan.BURST_CRITICAL_PER_HOUR", self.LIMIT * 3):
+            return detect_burst_rate(session, NOW)
+
     def test_burst_flagged_for_human_only(self, db_session):
         human = _seed_user(db_session, "fastfingers")
         app = _seed_user(db_session, "batch-runner", service=True)
-        for _ in range(BURST_PER_HOUR + 1):
+        for _ in range(self.LIMIT + 1):
             _log(db_session, human, when=NOW - timedelta(minutes=30))
             _log(db_session, app, when=NOW - timedelta(minutes=30))
         db_session.commit()
 
-        findings = detect_burst_rate(db_session, NOW)
-        scopes = [f["scope"] for f in findings]
+        scopes = [f["scope"] for f in self._found(db_session)]
         assert f"user:{human.id}" in scopes
-        assert f"user:{app.id}" not in scopes  # app accounts are exempt
+        assert f"user:{app.id}" not in scopes  # service accounts are exempt
+
+    def test_one_row_per_account_per_day_holding_the_peak_hour(self, db_session):
+        """A burst that lasts the afternoon is one finding, not one per scan."""
+        u = _seed_user(db_session, "allday")
+        for _ in range(self.LIMIT * 2):
+            _log(db_session, u, when=NOW - timedelta(minutes=30))
+        db_session.commit()
+        first = self._found(db_session)
+        persist(db_session, first)
+
+        # The next hour's scan: still bursting, less than before.
+        later = [dict(first[0], observed=self.LIMIT + 1, window_end=NOW + timedelta(hours=1))]
+        assert later[0]["window_start"] == first[0]["window_start"] == local_day_start_utc()
+        assert persist(db_session, later) == (0, 1)
+
+        rows = db_session.exec(select(AnomalyEvent)).all()
+        assert [(r.rule, r.observed) for r in rows] == [("burst_rate", self.LIMIT * 2)]
 
 
 class TestOffHours:
@@ -175,21 +260,44 @@ class TestDetectAll:
 
 class TestEmptyTurnRate:
 
-    def test_model_level_spike_detected(self, db_session):
-        u = _seed_user(db_session, "victim")
-        # Baseline: healthy responses over prior days
+    def _seed(self, session, empties_by):
+        """A healthy week, then a last hour of 30 responses, 12 of them empty
+        and coming from ``empties_by`` (cycled)."""
+        users = [_seed_user(session, name) for name in ("ann", "bob", "cy")]
         for d in range(1, 8):
             for _ in range(10):
-                _log(db_session, u, out_tokens=500, when=NOW - timedelta(days=d), model="radLLM")
-        # Last hour: 40% empty turns
+                _log(session, users[0], out_tokens=500, when=NOW - timedelta(days=d), model="radLLM")
         for i in range(30):
-            _log(db_session, u, out_tokens=(1 if i < 12 else 500),
+            user = users[empties_by[i % len(empties_by)]] if i < 12 else users[i % 3]
+            _log(session, user, out_tokens=(1 if i < 12 else 500),
                  when=NOW - timedelta(minutes=30), model="radLLM")
-        db_session.commit()
+        session.commit()
 
+    def test_model_level_spike_detected(self, db_session):
+        self._seed(db_session, empties_by=[0, 1])
         findings = detect_empty_turn_rate(db_session, NOW)
-        assert any(f["rule"] == "empty_turn_rate" and f["scope"] == "model:radLLM"
-                   for f in findings)
+        assert [(f["rule"], f["scope"], f["severity"]) for f in findings] == [
+            ("empty_turn_rate", "model:radLLM", "critical"),
+        ]
+        assert findings[0]["window_start"] == local_day_start_utc()   # one row a day, like every rule
+
+    def test_one_accounts_broken_client_is_not_the_model(self, db_session):
+        self._seed(db_session, empties_by=[1])
+        assert detect_empty_turn_rate(db_session, NOW) == []
+
+
+class TestBehaviorShift:
+
+    def test_a_new_model_type_is_recorded_as_info(self, db_session):
+        """A first embedding job looks exactly like this: worth a record, not an alarm."""
+        u = _seed_user(db_session, "rag")
+        _days(db_session, u, 3)
+        with patch("app.services.anomaly_scan.BEHAVIOR_SHIFT_MIN_REQUESTS", 3):
+            for _ in range(4):
+                _log(db_session, u, model="bge", model_type="embedding")
+            db_session.commit()
+            findings = detect_behavior_shift(db_session, NOW)
+        assert [(f["scope"], f["severity"]) for f in findings] == [(f"user:{u.id}", "info")]
 
 
 class TestPersistIdempotency:
@@ -213,6 +321,42 @@ class TestPersistIdempotency:
         rows = db_session.exec(select(AnomalyEvent)).all()
         assert len(rows) == 1
         assert rows[0].observed == 8.0
+
+    def test_a_lower_figure_does_not_replace_the_windows_peak(self, db_session):
+        u = _seed_user(db_session, "peak")
+        finding = {
+            "scope": f"user:{u.id}", "rule": "burst_rate", "severity": "critical",
+            "user_id": u.id, "model": None, "window_start": local_day_start_utc(),
+            "window_end": NOW, "observed": 4000.0, "baseline": 1200.0, "ratio": 3.33,
+            "detail": "{\"summary\": \"4000 requests in one hour\"}",
+        }
+        persist(db_session, [finding])
+        later = NOW + timedelta(hours=1)
+        persist(db_session, [dict(finding, observed=1300.0, ratio=1.08, severity="warning", window_end=later)])
+
+        row = db_session.exec(select(AnomalyEvent)).one()
+        assert (row.observed, row.severity, row.ratio) == (4000.0, "critical", 3.33)
+        assert row.window_end == later.replace(tzinfo=None)     # still happening: the row says until when
+
+    def test_open_findings_not_seen_again_are_closed(self, db_session):
+        """Nothing else ever closed one, so the admin's list only grew."""
+        stale = datetime.now(timezone.utc) - timedelta(days=OPEN_EXPIRY_DAYS + 1)
+        fresh = datetime.now(timezone.utc) - timedelta(days=OPEN_EXPIRY_DAYS - 1)
+        for scope, status, when in (("user:1", "new", stale), ("user:2", "acknowledged", stale),
+                                    ("user:3", "new", fresh), ("user:4", "resolved", stale)):
+            db_session.add(AnomalyEvent(
+                scope=scope, rule="cost_spike", window_start=when, window_end=when,
+                status=status, detail='{"summary": "x"}', created_at=when, updated_at=when,
+            ))
+        db_session.commit()
+
+        assert close_stale(db_session) == 2
+        rows = {r.scope: r for r in db_session.exec(select(AnomalyEvent)).all()}
+        assert {scope: r.status for scope, r in rows.items()} == {
+            "user:1": "resolved", "user:2": "resolved", "user:3": "new", "user:4": "resolved",
+        }
+        assert "not seen again" in rows["user:1"].detail and "summary" in rows["user:1"].detail
+        assert prune_resolved(db_session) == 0      # kept as resolved for the retention period
 
     def test_prune_resolved(self, db_session):
         old = datetime.now(timezone.utc) - timedelta(days=120)
@@ -264,6 +408,17 @@ class TestAnomalyAdminAPI:
             headers=web_auth_header(sub="testuser", scopes=["read"]),
         )
         assert resp.status_code == 403
+
+    def test_info_findings_stay_out_of_needs_attention(self, client, db_session, admin_user):
+        db_session.add(AnomalyEvent(
+            scope="user:1", rule="behavior_shift", severity="info",
+            window_start=NOW, window_end=NOW, observed=120, detail='{"summary": "new type"}',
+        ))
+        db_session.commit()
+        h = web_auth_header(sub=admin_user.username, scopes=["admin"])
+        assert "behavior_shift" not in client.get("/admin", headers=h).text
+        listed = client.get("/admin/api/anomalies?status=new", headers=h).json()
+        assert [e["rule"] for e in listed] == ["behavior_shift"]     # still on record
 
     def test_admin_page_shows_open_anomalies(self, client, db_session, admin_user):
         self._seed_event(db_session)
