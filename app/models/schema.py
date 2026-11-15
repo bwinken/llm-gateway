@@ -300,7 +300,7 @@ class AnomalyEvent(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     scope: str = Field()                    # "user:<id>" | "model:<alias>"
-    rule: str = Field()                     # cost_spike | off_hours | burst_rate | behavior_shift | empty_turn_rate
+    rule: str = Field()                     # cost_spike | off_hours | burst_rate | behavior_shift | empty_turn_rate | guardrail_unsafe
     severity: str = Field(default="warning")  # info | warning | critical
     user_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     model: str | None = Field(default=None)

@@ -280,7 +280,7 @@ cost_usd = (uncached_input_tokens × input_price_per_1m
 |---|---|---|---|---|
 | `id` | `INTEGER` | PK, auto-increment | — | 主鍵 |
 | `scope` | `VARCHAR` | UNIQUE（與 `rule`、`window_start`） | — | 帳號層級規則為 `user:<id>`，模型層級規則為 `model:<alias>` |
-| `rule` | `VARCHAR` | UNIQUE（與 `scope`、`window_start`） | — | `cost_spike`、`off_hours`、`burst_rate`、`behavior_shift`、`empty_turn_rate` |
+| `rule` | `VARCHAR` | UNIQUE（與 `scope`、`window_start`） | — | `cost_spike`、`off_hours`、`burst_rate`、`behavior_shift`、`empty_turn_rate`、`guardrail_unsafe` |
 | `severity` | `VARCHAR` | — | `"warning"` | `info`、`warning`、`critical` |
 | `user_id` | `INTEGER` | FK → `users.id`, INDEX, NULLABLE | `None` | `scope` 中使用者的反正規化副本，供 join 與顯示 |
 | `model` | `VARCHAR` | NULLABLE | `None` | 反正規化的模型別名 |

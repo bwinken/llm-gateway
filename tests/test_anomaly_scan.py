@@ -6,8 +6,10 @@ in-memory SQLite harness directly.
 
 from __future__ import annotations
 
+from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from sqlmodel import Session, select
 
@@ -22,6 +24,7 @@ from app.services.anomaly_scan import (
     detect_burst_rate,
     detect_cost_spike,
     detect_empty_turn_rate,
+    detect_guardrail_unsafe,
     detect_off_hours,
     persist,
     prune_resolved,
@@ -298,6 +301,104 @@ class TestBehaviorShift:
             db_session.commit()
             findings = detect_behavior_shift(db_session, NOW)
         assert [(f["scope"], f["severity"]) for f in findings] == [(f"user:{u.id}", "info")]
+
+
+def _verdicts(unsafe, blocked=0, **categories):
+    return {"unsafe": unsafe, "controversial": 0, "blocked": blocked, "categories": Counter(categories)}
+
+
+class TestGuardrailUnsafe:
+    """Verdicts live in Langfuse only: the rule reads counts per account from there."""
+
+    @contextmanager
+    def _langfuse(self, per_day, *, active=True, monitoring=True, sample_rate=1.0, cut=False):
+        """``per_day``: one ``{account: verdicts}`` per read, today first."""
+        reads = iter(per_day)
+        flagged = MagicMock(side_effect=lambda *a, **k: (next(reads), cut))
+        with patch("app.services.anomaly_scan.get_guardrail_settings", return_value={"active": active}), \
+             patch("app.services.langfuse_reader.monitoring", return_value={"on": monitoring, "reason": ""}), \
+             patch("app.services.langfuse_reader.sample_rate", return_value=sample_rate), \
+             patch("app.services.langfuse_reader.new_client", return_value=MagicMock()), \
+             patch("app.services.langfuse_reader.flagged_accounts", flagged):
+            yield flagged
+
+    # Well into the local day, so only today is read.
+    MIDDAY = local_day_start_utc() + timedelta(hours=12)
+
+    def test_repeated_unsafe_verdicts_are_a_finding_one_is_not(self, db_session):
+        repeat = _seed_user(db_session, "repeat")
+        once = _seed_user(db_session, "once")
+        jail = _seed_user(db_session, "jail")
+        app = _seed_user(db_session, "batch-runner", service=True)
+        with self._langfuse([{
+            "repeat": _verdicts(4, blocked=1, Violent=3, PII=1),
+            "once": _verdicts(1, Violent=1),             # the guard misjudges: one verdict is not a finding
+            "jail": _verdicts(2, Jailbreak=2),           # two jailbreak attempts are
+            "batch-runner": _verdicts(3, Violent=3),     # a program's account counts too
+            "gone": _verdicts(9, Violent=9),             # no such account any more
+            "(unknown)": _verdicts(5),
+        }]) as flagged:
+            findings = detect_guardrail_unsafe(db_session, self.MIDDAY)
+
+        assert {(f["scope"], f["observed"]) for f in findings} == {
+            (f"user:{repeat.id}", 4), (f"user:{jail.id}", 2), (f"user:{app.id}", 3),
+        }
+        assert once.id not in {f["user_id"] for f in findings}
+        first = next(f for f in findings if f["user_id"] == repeat.id)
+        assert (first["rule"], first["severity"], first["window_start"]) == (
+            "guardrail_unsafe", "warning", local_day_start_utc())
+        assert "4 request(s) judged unsafe" in first["detail"] and "Violent ×3" in first["detail"]
+        assert "1 refused" in first["detail"]
+        # One read, of today's unsafe verdicts up to now.
+        (_client, start, end, statuses, _pages), _kw = flagged.call_args
+        assert flagged.call_count == 1
+        assert (start, end, statuses) == (local_day_start_utc(), self.MIDDAY, ("unsafe",))
+
+    def test_off_without_the_guardrail_or_langfuse_and_nothing_is_read(self, db_session):
+        _seed_user(db_session, "repeat")
+        for off in ({"active": False}, {"monitoring": False}):
+            with self._langfuse([{"repeat": _verdicts(9)}], **off) as flagged:
+                assert detect_guardrail_unsafe(db_session, self.MIDDAY) == []
+            flagged.assert_not_called()
+
+    def test_early_in_the_day_yesterday_is_read_once_more(self, db_session):
+        """Yesterday's last scan ran before the day ended."""
+        u = _seed_user(db_session, "late")
+        day_start = local_day_start_utc()
+        with self._langfuse([{}, {"late": _verdicts(3, Violent=3)}]) as flagged:
+            findings = detect_guardrail_unsafe(db_session, day_start + timedelta(minutes=30))
+        assert flagged.call_count == 2
+        assert [(f["scope"], f["window_start"], f["window_end"]) for f in findings] == [
+            (f"user:{u.id}", day_start - timedelta(days=1), day_start),
+        ]
+
+    def test_the_summary_says_when_the_count_is_a_sample_or_cut(self, db_session):
+        _seed_user(db_session, "repeat")
+        with self._langfuse([{"repeat": _verdicts(3)}], sample_rate=0.25, cut=True):
+            (finding,) = detect_guardrail_unsafe(db_session, self.MIDDAY)
+        assert "a sample" in finding["detail"] and "more verdicts than were read" in finding["detail"]
+
+    def test_the_connection_is_released_before_langfuse_is_asked(self, db_session):
+        """The read is HTTP and can take a while: not with a pooled connection held."""
+        _seed_user(db_session, "repeat")
+        order = []
+        with self._langfuse([{"repeat": _verdicts(3)}]) as flagged, \
+             patch.object(db_session, "rollback", side_effect=lambda: order.append("released")):
+            flagged.side_effect = lambda *a, **k: (order.append("read") or {"repeat": _verdicts(3)}, False)
+            detect_guardrail_unsafe(db_session, self.MIDDAY)
+        assert order == ["released", "read"]
+
+    def test_langfuse_down_costs_this_rule_only(self, db_session):
+        from app.services.langfuse_reader import LangfuseError
+
+        u = _seed_user(db_session, "spiky")
+        _days(db_session, u, 12, cost=0.2)
+        _log(db_session, u, cost=3.0)
+        db_session.commit()
+        with self._langfuse([]) as flagged:
+            flagged.side_effect = LangfuseError("ReadTimeout reaching Langfuse")
+            findings = detect_all(db_session, self.MIDDAY)
+        assert [f["rule"] for f in findings] == ["cost_spike"]
 
 
 class TestPersistIdempotency:

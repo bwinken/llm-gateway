@@ -40,8 +40,17 @@ Rules (thresholds are module constants, tune freely):
                   template / downstream regressions; one account's broken
                   client is not the model)
 
-cost_spike and behavior_shift cover service accounts too (a leaked service
-key shows as a spend spike); off_hours and burst_rate are people only, since
+  guardrail_unsafe account with >= GUARDRAIL_UNSAFE_MIN requests judged unsafe by
+                  the guardrail in a local day, or >= GUARDRAIL_JAILBREAK_MIN
+                  in the Jailbreak category. One unsafe verdict is not a
+                  finding: the guard misjudges. Verdicts exist only in
+                  Langfuse, so this rule reads them there (counts and category
+                  names, never the screened text): it is off while the
+                  guardrail or Langfuse monitoring is, and under a
+                  LANGFUSE_SAMPLE_RATE below 1 its counts are a sample
+
+cost_spike, behavior_shift and guardrail_unsafe cover service accounts too
+(a leaked service key shows as a spend spike); off_hours and burst_rate are people only, since
 a program runs at night and at machine speed by design.
 
 An open finding not seen again for OPEN_EXPIRY_DAYS is closed by the scan
@@ -64,9 +73,11 @@ from datetime import datetime, timedelta, timezone
 import sqlalchemy as sa
 from sqlmodel import Session, func, select
 
+from app.core.config import get_guardrail_settings
 from app.core.logger import logger
-from app.core.timeutil import local_day_start_utc, local_today
+from app.core.timeutil import local_day_start_utc, local_day_start_utc_of, local_today
 from app.models.schema import AnomalyEvent, UsageLog, User, service_account_clause
+from app.services import langfuse_reader
 from app.services.scheduler import Job, env_seconds
 from app.services.usage_rollup import aggregate
 
@@ -88,6 +99,10 @@ EMPTY_TURN_RATE_ABS = 0.20      # >=20% empty turns in the last hour…
 EMPTY_TURN_RATE_RATIO = 3.0     # …and 3× the model's 30d baseline
 EMPTY_TURN_MIN_REQUESTS = 20    # need volume before the rate means anything
 EMPTY_TURN_MIN_USERS = 2        # …from more than one account: one broken client is not the model
+GUARDRAIL_UNSAFE_MIN = 3        # requests judged unsafe in a local day …
+GUARDRAIL_JAILBREAK_MIN = 2     # … or this many in the Jailbreak category
+GUARDRAIL_MAX_PAGES = 10        # pages of 100 unsafe verdicts read per day
+GUARDRAIL_CATCH_UP = timedelta(hours=2)  # this long into a day, yesterday is read once more
 BASELINE_DAYS = 30
 OPEN_EXPIRY_DAYS = 7            # an open finding not seen again for this long is closed
 RESOLVED_RETENTION_DAYS = 90
@@ -326,6 +341,70 @@ def detect_empty_turn_rate(session: Session, now: datetime) -> list[dict]:
     return findings
 
 
+def detect_guardrail_unsafe(session: Session, now: datetime) -> list[dict]:
+    """Accounts the guardrail judged unsafe repeatedly in a local day.
+
+    The verdicts are read from Langfuse (the only place they are kept), so
+    the rule needs the guardrail running and Langfuse monitoring on, and
+    finds nothing otherwise. A failed read raises: ``detect_all`` logs it
+    and the other rules still run.
+    """
+    if not get_guardrail_settings().get("active") or not langfuse_reader.monitoring()["on"]:
+        return []
+    # The read is HTTP and can take a while: not with a pooled connection held.
+    session.rollback()
+
+    today = local_today()
+    days = [today]
+    if now - local_day_start_utc_of(today) < GUARDRAIL_CATCH_UP:
+        # The last scan of yesterday ran before the day ended.
+        days.append(today - timedelta(days=1))
+    tallies: list[tuple[datetime, datetime, dict[str, dict], bool]] = []
+    with langfuse_reader.new_client() as client:
+        for day in days:
+            start = local_day_start_utc_of(day)
+            end = min(now, local_day_start_utc_of(day + timedelta(days=1)))
+            accounts, truncated = langfuse_reader.flagged_accounts(
+                client, start, end, ("unsafe",), GUARDRAIL_MAX_PAGES,
+            )
+            tallies.append((start, end, accounts, truncated))
+
+    names = {name for _start, _end, accounts, _cut in tallies for name in accounts}
+    if not names:
+        return []
+    _bound_statements(session)
+    ids = {str(name): int(uid) for uid, name in session.exec(
+        select(User.id, User.username).where(User.username.in_(names))  # type: ignore[attr-defined]
+    ).all()}
+    sampled = langfuse_reader.sample_rate() < 1.0
+
+    findings = []
+    for start, end, accounts, truncated in tallies:
+        for name, entry in accounts.items():
+            unsafe = int(entry["unsafe"])
+            jailbreak = int(entry["categories"].get("Jailbreak", 0))
+            if name not in ids or (unsafe < GUARDRAIL_UNSAFE_MIN and jailbreak < GUARDRAIL_JAILBREAK_MIN):
+                continue
+            categories = entry["categories"].most_common(5)
+            summary = f"{unsafe} request(s) judged unsafe by the guardrail"
+            if categories:
+                summary += " (" + ", ".join(f"{cat} ×{n}" for cat, n in categories) + ")"
+            if entry["blocked"]:
+                summary += f"; {entry['blocked']} refused"
+            if sampled:
+                summary += "; a sample, Langfuse does not record every request"
+            if truncated:
+                summary += "; more verdicts than were read"
+            findings.append(_finding(
+                f"user:{ids[name]}", "guardrail_unsafe", severity="warning",
+                window_start=start, window_end=end,
+                observed=unsafe, baseline=GUARDRAIL_UNSAFE_MIN, user_id=ids[name],
+                detail={"summary": summary, "username": name, "blocked": int(entry["blocked"]),
+                        "categories": dict(categories)},
+            ))
+    return findings
+
+
 def _bound_statements(session: Session) -> None:
     """Statement timeout for the rest of the current transaction (PostgreSQL
     only; ``SET LOCAL`` ends with the transaction, so it never leaks into the
@@ -338,7 +417,7 @@ def detect_all(session: Session, now: datetime | None = None) -> list[dict]:
     now = now or datetime.now(timezone.utc)
     findings: list[dict] = []
     for det in (detect_cost_spike, detect_off_hours, detect_burst_rate,
-                detect_behavior_shift, detect_empty_turn_rate):
+                detect_behavior_shift, detect_empty_turn_rate, detect_guardrail_unsafe):
         try:
             _bound_statements(session)
             findings.extend(det(session, now))

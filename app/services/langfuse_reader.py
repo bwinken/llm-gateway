@@ -1,9 +1,10 @@
-"""Reading back from Langfuse: the Public API, for the weekly reports.
+"""Reading back from Langfuse: the Public API, for the weekly reports and the
+anomaly scan's guardrail rule.
 
 ``observability.py`` writes one generation per request; this module is the
-only place that reads. It is used by the report job and the admin's preview,
-never on the request path: every call is blocking (run it in a thread) and
-bounded by ``TIMEOUT_S``.
+only place that reads. It is used by the report job, the admin's preview and
+the anomaly scan (a job too), never on the request path: every call is
+blocking (run it in a thread) and bounded by ``TIMEOUT_S``.
 
 Two API generations exist and a self-hosted server may be on either:
 
@@ -30,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
@@ -193,3 +195,32 @@ def scores(
             return items, False
         page += 1
     return items, True
+
+
+def flagged_accounts(
+    client: httpx.Client, start: datetime, end: datetime, statuses: tuple[str, ...], max_pages: int,
+) -> tuple[dict[str, dict], bool]:
+    """Per account (the trace's user): how many of its requests in
+    ``[start, end)`` the guardrail judged each of ``statuses`` (``unsafe`` /
+    ``controversial``), how many were refused, and the categories named.
+    ``(accounts, truncated)``. Counts and category names only: whatever else
+    a Langfuse item holds, the screened text never leaves this function."""
+    accounts: dict[str, dict] = {}
+    truncated = False
+    for status in statuses:
+        items, cut = scores(
+            client, name="guardrail_action", trace_tags=[f"guardrail:{status}"],
+            start=start, end=end, max_pages=max_pages,
+        )
+        truncated = truncated or cut
+        for item in items:
+            trace = item.get("trace") if isinstance(item.get("trace"), dict) else {}
+            name = str(trace.get("userId") or "(unknown)")
+            entry = accounts.setdefault(name, {"unsafe": 0, "controversial": 0, "blocked": 0, "categories": Counter()})
+            entry[status] += 1
+            if str(item.get("stringValue") or "") == "block":
+                entry["blocked"] += 1
+            for tag in trace.get("tags") or []:
+                if isinstance(tag, str) and tag.startswith("guardrail_category:"):
+                    entry["categories"][tag.partition(":")[2]] += 1
+    return accounts, truncated

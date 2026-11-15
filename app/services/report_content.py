@@ -752,28 +752,10 @@ def _score_counts(client, start: date, end: date) -> Counter:
 
 
 def _flagged_accounts(client, start: date, end: date, statuses: tuple[str, ...], max_pages: int) -> tuple[dict[str, dict], bool]:
-    """Per account (the trace's user): how many of its requests were judged
-    ``unsafe`` / ``controversial``, how many were refused, and the categories
-    named. ``(accounts, truncated)``."""
-    accounts: dict[str, dict] = {}
-    truncated = False
-    for status in statuses:
-        items, cut = langfuse_reader.scores(
-            client, name="guardrail_action", trace_tags=[f"guardrail:{status}"],
-            start=local_day_start_utc_of(start), end=local_day_start_utc_of(end), max_pages=max_pages,
-        )
-        truncated = truncated or cut
-        for item in items:
-            trace = item.get("trace") if isinstance(item.get("trace"), dict) else {}
-            name = str(trace.get("userId") or "(unknown)")
-            entry = accounts.setdefault(name, {"unsafe": 0, "controversial": 0, "blocked": 0, "categories": Counter()})
-            entry[status] += 1
-            if str(item.get("stringValue") or "") == "block":
-                entry["blocked"] += 1
-            for tag in trace.get("tags") or []:
-                if isinstance(tag, str) and tag.startswith("guardrail_category:"):
-                    entry["categories"][tag.partition(":")[2]] += 1
-    return accounts, truncated
+    """``langfuse_reader.flagged_accounts`` over local days ``[start, end)``."""
+    return langfuse_reader.flagged_accounts(
+        client, local_day_start_utc_of(start), local_day_start_utc_of(end), statuses, max_pages,
+    )
 
 
 def guardrail_figures(period: Period) -> dict[str, Any]:
