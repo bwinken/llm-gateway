@@ -49,7 +49,8 @@ from app.services.usage_rollup import aggregate
 # ── Tunables ──
 COST_SPIKE_RATIO = 5.0          # today > N × 30d daily median
 COST_SPIKE_FLOOR_USD = 1.0      # ignore spikes below this absolute spend
-OFF_HOURS_MIN_REQUESTS = 50     # 00:00-06:00 local requests to flag a human
+OFF_HOURS_MIN_REQUESTS = 300    # 00:00-06:00 local requests to flag a human: an agent loop
+                                # makes 50 in minutes, so working past midnight is not a finding
 OFF_HOURS_END = timedelta(hours=6)  # off-hours = local midnight to 06:00
 BURST_PER_HOUR = 600            # sustained ~10 req/min for an hour
 BURST_CRITICAL_PER_HOUR = 1500
