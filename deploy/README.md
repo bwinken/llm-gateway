@@ -82,12 +82,14 @@ Quick update (when no new dependencies):
 ```bash
 git pull
 rsync -a --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
-    --exclude='config.toml' --exclude='.env' --exclude='keys/' \
+    --exclude='config.toml' --exclude='.env' --exclude='keys/' --exclude='.cache/' \
     ./ ~/opt/llm-gateway/
 (cd ~/opt/llm-gateway && uv run alembic upgrade head)   # always migrate before restarting
 systemctl --user restart llm-gateway
 ```
 
+> Nothing to build: the pages' stylesheet, Chart.js and fonts are committed under `app/static/` and copied with the rest. Only someone who changed a template rebuilds the stylesheet, before committing ([docs/frontend-build.md](../docs/frontend-build.md)).
+>
 > `config.toml`, `.env`, `keys/`, and `deploy/.env` are never overwritten. If a systemd unit or timer under `deploy/` changed, run `setup.sh` instead, which reinstalls them.
 
 ## Service Management

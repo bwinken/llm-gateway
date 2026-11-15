@@ -278,5 +278,6 @@ CI runs both on every pull request, plus a dependency audit and a secret scan. [
 | [Architecture](docs/architecture.md) | How every subsystem behaves, in detail |
 | [Deployment](deploy/README.md) | Production setup, backups, upgrades |
 | [Langfuse](docs/langfuse-observability.md) | Observability design |
+| [Web page assets](docs/frontend-build.md) | Rebuilding the stylesheet after a template change (zh-TW, step by step) |
 | [Migrations](alembic/README.md) | Database schema changes |
 | Package notes | [core](app/core/README.md) · [routers](app/routers/README.md) · [models](app/models/README.md) · [templates](app/templates/README.md) · [tests](tests/README.md) |

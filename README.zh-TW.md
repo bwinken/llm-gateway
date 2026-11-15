@@ -278,5 +278,6 @@ CI 會在每個 pull request 跑這兩項，另外還有相依套件稽核與金
 | [架構](docs/architecture.md) | 每個子系統的詳細行為 |
 | [部署](deploy/README.zh-TW.md) | 正式環境設定、備份、升級 |
 | [Langfuse](docs/langfuse-observability.md) | 可觀測性設計 |
+| [網頁前端檔案](docs/frontend-build.md) | 改了模板之後怎麼重新產生樣式表，一步一步說明 |
 | [Migrations](alembic/README.zh-TW.md) | 資料庫 schema 變更 |
 | 各套件說明 | [core](app/core/README.zh-TW.md) · [routers](app/routers/README.zh-TW.md) · [models](app/models/README.zh-TW.md) · [templates](app/templates/README.zh-TW.md) · [tests](tests/README.md) |

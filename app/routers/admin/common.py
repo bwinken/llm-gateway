@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.core.auth import get_web_user
 from app.core.config import get_site_links, setup_page_enabled
+from app.core.static_assets import static_url
 from app.core.timeutil import LOCAL_TZ
 
 
@@ -32,6 +33,7 @@ templates = Jinja2Templates(directory=str(_templates_dir))
 # every page — same global as web_ui's template environment.
 templates.env.globals["get_site_links"] = get_site_links
 templates.env.globals["setup_page_enabled"] = setup_page_enabled
+templates.env.globals["static_url"] = static_url
 
 
 # The per-backend (Azure / Bedrock) amounts are gone: cloud spend has one

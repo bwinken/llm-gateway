@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-所有頁面透過 oauth2-proxy + nginx `auth_request` 保護，使用者需先完成 SSO 登入。頁面使用 Jinja2 模板 + Tailwind CSS (CDN) + Chart.js 渲染。
+所有頁面透過 oauth2-proxy + nginx `auth_request` 保護，使用者需先完成 SSO 登入。頁面使用 Jinja2 模板 + Tailwind CSS（已 build 成 `app/static/css/tailwind.css`）+ Chart.js 渲染，全部由本站提供。
 
 ## 頁面一覽
 
@@ -211,7 +211,7 @@ Admin 在 auth 階段免檢查停用旗標，因此這頁永遠不會擋到 admi
 - **Support Bot 按鈕** — 右下角浮動連結，只在有設定 `support_bot_url`（Admin → Site Links）時顯示；透過 `get_site_links` 模板全域函式讀取
 - **`gwTabs(barId, storageKey)`** — 頁面分頁：分頁列中的按鈕帶 `data-tab="x"`，面板帶 `data-panel="x"`（多個面板可共用同一名稱）。目前分頁取自 URL hash，否則取 `sessionStorage[storageKey]`（表單 POST 會 redirect 到不帶 hash 的網址），再否則為第一個分頁。每次切換後觸發 `resize` 事件，讓隱藏分頁內的圖表正確計算尺寸
 - **Tooltip** — 任何帶 `gw-tip` + `data-tip` 的元素（長文字加 `gw-tip-wide`）
-- **CDN** — Tailwind CSS、Chart.js、Plus Jakarta Sans + JetBrains Mono 字型
+- **前端檔案** — Tailwind CSS、Chart.js、Plus Jakarta Sans + JetBrains Mono 字型，都在 `app/static/`，用 `static_url(...)` 引用，不再從 CDN 載入。模板加了新的 class 之後，執行 `bash scripts/build_css.sh` 並 commit 樣式表（[docs/frontend-build.md](../../docs/frontend-build.md)）
 
 ### `_admin_tabs.html` — 管理分頁列
 

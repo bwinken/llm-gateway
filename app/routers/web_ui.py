@@ -27,6 +27,7 @@ from app.core.config import (
     setup_page_enabled,
 )
 from app.core.database import get_session
+from app.core.static_assets import static_url
 from app.core.logger import logger
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ, local_month_start, seconds_until_local_midnight
@@ -63,6 +64,8 @@ templates.env.globals["get_site_links"] = get_site_links
 # Same for the Setup page switch (SETUP_PAGE_ENABLED): the navbar link is on
 # every page.
 templates.env.globals["setup_page_enabled"] = setup_page_enabled
+# And the URLs of the pages' own stylesheet, scripts and fonts.
+templates.env.globals["static_url"] = static_url
 _SETUP_DIR = Path(__file__).resolve().parent.parent.parent / "setup"
 
 
