@@ -465,6 +465,7 @@ def _record_blocked(
         latency_ms=request_latency_ms(),
         user_agent=meta.get("user_agent"),
         x_app=meta.get("x_app"),
+        x_title=meta.get("x_title"),
         session_id=meta.get("session_id"),
         display_name=getattr(user, "display_name", None),
         guardrail=verdict_meta,

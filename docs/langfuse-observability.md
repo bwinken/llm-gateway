@@ -98,7 +98,7 @@ class GenerationRecord:
     endpoint: str            # "/v1/messages"  -> Langfuse generation `name` (groupable)
     backend: str             # "vllm" | "azure"
     user_agent: str | None   # raw User-Agent header -> metadata (calibration only)
-    client: str              # derived: claude-code|roo-code|openai-compatible|other -> categorical Score
+    client: str              # derived: X-Title, a known tool, else the User-Agent's product -> categorical Score + tag
     model_alias: str         # user-facing alias  -> Langfuse `model`
     real_model: str          # downstream model/deployment -> metadata
     model_type: str          # llm | vlm | embedding | reranker | systemone | ...
@@ -156,7 +156,7 @@ that can actually analyse it — confirmed against Langfuse Metrics API v2:
 | `x-session-id` header (if present) | `sessionId` | conversation drill-down |
 | model **alias** | `model` (`providedModelName`) | primary group-by dimension for cost/usage |
 | **endpoint** | generation **`name`** | **groupable** dimension → per-endpoint (per-surface) statistics |
-| **client** (derived: claude-code / roo-code / openai-compatible / other) | **categorical Score `client`** | **statisticable** — `scores-categorical` view gives request distribution per software + day/month trend |
+| **client** (derived: the `X-Title` the client sends, else a known tool such as claude-code / roo-code / codex-cli, else the User-Agent's own product such as openai-python / curl; an endpoint family only without a User-Agent) | generation **`version`** + **categorical Score `client`** + **tag `client:<label>`** | **statisticable** — the observations view groups tokens, cost and latency by `version`; the `scores-categorical` view gives request distribution per software + day/month trend; the tag filters the Tracing list |
 | raw `User-Agent` header | `metadata.user_agent` | calibration / lookup only — **NOT** for statistics |
 | `real_model` / deployment | `metadata.real_model` | reference only |
 | input/output/cached tokens | **`usageDetails`** map | native aggregatable measure |
@@ -198,9 +198,11 @@ that can actually analyse it — confirmed against Langfuse Metrics API v2:
   - `build_generation_kwargs()` — correct field routing (model=alias, name=endpoint,
     costDetails from gateway, scores for empty_turn/fallback/client, tags low-cardinality,
     image redaction).
-  - `classify_client()` — `claude-code` from UA `claude-cli`/`claude-code` or `x-app:cli`;
-    `roo-code` from a Roo UA; `openai-compatible` for OpenAI-style endpoints with a generic
-    SDK UA; `other` otherwise. Best-effort; calibrated against real traffic later.
+  - `classify_client()` — the client's own `X-Title` as a slug; else `claude-code` from UA
+    `claude-cli`/`claude-code` or `x-app:cli`, `roo-code` / `kilo-code` / `codex-cli` from
+    their UA; else the UA's first product under its own name (`openai-python`, `curl`, …);
+    the endpoint family (`anthropic-sdk` / `openai-compatible` / `other`) only without a UA.
+    Always a bounded slug. See *Observability* in `docs/architecture.md`.
   - `redact_payload()` — base64 data URL → `[image]`; text untouched.
   - `record_generation()` — **no-op when unconfigured** (no client → returns, no raise);
     swallows client errors without propagating.
@@ -298,7 +300,7 @@ Phase 1 (quantitative), via the Users view + filter-by-userId:
 10. The Users view lists every active user with their total cost, token usage, and request count over a time range.
 11. Filtering to one user and grouping by `model` shows that user's model mix; grouping by `name` (endpoint) and by the `client` Score shows which software/surface they use (Claude Code vs Roo Code vs embeddings…).
 12. Per user, request volume / tokens / cost can be charted over time (day/month granularity), and their empty-turn / fallback rate is queryable.
-13. The `client` categorical Score yields a request-distribution-per-software chart (Claude Code / Roo Code / openai-compatible / other), trendable by day/month, across all users or filtered to one.
+13. The `client` categorical Score yields a request-distribution-per-software chart (Claude Code / Roo Code / Cline / openai-python / an in-house application's own name / …), trendable by day/month, across all users or filtered to one.
 14. A username change does not fragment history irrecoverably — `metadata.user_id` still ties records to the same person.
 
 Phase 2 (qualitative):

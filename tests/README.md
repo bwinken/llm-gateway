@@ -568,7 +568,8 @@ counts are informational.
 ### `test_observability.py` — Langfuse integration
 
 Pure helpers, with the Langfuse SDK never imported: client classification
-(Claude Code, Roo Code, Anthropic SDK, OpenAI-compatible), scores, error
+(the `X-Title` a client sends, known tools, else the User-Agent's own product;
+always a bounded slug; a score and a tag; end to end from the header), scores, error
 generations, `record_generation` (no-op when unconfigured, never raises),
 streamed-output reassembly (tool-call-only turns captured), request latency,
 I/O capture only when enabled, `RequestMetaMiddleware` header capture (must be

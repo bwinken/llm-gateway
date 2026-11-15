@@ -47,7 +47,8 @@ def _make_record(**overrides):
 
 
 class TestClassifyClient:
-    """Best-effort mapping of (User-Agent, endpoint, x-app) -> client label."""
+    """(User-Agent, endpoint, x-app, X-Title) -> the label a client is
+    recorded under: a name of its own for every client, never a bucket."""
 
     def test_claude_code_from_user_agent(self):
         assert classify_client("claude-cli/1.2.3 (external, cli)", "/v1/messages") == "claude-code"
@@ -57,23 +58,71 @@ class TestClassifyClient:
         # Even with an unrecognised UA, x-app:cli pins it to Claude Code.
         assert classify_client("python-httpx/0.27", "/v1/messages", x_app="cli") == "claude-code"
 
-    def test_roo_code_from_user_agent(self):
+    def test_known_tools_from_user_agent(self):
         assert classify_client("Roo-Code/3.1 vscode", "/v1/chat/completions") == "roo-code"
+        assert classify_client("RooCode/3.28.0", "/v1/chat/completions") == "roo-code"
+        assert classify_client("Kilo-Code/4.90", "/v1/chat/completions") == "kilo-code"
+        assert classify_client("codex_cli_rs/0.40.0 (Mac OS 15; arm64)", "/v1/responses") == "codex-cli"
 
-    def test_anthropic_sdk_when_messages_endpoint_but_unknown_ua(self):
-        # /v1/messages with no Claude marker => some Anthropic-style client.
-        assert classify_client("OpenAI/Python 1.0", "/v1/messages") == "anthropic-sdk"
+    def test_a_marker_is_not_a_loose_substring(self):
+        # "roo" alone used to match: a tool named kangaroo is not Roo Code.
+        assert classify_client("kangaroo/1.0", "/v1/chat/completions") == "kangaroo"
 
-    def test_openai_compatible_for_openai_style_endpoints(self):
-        assert classify_client("OpenAI/Python 1.0", "/v1/chat/completions") == "openai-compatible"
+    def test_an_unknown_client_keeps_its_own_name(self):
+        # The point of the label: what is not on a list still shows up as
+        # itself, on whichever endpoint, instead of in a family bucket.
+        assert classify_client("python-httpx/0.27.2", "/v1/chat/completions") == "python-httpx"
+        assert classify_client("curl/8.5.0", "/v1/messages") == "curl"
+        assert classify_client("litellm/1.52.0", "/v1/chat/completions") == "litellm"
+        assert classify_client("Go-http-client/2.0", "/v1/embeddings") == "go-http-client"
+        assert classify_client("node", "/v1/chat/completions") == "node"
+        assert classify_client("opencode/v0.3.1", "/v1/chat/completions") == "opencode"
+
+    def test_sdk_user_agents_name_their_language(self):
+        # The SDKs write the language where a version would be.
+        assert classify_client("OpenAI/Python 1.40.0", "/v1/chat/completions") == "openai-python"
+        assert classify_client("AsyncOpenAI/Python 1.40.0", "/v1/messages") == "openai-python"
+        assert classify_client("OpenAI/JS 4.52.0", "/v1/responses") == "openai-js"
+        assert classify_client("Anthropic/Python 0.34.0", "/v1/messages") == "anthropic-python"
+        assert classify_client("AsyncAnthropic/Python 0.34.0", "/v1/messages") == "anthropic-python"
+
+    def test_a_browser_is_one_label(self):
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36"
+        assert classify_client(ua, "/v1/chat/completions") == "browser"
+
+    def test_the_name_a_client_gives_itself_wins(self):
+        # An agent that talks through the OpenAI SDK: only X-Title names it.
+        assert classify_client("OpenAI/JS 4.52.0", "/v1/chat/completions", x_title="Cline") == "cline"
+        assert classify_client("RooCode/3.28.0", "/v1/chat/completions", x_title="Roo Code") == "roo-code"
+        # An in-house application, also one built on Claude Code.
+        assert classify_client("OpenAI/Python 1.40.0", "/v1/chat/completions", x_title="Invoice Bot") == "invoice-bot"
+        assert classify_client(
+            "claude-cli/2.1.0 (external, sdk-py)", "/v1/messages", x_app="cli", x_title="review_agent",
+        ) == "review-agent"
+
+    def test_the_label_is_a_bounded_slug_of_what_was_sent(self):
+        label = classify_client("x" * 500 + "/1.0", "/v1/chat/completions")
+        assert label == "x" * 40
+        label = classify_client(None, "/v1/chat/completions", x_title="My App <script>alert(1)</script> " + "y" * 90)
+        assert len(label) <= 40
+        assert label.startswith("my-app-script-alert-1-script")
+        assert all(c.isascii() and (c.isalnum() or c in ".-") for c in label)
+        assert label == label.lower()
+
+    def test_a_title_with_nothing_usable_is_ignored(self):
+        assert classify_client("curl/8.5.0", "/v1/chat/completions", x_title="  ///  ") == "curl"
+        assert classify_client("curl/8.5.0", "/v1/chat/completions", x_title="") == "curl"
+
+    def test_endpoint_family_when_there_is_no_user_agent(self):
+        assert classify_client(None, "/v1/messages") == "anthropic-sdk"
+        assert classify_client("", "/v1/messages/count_tokens") == "anthropic-sdk"
+        assert classify_client(None, "/v1/chat/completions") == "openai-compatible"
         assert classify_client(None, "/v1/responses") == "openai-compatible"
         assert classify_client(None, "/v1/embeddings") == "openai-compatible"
 
     def test_other_when_nothing_matches(self):
         assert classify_client(None, "/v1/unknown") == "other"
-
-    def test_none_user_agent_does_not_crash(self):
-        assert classify_client(None, "/v1/messages") == "anthropic-sdk"
+        assert classify_client("(compatible)", "/v1/unknown") == "other"
 
 
 class TestBuildScores:
@@ -192,6 +241,42 @@ class TestRecordGeneration:
             record_generation(_make_record(user_agent="claude-cli/1.0", endpoint="/v1/messages"))
         client_score = next(c for c in gen.score.call_args_list if c.kwargs["name"] == "client")
         assert client_score.kwargs["value"] == "claude-code"
+
+    def test_the_client_is_a_tag_as_well_as_a_score(self):
+        # A score can be charted, a tag is a filter on the Tracing list:
+        # both carry the same label, and the name the client gave itself.
+        client = MagicMock()
+        gen = client.start_observation.return_value
+        seen: dict = {}
+
+        def _propagate(**kw):
+            seen.update(kw)
+            return contextlib.nullcontext()
+
+        with patch("app.services.observability.get_langfuse", return_value=client), \
+             patch("langfuse.propagate_attributes", _propagate):
+            record_generation(_make_record(user_agent="OpenAI/JS 4.52.0", x_title="Cline"))
+        client_score = next(c for c in gen.score.call_args_list if c.kwargs["name"] == "client")
+        assert client_score.kwargs["value"] == "cline"
+        assert "client:cline" in seen["tags"]
+        assert "backend:vllm" in seen["tags"]
+
+    def test_the_client_is_the_generations_version(self):
+        # What a report groups by: the Metrics API gives tokens, cost and
+        # latency per top-level field of the generation, never per metadata
+        # key, per score value or per single tag.
+        client = MagicMock()
+        with patch("app.services.observability.get_langfuse", return_value=client), \
+             patch("langfuse.propagate_attributes", lambda **kw: contextlib.nullcontext()):
+            record_generation(_make_record(user_agent="OpenAI/Python 1.40.0", x_title="Invoice Bot"))
+            record_generation(_make_record(user_agent="claude-cli/2.1.0 (external, cli)", error="502", is_error=True))
+        first, second = (c.kwargs for c in client.start_observation.call_args_list)
+        assert first["version"] == "invoice-bot"
+        assert "client" not in first["metadata"]
+        # Failed requests too, so an error rate per client can be read.
+        assert second["version"] == "claude-code" and second["level"] == "ERROR"
+        # The endpoint stays where it was.
+        assert first["name"] == "/v1/messages"
 
     def test_captured_io_is_also_written_on_the_trace(self):
         # The Tracing list shows the trace's own input / output, not the
@@ -419,6 +504,68 @@ class TestCacheWriteUsageDetails:
         assert rec.cost["cache_creation_input_tokens"] == 400 * 3.75 / 1_000_000
 
 
+class TestClientNameEndToEnd:
+    """The headers a client sends reach the Langfuse record through the real
+    path: middleware → auth → proxy → _log_usage / _log_error."""
+
+    def _post(self, client, headers, downstream):
+        from fastapi.testclient import TestClient
+
+        from app.services.observability import RequestMetaMiddleware
+        from tests.conftest import auth_header
+
+        captured = []
+        app = RequestMetaMiddleware(client.app)
+        with patch.object(client.__httpx_mock__, "post", return_value=downstream), \
+             patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.record_generation", captured.append), \
+             TestClient(app) as tc:
+            resp = tc.post(
+                "/v1/chat/completions",
+                json={"model": "test-llm", "messages": [{"role": "user", "content": "hi"}]},
+                headers={**auth_header(), **headers},
+            )
+        assert captured, "no generation recorded"
+        return resp, captured[-1]
+
+    def test_a_billed_request_carries_the_clients_own_name(self, client, test_user):
+        from tests.conftest import make_httpx_response
+
+        ok = make_httpx_response(200, {
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+        })
+        resp, rec = self._post(client, {"User-Agent": "OpenAI/Python 1.40.0", "X-Title": "Invoice Bot"}, ok)
+        assert resp.status_code == 200, resp.text
+        assert rec.user_agent == "OpenAI/Python 1.40.0"
+        assert rec.x_title == "Invoice Bot"
+        assert classify_client(rec.user_agent, rec.endpoint, rec.x_app, rec.x_title) == "invoice-bot"
+
+    def test_without_a_title_the_user_agent_names_it(self, client, test_user):
+        from tests.conftest import make_httpx_response
+
+        ok = make_httpx_response(200, {
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+        })
+        _, rec = self._post(client, {"User-Agent": "OpenAI/Python 1.40.0"}, ok)
+        assert rec.x_title is None
+        assert classify_client(rec.user_agent, rec.endpoint, rec.x_app, rec.x_title) == "openai-python"
+
+    def test_a_failed_request_carries_it_too(self, client, test_user):
+        from tests.conftest import make_httpx_response
+
+        resp, rec = self._post(
+            client, {"User-Agent": "curl/8.5.0", "X-Title": "Invoice Bot"},
+            make_httpx_response(400, {"error": {"message": "bad request"}}),
+        )
+        assert resp.status_code == 400
+        assert rec.is_error is True
+        assert rec.x_title == "Invoice Bot"
+
+
 class TestRequestMetaMiddleware:
     """Header capture MUST live in the pure-ASGI middleware: a contextvar set
     in the sync get_current_user dependency runs in a threadpool copy and is
@@ -441,6 +588,7 @@ class TestRequestMetaMiddleware:
             "headers": [
                 (b"user-agent", b"claude-cli/1.0 (external, cli)"),
                 (b"x-app", b"cli"),
+                (b"x-title", b"Review Agent"),
                 (b"x-session-id", b"sess-123"),
             ],
         }
@@ -454,6 +602,7 @@ class TestRequestMetaMiddleware:
         asyncio.run(mw(scope, receive, send))
         assert seen.get("user_agent") == "claude-cli/1.0 (external, cli)"
         assert seen.get("x_app") == "cli"
+        assert seen.get("x_title") == "Review Agent"
         assert seen.get("session_id") == "sess-123"
 
     def test_non_http_scope_is_passthrough(self):
