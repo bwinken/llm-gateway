@@ -1330,6 +1330,38 @@ function submitExportCsv() {
             <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
         </form>
     </div>
+    {% set op = concurrency_offpeak %}
+    <div class="flex flex-wrap items-center justify-between gap-4 mt-4 pt-4" style="border-top:1px solid rgba(255,255,255,0.06)">
+        <div class="max-w-xl">
+            <h3 class="text-xs font-bold text-t2 mb-1">Off-peak hours
+                {% if concurrency_offpeak_now %}<span class="ml-1.5 text-[11px] font-semibold" style="color:#34d399">● open now</span>{% endif %}
+            </h3>
+            <p class="text-xs text-t4 gw-tip gw-tip-wide"
+               data-tip="During these hours local (on-prem) requests are not held to the local limit: they still count (the in-flight numbers stay true), but none is refused or logged as over the limit. Cloud requests keep their limit. Times are Asia/Taipei; a window may cross midnight (22:00 → 08:00); the end is not included. Leave both times empty for no daily window. Has no effect while the mode is Off.">
+                {% if op.start or op.weekends %}
+                Local requests unlimited
+                {% if op.start %}<span class="font-mono text-t2">{{ op.start }}–{{ op.end }}</span> daily{% endif %}{% if op.start and op.weekends %} and{% endif %}
+                {% if op.weekends %}all weekend{% endif %} (Asia/Taipei). Cloud keeps its limit.
+                {% else %}
+                None set: the local limit applies around the clock.
+                {% endif %}
+            </p>
+        </div>
+        <form action="/admin/concurrency-offpeak" method="POST" class="flex flex-wrap items-end gap-3">
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">From</label>
+                <input type="time" name="start" value="{{ op.start }}" class="gw-input text-sm font-mono py-1.5 px-2">
+            </div>
+            <div>
+                <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Until</label>
+                <input type="time" name="end" value="{{ op.end }}" class="gw-input text-sm font-mono py-1.5 px-2">
+            </div>
+            <label class="flex items-center gap-2 text-sm text-t2 py-1.5">
+                <input type="checkbox" name="weekends" value="on" {{ 'checked' if op.weekends else '' }}> Weekends
+            </label>
+            <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
+        </form>
+    </div>
 </div>
 
 {# ── Default Daily Limit ── #}

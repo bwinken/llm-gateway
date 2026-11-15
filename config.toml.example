@@ -50,6 +50,15 @@ cloud_budget_fallback = false
 concurrency_limit_mode = "off"
 concurrency_limit = 8
 concurrency_cloud_limit = 10
+# Off-peak hours (same card): while they are open, local (on-prem) requests
+# are not held to concurrency_limit (they still count; none is refused).
+# Cloud requests keep concurrency_cloud_limit. Asia/Taipei "HH:MM"; a window
+# may cross midnight ("22:00" → "08:00"); the end is not included. Both
+# empty = no daily window. concurrency_offpeak_weekends = true makes all of
+# Saturday and Sunday off-peak too.
+concurrency_offpeak_start = ""
+concurrency_offpeak_end = ""
+concurrency_offpeak_weekends = false
 
 # API IP allowlist (admin panel → "IP Allowlist" card): which accounts may
 # call /v1, /azure and /aws from which addresses (the web UI and health checks

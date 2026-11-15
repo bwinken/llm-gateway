@@ -14,6 +14,11 @@ served by vLLM, where concurrent requests compete for the same GPUs) and
 borrows from the other. Which pool a request is in is the caller's decision
 (``deps._limited``); this module only counts.
 
+Off-peak hours (``[app].concurrency_offpeak_*``, ``is_offpeak``) lift the
+local limit: a local request still takes a lease (so the count stays true
+when the window closes and the admin card still shows the load), but is
+admitted whatever the count. The cloud limit has no off-peak.
+
 Lifecycle of a lease:
   - ``acquire``  — short transaction: lock the user's row (``SELECT ... FOR
     UPDATE``, so two workers admitting the same user serialize), count the
@@ -53,8 +58,10 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, distinct, update
 from sqlmodel import Session, func, select
 
+from app.core.config import get_concurrency_offpeak
 from app.core.database import engine
 from app.core.logger import logger
+from app.core.timeutil import LOCAL_TZ
 from app.models.schema import ConcurrencyLease, User
 
 POOL_LOCAL = "local"
@@ -76,6 +83,34 @@ def worker_id() -> str:
     if _identity is None or _identity[0] != pid:
         _identity = (pid, f"{socket.gethostname()}:{pid}:{uuid.uuid4().hex[:12]}")
     return _identity[1]
+
+
+def in_offpeak(settings: dict, local_now: datetime) -> bool:
+    """Whether ``local_now`` (Asia/Taipei) falls in the off-peak hours
+    ``settings`` (``config.get_concurrency_offpeak()``): all of Saturday and
+    Sunday when ``weekends``, and every day from ``start`` up to (not
+    including) ``end``. A window whose end is before its start crosses
+    midnight. Pure: no I/O."""
+    if settings.get("weekends") and local_now.weekday() >= 5:
+        return True
+    start, end = settings.get("start") or "", settings.get("end") or ""
+    if not start or not end or start == end:
+        return False
+    now = f"{local_now.hour:02d}:{local_now.minute:02d}"
+    if start < end:
+        return start <= now < end
+    return now >= start or now < end
+
+
+def is_offpeak(local_now: datetime | None = None) -> bool:
+    """Whether the off-peak hours are open right now: local requests are
+    then not held to the local limit (``deps._concurrency_slot``). Never
+    raises (a broken setting reads as "not off-peak": the limit stays)."""
+    try:
+        return in_offpeak(get_concurrency_offpeak(), local_now or datetime.now(LOCAL_TZ))
+    except Exception as exc:
+        logger.warning("Off-peak check failed, limit stays | error={}: {}", type(exc).__name__, exc)
+        return False
 
 
 def _utcnow() -> datetime:

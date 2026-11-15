@@ -39,6 +39,7 @@ from app.core.config import (
     get_bedrock_models_snapshot,
     get_cloud_budget_fallback,
     get_concurrency_cloud_limit,
+    get_concurrency_offpeak,
     get_concurrency_settings,
     get_model_routing_snapshot,
 )
@@ -69,7 +70,7 @@ from app.services.azure_proxy import (
     azure_forward_messages,
     azure_forward_responses,
 )
-from app.services import client_rules, client_settings, guardrail, model_catalog
+from app.services import client_rules, client_settings, concurrency, guardrail, model_catalog
 from app.services.model_order import natural_key
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
@@ -393,6 +394,7 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
     mode, limit = get_concurrency_settings()
     concurrency_applies = mode != "off" and not user.concurrency_waived
     local_now = datetime.now(LOCAL_TZ)
+    offpeak = get_concurrency_offpeak()
 
     return {
         "object": "account",
@@ -441,6 +443,13 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
                 "limit": limit,
                 **({"cloud_limit": get_concurrency_cloud_limit()}
                    if azure_access or bedrock_access else {}),
+                # Off-peak hours lift "limit" (local only); shown only when set.
+                **({"offpeak": {
+                    "start": offpeak["start"],
+                    "end": offpeak["end"],
+                    "weekends": offpeak["weekends"],
+                    "active": concurrency.in_offpeak(offpeak, local_now),
+                }} if offpeak["start"] or offpeak["weekends"] else {}),
             } if concurrency_applies else {"mode": "off"}
         ),
     }
