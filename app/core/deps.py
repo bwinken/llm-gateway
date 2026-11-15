@@ -533,6 +533,9 @@ async def _concurrency_slot(
     - ``monitor``: the lease is always taken; going over the limit logs a
       WARNING and the request is served.
     - ``enforce``: over the limit → 429 with ``Retry-After``.
+    - off-peak hours (``concurrency.is_offpeak``): a local request takes its
+      lease but is never refused or logged as over the limit; cloud requests
+      keep their limit.
     - the lease store failing (DB trouble) never fails the request: it is
       logged and the request proceeds unlimited (fail-open), so the limiter
       can't become an outage of its own.
@@ -544,6 +547,7 @@ async def _concurrency_slot(
 
     from app.services import concurrency
 
+    offpeak = False
     try:
         if not isinstance(pool, str):
             pool = await pool()
@@ -551,9 +555,12 @@ async def _concurrency_slot(
             limit = get_concurrency_cloud_limit()
         else:
             pool = concurrency.POOL_LOCAL
+            # Off-peak: the lease is still taken (the count must be true
+            # when the window closes) but nothing is refused or logged.
+            offpeak = concurrency.is_offpeak()
         lease_id, active = await run_in_threadpool(
             concurrency.acquire, user.id, limit, endpoint,
-            enforce=(mode == "enforce"), pool=pool,
+            enforce=(mode == "enforce" and not offpeak), pool=pool,
         )
     except Exception as exc:
         logger.warning(
@@ -563,7 +570,7 @@ async def _concurrency_slot(
         yield
         return
 
-    if active >= limit:
+    if active >= limit and not offpeak:
         logger.warning(
             "Concurrency limit {} | user={} in_flight={} limit={} endpoint={} pool={}",
             "hit" if lease_id is None else "exceeded (monitor)",

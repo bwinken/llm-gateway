@@ -1067,6 +1067,66 @@ def set_concurrency_settings(mode: str, limit: int, cloud_limit: int | None = No
     _save_app_keys(keys)
 
 
+# Off-peak hours (same card): while the window is open, local (vLLM) requests
+# are not held to ``concurrency_limit``; cloud requests keep their limit.
+# Times are Asia/Taipei "HH:MM"; a window may cross midnight (22:00 → 08:00);
+# end is exclusive. Both empty = no daily window. ``weekends`` makes all of
+# Saturday and Sunday off-peak too.
+_CONCURRENCY_OFFPEAK_START_KEY = "concurrency_offpeak_start"
+_CONCURRENCY_OFFPEAK_END_KEY = "concurrency_offpeak_end"
+_CONCURRENCY_OFFPEAK_WEEKENDS_KEY = "concurrency_offpeak_weekends"
+
+
+def parse_hhmm(value: Any) -> str | None:
+    """``"H:MM"`` / ``"HH:MM"`` (00:00–23:59) → normalized ``"HH:MM"``;
+    anything else → None."""
+    if not isinstance(value, str):
+        return None
+    parts = value.strip().split(":")
+    if len(parts) != 2 or not all(p.isdigit() for p in parts) or len(parts[1]) != 2:
+        return None
+    hour, minute = int(parts[0]), int(parts[1])
+    if len(parts[0]) > 2 or hour > 23 or minute > 59:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def get_concurrency_offpeak() -> dict[str, Any]:
+    """``{"start", "end", "weekends"}`` for the off-peak hours.
+
+    ``start`` / ``end`` are ``"HH:MM"`` or both ``""`` (no daily window):
+    a missing, malformed or zero-length (start == end) window reads as none,
+    so a typo never lifts the limit. ``weekends`` is True only for a real
+    boolean true (or ``"true"``). Never raises; auto-reloads.
+    """
+    _check_auto_reload()
+    start = parse_hhmm(APP_CONFIG.get(_CONCURRENCY_OFFPEAK_START_KEY))
+    end = parse_hhmm(APP_CONFIG.get(_CONCURRENCY_OFFPEAK_END_KEY))
+    if start is None or end is None or start == end:
+        start = end = ""
+    raw = APP_CONFIG.get(_CONCURRENCY_OFFPEAK_WEEKENDS_KEY, False)
+    weekends = raw is True or (isinstance(raw, str) and raw.strip().lower() in ("true", "yes", "on", "1"))
+    return {"start": start, "end": end, "weekends": weekends}
+
+
+def set_concurrency_offpeak(start: str, end: str, weekends: bool) -> None:
+    """Persist the off-peak hours. ``start`` and ``end`` are both ``""``
+    (no daily window) or both valid, different ``"HH:MM"`` values. Callers
+    validate first; this re-checks so a bad value never reaches config.toml."""
+    if (start == "") != (end == ""):
+        raise ValueError("off-peak start and end must both be set or both be empty")
+    if start:
+        if parse_hhmm(start) != start or parse_hhmm(end) != end:
+            raise ValueError(f"off-peak times must be HH:MM, got {start!r} / {end!r}")
+        if start == end:
+            raise ValueError("off-peak start and end must differ")
+    _save_app_keys({
+        _CONCURRENCY_OFFPEAK_START_KEY: start,
+        _CONCURRENCY_OFFPEAK_END_KEY: end,
+        _CONCURRENCY_OFFPEAK_WEEKENDS_KEY: bool(weekends),
+    })
+
+
 # API IP allowlist (admin panel → "IP Allowlist" card; rules live in the
 # ip_allow_rules table, enforced by app/services/ip_allowlist.py). Like the
 # concurrency limit, "off" is an explicit mode, and a typo never turns it on.

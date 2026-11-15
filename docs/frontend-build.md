@@ -183,20 +183,27 @@ systemctl --user restart llm-gateway
 sudo nginx -T 2>/dev/null | grep -A4 "location /static/"
 ```
 
-- **有輸出**，而且裡面有一行 `alias .../app/static/;`：好了，什麼都不用做。
-- **沒有輸出**：頁面照樣能正常顯示（gateway 自己會提供這些檔案），只是少了 nginx 的快取。想補上的話，從 `deploy/llm-gateway-example.nginx.conf` 複製 `location /static/ { ... }` 那一整段，貼到你們 nginx 設定檔（通常是 `deploy/llm-gateway.nginx.conf`）裡的 `location / {` 前面。`__APP_DIR__` 換成 repo 的完整路徑，例如 `/home/gateway/opt/llm-gateway`。然後依序執行下面兩行：
+- **有輸出**，而且裡面是 `proxy_pass http://127.0.0.1:8050;`：好了，什麼都不用做。
+- **有輸出**，但裡面是 `alias .../app/static/;`（較早的範例）：改成 proxy 的寫法（見下一段），尤其程式放在家目錄底下時（`setup.sh` 預設的 `$HOME/opt/llm-gateway`）。家目錄通常是 `750`，nginx（`www-data`）進不去，`/static/` 會回 403，網頁就變成沒有樣式。nginx 的 `error.log` 會有 `Permission denied`。
+- **沒有輸出**：頁面照樣能正常顯示（請求落到 `location /`，由 gateway 提供這些檔案），只是每個檔案多經過一次登入檢查、也少了快取。想補上的話，從 `deploy/llm-gateway-example.nginx.conf` 複製 `location /static/ { ... }` 那一整段，貼到你們 nginx 設定檔（通常是 `deploy/llm-gateway.nginx.conf`）裡的 `location / {` 前面。
 
-  ```bash
-  sudo nginx -t
-  ```
+改完依序執行下面兩行：
 
-  ```bash
-  sudo systemctl reload nginx
-  ```
+```bash
+sudo nginx -t
+```
 
-  第一行顯示 `syntax is ok` 和 `test is successful` 才執行第二行。
+```bash
+sudo systemctl reload nginx
+```
 
-- 容器部署：nginx 讀的是**主機上**的 repo。請確認它和 build image 用的是同一份 checkout（照 `deploy/migration` 的流程就是）。不確定的話就不要加這段，交給 gateway 提供。
+第一行顯示 `syntax is ok` 和 `test is successful` 才執行第二行。確認方式：
+
+```bash
+curl -skI https://<你的網域>/static/css/tailwind.css | head -n 5
+```
+
+要看到 `200` 和 `content-type: text/css`。
 
 ---
 

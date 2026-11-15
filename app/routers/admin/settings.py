@@ -15,7 +15,9 @@ from app.core.auth import get_web_user
 from app.core.config import (
     CONCURRENCY_MODES,
     get_concurrency_cloud_limit,
+    parse_hhmm,
     set_cloud_budget_fallback,
+    set_concurrency_offpeak,
     set_concurrency_settings,
     set_cloud_daily_limit,
     set_default_daily_limit,
@@ -25,7 +27,7 @@ from app.core.database import get_session
 from app.core.logger import logger
 from app.models.schema import ReportSchedule, User
 from app.routers.admin.common import _limit_usd, _wants_json, router
-from app.services import audit, mailer, langfuse_reader, weekly_reports
+from app.services import audit, concurrency, mailer, langfuse_reader, weekly_reports
 
 
 @router.post("/default-limit")
@@ -303,4 +305,51 @@ async def update_concurrency_limit(
     )
     if _wants_json(request):
         return JSONResponse({"ok": True, "mode": mode, "limit": limit, "cloud_limit": cloud_limit})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/concurrency-offpeak")
+async def update_concurrency_offpeak(
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+):
+    """Set the off-peak hours (``[app].concurrency_offpeak_start`` / ``_end``
+    / ``_weekends``), during which local requests are not held to the local
+    concurrency limit (cloud requests keep theirs).
+
+    Form fields: ``start`` / ``end`` — Asia/Taipei ``HH:MM``, both or neither
+    (both empty = no daily window; a window may cross midnight, end is
+    exclusive; start == end is refused, it would be ambiguous);
+    ``weekends`` — ``on`` makes all of Saturday and Sunday off-peak (any
+    other value or absent = off). Takes effect on the next request.
+    """
+    form = await request.form()
+    raw_start = str(form.get("start") or "").strip()
+    raw_end = str(form.get("end") or "").strip()
+    weekends = str(form.get("weekends") or "").strip().lower() in ("on", "true", "1", "yes")
+    if bool(raw_start) != bool(raw_end):
+        raise HTTPException(
+            status_code=400,
+            detail="Set both the start and the end of the off-peak hours, or neither.",
+        )
+    start = end = ""
+    if raw_start:
+        start, end = parse_hhmm(raw_start), parse_hhmm(raw_end)
+        if start is None or end is None:
+            raise HTTPException(status_code=400, detail="Off-peak times must be HH:MM (00:00–23:59).")
+        if start == end:
+            raise HTTPException(
+                status_code=400,
+                detail="Off-peak start and end must differ (leave both empty for no daily window).",
+            )
+    set_concurrency_offpeak(start, end, weekends)
+    logger.info(
+        "Concurrency off-peak hours set | start={} end={} weekends={} admin={}",
+        start or "-", end or "-", weekends, admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({
+            "ok": True, "start": start, "end": end, "weekends": weekends,
+            "active": concurrency.is_offpeak(),
+        })
     return RedirectResponse(url="/admin", status_code=303)

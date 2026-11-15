@@ -772,6 +772,208 @@ class TestAdmin:
         assert "unavailable" in resp.text
 
 
+# ── Off-peak hours ────────────────────────────────────────────────────────
+
+_NIGHT = {"start": "22:00", "end": "08:00", "weekends": False}
+
+
+@contextmanager
+def _offpeak(settings: dict | None = None, *, open_now: bool = True):
+    """Off-peak hours ``settings``, and whether they are open right now."""
+    settings = settings or _NIGHT
+    with patch("app.services.concurrency.get_concurrency_offpeak", return_value=settings), \
+         patch("app.services.concurrency.in_offpeak", return_value=open_now):
+        yield
+
+
+class TestOffpeak:
+    """During off-peak hours local requests are not held to the local limit;
+    they still take a lease, so the count is true when the window closes.
+    Cloud requests keep their limit."""
+
+    @pytest.mark.parametrize("settings, when, expected", [
+        # a window inside one day; the end is not included
+        ({"start": "12:00", "end": "13:30", "weekends": False}, (2026, 11, 16, 12, 0), True),
+        ({"start": "12:00", "end": "13:30", "weekends": False}, (2026, 11, 16, 13, 29), True),
+        ({"start": "12:00", "end": "13:30", "weekends": False}, (2026, 11, 16, 13, 30), False),
+        ({"start": "12:00", "end": "13:30", "weekends": False}, (2026, 11, 16, 11, 59), False),
+        # a window across midnight (2026-11-16 is a Monday)
+        (_NIGHT, (2026, 11, 16, 23, 0), True),
+        (_NIGHT, (2026, 11, 16, 0, 0), True),
+        (_NIGHT, (2026, 11, 16, 7, 59), True),
+        (_NIGHT, (2026, 11, 16, 8, 0), False),
+        (_NIGHT, (2026, 11, 16, 15, 0), False),
+        # weekends: all of Saturday and Sunday
+        ({"start": "", "end": "", "weekends": True}, (2026, 11, 14, 15, 0), True),
+        ({"start": "", "end": "", "weekends": True}, (2026, 11, 15, 23, 59), True),
+        ({"start": "", "end": "", "weekends": True}, (2026, 11, 16, 0, 0), False),
+        ({**_NIGHT, "weekends": False}, (2026, 11, 14, 15, 0), False),
+        # nothing set, or a zero-length window: never
+        ({"start": "", "end": "", "weekends": False}, (2026, 11, 16, 3, 0), False),
+        ({"start": "08:00", "end": "08:00", "weekends": False}, (2026, 11, 16, 8, 0), False),
+    ])
+    def test_in_offpeak(self, settings, when, expected):
+        from app.core.timeutil import LOCAL_TZ
+        from datetime import datetime
+        assert concurrency.in_offpeak(settings, datetime(*when, tzinfo=LOCAL_TZ)) is expected
+
+    def test_is_offpeak_uses_local_time(self):
+        from datetime import datetime, timezone
+        # 15:30 UTC is 23:30 in Taipei
+        utc = datetime(2026, 11, 16, 15, 30, tzinfo=timezone.utc)
+        from app.core.timeutil import LOCAL_TZ
+        with patch("app.services.concurrency.get_concurrency_offpeak", return_value=_NIGHT):
+            assert concurrency.is_offpeak(utc.astimezone(LOCAL_TZ)) is True
+
+    def test_a_broken_setting_keeps_the_limit(self):
+        with patch("app.services.concurrency.get_concurrency_offpeak", side_effect=RuntimeError("x")):
+            assert concurrency.is_offpeak() is False
+
+    def test_local_is_unlimited_and_still_counted(self, client, test_user):
+        _add_lease(test_user.id)  # local is full
+        seen = {}
+
+        async def fake_post(url, **kwargs):
+            seen["leases"] = len(_leases(test_user.id))
+            return make_httpx_response(200, _OK_CHAT)
+
+        with _mode("enforce", 1), _offpeak(), patch("app.core.deps.logger") as log, \
+             patch.object(client.__httpx_mock__, "post", side_effect=fake_post):
+            resp = client.post("/v1/chat/completions", json=_CHAT, headers=auth_header())
+        assert resp.status_code == 200
+        assert seen["leases"] == 2  # ours was taken while it ran
+        assert len(_leases(test_user.id)) == 1  # and released after
+        log.warning.assert_not_called()
+
+    def test_outside_the_window_the_limit_applies(self, client, test_user):
+        _add_lease(test_user.id)
+        with _mode("enforce", 1), _offpeak(open_now=False):
+            resp = client.post("/v1/chat/completions", json=_CHAT, headers=auth_header())
+        assert resp.status_code == 429
+
+    def test_cloud_keeps_its_limit(self, client, test_user):
+        for _ in range(2):
+            _add_lease(test_user.id, pool="cloud")
+        with _mode("enforce", 1, cloud_limit=2), _offpeak():
+            resp = client.post(
+                "/v1/messages", json={**_MESSAGES, "model": "bedrock-claude"}, headers=auth_header(),
+            )
+        assert resp.status_code == 429
+        assert "concurrent cloud requests" in resp.json()["detail"]
+
+    def test_mode_off_takes_no_lease_even_off_peak(self, client, test_user):
+        client.__httpx_mock__.post.return_value = make_httpx_response(200, _OK_CHAT)
+        with _mode("off"), _offpeak(), patch.object(concurrency, "acquire") as acquire:
+            client.post("/v1/chat/completions", json=_CHAT, headers=auth_header())
+        acquire.assert_not_called()
+
+    # settings
+
+    @pytest.mark.parametrize("app_cfg, expected", [
+        ({}, {"start": "", "end": "", "weekends": False}),
+        ({"concurrency_offpeak_start": "22:00", "concurrency_offpeak_end": "8:00"},
+         {"start": "22:00", "end": "08:00", "weekends": False}),
+        ({"concurrency_offpeak_weekends": True}, {"start": "", "end": "", "weekends": True}),
+        ({"concurrency_offpeak_weekends": "true"}, {"start": "", "end": "", "weekends": True}),
+        ({"concurrency_offpeak_weekends": 1}, {"start": "", "end": "", "weekends": False}),
+        # half a window, a bad time or a zero-length window is no window
+        ({"concurrency_offpeak_start": "22:00"}, {"start": "", "end": "", "weekends": False}),
+        ({"concurrency_offpeak_start": "22:00", "concurrency_offpeak_end": "24:00"},
+         {"start": "", "end": "", "weekends": False}),
+        ({"concurrency_offpeak_start": "22:00", "concurrency_offpeak_end": "22:00"},
+         {"start": "", "end": "", "weekends": False}),
+        ({"concurrency_offpeak_start": 22, "concurrency_offpeak_end": 8},
+         {"start": "", "end": "", "weekends": False}),
+    ])
+    def test_get(self, app_cfg, expected):
+        from app.core import config
+        with patch.object(config, "APP_CONFIG", app_cfg), patch.object(config, "_check_auto_reload"):
+            assert config.get_concurrency_offpeak() == expected
+
+    @pytest.mark.parametrize("value, expected", [
+        ("08:00", "08:00"), ("8:05", "08:05"), (" 23:59 ", "23:59"),
+        ("24:00", None), ("12:60", None), ("12:5", None), ("123:00", None),
+        ("12", None), ("ab:cd", None), ("", None), (None, None), (800, None),
+    ])
+    def test_parse_hhmm(self, value, expected):
+        from app.core.config import parse_hhmm
+        assert parse_hhmm(value) == expected
+
+    @pytest.mark.parametrize("start, end", [("22:00", ""), ("", "08:00"), ("8:00", "09:00"), ("09:00", "09:00")])
+    def test_set_rejects(self, start, end):
+        from app.core import config
+        with patch.object(config, "_save_app_keys") as save:
+            with pytest.raises(ValueError):
+                config.set_concurrency_offpeak(start, end, False)
+        save.assert_not_called()
+
+    def test_set_persists(self):
+        from app.core import config
+        with patch.object(config, "_save_app_keys") as save:
+            config.set_concurrency_offpeak("22:00", "08:00", True)
+        save.assert_called_once_with({
+            "concurrency_offpeak_start": "22:00",
+            "concurrency_offpeak_end": "08:00",
+            "concurrency_offpeak_weekends": True,
+        })
+
+    # admin
+
+    def test_admin_sets_the_hours(self, client, admin_user):
+        with patch("app.routers.admin.settings.set_concurrency_offpeak") as save:
+            resp = client.post(
+                "/admin/concurrency-offpeak",
+                data={"start": "22:00", "end": "8:00", "weekends": "on"},
+                headers=TestAdmin._hdr(admin_user, json=True),
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] and (body["start"], body["end"], body["weekends"]) == ("22:00", "08:00", True)
+        save.assert_called_once_with("22:00", "08:00", True)
+
+    def test_admin_clears_the_hours(self, client, admin_user):
+        with patch("app.routers.admin.settings.set_concurrency_offpeak") as save:
+            resp = client.post(
+                "/admin/concurrency-offpeak", data={"start": "", "end": ""},
+                headers=TestAdmin._hdr(admin_user), follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        save.assert_called_once_with("", "", False)
+
+    @pytest.mark.parametrize("form", [
+        {"start": "22:00"},
+        {"end": "08:00"},
+        {"start": "22:00", "end": "25:00"},
+        {"start": "nope", "end": "08:00"},
+        {"start": "08:00", "end": "8:00"},
+    ])
+    def test_admin_rejects(self, client, admin_user, form):
+        with patch("app.routers.admin.settings.set_concurrency_offpeak") as save:
+            resp = client.post("/admin/concurrency-offpeak", data=form, headers=TestAdmin._hdr(admin_user))
+        assert resp.status_code == 400
+        save.assert_not_called()
+
+    def test_admin_requires_admin(self, client, test_user):
+        with patch("app.routers.admin.settings.set_concurrency_offpeak") as save:
+            resp = client.post(
+                "/admin/concurrency-offpeak", data={"start": "22:00", "end": "08:00"},
+                headers=web_auth_header(sub=test_user.username),
+            )
+        assert resp.status_code in (401, 403)
+        save.assert_not_called()
+
+    def test_admin_page_shows_the_hours(self, client, admin_user):
+        with patch("app.routers.admin.page.get_concurrency_offpeak",
+                   return_value={**_NIGHT, "weekends": True}), \
+             patch.object(concurrency, "is_offpeak", return_value=True):
+            resp = client.get("/admin", headers=TestAdmin._hdr(admin_user))
+        assert resp.status_code == 200
+        assert 'action="/admin/concurrency-offpeak"' in resp.text
+        assert 'name="start" value="22:00"' in resp.text
+        assert 'name="end" value="08:00"' in resp.text
+        assert "open now" in resp.text
+
+
 # ── PostgreSQL: concurrent admissions across workers ───────────────────────
 
 _PG_URL = os.getenv("CONCURRENCY_TEST_PG_URL")
