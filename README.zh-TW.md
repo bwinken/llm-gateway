@@ -64,23 +64,11 @@ ANTHROPIC_BASE_URL=https://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key cla
 
 ## 端點
 
-所有 API 路由都用使用者的 API key（`Authorization: Bearer` 或 `x-api-key`）。gateway 跑起來後，`/docs` 會用同樣的分組列出它們。
+分組方式和 gateway 上的 `/docs` 相同（它的 tag）。API 各組都用使用者的 API key（`Authorization: Bearer` 或 `x-api-key`）；`web` 和 `admin` 在 SSO 後面。
 
-**模型**（計費，算進額度）
+### `account`
 
-| 端點 | 用途 |
-|---|---|
-| `POST /v1/chat/completions` | OpenAI chat completions，支援串流 |
-| `POST /v1/responses` | OpenAI Responses API |
-| `POST /v1/messages` | Anthropic Messages：Claude Code 和 Anthropic SDK 呼叫的就是這支 |
-| `POST /v1/messages/count_tokens`、`/v1/tokenize` | 只算 token、不產生內容（不計費） |
-| `POST /v1/embeddings`、`/v1/rerank`、`/v1/score` | Embedding 與 rerank（地端模型） |
-| `GET /v1/models` | 這個帳號可以用的模型 |
-| `/azure/v1/*`、`/aws/v1/*` | 同樣的 chat 與 Messages 路由（Azure 另有 Responses），但只走 Azure OpenAI 或 AWS Bedrock |
-
-以上路由不帶 `/v1` 前綴也會回應，給 base URL 沒寫 `/v1` 的 client 用。
-
-**帳號**（不計費；額度用完時一樣會回應）。把 dashboard 顯示的內容以 JSON 提供給不是瀏覽器的程式：狀態列、terminal 工具、幫使用者設定 client 的桌面程式。
+把 dashboard 顯示給帳號看的內容以 JSON 提供給不是瀏覽器的程式：狀態列、terminal 工具、幫使用者設定 client 的桌面程式。不計費，額度用完時一樣會回應。
 
 | 端點 | 用途 |
 |---|---|
@@ -93,14 +81,76 @@ ANTHROPIC_BASE_URL=https://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key cla
 | `POST /v1/notices/resolved` | 「我已經套用修正」：清掉通知，全部或指定 id |
 | `POST /v1/events` | 安裝工具回報它安裝、更新或移除了什麼、哪個版本、在哪種 OS 和哪台機器 |
 
-**登入與維運**
+### `v1`
+
+透過同一個 base URL 使用模型：模型名稱決定走 vLLM、Azure 還是 Bedrock。除非另外註明，都會計費並算進額度。這一組的每條路由不帶 `/v1` 前綴也會回應，給 base URL 沒寫 `/v1` 的 client 用。
 
 | 端點 | 用途 |
 |---|---|
-| `POST /auth/api-key` | 用 SSO 的 access token 換帳號的 API key：terminal 工具的登入方式 |
-| `GET /healthz`、`/readyz` | 存活與就緒探針（不需要 key） |
+| `GET /v1/models` | 這個帳號可以用的模型（不計費） |
+| `POST /v1/chat/completions` | OpenAI chat completions，支援串流 |
+| `POST /v1/responses` | OpenAI Responses API |
+| `POST /v1/messages` | Anthropic Messages：Claude Code 和 Anthropic SDK 呼叫的就是這支 |
+| `POST /v1/messages/count_tokens`、`/v1/tokenize` | 只算 token、不產生內容（不計費） |
+| `POST /v1/chat/completions/render` | chat 請求套用模型 template 之後的 prompt，除錯用（不計費） |
+| `POST /v1/embeddings` | Embedding（地端模型） |
+| `POST /v1/rerank`、`/v1/score` | Rerank 與相關性分數（地端模型） |
+| `POST /v1/systemone` | System One 的型別化決策（地端模型） |
+
+### `azure`
+
+只走 Azure OpenAI，給有 Azure 權限的帳號。不是 Azure 模型的名稱會改用另一個 Azure 模型，不會退回地端。
+
+| 端點 | 用途 |
+|---|---|
+| `GET /azure/v1/models` | Azure 的模型 |
+| `POST /azure/v1/chat/completions`、`/azure/v1/responses`、`/azure/v1/messages` | 和 `v1` 底下相同的三種 API |
+| `POST /azure/v1/messages/count_tokens` | 計算 token（不計費） |
+
+### `aws`
+
+只走 AWS Bedrock，給有 AWS 權限的帳號。
+
+| 端點 | 用途 |
+|---|---|
+| `GET /aws/v1/models` | Bedrock 的模型 |
+| `POST /aws/v1/chat/completions`、`/aws/v1/messages` | Chat completions 與 Messages（Bedrock 沒有 Responses API） |
+| `POST /aws/v1/messages/count_tokens` | 計算 token（不計費） |
+
+### `auth`
+
+| 端點 | 用途 |
+|---|---|
+| `POST /auth/api-key` | 用 SSO 的 access token 換帳號的 API key：terminal 工具的登入方式。帶的是 token，不是 API key |
+
+### `health`
+
+不需要 key，也不會列在 `/docs`。
+
+| 端點 | 用途 |
+|---|---|
+| `GET /healthz` | 存活：程序有回應 |
+| `GET /readyz` | 就緒：連得到資料庫（load balancer 檢查的就是這支） |
 | `GET /metrics` | Prometheus 指標，設了 `METRICS_ENABLED` 才有 |
-| `/dashboard`、`/admin` | Web UI，在 SSO 後面 |
+
+### `web`
+
+使用者透過 SSO 登入後看到的頁面。
+
+| 端點 | 用途 |
+|---|---|
+| `/dashboard` | 額度、用量、模型狀態、API key、client 通知與 patch 下載、名下的服務帳號 |
+| `/setup` | Claude Code 的 Windows 安裝檔（可以關閉） |
+
+### `admin`
+
+給有 `admin` scope 的帳號。
+
+| 端點 | 用途 |
+|---|---|
+| `/admin` | 帳號、上限、client 規則與設定、安全、報表（見[管理](#管理)） |
+| `/admin/models` | 模型、價格與備援 |
+| `/admin/api/*` | 這些頁面背後的 JSON：模型設定、稽核紀錄、匯出 |
 
 請求與回應的格式見 **[Client 指南](docs/client-guide.zh-TW.md)**。
 

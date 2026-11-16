@@ -64,23 +64,11 @@ The **[Client Guide](docs/client-guide.md)** has every endpoint, Azure and Bedro
 
 ## Endpoints
 
-Every API route takes the user's API key (`Authorization: Bearer` or `x-api-key`). `/docs` on a running gateway lists them in the same groups.
+Grouped as `/docs` on a running gateway groups them (its tags). The API groups take the user's API key (`Authorization: Bearer` or `x-api-key`); `web` and `admin` are behind SSO.
 
-**Models** (billed, counted against the budget)
+### `account`
 
-| Endpoint | What it is for |
-|---|---|
-| `POST /v1/chat/completions` | OpenAI chat completions, with streaming |
-| `POST /v1/responses` | OpenAI Responses API |
-| `POST /v1/messages` | Anthropic Messages: what Claude Code and the Anthropic SDK call |
-| `POST /v1/messages/count_tokens`, `/v1/tokenize` | Count tokens without generating (not billed) |
-| `POST /v1/embeddings`, `/v1/rerank`, `/v1/score` | Embeddings and reranking (on-prem models) |
-| `GET /v1/models` | The models the account can use |
-| `/azure/v1/*`, `/aws/v1/*` | The same chat and Messages routes (and Responses on Azure), restricted to Azure OpenAI or AWS Bedrock |
-
-The routes above also answer without the `/v1` prefix, for clients whose base URL leaves it out.
-
-**Account** (never billed; they answer even when the budget is spent). What the dashboard shows, as JSON, for programs that are not a browser: a status line, a terminal tool, a desktop app that sets clients up.
+What the dashboard shows an account, as JSON, for programs that are not a browser: a status line, a terminal tool, a desktop app that sets clients up. Never billed, and they answer even when the budget is spent.
 
 | Endpoint | What it is for |
 |---|---|
@@ -93,14 +81,76 @@ The routes above also answer without the `/v1` prefix, for clients whose base UR
 | `POST /v1/notices/resolved` | "I've applied the fix": clears the notices, all or by id |
 | `POST /v1/events` | A setup tool reports what it installed, updated or removed, in which version, on which OS and machine |
 
-**Sign-in and operations**
+### `v1`
+
+The models, through one base URL: the model name picks vLLM, Azure or Bedrock. Billed and counted against the budget unless noted. Every route here also answers without the `/v1` prefix, for clients whose base URL leaves it out.
 
 | Endpoint | What it is for |
 |---|---|
-| `POST /auth/api-key` | Trade an SSO access token for the account's API key: how a terminal tool signs in |
-| `GET /healthz`, `/readyz` | Liveness and readiness probes (no key) |
+| `GET /v1/models` | The models the account can use (not billed) |
+| `POST /v1/chat/completions` | OpenAI chat completions, with streaming |
+| `POST /v1/responses` | OpenAI Responses API |
+| `POST /v1/messages` | Anthropic Messages: what Claude Code and the Anthropic SDK call |
+| `POST /v1/messages/count_tokens`, `/v1/tokenize` | Count tokens without generating (not billed) |
+| `POST /v1/chat/completions/render` | The prompt a chat request becomes after the model's template, for debugging (not billed) |
+| `POST /v1/embeddings` | Embeddings (on-prem models) |
+| `POST /v1/rerank`, `/v1/score` | Reranking and relevance scores (on-prem models) |
+| `POST /v1/systemone` | System One typed decisions (on-prem models) |
+
+### `azure`
+
+Azure OpenAI only, for accounts with Azure access. A model name that is not an Azure one falls back to an Azure model, never to on-prem.
+
+| Endpoint | What it is for |
+|---|---|
+| `GET /azure/v1/models` | The Azure models |
+| `POST /azure/v1/chat/completions`, `/azure/v1/responses`, `/azure/v1/messages` | The same three APIs as under `v1` |
+| `POST /azure/v1/messages/count_tokens` | Count tokens (not billed) |
+
+### `aws`
+
+AWS Bedrock only, for accounts with AWS access.
+
+| Endpoint | What it is for |
+|---|---|
+| `GET /aws/v1/models` | The Bedrock models |
+| `POST /aws/v1/chat/completions`, `/aws/v1/messages` | Chat completions and Messages (no Responses API on Bedrock) |
+| `POST /aws/v1/messages/count_tokens` | Count tokens (not billed) |
+
+### `auth`
+
+| Endpoint | What it is for |
+|---|---|
+| `POST /auth/api-key` | Trade an SSO access token for the account's API key: how a terminal tool signs in. Takes the token, not an API key |
+
+### `health`
+
+No key needed, and not listed in `/docs`.
+
+| Endpoint | What it is for |
+|---|---|
+| `GET /healthz` | Liveness: the process answers |
+| `GET /readyz` | Readiness: the database is reachable (what a load balancer checks) |
 | `GET /metrics` | Prometheus metrics, when `METRICS_ENABLED` is set |
-| `/dashboard`, `/admin` | The web UI, behind SSO |
+
+### `web`
+
+The pages a user sees after signing in through SSO.
+
+| Endpoint | What it is for |
+|---|---|
+| `/dashboard` | Budget, usage, model status, the API key, client notices and their patch download, owned service accounts |
+| `/setup` | The Windows installer for Claude Code (can be turned off) |
+
+### `admin`
+
+For accounts with the `admin` scope.
+
+| Endpoint | What it is for |
+|---|---|
+| `/admin` | Accounts, limits, client rules and setup, security, reports (see [Run it as an admin](#run-it-as-an-admin)) |
+| `/admin/models` | Models, prices and fallbacks |
+| `/admin/api/*` | The JSON behind those pages: model config, audit log, exports |
 
 Request and response shapes are in the **[Client Guide](docs/client-guide.md)**.
 
