@@ -168,6 +168,8 @@ The auth dependencies open their **own short-lived `Session(engine)`** and close
 | `get_today_usage(user)` | `dict` | Today's spend and tokens split by backend (`stats.get_user_daily_summary`); short-lived session |
 | `get_usage_history(user, days)` | `dict` | For `GET /v1/usage`: one row per local day for the last `days` days (`stats.get_daily_trends`) and today's and this month's rows per model and backend (`stats.get_model_breakdown`); short-lived session |
 | `get_owned_apps(user)` | `list[dict]` | For `GET /v1/service-accounts`: the service accounts the user owns with this month's usage (`stats.get_owned_apps_summary`), their API keys removed; short-lived session |
+| `resolve_client_notices(user, ids)` | `list[str]` | For `POST /v1/notices/resolved`: resolves the caller's open notices, all (`ids` None) or the ones named, through `client_rules.resolve_all` / `resolve`; returns the ids resolved; raises on a broken store; short-lived session |
+| `record_client_event(user, values)` | `None` | For `POST /v1/events`: appends one event (`values` from `client_events.clean`); raises `client_events.TooManyEvents` past the hourly allowance; short-lived session |
 | `get_client_notices(user)` | `dict` | For `GET /v1/notices`: `notices` (`client_rules.notices_for`) and `combined` (`client_rules.combined_for`); a broken store reads as nothing open; short-lived session |
 
 All daily-limit 429s carry `Retry-After` until the next local midnight (`timeutil`).

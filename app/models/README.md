@@ -371,6 +371,7 @@ Four tables behind the admin *Clients* tab (`app/services/client_rules.py`; see 
 | `client_rule_settings` (`ClientRuleSetting`) | built-in check an admin has saved (`rule_id`, e.g. `CC001`) | on / off, action, title, message, the patch for everyone and for Azure / AWS accounts, mail subject, automatic mail and its repeat. No row = the defaults in code. Never any part of what the check detects |
 | `client_violations` (`ClientViolation`) | check × account | first / last seen, Claude Code version, the day of the last terminal reminder, mail state (`mailed_at`, `mail_attempted_at`, `mail_error`, `mail_requested_at`), `resolved_at` (the account said it applied the fix) |
 | `client_versions` (`ClientVersion`) | account × Claude Code version | when it was last seen (from the User-Agent) |
+| `client_events` (`ClientEvent`) | event a setup tool reported (`POST /v1/events`) | when, account, `event` (`installed` / `updated` / `uninstalled` / `settings_applied`), `ok`, the reporting `tool` and its version, `kind` (`app` / `skill` / `mcp` / `plugin`), `component` and its version (and the previous one), the `client` it was added to, `method`, `os` + `os_version` + `arch`, `hostname`, `message`. Appended, never changed; what is installed now is derived (`client_events.installs`) |
 | `client_mail_log` (`ClientMailLog`) | mail attempt | when, account, address, subject, the checks it covered, why (`requested` / `automatic` / `test`), sent or failed with the error, the admin behind a test. Append-only; no mail body |
 
 ## AuditLog Model
