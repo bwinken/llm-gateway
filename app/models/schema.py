@@ -439,7 +439,9 @@ class ClientEvent(SQLModel, table=True):
     which operating system. One row per event; nothing updates a row.
 
     ``tool`` is the program reporting, ``component`` what the event is
-    about (``claude-code``, ``node``, the tool itself). ``os`` is
+    about and ``kind`` what sort of thing that is: ``app`` (a program of its
+    own: ``claude-code``, ``vscode``, the tool itself) or a ``skill`` /
+    ``mcp`` / ``plugin`` added to the program ``client`` names. ``os`` is
     ``windows`` / ``linux`` / ``macos``; ``hostname`` is the machine's name
     when the tool sent it (may be ""). ``ok`` false is an
     attempt that failed, with ``message`` saying why. Everything but
@@ -460,7 +462,9 @@ class ClientEvent(SQLModel, table=True):
     ok: bool = Field(default=True, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.true()))
     tool: str = Field()
     tool_version: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    kind: str = Field(default="app", sa_column=sa.Column(sa.String, nullable=False, server_default="app"))
     component: str = Field()
+    client: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     component_version: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     previous_version: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     method: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))

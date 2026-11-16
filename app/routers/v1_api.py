@@ -702,8 +702,11 @@ def client_event(
 
     One event per request: ``event`` (``installed`` / ``updated`` /
     ``uninstalled`` / ``settings_applied``), the reporting ``tool`` and its
-    ``tool_version``, the ``component`` it is about (``claude-code``, ...)
-    and ``os`` (``windows`` / ``linux`` / ``macos``) are required;
+    ``tool_version``, the ``component`` it is about (``claude-code``,
+    ``vscode``, a skill, an MCP server, ...) and ``os`` (``windows`` /
+    ``linux`` / ``macos``) are required; ``kind`` (``app``, the default, or
+    ``skill`` / ``mcp`` / ``plugin``, with the program it was added to in
+    ``client``),
     ``component_version``, ``previous_version``, ``method``, ``os_version``,
     ``arch``, ``hostname`` (the machine's name: what tells two machines of
     one account apart), ``ok`` (false: the attempt failed) and ``message``

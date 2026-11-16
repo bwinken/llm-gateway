@@ -10,15 +10,19 @@ what recently happened, failures included.
 One event is one row of ``client_events``, appended and never changed::
 
     {"event": "installed", "tool": "gateway-tui", "tool_version": "0.3.1",
-     "component": "claude-code", "component_version": "2.1.310",
+     "kind": "app", "component": "claude-code", "component_version": "2.1.310",
      "os": "windows", "os_version": "10.0.22631", "arch": "x64",
      "method": "npm", "hostname": "pc-0421", "ok": true}
 
 - ``event``: one of ``EVENTS``. The vocabulary is code; an unknown one is
   refused, so a table an admin reads holds no made-up kinds.
 - ``tool`` / ``tool_version``: the program reporting.
-- ``component`` / ``component_version``: what the event is about (``claude-code``,
-  ``node``, ``git``, or the tool itself). ``previous_version`` for an update.
+- ``kind`` / ``component`` / ``component_version``: what the event is about.
+  ``kind`` is one of ``KINDS``: ``app`` (a program of its own: ``claude-code``,
+  ``codex``, ``vscode``, ``claude-desktop``, the tool itself; the default) or
+  something added to one, ``skill`` / ``mcp`` / ``plugin``, which then names
+  that program in ``client`` (the same MCP server in Claude Code and in Claude
+  Desktop is two installs). ``previous_version`` for an update.
 - ``os``: one of ``OS_FAMILIES``; required, because the same account may have a
   Windows desktop and a Linux server. ``os_version`` and ``arch`` say which.
 - ``method``: how it was installed (``npm``, ``native``, ``offline``, ...).
@@ -52,14 +56,21 @@ EVENTS: tuple[str, ...] = ("installed", "updated", "uninstalled", "settings_appl
 # The events that change what is installed on a machine (``installs``).
 _INSTALL_EVENTS = frozenset({"installed", "updated", "uninstalled"})
 OS_FAMILIES: tuple[str, ...] = ("windows", "linux", "macos")
+# What sort of thing a component is. ``app``: a program of its own (an
+# editor, a CLI, a desktop application). The other three are added to a
+# client, which the event names in ``client``.
+KINDS: tuple[str, ...] = ("app", "skill", "mcp", "plugin")
 
-# Events one account may report per hour.
-MAX_PER_HOUR = 60
-# How far back ``installs`` looks, and how many rows at most.
+# Events one account may report per hour. Setting a machine up is a burst:
+# a few programs and a few dozen skills and MCP servers, an event each.
+MAX_PER_HOUR = 300
+# An install older than this is no longer listed (``installs``).
 INSTALL_WINDOW_DAYS = 365
-_INSTALL_ROWS = 20000
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9._-]{0,39}$")
+# A component is named as its ecosystem names it: ``@scope/server-github``,
+# ``anthropic-skills:pdf``.
+_COMPONENT = re.compile(r"^[a-z0-9@][a-z0-9@._/:+-]{0,99}$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+_-]{0,39}$")
 _HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9._-]{0,98}[a-z0-9])?$")
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
@@ -69,7 +80,10 @@ _MAX_MESSAGE = 500
 
 # The fields kept as the client spelled them (names and versions): a key in
 # one of them is refused, where the free text has it taken out.
-_NAMES = ("tool", "tool_version", "component", "component_version", "previous_version", "method", "arch", "hostname")
+_NAMES = (
+    "tool", "tool_version", "component", "component_version", "previous_version", "client", "method", "arch",
+    "hostname",
+)
 
 
 class TooManyEvents(Exception):
@@ -129,6 +143,16 @@ def clean(body: Any, secret: str = "") -> dict[str, Any]:
     ok = body.get("ok", True)
     if not isinstance(ok, bool):
         raise ValueError("ok must be true or false.")
+    kind = body.get("kind") or KINDS[0]
+    if kind not in KINDS:
+        raise ValueError(f"kind must be one of: {', '.join(KINDS)}.")
+    component = body.get("component")
+    if component is None or component == "":
+        raise ValueError("component is required.")
+    if not isinstance(component, str) or not _COMPONENT.match(component.strip().lower()):
+        raise ValueError(
+            "component must be a name of letters, digits and '@', '.', '_', '/', ':', '+', '-', 100 characters at most."
+        )
     hostname = body.get("hostname") or ""
     if not isinstance(hostname, str) or (hostname and not _HOSTNAME.match(hostname.strip().lower())):
         raise ValueError("hostname must be a machine name of letters, digits, '.', '_' or '-', 100 characters at most.")
@@ -138,7 +162,7 @@ def clean(body: Any, secret: str = "") -> dict[str, Any]:
     return {
         "event": event, "ok": ok,
         "tool": _slug(body, "tool", required=True), "tool_version": _version(body, "tool_version", required=True),
-        "component": _slug(body, "component", required=True),
+        "kind": kind, "component": component.strip().lower(), "client": _slug(body, "client"),
         "component_version": _version(body, "component_version"),
         "previous_version": _version(body, "previous_version"),
         "method": _slug(body, "method"),
@@ -180,51 +204,81 @@ def recent(session: Session, limit: int = 100) -> list[ClientEvent]:
     ).all())
 
 
+# One thing installed in one place: a component of a kind, on a machine, and
+# for a skill, an MCP server or a plugin the client it was added to.
+_INSTALL_KEY = (
+    ClientEvent.username, ClientEvent.hostname, ClientEvent.os,
+    ClientEvent.kind, ClientEvent.component, ClientEvent.client,
+)
+
+
 def installs(session: Session, now: datetime | None = None) -> list[ClientEvent]:
-    """What is installed now: per machine (``machine_key``) and component the
-    last install or update that worked, unless an uninstall followed it. Newest
-    first. Read from the events of the last ``INSTALL_WINDOW_DAYS`` days."""
+    """What is installed now: per machine (``machine_key``), kind, component
+    and client the last install or update that worked, unless an uninstall
+    followed it or it is older than ``INSTALL_WINDOW_DAYS`` (a machine that
+    is gone never says so). Newest first.
+
+    The last event of each is picked in SQL (the highest id per key), so
+    the answer does not depend on how many events there are."""
     now = now or _utcnow()
-    rows = session.exec(
+    last = (
+        select(func.max(ClientEvent.id))
+        .where(ClientEvent.event.in_(_INSTALL_EVENTS), ClientEvent.ok.is_(True))
+        .group_by(*_INSTALL_KEY)
+    )
+    return list(session.exec(
         select(ClientEvent)
         .where(
+            ClientEvent.id.in_(last), ClientEvent.event != "uninstalled",
             ClientEvent.created_at >= now - timedelta(days=INSTALL_WINDOW_DAYS),
-            ClientEvent.event.in_(_INSTALL_EVENTS), ClientEvent.ok.is_(True),
         )
-        .order_by(ClientEvent.created_at.desc(), ClientEvent.id.desc()).limit(_INSTALL_ROWS)
-    ).all()
-    latest: dict[tuple, ClientEvent] = {}
-    for row in rows:                                   # newest first: the first seen per key is its state
-        latest.setdefault((machine_key(row), row.component), row)
-    return [row for row in latest.values() if row.event != "uninstalled"]
+        .order_by(ClientEvent.id.desc())
+    ).all())
 
 
-def _newest_first(item: tuple[tuple[str, str], set[str]]) -> tuple:
-    """Components by name, each one's versions newest first (numerically)."""
-    (component, version), _ = item
+def _newest_first(version: str) -> tuple:
+    """Sort key: dotted numbers newest first, anything else after them."""
     try:
-        numbers = tuple(-int(part) for part in version.lstrip("vV").split("."))
+        return (0, tuple(-int(part) for part in version.lstrip("vV").split(".")), version)
     except ValueError:
-        numbers = (1,)                       # not a dotted number: after the ones that are
-    return (component, numbers, version)
+        return (1, (), version)
 
 
-def overview(session: Session, now: datetime | None = None) -> dict[str, Any]:
-    """The *Client installs* card: the installs, and how many machines and
-    accounts they are on per operating system and per component version."""
+def overview(session: Session, now: datetime | None = None, limit: int = 200) -> dict[str, Any]:
+    """The *Client installs* card: how many machines per operating system,
+    per kind and component how many accounts and machines have it and in
+    which versions, and the newest ``limit`` installs themselves (``total``
+    says how many there are)."""
     found = installs(session, now)
     by_os: dict[str, set[tuple]] = {}
-    by_version: dict[tuple[str, str], set[str]] = {}
+    components: dict[tuple[str, str], dict[str, Any]] = {}
     for row in found:
         by_os.setdefault(row.os, set()).add(machine_key(row))
-        by_version.setdefault((row.component, row.component_version), set()).add(row.username)
+        entry = components.setdefault(
+            (row.kind, row.component), {"accounts": set(), "machines": set(), "clients": set(), "versions": {}},
+        )
+        entry["accounts"].add(row.username)
+        entry["machines"].add(machine_key(row))
+        if row.client:
+            entry["clients"].add(row.client)
+        entry["versions"].setdefault(row.component_version, set()).add(machine_key(row))
     return {
-        "installs": found,
+        "installs": found[:limit], "total": len(found),
         "accounts": len({row.username for row in found}),
         "os": [{"os": name, "machines": len(by_os[name])} for name in OS_FAMILIES if name in by_os],
-        "versions": [
-            {"component": component, "version": version, "usernames": sorted(names), "count": len(names)}
-            for (component, version), names in sorted(by_version.items(), key=_newest_first)
+        "components": [
+            {
+                "kind": kind, "component": component,
+                "accounts": len(entry["accounts"]), "machines": len(entry["machines"]),
+                "clients": sorted(entry["clients"]),
+                "versions": [
+                    {"version": version, "machines": len(entry["versions"][version])}
+                    for version in sorted(entry["versions"], key=_newest_first)
+                ],
+            }
+            for (kind, component), entry in sorted(
+                components.items(), key=lambda kv: (KINDS.index(kv[0][0]) if kv[0][0] in KINDS else len(KINDS), kv[0][1]),
+            )
         ],
         "days": INSTALL_WINDOW_DAYS,
     }

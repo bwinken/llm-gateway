@@ -135,7 +135,8 @@ def _client_installs_view(session: Session) -> dict:
         return {
             "at": _local_label(event.created_at), "username": event.username, "event": event.event, "ok": event.ok,
             "tool": event.tool, "tool_version": event.tool_version,
-            "component": event.component, "component_version": event.component_version,
+            "kind": event.kind, "component": event.component, "client": event.client,
+            "component_version": event.component_version,
             "previous_version": event.previous_version, "method": event.method,
             "os_label": _OS_LABELS.get(event.os, event.os), "os_version": event.os_version, "arch": event.arch,
             "hostname": event.hostname, "message": event.message,
@@ -145,7 +146,8 @@ def _client_installs_view(session: Session) -> dict:
     events = [row(event) for event in client_events.recent(session)]
     return {
         "installs": [row(event) for event in found["installs"]],
-        "accounts": found["accounts"], "days": found["days"], "versions": found["versions"],
+        "total": found["total"], "accounts": found["accounts"], "days": found["days"],
+        "components": found["components"],
         "os": [{"label": _OS_LABELS[o["os"]], "machines": o["machines"]} for o in found["os"]],
         "events": events, "failed": sum(1 for event in events if not event["ok"]),
         "max_per_hour": client_events.MAX_PER_HOUR,

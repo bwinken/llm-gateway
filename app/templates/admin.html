@@ -1064,18 +1064,27 @@ function submitExportCsv() {
         {{ ci.accounts }} account{{ '' if ci.accounts == 1 else 's' }} in {{ ci.days }} days{% for o in ci.os %} · <span class="text-t2">{{ o.label }}</span> {{ o.machines }} machine{{ '' if o.machines == 1 else 's' }}{% endfor %}
         {% else %}No tool has reported an install yet.{% endif %}
     </p>
-    {% if ci.versions %}
-    <div class="flex flex-wrap gap-1.5 mb-4" id="client-install-versions">
-        {% for v in ci.versions %}
-        <details class="text-xs">
-            <summary class="cursor-pointer select-none px-2 py-1 rounded" style="background:rgba(255,255,255,0.04)"><span class="text-t3">{{ v.component }}</span> <span class="font-mono text-t1">{{ v.version or '—' }}</span> <span class="text-t4">· {{ v.count }}</span></summary>
-            <div class="mt-1 px-2 py-1 text-t3 font-mono max-w-md">{{ v.usernames | join(', ') }}</div>
-        </details>
-        {% endfor %}
+    {% if ci.components %}
+    <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">What is installed <span class="text-t4 font-mono">{{ ci.components | length }}</span></div>
+    <div class="overflow-x-auto mb-4">
+    <table class="gw-table" id="client-install-components">
+        <thead><tr><th>Kind</th><th>Component</th><th>Accounts</th><th>Machines</th><th>Versions</th></tr></thead>
+        <tbody>
+            {% for c in ci.components %}
+            <tr>
+                <td class="text-xs text-t3">{{ c.kind }}</td>
+                <td class="text-sm text-t1">{{ c.component }}{% if c.clients %} <span class="text-xs text-t4">in {{ c.clients | join(', ') }}</span>{% endif %}</td>
+                <td class="font-mono text-xs text-t2">{{ c.accounts }}</td>
+                <td class="font-mono text-xs text-t2">{{ c.machines }}</td>
+                <td class="font-mono text-xs text-t3">{% for v in c.versions[:5] %}<span class="text-t1">{{ v.version or '—' }}</span> <span class="text-t4">· {{ v.machines }}</span>{{ ', ' if not loop.last }}{% endfor %}{% if c.versions | length > 5 %} <span class="text-t4">+{{ c.versions | length - 5 }} more</span>{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
     </div>
     {% endif %}
     {% if ci.installs %}
-    <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">Installed now <span class="text-t4 font-mono">{{ ci.installs | length }}</span></div>
+    <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">Installed now <span class="text-t4 font-mono">{{ ci.total }}</span>{% if ci.total > ci.installs | length %} <span class="normal-case tracking-normal font-normal text-t4">showing the newest {{ ci.installs | length }}</span>{% endif %}</div>
     <div class="overflow-x-auto mb-4">
     <table class="gw-table" id="client-installs-table">
         <thead><tr><th>Account</th><th>Component</th><th>Version</th><th>OS</th><th>Machine</th><th>Installed by</th><th>Since</th></tr></thead>
@@ -1083,7 +1092,7 @@ function submitExportCsv() {
             {% for i in ci.installs %}
             <tr>
                 <td class="text-sm"><a href="?q={{ i.username | urlencode }}#users" class="font-mono text-t1 hover:underline">{{ i.username }}</a></td>
-                <td class="text-sm text-t2">{{ i.component }}</td>
+                <td class="text-sm text-t2">{{ i.component }}{% if i.kind != 'app' %} <span class="text-xs text-t4">{{ i.kind }}{% if i.client %} in {{ i.client }}{% endif %}</span>{% endif %}</td>
                 <td class="font-mono text-xs text-t1">{{ i.component_version or '—' }}</td>
                 <td class="text-xs text-t2 whitespace-nowrap">{{ i.os_label }}{% if i.os_version or i.arch %} <span class="text-t4">{{ i.os_version }} {{ i.arch }}</span>{% endif %}</td>
                 <td class="font-mono text-xs {{ 'text-t2' if i.hostname else 'text-t4' }}">{{ i.hostname or '—' }}</td>
@@ -1107,7 +1116,7 @@ function submitExportCsv() {
                     <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ e.at }}</td>
                     <td class="text-sm"><a href="?q={{ e.username | urlencode }}#users" class="font-mono text-t1 hover:underline">{{ e.username }}</a></td>
                     <td class="text-xs text-t2 whitespace-nowrap">{{ e.event }}</td>
-                    <td class="text-xs text-t2">{{ e.component }} <span class="font-mono text-t3">{% if e.previous_version %}{{ e.previous_version }} → {% endif %}{{ e.component_version }}</span></td>
+                    <td class="text-xs text-t2">{{ e.component }}{% if e.kind != 'app' %} <span class="text-t4">{{ e.kind }}{% if e.client %} in {{ e.client }}{% endif %}</span>{% endif %} <span class="font-mono text-t3">{% if e.previous_version %}{{ e.previous_version }} → {% endif %}{{ e.component_version }}</span></td>
                     <td class="text-xs text-t3 whitespace-nowrap">{{ e.os_label }} <span class="text-t4">{{ e.os_version }} {{ e.arch }}</span></td>
                     <td class="font-mono text-xs {{ 'text-t2' if e.hostname else 'text-t4' }}">{{ e.hostname or '—' }}</td>
                     <td class="text-xs text-t3 whitespace-nowrap">{{ e.tool }} <span class="font-mono text-t4">{{ e.tool_version }}</span></td>

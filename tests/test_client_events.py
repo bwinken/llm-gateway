@@ -46,13 +46,32 @@ class TestReport:
         (row,) = _rows(db_session)
         assert row.username == "testuser" and row.event == "installed" and row.ok is True
         assert (row.tool, row.tool_version) == ("gateway-tui", "0.3.1")
-        assert (row.component, row.component_version, row.method) == ("claude-code", "2.1.310", "npm")
+        assert (row.kind, row.component, row.client) == ("app", "claude-code", "")   # a program of its own
+        assert (row.component_version, row.method) == ("2.1.310", "npm")
         assert (row.os, row.os_version, row.arch, row.hostname) == ("windows", "10.0.22631", "x64", "pc-1")
 
     @pytest.mark.parametrize("os_family", client_events.OS_FAMILIES)
     def test_every_os_is_recorded_as_its_own(self, client, db_session, test_user, os_family):
         assert client.post(PATH, json=_event(os=os_family), headers=auth_header()).status_code == 200
         assert _rows(db_session)[0].os == os_family
+
+    @pytest.mark.parametrize("component", [
+        "vscode", "claude-code", "codex", "claude-in-office", "claude-desktop", "hermes",
+    ])
+    def test_any_program_by_its_name(self, client, db_session, test_user, component):
+        assert client.post(PATH, json=_event(component=component), headers=auth_header()).status_code == 200
+        (row,) = _rows(db_session)
+        assert (row.kind, row.component) == ("app", component)
+
+    @pytest.mark.parametrize("kind, component", [
+        ("mcp", "@modelcontextprotocol/server-github"), ("skill", "anthropic-skills:pdf"),
+        ("plugin", "anthropic.claude-code"), ("skill", "Team/Review+Checklist"),
+    ])
+    def test_a_skill_an_mcp_server_or_a_plugin_and_what_it_was_added_to(self, client, db_session, test_user, kind, component):
+        body = _event(kind=kind, component=component, client="claude-code", component_version=None)
+        assert client.post(PATH, json=body, headers=auth_header()).status_code == 200, component
+        (row,) = _rows(db_session)
+        assert (row.kind, row.component, row.client) == (kind, component.lower(), "claude-code")
 
     def test_only_what_is_required(self, client, db_session, test_user):
         body = {"event": "settings_applied", "tool": "gateway-gui", "tool_version": "1.0", "component": "claude-code",
@@ -90,6 +109,12 @@ class TestReport:
         ({"tool": "x" * 41}, "tool must be a short name"),
         ({"tool_version": None}, "tool_version is required"),
         ({"component": None}, "component is required"),
+        ({"component": "two words"}, "component must be a name"),
+        ({"component": "<script>"}, "component must be a name"),
+        ({"component": "c" * 101}, "component must be a name"),
+        ({"kind": "extension"}, "kind must be one of"),
+        ({"kind": ["mcp"]}, "kind must be one of"),
+        ({"client": "Claude Code"}, "client must be a short name"),
         ({"component_version": "2.1 <script>"}, "component_version must be a version"),
         ({"method": ["npm"]}, "method must be a short name"),
         ({"ok": "yes"}, "ok must be true or false"),
@@ -196,6 +221,39 @@ class TestInstalledNow:
     def _state(self, db_session) -> set[tuple]:
         return {(r.username, r.hostname, r.os, r.component, r.component_version) for r in client_events.installs(db_session)}
 
+    def test_the_same_mcp_server_in_two_clients_is_two_installs(self, db_session):
+        mcp = dict(kind="mcp", component="@modelcontextprotocol/server-github", component_version="1.2.0")
+        self._add(db_session, minutes_ago=3, client="claude-code", **mcp)
+        self._add(db_session, minutes_ago=2, client="claude-desktop", **mcp)
+        self._add(db_session, minutes_ago=1, client="claude-code", event="uninstalled", **mcp)
+        assert [(r.component, r.client) for r in client_events.installs(db_session)] == [
+            ("@modelcontextprotocol/server-github", "claude-desktop"),
+        ]
+
+    def test_a_skill_named_like_a_program_is_not_that_program(self, db_session):
+        self._add(db_session, minutes_ago=2, component="codex")
+        self._add(db_session, minutes_ago=1, component="codex", kind="skill", client="claude-code", event="uninstalled")
+        assert [(r.kind, r.component) for r in client_events.installs(db_session)] == [("app", "codex")]
+
+    def test_the_state_does_not_depend_on_how_many_events_there_are(self, db_session):
+        # An install nobody touched since stays listed however much happened after it.
+        self._add(db_session, minutes_ago=600, component="vscode", component_version="1.95.0")
+        base = client_events.clean(_event(event="updated"))
+        now = _now()
+        db_session.add_all([
+            ClientEvent(username="testuser", created_at=now - timedelta(minutes=500 - i), **{**base, "component_version": f"2.1.{i}"})
+            for i in range(400)
+        ])
+        db_session.commit()
+        assert self._state(db_session) == {
+            ("testuser", "pc-1", "windows", "vscode", "1.95.0"), ("testuser", "pc-1", "windows", "claude-code", "2.1.399"),
+        }
+
+    def test_an_install_not_heard_of_for_a_year_is_no_longer_listed(self, db_session):
+        client_events.record(db_session, "testuser", client_events.clean(_event()),
+                             now=_now() - timedelta(days=client_events.INSTALL_WINDOW_DAYS + 1))
+        assert client_events.installs(db_session) == []
+
     def test_the_last_install_or_update_that_worked(self, db_session):
         self._add(db_session, minutes_ago=30, component_version="2.1.300")
         self._add(db_session, minutes_ago=20, event="updated", component_version="2.1.310")
@@ -241,9 +299,27 @@ class TestInstalledNow:
         found = client_events.overview(db_session)
         assert found["accounts"] == 2
         assert found["os"] == [{"os": "windows", "machines": 2}, {"os": "linux", "machines": 1}]
-        assert [(v["version"], v["usernames"]) for v in found["versions"]] == [
-            ("2.1.310", ["testuser"]), ("2.1.300", ["someone-else"]),
+        (component,) = found["components"]
+        assert (component["kind"], component["component"]) == ("app", "claude-code")
+        assert (component["accounts"], component["machines"]) == (2, 3)
+        assert component["versions"] == [{"version": "2.1.310", "machines": 2}, {"version": "2.1.300", "machines": 1}]
+
+    def test_programs_first_then_what_was_added_to_them(self, db_session):
+        self._add(db_session, kind="mcp", component="github", client="claude-code")
+        self._add(db_session, kind="mcp", component="github", client="claude-desktop")
+        self._add(db_session, kind="skill", component="pdf", client="claude-code")
+        self._add(db_session, component="vscode")
+        found = client_events.overview(db_session)["components"]
+        assert [(c["kind"], c["component"], c["clients"]) for c in found] == [
+            ("app", "vscode", []), ("skill", "pdf", ["claude-code"]), ("mcp", "github", ["claude-code", "claude-desktop"]),
         ]
+
+    def test_the_card_gets_the_newest_installs_and_how_many_there_are(self, db_session):
+        for i in range(5):
+            self._add(db_session, minutes_ago=10 - i, hostname=f"pc-{i}")
+        found = client_events.overview(db_session, limit=2)
+        assert found["total"] == 5 and [r.hostname for r in found["installs"]] == ["pc-4", "pc-3"]
+        assert found["os"] == [{"os": "windows", "machines": 5}]      # counted over all of them
 
 
 class TestAdminCard:
@@ -268,7 +344,15 @@ class TestAdminCard:
         assert "2.1.310" in card and "gateway-tui" in card and "10.0.22631" in card
         assert ">pc-0421<" in card
         assert "1 failed" in card and "2.1.310 → 2.1.320" in card
+        assert 'id="client-install-components"' in card
         assert "&lt;b&gt;EACCES&lt;/b&gt;" in card and "<b>EACCES</b>" not in card   # what a client sent is escaped
+
+    def test_a_skill_says_what_it_was_added_to(self, client, db_session, test_user, admin_user):
+        client.post(PATH, json=_event(kind="mcp", component="@modelcontextprotocol/server-github",
+                                      client="claude-desktop", component_version="1.2.0"), headers=auth_header())
+        body = self._page(client, admin_user)
+        card = body[body.index('id="client-installs"'):body.index('data-panel="security"')]
+        assert "@modelcontextprotocol/server-github" in card and "mcp in claude-desktop" in card
 
     def test_a_missing_table_costs_the_card_only(self, client, admin_user):
         from unittest.mock import patch
