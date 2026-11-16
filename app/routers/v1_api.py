@@ -705,8 +705,9 @@ def client_event(
     ``tool_version``, the ``component`` it is about (``claude-code``, ...)
     and ``os`` (``windows`` / ``linux`` / ``macos``) are required;
     ``component_version``, ``previous_version``, ``method``, ``os_version``,
-    ``arch``, ``machine_id``, ``ok`` (false: the attempt failed) and
-    ``message`` are optional. Keys the gateway does not know are ignored.
+    ``arch``, ``hostname`` (the machine's name: what tells two machines of
+    one account apart), ``ok`` (false: the attempt failed) and ``message``
+    are optional. Keys the gateway does not know are ignored.
 
     Telemetry and nothing else: it changes nothing about the account, and
     nothing routes, limits or refuses by what was reported. A tool sends it

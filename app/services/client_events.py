@@ -12,7 +12,7 @@ One event is one row of ``client_events``, appended and never changed::
     {"event": "installed", "tool": "gateway-tui", "tool_version": "0.3.1",
      "component": "claude-code", "component_version": "2.1.310",
      "os": "windows", "os_version": "10.0.22631", "arch": "x64",
-     "method": "npm", "machine_id": "5d0c1e0a-...", "ok": true}
+     "method": "npm", "hostname": "pc-0421", "ok": true}
 
 - ``event``: one of ``EVENTS``. The vocabulary is code; an unknown one is
   refused, so a table an admin reads holds no made-up kinds.
@@ -22,8 +22,10 @@ One event is one row of ``client_events``, appended and never changed::
 - ``os``: one of ``OS_FAMILIES``; required, because the same account may have a
   Windows desktop and a Linux server. ``os_version`` and ``arch`` say which.
 - ``method``: how it was installed (``npm``, ``native``, ``offline``, ...).
-- ``machine_id``: an id the tool made up once and kept on that machine, so two
-  machines of one account stay apart. Opaque: not a hostname, not an address.
+- ``hostname``: the machine's name, if the tool sends it: what an admin
+  recognizes a machine by, and what keeps two machines of one account apart
+  (together with ``os``: a WSL distribution carries its Windows host's name).
+  Without it the account's machines of one OS count as one.
 - ``ok`` false: the attempt failed; ``message`` says why.
 
 Everything is text the client sent. It is validated to short slugs and bounded
@@ -59,10 +61,15 @@ _INSTALL_ROWS = 20000
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9._-]{0,39}$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+_-]{0,39}$")
-_MACHINE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9._-]{0,98}[a-z0-9])?$")
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _MAX_OS_VERSION = 80
 _MAX_MESSAGE = 500
+
+
+# The fields kept as the client spelled them (names and versions): a key in
+# one of them is refused, where the free text has it taken out.
+_NAMES = ("tool", "tool_version", "component", "component_version", "previous_version", "method", "arch", "hostname")
 
 
 class TooManyEvents(Exception):
@@ -122,9 +129,12 @@ def clean(body: Any, secret: str = "") -> dict[str, Any]:
     ok = body.get("ok", True)
     if not isinstance(ok, bool):
         raise ValueError("ok must be true or false.")
-    machine_id = body.get("machine_id") or ""
-    if not isinstance(machine_id, str) or (machine_id and not _MACHINE.match(machine_id)):
-        raise ValueError("machine_id must be an id of letters, digits, '.', '_' or '-', 64 characters at most.")
+    hostname = body.get("hostname") or ""
+    if not isinstance(hostname, str) or (hostname and not _HOSTNAME.match(hostname.strip().lower())):
+        raise ValueError("hostname must be a machine name of letters, digits, '.', '_' or '-', 100 characters at most.")
+    hostname = hostname.strip().lower()
+    if secret and any(secret.lower() in str(body.get(key) or "").lower() for key in _NAMES):
+        raise ValueError("An event must not contain the API key.")
     return {
         "event": event, "ok": ok,
         "tool": _slug(body, "tool", required=True), "tool_version": _version(body, "tool_version", required=True),
@@ -134,7 +144,7 @@ def clean(body: Any, secret: str = "") -> dict[str, Any]:
         "method": _slug(body, "method"),
         "os": os_family.strip().lower(), "os_version": _text(body, "os_version", _MAX_OS_VERSION, secret),
         "arch": _slug(body, "arch"),
-        "machine_id": machine_id, "message": _text(body, "message", _MAX_MESSAGE, secret),
+        "hostname": hostname, "message": _text(body, "message", _MAX_MESSAGE, secret),
     }
 
 
@@ -156,6 +166,13 @@ def record(session: Session, username: str, values: dict[str, Any], now: datetim
 
 # ── Admin: what is installed where, and what happened ──
 
+def machine_key(row: ClientEvent) -> tuple[str, str, str]:
+    """One machine: the account, the machine's name and its OS. The OS is
+    part of it because a WSL distribution reports its Windows host's name;
+    without a name the account's machines of one OS count as one."""
+    return (row.username, row.hostname, row.os)
+
+
 def recent(session: Session, limit: int = 100) -> list[ClientEvent]:
     """The newest events, newest first."""
     return list(session.exec(
@@ -164,8 +181,8 @@ def recent(session: Session, limit: int = 100) -> list[ClientEvent]:
 
 
 def installs(session: Session, now: datetime | None = None) -> list[ClientEvent]:
-    """What is installed now: per account, machine and component the last
-    install or update that worked, unless an uninstall followed it. Newest
+    """What is installed now: per machine (``machine_key``) and component the
+    last install or update that worked, unless an uninstall followed it. Newest
     first. Read from the events of the last ``INSTALL_WINDOW_DAYS`` days."""
     now = now or _utcnow()
     rows = session.exec(
@@ -176,9 +193,9 @@ def installs(session: Session, now: datetime | None = None) -> list[ClientEvent]
         )
         .order_by(ClientEvent.created_at.desc(), ClientEvent.id.desc()).limit(_INSTALL_ROWS)
     ).all()
-    latest: dict[tuple[str, str, str], ClientEvent] = {}
+    latest: dict[tuple, ClientEvent] = {}
     for row in rows:                                   # newest first: the first seen per key is its state
-        latest.setdefault((row.username, row.machine_id, row.component), row)
+        latest.setdefault((machine_key(row), row.component), row)
     return [row for row in latest.values() if row.event != "uninstalled"]
 
 
@@ -196,10 +213,10 @@ def overview(session: Session, now: datetime | None = None) -> dict[str, Any]:
     """The *Client installs* card: the installs, and how many machines and
     accounts they are on per operating system and per component version."""
     found = installs(session, now)
-    by_os: dict[str, set[tuple[str, str]]] = {}
+    by_os: dict[str, set[tuple]] = {}
     by_version: dict[tuple[str, str], set[str]] = {}
     for row in found:
-        by_os.setdefault(row.os, set()).add((row.username, row.machine_id))
+        by_os.setdefault(row.os, set()).add(machine_key(row))
         by_version.setdefault((row.component, row.component_version), set()).add(row.username)
     return {
         "installs": found,

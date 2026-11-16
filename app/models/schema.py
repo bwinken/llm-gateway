@@ -440,8 +440,8 @@ class ClientEvent(SQLModel, table=True):
 
     ``tool`` is the program reporting, ``component`` what the event is
     about (``claude-code``, ``node``, the tool itself). ``os`` is
-    ``windows`` / ``linux`` / ``macos``; ``machine_id`` is an id the tool
-    made up for that machine (opaque, may be ""). ``ok`` false is an
+    ``windows`` / ``linux`` / ``macos``; ``hostname`` is the machine's name
+    when the tool sent it (may be ""). ``ok`` false is an
     attempt that failed, with ``message`` saying why. Everything but
     ``username`` and ``created_at`` is what the client sent, validated to
     short slugs and bounded text. ``username`` is not a foreign key, so
@@ -467,7 +467,7 @@ class ClientEvent(SQLModel, table=True):
     os: str = Field()
     os_version: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     arch: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
-    machine_id: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    hostname: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     message: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
 
 

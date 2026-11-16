@@ -1051,7 +1051,7 @@ function submitExportCsv() {
     <div class="mb-4 max-w-3xl">
         <h2 class="text-sm font-bold text-t2 mb-1">Client installs</h2>
         <p class="text-xs text-t4 gw-tip gw-tip-wide"
-           data-tip="A setup tool reports what it did on its user's machine: installed, updated or removed a component, or applied settings, with the version, the operating system and an id it made up for that machine. Everything here is what the tool said; the gateway cannot check it, and nothing is routed, limited or refused by it. An account can report at most {{ client_installs.max_per_hour if client_installs else '' }} events an hour.">
+           data-tip="A setup tool reports what it did on its user's machine: installed, updated or removed a component, or applied settings, with the version, the operating system and, if it sends it, the machine's name (without one, an account's machines of the same OS count as one). Everything here is what the tool said; the gateway cannot check it, and nothing is routed, limited or refused by it. An account can report at most {{ client_installs.max_per_hour if client_installs else '' }} events an hour.">
             What setup tools say they installed for their users (<span class="font-mono">POST /v1/events</span>): which account has what, in which version, on which operating system.
         </p>
     </div>
@@ -1086,7 +1086,7 @@ function submitExportCsv() {
                 <td class="text-sm text-t2">{{ i.component }}</td>
                 <td class="font-mono text-xs text-t1">{{ i.component_version or '—' }}</td>
                 <td class="text-xs text-t2 whitespace-nowrap">{{ i.os_label }}{% if i.os_version or i.arch %} <span class="text-t4">{{ i.os_version }} {{ i.arch }}</span>{% endif %}</td>
-                <td class="font-mono text-xs text-t4" title="{{ i.machine_id }}">{{ i.machine_id[:8] or '—' }}</td>
+                <td class="font-mono text-xs {{ 'text-t2' if i.hostname else 'text-t4' }}">{{ i.hostname or '—' }}</td>
                 <td class="text-xs text-t3 whitespace-nowrap">{{ i.tool }} <span class="font-mono text-t4">{{ i.tool_version }}</span>{% if i.method %} <span class="text-t4">· {{ i.method }}</span>{% endif %}</td>
                 <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ i.at }}</td>
             </tr>
@@ -1100,7 +1100,7 @@ function submitExportCsv() {
         <summary class="cursor-pointer select-none text-xs text-t3">Recent events <span class="text-t4 font-mono">{{ ci.events | length }}</span>{% if ci.failed %} · <span class="text-ar">{{ ci.failed }} failed</span>{% endif %}</summary>
         <div class="overflow-x-auto mt-2">
         <table class="gw-table">
-            <thead><tr><th>Time</th><th>Account</th><th>Event</th><th>Component</th><th>OS</th><th>Tool</th><th>Result</th></tr></thead>
+            <thead><tr><th>Time</th><th>Account</th><th>Event</th><th>Component</th><th>OS</th><th>Machine</th><th>Tool</th><th>Result</th></tr></thead>
             <tbody>
                 {% for e in ci.events %}
                 <tr>
@@ -1109,6 +1109,7 @@ function submitExportCsv() {
                     <td class="text-xs text-t2 whitespace-nowrap">{{ e.event }}</td>
                     <td class="text-xs text-t2">{{ e.component }} <span class="font-mono text-t3">{% if e.previous_version %}{{ e.previous_version }} → {% endif %}{{ e.component_version }}</span></td>
                     <td class="text-xs text-t3 whitespace-nowrap">{{ e.os_label }} <span class="text-t4">{{ e.os_version }} {{ e.arch }}</span></td>
+                    <td class="font-mono text-xs {{ 'text-t2' if e.hostname else 'text-t4' }}">{{ e.hostname or '—' }}</td>
                     <td class="text-xs text-t3 whitespace-nowrap">{{ e.tool }} <span class="font-mono text-t4">{{ e.tool_version }}</span></td>
                     <td class="text-xs">{% if e.ok %}<span class="text-ag">ok</span>{% else %}<span class="text-ar">failed</span>{% endif %}{% if e.message %} <span class="text-t3">· {{ e.message }}</span>{% endif %}</td>
                 </tr>

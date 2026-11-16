@@ -42,7 +42,7 @@ def upgrade() -> None:
         sa.Column("os", sa.String(), nullable=False),
         sa.Column("os_version", sa.String(), server_default="", nullable=False),
         sa.Column("arch", sa.String(), server_default="", nullable=False),
-        sa.Column("machine_id", sa.String(), server_default="", nullable=False),
+        sa.Column("hostname", sa.String(), server_default="", nullable=False),
         sa.Column("message", sa.String(), server_default="", nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )

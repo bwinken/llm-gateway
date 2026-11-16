@@ -138,7 +138,7 @@ def _client_installs_view(session: Session) -> dict:
             "component": event.component, "component_version": event.component_version,
             "previous_version": event.previous_version, "method": event.method,
             "os_label": _OS_LABELS.get(event.os, event.os), "os_version": event.os_version, "arch": event.arch,
-            "machine_id": event.machine_id, "message": event.message,
+            "hostname": event.hostname, "message": event.message,
         }
 
     found = client_events.overview(session)
