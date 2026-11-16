@@ -339,14 +339,15 @@ def _models(user: Any) -> tuple[list[dict], dict[str, dict]]:
     return listed, known
 
 
-def fields_for(user: Any) -> list[dict[str, Any]]:
+def fields_for(user: Any, fields: tuple[Field, ...] | None = None) -> list[dict[str, Any]]:
     """What ``GET /v1/settings`` lists for ``user``, in the file's order.
     Every field has a description and a non-empty ``default`` that is one of
-    its ``options``; no value is None."""
+    its ``options``; no value is None. ``fields``: resolve these instead of
+    the file in force (the admin card's check of a text not yet saved)."""
     hidden = model_catalog.hidden_cloud_backends(user)
     azure, aws = "azure" not in hidden, "bedrock" not in hidden
     listed, known = _models(user)
-    resolved = (_resolve(field, azure, aws, listed, known) for field in load())
+    resolved = (_resolve(field, azure, aws, listed, known) for field in (load() if fields is None else fields))
     return [field for field in resolved if field is not None]
 
 
@@ -356,12 +357,24 @@ def _account(azure: bool, aws: bool) -> SimpleNamespace:
     return SimpleNamespace(can_use_azure=azure, can_use_bedrock=aws, is_admin=False)
 
 
-def preview() -> list[dict[str, Any]]:
+def preview(fields: tuple[Field, ...] | None = None) -> list[dict[str, Any]]:
     """Per kind of account (``ACCOUNTS``), the fields it is offered."""
     return [
-        {"account": name, "fields": fields_for(_account(azure, aws))}
+        {"account": name, "fields": fields_for(_account(azure, aws), fields)}
         for name, azure, aws in ACCOUNTS
     ]
+
+
+def check(text: str) -> dict[str, Any]:
+    """What ``text`` would offer each kind of account if it were saved.
+    Raises ValueError saying what is wrong with it. Writes nothing."""
+    fields = parse(text)
+    return {
+        "fields": len(fields),
+        "names": [field.name for field in fields],
+        "unknown_models": unknown_models(fields),
+        "preview": preview(fields),
+    }
 
 
 def unknown_models(fields: tuple[Field, ...] | None = None) -> list[str]:

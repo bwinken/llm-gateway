@@ -62,6 +62,7 @@ _UNSAFE = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _NOT_AUDITED: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/admin/api/test-model"),
     ("POST", "/admin/guardrail/test"),
+    ("POST", "/admin/client-settings/check"),
 })
 _AUDITED_READS = re.compile(r"^/(admin/(users/\d+/api-key|api/export/.+)|dashboard/api-key/patch\.(bat|sh))$")
 # Authenticated by an SSO token the client sends itself, outside the cookie

@@ -362,6 +362,18 @@ def save_client_settings(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.post("/client-settings/check")
+def check_client_settings(settings: str = Form("")):
+    """What a settings text would offer each tier, without saving it: the
+    card's live view while the admin edits. Validated by the same
+    ``client_settings.parse``; an invalid text is a 400 saying why. Writes
+    nothing (and so is not audited)."""
+    try:
+        return JSONResponse({"ok": True, **client_settings.check(settings)})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.post("/client-settings/reset")
 def reset_client_settings(
     request: Request,

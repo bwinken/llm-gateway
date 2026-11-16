@@ -249,6 +249,7 @@ Behavior is described in [docs/architecture.md](../../docs/architecture.md) (Adm
 | `POST` | `/admin/client-rules/{rule_id}` | Save a check's settings: on / off, action, wording, patch, mail. What it detects is code and not editable |
 | `POST` | `/admin/client-rules/{rule_id}/reset` | Back to the defaults in code; recorded violations are kept |
 | `POST` | `/admin/client-settings` | Save `client_settings.json` (form field `settings`, the JSON text): the fields `GET /v1/settings` offers. Validated first; an invalid text is a 400 and nothing is written |
+| `POST` | `/admin/client-settings/check` | What a settings text (form field `settings`) would offer each tier, without saving it: the card's live view. Same validation; invalid is a 400. Writes nothing, not audited |
 | `POST` | `/admin/client-settings/reset` | Remove `client_settings.json`: the shipped example is offered again |
 | `POST` | `/admin/client-rules/{rule_id}/mail` | Queue a mail to the check's accounts (`only_unmailed=on\|off`); the first batch goes out after the reply, the mail job sends the rest |
 | `POST` | `/admin/client-rules/mail-all` | Queue a mail to every account with anything open under any check |

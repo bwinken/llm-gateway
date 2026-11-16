@@ -813,6 +813,24 @@ class TestClientSetupAdmin:
         body = client.post("/admin/client-settings", data={"settings": text}, headers=self._admin(admin_user)).json()
         assert body["unknown_models"] == ["gone-model", "typo-model"]
 
+    def test_a_text_is_checked_without_being_saved(self, client, admin_user, settings_file):
+        # The card's live view while the admin edits: what the text would
+        # offer each tier, from the same validator, and nothing is written.
+        text = self._text(_choice_field(), _model_field(default={"azure": "azure-gpt-4"}, options=["test-llm", "azure-gpt-4", "gone-model"]))
+        resp = client.post("/admin/client-settings/check", data={"settings": text}, headers=self._admin(admin_user))
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["fields"] == 2 and body["names"] == ["SWITCH", "ANTHROPIC_MODEL"]
+        assert body["unknown_models"] == ["gone-model"]
+        offered = {p["account"]: {f["name"]: f for f in p["fields"]} for p in body["preview"]}
+        assert offered["azure"]["ANTHROPIC_MODEL"]["default"] == "azure-gpt-4"
+        assert [o["value"] for o in offered["local"]["ANTHROPIC_MODEL"]["options"]] == ["test-llm"]
+        bad = client.post("/admin/client-settings/check", data={"settings": "{not json"}, headers=self._admin(admin_user))
+        assert bad.status_code == 400 and bad.json()["detail"]
+        assert not settings_file.path.exists()
+        # What is in force is untouched by a check.
+        assert client.get("/v1/settings", headers=auth_header()).json()["fields"][0]["name"] != "SWITCH"
+
     def test_reset_goes_back_to_the_shipped_example(self, client, admin_user, test_user, settings_file):
         settings_file(_choice_field())
         body = client.post("/admin/client-settings/reset", headers=self._admin(admin_user)).json()
@@ -823,7 +841,7 @@ class TestClientSetupAdmin:
 
     def test_only_an_admin(self, client, test_user, settings_file):
         headers = {**web_auth_header(sub=test_user.username), "Accept": "application/json"}
-        for path in ("/admin/client-settings", "/admin/client-settings/reset"):
+        for path in ("/admin/client-settings", "/admin/client-settings/reset", "/admin/client-settings/check"):
             assert client.post(path, data={"settings": self._text(_choice_field())}, headers=headers).status_code == 403
         assert not settings_file.path.exists()
 
