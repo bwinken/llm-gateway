@@ -79,6 +79,14 @@ def _violators(db_session, rule_id: str) -> list[str]:
     return sorted(v.username for v in db_session.exec(select(ClientViolation).where(ClientViolation.rule_id == rule_id)).all())
 
 
+def _patch_payload(script: str) -> str:
+    """The patch a downloaded script carries (base64 in the script), as JSON text."""
+    import base64
+    import re
+
+    return base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", script).group(1)).decode("utf-8")
+
+
 def _violations(db_session, rule_id: str) -> list[ClientViolation]:
     db_session.expire_all()
     return list(db_session.exec(select(ClientViolation).where(ClientViolation.rule_id == rule_id)).all())
@@ -599,6 +607,95 @@ class TestPatch:
         import os
         env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "GW_PATCH_SELF": str(script)}
         return subprocess.run(["node", "-e", line[len('node -e "'):-1]], env=env, capture_output=True, text=True, timeout=60)
+
+
+class TestFromSetup:
+    """``NAME=@setup`` in a patch: the value is what Client setup suggests
+    the account (``GET /v1/settings``'s ``default``), so it has one home."""
+
+    SERVER = "CLAUDE_CODE_AUTO_MODE_SERVER"   # a field of the shipped example, default "0"
+
+    @pytest.fixture(autouse=True)
+    def _no_baseline(self, monkeypatch):
+        monkeypatch.setattr(client_checks, "BASELINE_ENV", "")
+
+    @pytest.fixture
+    def setup_file(self, tmp_path):
+        path = tmp_path / "client_settings.json"
+
+        def write(*fields: dict) -> None:
+            path.write_text(json.dumps({"fields": list(fields)}), encoding="utf-8")
+
+        with patch("app.services.client_settings.SETTINGS_PATH", path):
+            yield write
+
+    @staticmethod
+    def _switch(name: str, default, options=("a", "b", "c")) -> dict:
+        return {"name": name, "label": name, "description": "A switch.", "type": "choice",
+                "default": default, "options": options if isinstance(options, dict) else list(options)}
+
+    def test_the_value_is_the_one_setup_suggests(self):
+        rule = SimpleNamespace(patch=json.dumps({self.SERVER: "@setup", "X": "1"}), patch_azure="", patch_aws="")
+        assert client_rules.effective_env(rule, False, False) == {self.SERVER: "0", "X": "1"}
+
+    def test_it_follows_the_accounts_tier_like_the_settings_endpoint(self, client, db_session, test_user, setup_file):
+        setup_file(self._switch("MODE", {"everyone": "a", "azure": "b", "both": "c"}))
+        rule = SimpleNamespace(patch='{"MODE": "@setup"}', patch_azure="", patch_aws="")
+        assert client_rules.effective_env(rule, False, False) == {"MODE": "a"}
+        assert client_rules.effective_env(rule, True, False) == {"MODE": "b"}
+        assert client_rules.effective_env(rule, True, True) == {"MODE": "c"}
+        fields = client.get("/v1/settings", headers=auth_header()).json()["fields"]
+        mine = client_rules.effective_env(rule, *client_rules.audience_of(test_user))
+        assert {f["name"]: f["default"] for f in fields} == mine
+
+    def test_a_model_variable_names_a_model_the_account_can_use(self):
+        rule = SimpleNamespace(patch='{"ANTHROPIC_MODEL": "@setup"}', patch_azure="", patch_aws="")
+        assert client_rules.effective_env(rule, False, False) == {"ANTHROPIC_MODEL": "test-llm"}
+
+    def test_a_written_value_still_wins_for_its_audience(self, setup_file):
+        setup_file(self._switch("MODE", "a"))
+        rule = SimpleNamespace(patch='{"MODE": "@setup"}', patch_azure='{"MODE": "mine"}', patch_aws="")
+        assert client_rules.effective_env(rule, False, False) == {"MODE": "a"}
+        assert client_rules.effective_env(rule, True, False) == {"MODE": "mine"}
+
+    def test_a_variable_setup_does_not_offer_is_left_out(self, setup_file):
+        # Offered to Azure accounts only: the others have no value to be told.
+        setup_file(self._switch("MODE", {"azure": "b"}, options={"azure": ["b"]}))
+        rule = SimpleNamespace(patch='{"MODE": "@setup"}', patch_azure="", patch_aws="")
+        assert client_rules.effective_env(rule, True, False) == {"MODE": "b"}
+        assert client_rules.effective_env(rule, False, False) == {}
+        assert client_rules.split_covered([SimpleNamespace(id="CC001", **vars(rule))], False, False) == ([], ["CC001"])
+
+    def test_setup_that_cannot_be_read_costs_the_variable_only(self):
+        rule = SimpleNamespace(patch=json.dumps({self.SERVER: "@setup", "X": "1"}), patch_azure="", patch_aws="")
+        with patch("app.services.client_settings.defaults", side_effect=RuntimeError("boom")):
+            assert client_rules.effective_env(rule, False, False) == {"X": "1"}
+
+    def test_the_marker_never_reaches_a_user(self, client, db_session, test_user):
+        _configure(db_session, AUTO, patch=json.dumps({self.SERVER: "@setup"}))
+        _violation(db_session, AUTO, "testuser")
+        body = client.get("/v1/notices", headers=auth_header()).json()
+        assert body["patch"]["set"] == {self.SERVER: "0"} and body["notices"][0]["patch"]["set"] == {self.SERVER: "0"}
+        headers = web_auth_header(sub=test_user.username)
+        assert "@setup" not in client.get("/dashboard", headers=headers).text
+        script = client.get("/dashboard/client-rules/all/patch.sh", headers=headers).text
+        assert "@setup" not in script and "@setup" not in _patch_payload(script)
+
+    def test_only_a_setup_variable_can_be_left_to_setup(self):
+        form = {"title": "t", "enabled": "on", "patch": f"{self.SERVER}=@setup"}
+        assert json.loads(client_rules.clean_fields(form)["patch"]) == {self.SERVER: "@setup"}
+        for box in ("patch", "patch_azure", "patch_aws"):
+            with pytest.raises(ValueError, match="NOT_A_FIELD=@setup: not a Client setup variable"):
+                client_rules.clean_fields({"title": "t", box: "NOT_A_FIELD=@setup"})
+        with pytest.raises(ValueError, match="not a Client setup variable"):   # a key is never a field
+            client_rules.clean_fields({"title": "t", "patch": "ANTHROPIC_AUTH_TOKEN=@setup"})
+
+    def test_the_admin_sees_what_he_wrote_and_the_preview_what_accounts_get(self, client, db_session, admin_user):
+        _configure(db_session, AUTO, patch=json.dumps({self.SERVER: "@setup"}))
+        headers = web_auth_header(sub=admin_user.username, scopes=["admin"])
+        assert f"{self.SERVER}=@setup" in client.get("/admin", headers=headers).text
+        script = client.get(f"/admin/client-rules/{AUTO}/patch.sh?audience=local", headers=headers).text
+        assert "@setup" not in _patch_payload(script)
 
 
 class TestBaseline:

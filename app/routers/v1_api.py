@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import (
@@ -48,6 +48,8 @@ from app.core.deps import (
     check_cloud_budget,
     effective_cloud_limit,
     get_client_notices,
+    record_client_event,
+    resolve_client_notices,
     get_current_user,
     get_current_user_unmetered,
     get_owned_apps,
@@ -70,7 +72,7 @@ from app.services.azure_proxy import (
     azure_forward_messages,
     azure_forward_responses,
 )
-from app.services import client_rules, client_settings, concurrency, guardrail, model_catalog
+from app.services import audit, client_events, client_rules, client_settings, concurrency, guardrail, model_catalog
 from app.services.model_order import natural_key
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
@@ -259,8 +261,8 @@ _TYPE_CAPABILITIES: dict[str, str] = {
 }
 
 
-@router.get("/v1/models")
-@router.get("/models")
+@router.get("/v1/models", tags=["v1"])
+@router.get("/models", tags=["v1"])
 async def list_models(user: User = Depends(get_current_user)):
     """List chat-capable models available to this user.
 
@@ -342,8 +344,8 @@ def _remaining(limit: float, used: float) -> float:
     return _usd(max(0.0, limit - used))
 
 
-@router.get("/v1/me")
-@router.get("/me")
+@router.get("/v1/me", tags=["account"])
+@router.get("/me", tags=["account"])
 async def account_info(user: User = Depends(get_current_user_unmetered)):
     """The caller's own access and today's budget, for clients and scripts.
 
@@ -455,7 +457,7 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
     }
 
 
-@router.get("/v1/status")
+@router.get("/v1/status", tags=["account"])
 async def model_status(user: User = Depends(get_current_user_unmetered)):
     """The models this key can use and whether they are up, for clients and
     scripts: what the dashboard's model tables show.
@@ -501,7 +503,7 @@ def _model_usage_row(row: dict) -> dict:
     }
 
 
-@router.get("/v1/usage")
+@router.get("/v1/usage", tags=["account"])
 def usage_history(
     days: int = Query(7, ge=1, le=USAGE_MAX_DAYS, description="How many days back, today included."),
     user: User = Depends(get_current_user_unmetered),
@@ -574,7 +576,7 @@ def _owned_service_account_rows(user: User) -> list[dict]:
     ]
 
 
-@router.get("/v1/service-accounts")
+@router.get("/v1/service-accounts", tags=["account"])
 def owned_service_accounts(user: User = Depends(get_current_user_unmetered)):
     """The service accounts the caller owns (accounts for programs, assigned
     by an admin), with each one's daily limit and this month's usage, in
@@ -609,7 +611,7 @@ def _patch(env: dict[str, str | None]) -> dict:
     }
 
 
-@router.get("/v1/notices")
+@router.get("/v1/notices", tags=["account"])
 def client_notices(user: User = Depends(get_current_user_unmetered)):
     """What the dashboard's notices panel tells the caller: the client
     checks (``CC001``...) this account tripped in the last ``window_days``
@@ -624,8 +626,8 @@ def client_notices(user: User = Depends(get_current_user_unmetered)):
     open. A patch only ever sets or removes variables in the ``env`` block
     of settings.json, and never holds a key.
 
-    Read-only: reporting a notice as fixed (*I've applied it*) stays on the
-    dashboard. Answers once the daily limit is spent. Plain ``def``.
+    Read-only: reporting a notice as fixed is ``POST /v1/notices/resolved``.
+    Answers once the daily limit is spent. Plain ``def``.
     """
     found = get_client_notices(user)
     notices = []
@@ -652,7 +654,84 @@ def client_notices(user: User = Depends(get_current_user_unmetered)):
     return body
 
 
-@router.get("/v1/settings")
+@router.post("/v1/notices/resolved", tags=["account"])
+def client_notices_resolved(
+    body: dict | None = Body(default=None),
+    user: User = Depends(get_current_user_unmetered),
+):
+    """*I've applied it*, for a client that is not a browser: the caller's
+    open notices are marked as fixed, as the dashboard's button does.
+
+    Without a body (or without ``ids``) everything open is resolved; with
+    ``{"ids": ["CC001", ...]}`` only those. The answer lists what was open
+    and is now resolved (``resolved``, in the checks' order), so a repeated
+    call answers an empty list and an id with nothing open is not an error.
+    The gateway cannot see a settings file and takes the account's word:
+    the next violating request reopens the notice by itself.
+
+    The one write an API key has on its account, and in the audit log.
+    Plain ``def``.
+    """
+    ids = None
+    if body is not None and body.get("ids") is not None:
+        ids = body["ids"]
+        if (
+            not isinstance(ids, list) or len(ids) > 50
+            or not all(isinstance(rule_id, str) and len(rule_id) <= 20 for rule_id in ids)
+        ):
+            raise HTTPException(status_code=400, detail="ids must be a list of notice ids, such as [\"CC001\"].")
+    audit.note_actor(user.username)
+    try:
+        resolved = resolve_client_notices(user, ids)
+    except Exception as exc:
+        logger.warning("Client notices resolve failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
+        raise HTTPException(status_code=503, detail="Could not record this now. Try again later.")
+    audit.note(resolved=resolved)
+    logger.info("Client rules marked as fixed by API key | user={} rules={}", user.username, ",".join(resolved) or "-")
+    return {"object": "notices.resolved", "resolved": resolved}
+
+
+@router.post("/v1/events", tags=["account"])
+def client_event(
+    body: dict = Body(...),
+    user: User = Depends(get_current_user_unmetered),
+):
+    """What a setup tool did on its user's machine, for the admin's *Client
+    installs* list: which account installed, updated, removed or configured
+    what, in which version, on which operating system.
+
+    One event per request: ``event`` (``installed`` / ``updated`` /
+    ``uninstalled`` / ``settings_applied``), the reporting ``tool`` and its
+    ``tool_version``, the ``component`` it is about (``claude-code``, ...)
+    and ``os`` (``windows`` / ``linux`` / ``macos``) are required;
+    ``component_version``, ``previous_version``, ``method``, ``os_version``,
+    ``arch``, ``machine_id``, ``ok`` (false: the attempt failed) and
+    ``message`` are optional. Keys the gateway does not know are ignored.
+
+    Telemetry and nothing else: it changes nothing about the account, and
+    nothing routes, limits or refuses by what was reported. A tool sends it
+    and carries on whatever the answer: 400 for an event that does not
+    validate, 429 past the hourly allowance, 503 when it could not be
+    kept. Never billed; answers once the daily limit is spent. Plain ``def``.
+    """
+    try:
+        values = client_events.clean(body, secret=user.api_key or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        record_client_event(user, values)
+    except client_events.TooManyEvents:
+        raise HTTPException(
+            status_code=429, headers={"Retry-After": "3600"},
+            detail=f"At most {client_events.MAX_PER_HOUR} events an hour per account.",
+        )
+    except Exception as exc:
+        logger.warning("Client event not recorded | user={} error={}: {}", user.username, type(exc).__name__, exc)
+        raise HTTPException(status_code=503, detail="Could not record this now.")
+    return {"object": "event", "recorded": True}
+
+
+@router.get("/v1/settings", tags=["account"])
 async def client_settings_fields(user: User = Depends(get_current_user_unmetered)):
     """The client settings this account can be offered, for a tool that
     sets a client up: apply every ``default``, or let the user pick.
@@ -682,8 +761,8 @@ async def client_settings_fields(user: User = Depends(get_current_user_unmetered
     }
 
 
-@router.post("/v1/chat/completions")
-@router.post("/chat/completions")
+@router.post("/v1/chat/completions", tags=["v1"])
+@router.post("/chat/completions", tags=["v1"])
 async def chat_completions(request: Request, user: User = Depends(limited_v1_user)):
     alias = await _peek_model_alias(request)
     budget_fallback: str | None = None
@@ -950,8 +1029,8 @@ _RENDER_OPENAPI: dict[str, object] = {
 }
 
 
-@router.post("/v1/chat/completions/render", openapi_extra=_RENDER_OPENAPI)
-@router.post("/chat/completions/render", openapi_extra=_RENDER_OPENAPI)
+@router.post("/v1/chat/completions/render", tags=["v1"], openapi_extra=_RENDER_OPENAPI)
+@router.post("/chat/completions/render", tags=["v1"], openapi_extra=_RENDER_OPENAPI)
 async def chat_completions_render(
     request: Request,
     decode: bool = Query(
@@ -1025,8 +1104,8 @@ print(resp.json()["decoded_prompt"])
     )
 
 
-@router.post("/v1/responses")
-@router.post("/responses")
+@router.post("/v1/responses", tags=["v1"])
+@router.post("/responses", tags=["v1"])
 async def responses(request: Request, user: User = Depends(limited_v1_responses_user)):
     """OpenAI Responses API endpoint.
 
@@ -1054,8 +1133,8 @@ async def responses(request: Request, user: User = Depends(limited_v1_responses_
     return response
 
 
-@router.post("/v1/messages")
-@router.post("/messages")
+@router.post("/v1/messages", tags=["v1"])
+@router.post("/messages", tags=["v1"])
 async def messages(request: Request, user: User = Depends(limited_v1_user)):
     """Anthropic Messages API compatibility endpoint.
 
@@ -1095,8 +1174,8 @@ async def messages(request: Request, user: User = Depends(limited_v1_user)):
     return response
 
 
-@router.post("/v1/messages/count_tokens")
-@router.post("/messages/count_tokens")
+@router.post("/v1/messages/count_tokens", tags=["v1"])
+@router.post("/messages/count_tokens", tags=["v1"])
 async def messages_count_tokens(
     request: Request, user: User = Depends(get_current_user)
 ):
@@ -1137,8 +1216,8 @@ async def messages_count_tokens(
     return response
 
 
-@router.post("/v1/tokenize")
-@router.post("/tokenize")
+@router.post("/v1/tokenize", tags=["v1"])
+@router.post("/tokenize", tags=["v1"])
 async def tokenize(request: Request, user: User = Depends(get_current_user)):
     """vLLM-native ``/tokenize`` pass-through.
 
@@ -1151,8 +1230,8 @@ async def tokenize(request: Request, user: User = Depends(get_current_user)):
     )
 
 
-@router.post("/v1/embeddings")
-@router.post("/embeddings")
+@router.post("/v1/embeddings", tags=["v1"])
+@router.post("/embeddings", tags=["v1"])
 async def embeddings(request: Request, user: User = Depends(get_current_user)):
     return await vllm_forward_simple_request(
         request,
@@ -1163,10 +1242,10 @@ async def embeddings(request: Request, user: User = Depends(get_current_user)):
     )
 
 
-@router.post("/v1/rerank")
-@router.post("/v1/score")
-@router.post("/rerank")
-@router.post("/score")
+@router.post("/v1/rerank", tags=["v1"])
+@router.post("/v1/score", tags=["v1"])
+@router.post("/rerank", tags=["v1"])
+@router.post("/score", tags=["v1"])
 async def rerank(request: Request, user: User = Depends(get_current_user)):
     return await vllm_forward_simple_request(
         request,
@@ -1177,8 +1256,8 @@ async def rerank(request: Request, user: User = Depends(get_current_user)):
     )
 
 
-@router.post("/v1/systemone")
-@router.post("/systemone")
+@router.post("/v1/systemone", tags=["v1"])
+@router.post("/systemone", tags=["v1"])
 async def systemone(request: Request, user: User = Depends(get_current_user)):
     """System One typed decisions, in TypeSafe's ``/v1/systemone`` wire format.
 

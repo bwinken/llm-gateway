@@ -52,6 +52,41 @@ def _no_nulls(value) -> bool:
 PATHS = ["/v1/status", "/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/settings"]
 
 
+class TestDocsGroups:
+    """Each route is in one group of /docs, and the account endpoints in
+    their own: what a tool outside this repository is built against is
+    found in one place."""
+
+    ACCOUNT = PATHS + ["/v1/me", "/me", "/v1/notices/resolved", "/v1/events"]
+
+    def _operations(self, client) -> dict[tuple[str, str], list[str]]:
+        spec = client.get("/openapi.json").json()
+        return {
+            (method, path): operation.get("tags", [])
+            for path, item in spec["paths"].items() for method, operation in item.items()
+        }
+
+    def test_every_route_is_in_exactly_one_known_group(self, client):
+        import ast
+        from pathlib import Path
+
+        tree = ast.parse((Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8"))
+        (assign,) = [
+            n for n in tree.body
+            if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name) and n.targets[0].id == "OPENAPI_TAGS"
+        ]
+        known = {tag["name"] for tag in ast.literal_eval(assign.value)}
+        operations = self._operations(client)
+        assert len(operations) > 50
+        for key, tags in operations.items():
+            assert len(tags) == 1 and tags[0] in known, (key, tags)
+
+    def test_the_account_endpoints_are_one_group(self, client):
+        operations = self._operations(client)
+        account = sorted({path for (_, path), tags in operations.items() if tags == ["account"]})
+        assert account == sorted(self.ACCOUNT)
+
+
 class TestAuth:
     @pytest.mark.parametrize("path", PATHS)
     def test_needs_a_key(self, client, test_user, path):
@@ -502,7 +537,7 @@ class TestNotices:
         assert test_user.api_key not in client.get("/v1/notices", headers=auth_header()).text
 
     def test_read_only(self, client, db_session, test_user):
-        # Reporting a notice as fixed stays on the dashboard, behind SSO.
+        # Reporting a notice as fixed has its own route; this one only reads.
         self._violation(db_session, AUTO)
         for method in ("post", "put", "delete"):
             assert getattr(client, method)("/v1/notices", headers=auth_header()).status_code == 405
@@ -511,6 +546,114 @@ class TestNotices:
     def test_a_broken_store_reads_as_nothing_open(self, client, test_user):
         with patch("app.services.client_rules.notices_for", side_effect=RuntimeError("no table")):
             assert self._notices(client)["notices"] == []
+
+
+class TestNoticesResolved:
+    """``POST /v1/notices/resolved``: *I've applied it* for a client that is
+    not a browser. The one write an API key has on its account."""
+
+    PATH = "/v1/notices/resolved"
+    _now = TestNotices._now
+    _violation = TestNotices._violation
+    _configure = TestNotices._configure
+    _notices = TestNotices._notices
+
+    def _resolve(self, client, body=None, headers=None):
+        return client.post(self.PATH, json=body, headers=headers or auth_header())
+
+    def test_everything_open_without_a_body(self, client, db_session, test_user):
+        self._violation(db_session, AUTO)
+        self._violation(db_session, OUTDATED)
+        self._configure(db_session, OUTDATED)
+        resp = client.post(self.PATH, headers=auth_header())
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"object": "notices.resolved", "resolved": [AUTO, OUTDATED]}
+        assert self._notices(client)["notices"] == []
+
+    def test_only_the_ones_named(self, client, db_session, test_user):
+        self._violation(db_session, AUTO)
+        self._violation(db_session, OUTDATED)
+        self._configure(db_session, OUTDATED)
+        assert self._resolve(client, {"ids": [OUTDATED]}).json()["resolved"] == [OUTDATED]
+        assert [n["id"] for n in self._notices(client)["notices"]] == [AUTO]
+
+    def test_what_the_dashboard_button_does(self, client, db_session, test_user):
+        from app.services import client_rules
+
+        row = self._violation(db_session, AUTO)
+        self._resolve(client, {"ids": [AUTO]})
+        db_session.refresh(row)
+        assert client_rules.is_resolved(row)
+        # The next violation reopens it, as after the dashboard's button.
+        row.last_seen_at = row.resolved_at + timedelta(minutes=5)
+        db_session.add(row)
+        db_session.commit()
+        assert len(self._notices(client)["notices"]) == 1
+
+    def test_nothing_open_is_not_an_error(self, client, db_session, test_user):
+        assert self._resolve(client).json() == {"object": "notices.resolved", "resolved": []}
+        self._violation(db_session, AUTO)
+        assert self._resolve(client, {"ids": ["CC999", OUTDATED]}).json()["resolved"] == []
+        assert self._resolve(client, {"ids": [AUTO]}).json()["resolved"] == [AUTO]
+        assert self._resolve(client, {"ids": [AUTO]}).json()["resolved"] == []  # said twice
+
+    def test_only_the_callers_own(self, client, db_session, test_user):
+        other = self._violation(db_session, AUTO, username="someone-else")
+        assert self._resolve(client).json()["resolved"] == []
+        db_session.refresh(other)
+        assert other.resolved_at is None
+
+    @pytest.mark.parametrize("ids", ["CC001", [1], [["CC001"]], ["CC001"] * 51, {"CC001": True}])
+    def test_a_malformed_list_is_refused(self, client, db_session, test_user, ids):
+        row = self._violation(db_session, AUTO)
+        assert self._resolve(client, {"ids": ids}).status_code == 400
+        db_session.refresh(row)
+        assert row.resolved_at is None
+
+    def test_needs_a_key_and_answers_over_budget(self, client, db_session, test_user):
+        assert client.post(self.PATH).status_code in (401, 403)
+        assert self._resolve(client, headers=auth_header("sk-not-a-key")).status_code == 401
+        _update(db_session, test_user, daily_limit_usd=1.0)
+        _spend(db_session, test_user, "5.0")
+        self._violation(db_session, AUTO)
+        assert self._resolve(client).json()["resolved"] == [AUTO]
+        _update(db_session, test_user, is_disabled=True)
+        assert self._resolve(client).status_code == 403
+
+    def test_it_is_in_the_audit_log_under_the_account(self, client, db_session, test_user):
+        from app.models.schema import AuditLog
+
+        self._violation(db_session, AUTO)
+        self._resolve(client, {"ids": [AUTO]})
+        (row,) = [r for r in db_session.exec(select(AuditLog)).all() if r.route == self.PATH]
+        assert row.actor == "testuser" and row.status == 200 and row.method == "POST"
+        assert '"via": "api_key"' in row.detail and AUTO in row.detail
+        assert test_user.api_key not in row.detail and "_actor" not in row.detail
+
+    def test_a_refused_key_cannot_fill_the_audit_log(self, client, db_session, test_user):
+        from app.models.schema import AuditLog
+
+        self._resolve(client, headers=auth_header("sk-not-a-key"))
+        client.post(self.PATH)
+        assert [r for r in db_session.exec(select(AuditLog)).all() if r.route == self.PATH] == []
+
+    def test_a_broken_store_is_told(self, client, test_user):
+        with patch("app.core.deps.resolve_client_notices", side_effect=RuntimeError("no table")), \
+                patch("app.routers.v1_api.resolve_client_notices", side_effect=RuntimeError("no table")):
+            resp = self._resolve(client)
+        assert resp.status_code == 503 and "no table" not in resp.text
+
+    def test_no_other_account_endpoint_writes(self, client, test_user):
+        for path in PATHS:
+            for method in ("post", "put", "patch", "delete"):
+                assert getattr(client, method)(path, headers=auth_header()).status_code == 405, (method, path)
+
+    def test_runs_off_the_event_loop(self):
+        import inspect
+
+        from app.routers import v1_api
+
+        assert not inspect.iscoroutinefunction(v1_api.client_notices_resolved)
 
 
 MODEL_FIELDS = ["ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_AUTO_MODE_MODEL"]

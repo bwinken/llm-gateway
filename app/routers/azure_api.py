@@ -26,7 +26,7 @@ from app.services.azure_proxy import (
     azure_forward_responses,
 )
 
-router = APIRouter()
+router = APIRouter(tags=["azure"])
 
 _TYPE_CAPABILITIES: dict[str, str] = {
     "llm": "text-generation",

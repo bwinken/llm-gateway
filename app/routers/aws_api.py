@@ -27,7 +27,7 @@ from app.services.bedrock_proxy import (
     bedrock_forward_messages,
 )
 
-router = APIRouter()
+router = APIRouter(tags=["aws"])
 
 _TYPE_CAPABILITIES: dict[str, str] = {
     "llm": "text-generation",

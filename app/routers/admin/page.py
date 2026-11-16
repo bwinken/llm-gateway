@@ -31,7 +31,7 @@ from app.core.logger import logger
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import local_month_start
 from app.models.schema import AnomalyEvent, User
-from app.routers.admin.clients import _client_rules_view
+from app.routers.admin.clients import _client_installs_view, _client_rules_view
 from app.routers.admin.common import router, templates
 from app.routers.admin.security import _audit_rows, _guardrail_view, _ip_allowlist_view
 from app.routers.admin.settings import _weekly_reports_view
@@ -136,6 +136,12 @@ def admin_page(
         session.rollback()
         logger.warning("Client rules view failed | error={}: {}", type(exc).__name__, exc)
         client_rules_view = None
+    try:
+        client_installs_view = _client_installs_view(session)
+    except Exception as exc:  # e.g. before `alembic upgrade`
+        session.rollback()
+        logger.warning("Client installs view failed | error={}: {}", type(exc).__name__, exc)
+        client_installs_view = None
     system_status = summarize_server_status([
         {"name": alias, "alive": is_alive(route["base_url"]),
          "waiting": (get_metrics(route["base_url"]) or {}).get("waiting")}
@@ -202,6 +208,7 @@ def admin_page(
             "budget_pressure": budget_pressure,
             "client_rules": client_rules_view,
             "client_setup": client_settings.status(),
+            "client_installs": client_installs_view,
             "client_rule_attention": [
                 {"id": r["id"], "name": r["name"], "count": r["open"]}
                 for r in (client_rules_view or {}).get("rules", []) if r["enabled"] and r["open"]

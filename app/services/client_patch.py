@@ -1,8 +1,9 @@
 """The settings patch: environment variables for the ``env`` block of
 ``~/.claude/settings.json``, and the scripts that apply them.
 
-A patch is text an admin writes (``NAME=value`` to set, ``-NAME`` to remove)
-and nothing else: ``parse_env`` cannot express a change outside the ``env``
+A patch is text an admin writes (``NAME=value`` to set, ``-NAME`` to remove,
+``NAME=@setup`` for the value Client setup suggests the account) and nothing
+else: ``parse_env`` cannot express a change outside the ``env``
 block, and every script does exactly ``apply_env`` (Node for the ``.bat`` and
 the ``.sh``, Python as the ``.sh`` fallback, PowerShell as the ``.bat``'s).
 The patch reaches the user's machine as base64 inside the script, never as
@@ -30,6 +31,12 @@ _ENV_MAX_VARS = 50
 
 
 _ENV_MAX_VALUE = 2000
+
+# A value an admin writes instead of a literal one (``NAME=@setup``): "what
+# Client setup suggests this account for NAME". It is stored as written and
+# replaced by ``client_rules.effective_env``, so the value has one home (the
+# admin's ``client_settings.json``) and no script ever receives the marker.
+FROM_SETUP = "@setup"
 
 
 # ── Settings patch (environment variables only) ──

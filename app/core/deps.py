@@ -440,6 +440,38 @@ def get_client_notices(user: User) -> dict:
         return {"notices": [], "combined": None}
 
 
+def resolve_client_notices(user: User, ids: list[str] | None) -> list[str]:
+    """*I've applied it* by API key (``POST /v1/notices/resolved``): mark
+    the caller's open notices as fixed, all of them (``ids`` None) or the
+    ones named, through the dashboard's own ``client_rules.resolve`` /
+    ``resolve_all``. Returns the ids that were open and are now resolved,
+    in the checks' order; an id with nothing open is left out. Raises on a
+    broken store (the caller is told, unlike a read). Short-lived session;
+    blocking."""
+    from app.services import client_rules
+
+    with Session(engine) as session:
+        open_ids = [rule.id for rule, _ in client_rules.open_items(session, None, [user.username]).get(user.username, [])]
+        if ids is None:
+            client_rules.resolve_all(session, user.username)
+            return open_ids
+        wanted = [rule_id for rule_id in open_ids if rule_id in set(ids)]
+        for rule_id in wanted:
+            client_rules.resolve(session, rule_id, user.username)
+        return wanted
+
+
+def record_client_event(user: User, values: dict) -> None:
+    """Append one event a setup tool reported (``POST /v1/events``;
+    ``values`` from ``client_events.clean``). Raises
+    ``client_events.TooManyEvents`` past the hourly allowance, and whatever
+    a broken store raises. Short-lived session; blocking."""
+    from app.services import client_events
+
+    with Session(engine) as session:
+        client_events.record(session, user.username, values)
+
+
 def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),

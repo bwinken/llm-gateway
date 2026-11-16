@@ -432,6 +432,45 @@ class ClientVersion(SQLModel, table=True):
     last_seen_at: NaiveDatetime = Field()
 
 
+class ClientEvent(SQLModel, table=True):
+    """What a setup tool reported about its user's machine
+    (``POST /v1/events``, app/services/client_events.py): which account
+    installed, updated, removed or configured what, in which version, on
+    which operating system. One row per event; nothing updates a row.
+
+    ``tool`` is the program reporting, ``component`` what the event is
+    about (``claude-code``, ``node``, the tool itself). ``os`` is
+    ``windows`` / ``linux`` / ``macos``; ``machine_id`` is an id the tool
+    made up for that machine (opaque, may be ""). ``ok`` false is an
+    attempt that failed, with ``message`` saying why. Everything but
+    ``username`` and ``created_at`` is what the client sent, validated to
+    short slugs and bounded text. ``username`` is not a foreign key, so
+    deleting an account leaves its rows. Timestamps are naive UTC.
+    """
+    __tablename__ = "client_events"
+    __table_args__ = (
+        Index("ix_client_events_created_at", "created_at"),
+        Index("ix_client_events_username_created_at", "username", "created_at"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    created_at: NaiveDatetime = Field(default_factory=_naive_utcnow)
+    username: str = Field()
+    event: str = Field()
+    ok: bool = Field(default=True, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.true()))
+    tool: str = Field()
+    tool_version: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    component: str = Field()
+    component_version: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    previous_version: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    method: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    os: str = Field()
+    os_version: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    arch: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    machine_id: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    message: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+
+
 class ClientMailLog(SQLModel, table=True):
     """Every client-rule mail the gateway tried to send, one row per mail:
     who it was for, the address it went to, the checks it covered

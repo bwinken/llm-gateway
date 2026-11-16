@@ -54,7 +54,7 @@ from app.services.stats import (
     summarize_server_status,
 )
 
-router = APIRouter()
+router = APIRouter(tags=["web"])
 _templates_dir = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
 # base.html reads the admin-editable links (support bot / install guide) on

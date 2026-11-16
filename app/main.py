@@ -106,11 +106,28 @@ async def lifespan(app: FastAPI):
     logger.info("{} shut down.", APP_TITLE)
 
 
+# The groups of /docs, in the order shown. Every route carries exactly one
+# (its router's, or its own in v1_api, where two groups share a router).
+OPENAPI_TAGS = [
+    {"name": "account", "description": "What an account can read and report about itself, by API key: budget, "
+     "models, usage, service accounts, client notices, client settings, and what a setup tool installed. "
+     "Never billed; what a terminal tool or a desktop window is built against."},
+    {"name": "v1", "description": "The unified inference API (OpenAI- and Anthropic-compatible): on-prem models, "
+     "plus the Azure and AWS models the account may use. Also served without the /v1 prefix."},
+    {"name": "azure", "description": "Azure OpenAI only (`/azure/v1`). Needs Azure access."},
+    {"name": "aws", "description": "AWS Bedrock only (`/aws/v1`). Needs AWS access."},
+    {"name": "auth", "description": "Sign-in for a terminal tool: an SSO token for the account's API key."},
+    {"name": "health", "description": "Liveness, readiness and metrics."},
+    {"name": "web", "description": "The dashboard and setup pages (SSO)."},
+    {"name": "admin", "description": "The admin pages and their API (SSO, admin scope)."},
+]
+
 app = FastAPI(
     title=APP_TITLE,
     version="1.0.0",
     description="High-performance API gateway for LLM/VLM/Embedding servers.",
     lifespan=lifespan,
+    openapi_tags=OPENAPI_TAGS,
 )
 
 # --- Middleware ---
