@@ -1014,13 +1014,10 @@ function submitExportCsv() {
 <div id="client-setup" class="gw-card p-5 mb-6" style="border-left:3px solid #4da3ff">
     <div class="mb-4 max-w-3xl">
         <h2 class="text-sm font-bold text-t2 mb-1">Client setup</h2>
-        <p class="text-xs text-t4">
-            What a terminal tool offers when it sets Claude Code up for a user (<span class="font-mono">GET /v1/settings</span>): one field per environment variable,
-            each with a description, a default the tool can apply as it is, and the options the user may pick instead.
-            <span class="font-mono">default</span> and <span class="font-mono">options</span> can differ per tier, the account's cloud access: write an object keyed by
-            <span class="font-mono">everyone</span> / <span class="font-mono">azure</span> / <span class="font-mono">aws</span> / <span class="font-mono">both</span> instead of a plain value
-            (the most specific key that applies wins). A <span class="font-mono">model</span> field without options offers every chat model the account can see.
-            This is separate from the client rules above and their patches.
+        <p class="text-xs text-t4 gw-tip gw-tip-wide"
+           data-tip="Each variable is one entry of the env block of Claude Code's settings.json. A tool applies the default as it is, or lets the user pick one of the options. Default and options can differ per tier, the account's cloud access: a value for Everyone, and one for Azure, AWS or Azure + AWS where those accounts should get something else (the most specific that applies wins). A model variable without options offers every chat model the account can see; without a default it suggests the gateway's fallback LLM. Separate from the client rules above and their patches.">
+            The variables a terminal tool offers when it sets Claude Code up for a user (<span class="font-mono">GET /v1/settings</span>).
+            Each card shows what accounts get: the default, and what the user can pick instead. Press <span class="text-t2">Edit</span> to change one; the card follows your edit, and nothing applies until you save.
         </p>
     </div>
     <p class="text-xs text-t4 mb-3" id="cs-source" data-path="{{ cs.path }}">
@@ -1030,26 +1027,23 @@ function submitExportCsv() {
     <p class="text-xs text-ar mb-3{{ '' if cs.error else ' hidden' }}" id="cs-error">{% if cs.error %}The file on disk is not in force (the last good one is): {{ cs.error }}{% endif %}</p>
     <p class="text-xs mb-3{{ '' if cs.unknown_models else ' hidden' }}" id="cs-unknown" style="color:#f5a623">{% if cs.unknown_models %}Not a chat model of this gateway, so skipped for every account: {{ cs.unknown_models | join(', ') }}{% endif %}</p>
     <form action="/admin/client-settings" method="POST" id="cs-form">
-        {# Two views of one document: the form edits the JSON in the
+        {# Two views of one document: the cards edit the JSON in the
            textarea, which is what is posted and what the server validates
            (client_settings.parse). Without JS only the textarea shows. #}
         <div class="bg-n1 p-1 rounded-lg inline-flex items-center gap-0.5 mb-3 hidden" id="cs-views" role="tablist">
-            <button type="button" class="gw-chtab gw-chtab-on" data-cs-view="form" role="tab" aria-selected="true">Form</button>
+            <button type="button" class="gw-chtab gw-chtab-on" data-cs-view="form" role="tab" aria-selected="true">Variables</button>
             <button type="button" class="gw-chtab" data-cs-view="json" role="tab" aria-selected="false">JSON</button>
         </div>
         <div id="cs-editor" class="space-y-3 hidden"></div>
         <datalist id="cs-models">{% for m in cs.models %}<option value="{{ m }}"></option>{% endfor %}</datalist>
         <textarea name="settings" rows="22" spellcheck="false" aria-label="Client settings (JSON)" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ cs.text }}</textarea>
+        <p class="text-xs mt-3" id="cs-check" role="status" aria-live="polite"></p>
         <div class="flex flex-wrap items-center gap-3 mt-3">
             <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
+            <span class="text-xs hidden" id="cs-dirty" style="color:#f5a623">Unsaved changes</span>
             <button type="button" id="cs-reset" class="gw-btn gw-btn-ghost text-sm px-3 py-2{{ '' if cs.customized else ' hidden' }}">Reset to the shipped example</button>
         </div>
     </form>
-    <div class="mt-5 pt-3" style="border-top:1px solid rgba(255,255,255,0.05)">
-        <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">What each tier is offered</div>
-        <div class="overflow-x-auto"><table class="gw-table" id="cs-preview"></table></div>
-        <p class="text-[11px] text-t4 mt-2">The default, then how many options there are. A dash: the field is not offered to that tier.</p>
-    </div>
 </div>
 
 </div>
@@ -2688,15 +2682,33 @@ function submitExportCsv() {
         // when the admin comes back to this page later.
         if (saved && typeof saved.y === 'number' && Date.now() - saved.t < 30000) window.scrollTo(0, saved.y);
     })();
-    /* ── Client setup: the form editor ──
-       Edits the parsed JSON document and writes it back into the textarea
-       (sync), keeping every key it does not know (_readme, _notes...). A
-       per-tier value shows one row per tier key; "everyone" alone is written
-       as a plain value, as a person would. The server is the validator. */
-    window.gwClientSetupEditor = function(form, box, TIERS) {
+    /* ── Client setup ──
+       One card per variable. Each shows what accounts really get (the
+       default and the options per tier, resolved by the server), and opens
+       into an editor. The editor edits the parsed JSON document and writes
+       it into the one textarea that is posted, keeping every key it does not
+       know (_readme, _notes...). While the admin edits, the text is sent to
+       POST /admin/client-settings/check (validates, resolves, writes
+       nothing) so the cards and the status line follow the edit. The server
+       is the only validator. */
+    (function() {
+        var card = document.getElementById('client-setup');
+        if (!card) return;
+        var form = document.getElementById('cs-form'), box = form.querySelector('textarea');
         var root = document.getElementById('cs-editor'), views = document.getElementById('cs-views');
+        var resetBtn = document.getElementById('cs-reset'), statusLine = document.getElementById('cs-check');
+        var dirtyMark = document.getElementById('cs-dirty');
+        var TIERS = {{ cs.tiers | tojson }};
         var TIER_LABEL = { everyone: 'Everyone', azure: 'Azure', aws: 'AWS', both: 'Azure + AWS' };
+        var ACCOUNTS = ['local', 'azure', 'aws', 'both'];
+        var ACCOUNT_LABEL = { local: 'Local only', azure: 'Azure', aws: 'AWS', both: 'Azure + AWS' };
+        var MANY = 12;                       // options shown before "+ N more"
         var doc = null, mode = 'form';
+        var open = new Set();                // the fields whose editor is open
+        var resolved = {};                   // account -> field name -> what it is offered
+        var stale = false;                   // the last check failed: resolved is the last valid text's
+        var painters = [];                   // one per card: repaints its "what accounts get"
+        var dirty = false, timer = null, seq = 0;
 
         function el(tag, attrs, kids) {
             var n = document.createElement(tag);
@@ -2717,6 +2729,7 @@ function submitExportCsv() {
             return n;
         }
         function small(text, cls) { return el('span', { class: 'text-[11px] ' + (cls || 'text-t4'), text: text }); }
+        function caption(text) { return el('div', { class: 'text-[11px] text-t4 font-semibold uppercase tracking-wider mb-1', text: text }); }
         function btn(text, onClick, title, cls) {
             return el('button', { type: 'button', class: 'gw-btn gw-btn-ghost text-xs px-2 py-0.5 ' + (cls || ''), text: text, title: title || text, 'aria-label': title || text, onclick: onClick });
         }
@@ -2729,6 +2742,74 @@ function submitExportCsv() {
             var out = {}; keys.forEach(function(k) { out[k] = t[k]; }); return out;
         }
 
+        // ── What accounts get: the server's answer, per card ──
+        function chip(option, isDefault) {
+            var kids = [];
+            if (isDefault) kids.push(el('span', { text: '✓', 'aria-hidden': 'true' }));
+            kids.push(el('span', { class: 'font-mono', text: option.value }));
+            if (option.label && option.label !== option.value) kids.push(el('span', { class: 'text-t3', text: option.label }));
+            var title = (isDefault ? 'The default. ' : '') + (option.description || '') + (option.backend ? ' (' + option.backend + ')' : '');
+            return el('span', {
+                class: 'inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] ' + (isDefault ? 'text-t1' : 'text-t2'),
+                style: isDefault ? 'background:rgba(77,163,255,0.16);border:1px solid rgba(77,163,255,0.55)' : 'background:rgba(255,255,255,0.06);border:1px solid transparent',
+                title: title.trim()
+            }, kids);
+        }
+        function offerRow(label, offer) {
+            var right;
+            if (!offer) {
+                right = small('Not offered: no option applies to these accounts.');
+            } else {
+                var byValue = {};
+                offer.options.forEach(function(o) { byValue[o.value] = o; });
+                var others = offer.options.filter(function(o) { return o.value !== offer['default']; });
+                // One line: the default first (✓), then what can be picked instead.
+                var list = el('div', { class: 'flex flex-wrap items-center gap-1' });
+                function fill(all) {
+                    list.textContent = '';
+                    list.appendChild(chip(byValue[offer['default']] || { value: offer['default'] }, true));
+                    list.appendChild(small(others.length ? 'or' : 'the only value', 'text-t4 px-1'));
+                    (all ? others : others.slice(0, MANY)).forEach(function(o) { list.appendChild(chip(o, false)); });
+                    if (!all && others.length > MANY) list.appendChild(btn('+ ' + (others.length - MANY) + ' more', function() { fill(true); }, 'Show every option'));
+                }
+                fill(false);
+                right = list;
+            }
+            return el('div', { class: 'flex items-start gap-3' }, [
+                el('span', { class: 'text-xs text-t2 font-semibold w-28 flex-shrink-0 pt-0.5', text: label }),
+                el('div', { class: 'flex-1 min-w-0' }, [right])
+            ]);
+        }
+        function paintOffers(node, f) {
+            node.textContent = '';
+            node.style.opacity = stale ? '0.5' : '';
+            node.appendChild(caption(stale ? 'What accounts get (before the problem below)' : 'What accounts get: ✓ default, or one of the options'));
+            var name = (f.name || '').trim();
+            // Tiers that get the same thing share a row.
+            var groups = [], bySig = {};
+            ACCOUNTS.forEach(function(a) {
+                var offer = (resolved[a] || {})[name] || null;
+                var sig = offer ? JSON.stringify([offer['default'], offer.options.map(function(o) { return o.value; })]) : '-';
+                if (!(sig in bySig)) { bySig[sig] = { accounts: [], offer: offer }; groups.push(bySig[sig]); }
+                bySig[sig].accounts.push(a);
+            });
+            groups.forEach(function(g) {
+                var label = g.accounts.length === ACCOUNTS.length ? 'All accounts'
+                    : g.accounts.map(function(a) { return ACCOUNT_LABEL[a]; }).join(', ');
+                node.appendChild(offerRow(label, g.offer));
+            });
+        }
+        function setResolved(preview) {
+            resolved = {};
+            preview.forEach(function(p) {
+                resolved[p.account] = {};
+                p.fields.forEach(function(f) { resolved[p.account][f.name] = f; });
+            });
+            stale = false;
+            painters.forEach(function(paint) { paint(); });
+        }
+
+        // ── The editor of one field ──
         // One tiered block: a row per tier key present, "+ tier" to add one.
         function tiered(field, key, editOne, emptyValue, note) {
             var wrap = el('div', { class: 'space-y-1.5' });
@@ -2737,105 +2818,133 @@ function submitExportCsv() {
                 var t = tiers(field[key]);
                 TIERS.forEach(function(tier) {
                     if (!(tier in t)) return;
-                    var row = el('div', { class: 'flex items-start gap-2' }, [
+                    wrap.appendChild(el('div', { class: 'flex items-start gap-2' }, [
                         el('span', { class: 'text-[11px] text-t3 w-20 pt-1.5 flex-shrink-0', text: TIER_LABEL[tier] }),
                         el('div', { class: 'flex-1 min-w-0' }, [editOne(t[tier], function(v) { t[tier] = v; field[key] = untier(t); })]),
-                        btn('×', function() { delete t[tier]; field[key] = untier(t); draw(); }, 'Remove the ' + TIER_LABEL[tier] + ' value')
-                    ]);
-                    wrap.appendChild(row);
+                        btn('×', function() { delete t[tier]; field[key] = untier(t); draw(); touch(); }, 'Remove the ' + TIER_LABEL[tier] + ' value')
+                    ]));
                 });
                 var missing = TIERS.filter(function(k) { return !(k in t); });
                 if (missing.length) {
                     var pickTier = el('select', { class: 'gw-input text-[11px] py-0.5 px-1', 'aria-label': 'Add a value for a tier' },
-                        [el('option', { value: '', text: Object.keys(t).length ? '+ value for a tier…' : '+ set a value…' })].concat(
+                        [el('option', { value: '', text: Object.keys(t).length ? '+ a different value for…' : '+ set a value for…' })].concat(
                             missing.map(function(k) { return el('option', { value: k, text: TIER_LABEL[k] }); })));
                     pickTier.addEventListener('change', function() {
                         if (!pickTier.value) return;
                         t[pickTier.value] = emptyValue(); field[key] = untier(t); draw();
                     });
-                    wrap.appendChild(el('div', { class: 'flex items-center gap-2' }, [pickTier, note ? small(note) : null]));
+                    wrap.appendChild(el('div', { class: 'flex flex-wrap items-center gap-2' }, [pickTier, note && !Object.keys(t).length ? small(note) : null]));
                 }
             }
             draw();
             return wrap;
         }
-
         function choiceOptions(list, set) {
-            var box = el('div', { class: 'space-y-1' });
+            var wrap = el('div', { class: 'space-y-1' });
             function draw() {
-                box.textContent = '';
+                wrap.textContent = '';
                 list.forEach(function(opt, i) {
                     var o = typeof opt === 'object' ? opt : { value: opt };
                     list[i] = o;
-                    box.appendChild(el('div', { class: 'grid gap-1.5', style: 'grid-template-columns: 7rem 10rem 1fr auto' }, [
+                    wrap.appendChild(el('div', { class: 'grid gap-1.5', style: 'grid-template-columns: 7rem 10rem 1fr auto' }, [
                         input(o.value, function(v) { o.value = v; set(list); }, { placeholder: 'value', class: 'gw-input text-xs font-mono py-1 px-2 w-full' }),
                         input(o.label, function(v) { if (v) o.label = v; else delete o.label; set(list); }, { placeholder: 'label' }),
                         input(o.description, function(v) { if (v) o.description = v; else delete o.description; set(list); }, { placeholder: 'description (optional)' }),
-                        btn('×', function() { list.splice(i, 1); set(list); draw(); }, 'Remove this option')
+                        btn('×', function() { list.splice(i, 1); set(list); draw(); touch(); }, 'Remove this option')
                     ]));
                 });
-                box.appendChild(btn('+ option', function() { list.push({ value: '' }); set(list); draw(); }, 'Add an option'));
+                wrap.appendChild(btn('+ option', function() { list.push({ value: '' }); set(list); draw(); }, 'Add an option'));
             }
             draw();
-            return box;
+            return wrap;
         }
         function modelOptions(list, set) {
             return input((list || []).join(', '), function(v) {
                 set(v.split(',').map(function(x) { return x.trim(); }).filter(Boolean));
             }, { placeholder: 'model aliases, comma-separated', class: 'gw-input text-xs font-mono py-1 px-2 w-full', list: 'cs-models' });
         }
-
-        function fieldCard(f, i, fields) {
+        function editor(f, onHead) {
             var isModel = f.type === 'model';
-            var head = el('div', { class: 'flex flex-wrap items-center gap-2' }, [
-                el('div', { class: 'w-72' }, [input(f.name, function(v) { f.name = v; }, { placeholder: 'ENV_VARIABLE_NAME', class: 'gw-input text-xs font-mono py-1 px-2 w-full', 'aria-label': 'Variable name' })]),
-                el('div', { class: 'w-48' }, [input(f.label, function(v) { if (v) f.label = v; else delete f.label; }, { placeholder: 'Label', 'aria-label': 'Label' })]),
-                (function() {
-                    var sel = el('select', { class: 'gw-input text-xs py-1 px-2', 'aria-label': 'Type' },
-                        [el('option', { value: 'model', text: 'model' }), el('option', { value: 'choice', text: 'choice' })]);
-                    sel.value = f.type || 'choice';
-                    sel.addEventListener('change', function() { f.type = sel.value; delete f.options; draw(); });
-                    return sel;
-                })(),
-                el('span', { class: 'flex-1' }),
-                btn('↑', function() { if (i) { fields.splice(i - 1, 0, fields.splice(i, 1)[0]); draw(); } }, 'Move up'),
-                btn('↓', function() { if (i < fields.length - 1) { fields.splice(i + 1, 0, fields.splice(i, 1)[0]); draw(); } }, 'Move down'),
-                btn('Remove', function() {
-                    gwConfirm('Remove the field ' + (f.name || '(unnamed)') + '? Nothing is saved until you press Save.', { okLabel: 'Remove', danger: true })
-                        .then(function(yes) { if (yes) { fields.splice(i, 1); draw(); } });
-                }, 'Remove this field', 'text-ar')
+            var type = el('select', { class: 'gw-input text-xs py-1 px-2 w-full', 'aria-label': 'Type' }, [
+                el('option', { value: 'model', text: 'model: pick one of the gateway\'s models' }),
+                el('option', { value: 'choice', text: 'choice: pick one of the values listed here' })
             ]);
+            type.value = f.type || 'choice';
+            type.addEventListener('change', function() { f.type = type.value; delete f.options; redraw(); });
             var desc = el('textarea', { rows: '2', class: 'gw-input text-xs py-1 px-2 w-full', placeholder: 'What the variable is for (required)', 'aria-label': 'Description' });
             desc.value = f.description || '';
-            desc.addEventListener('input', function() { f.description = desc.value; });
-
+            desc.addEventListener('input', function() { f.description = desc.value; onHead(); });
+            var mono = 'gw-input text-xs font-mono py-1 px-2 w-full';
             var dflt = tiered(f, 'default', function(v, set) {
-                return input(v, set, isModel ? { list: 'cs-models', class: 'gw-input text-xs font-mono py-1 px-2 w-full', placeholder: 'model alias' } : { class: 'gw-input text-xs font-mono py-1 px-2 w-full', placeholder: 'value' });
-            }, function() { return ''; }, isModel ? 'none: the gateway\'s fallback LLM' : null);
+                return input(v, set, isModel ? { list: 'cs-models', class: mono, placeholder: 'model alias' } : { class: mono, placeholder: 'one of the option values' });
+            }, function() { return ''; }, isModel ? 'Not set: the gateway\'s fallback LLM is suggested.' : 'A choice needs a default.');
             var opts = tiered(f, 'options', function(v, set) {
                 return isModel ? modelOptions(v, set) : choiceOptions(Array.isArray(v) ? v : [], set);
-            }, function() { return []; }, isModel ? 'none: every chat model the account can see' : 'a choice needs options');
+            }, function() { return []; }, isModel ? 'Not set: every chat model the account can see.' : 'A choice needs options.');
+            return el('div', { class: 'space-y-3 pt-3', style: 'border-top:1px solid rgba(255,255,255,0.06)' }, [
+                el('div', { class: 'grid grid-cols-1 md:grid-cols-3 gap-3' }, [
+                    el('div', {}, [caption('Variable'), input(f.name, function(v) { f.name = v; onHead(); }, { placeholder: 'ENV_VARIABLE_NAME', class: mono, 'aria-label': 'Variable name' })]),
+                    el('div', {}, [caption('Label'), input(f.label, function(v) { if (v) f.label = v; else delete f.label; onHead(); }, { placeholder: 'Shown to the user', 'aria-label': 'Label' })]),
+                    el('div', {}, [caption('Type'), type])
+                ]),
+                el('div', {}, [caption('Description'), desc]),
+                el('div', { class: 'grid grid-cols-1 lg:grid-cols-2 gap-4' }, [
+                    el('div', {}, [caption('Default'), dflt]),
+                    el('div', {}, [caption('Options'), opts])
+                ]),
+                small('A value for Everyone applies to all accounts; add one for Azure, AWS or Azure + AWS only where those accounts should get something else (the most specific wins).')
+            ]);
+        }
 
-            return el('div', { class: 'rounded-lg p-3 space-y-2', style: 'background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05)', 'data-cs-field': '' }, [
-                head, desc,
-                el('div', { class: 'grid grid-cols-1 lg:grid-cols-2 gap-3' }, [
-                    el('div', {}, [small('DEFAULT', 'text-t4 font-semibold tracking-wider'), dflt]),
-                    el('div', {}, [small('OPTIONS', 'text-t4 font-semibold tracking-wider'), opts])
-                ])
+        function fieldCard(f, i, fields) {
+            var isOpen = open.has(f);
+            var name = el('span', { class: 'font-mono text-sm text-t1 font-semibold break-all' });
+            var label = el('span', { class: 'text-xs text-t3' });
+            var desc = el('p', { class: 'text-xs text-t4' });
+            function head() {
+                name.textContent = f.name || '(no name yet)';
+                label.textContent = f.label || '';
+                desc.textContent = f.description || '';
+            }
+            head();
+            var offers = el('div', { class: 'rounded-md px-3 py-2 space-y-2', style: 'background:rgba(0,0,0,0.18)' });
+            painters.push(function() { paintOffers(offers, f); });
+            paintOffers(offers, f);
+            return el('div', { class: 'rounded-lg p-3 space-y-2', style: 'background:rgba(255,255,255,0.02);border:1px solid ' + (isOpen ? 'rgba(77,163,255,0.45)' : 'rgba(255,255,255,0.06)'), 'data-cs-field': '' }, [
+                el('div', { class: 'flex flex-wrap items-center gap-2' }, [
+                    name, label,
+                    el('span', { class: 'gw-badge gw-badge-muted', text: f.type === 'model' ? 'model' : 'choice' }),
+                    el('span', { class: 'flex-1' }),
+                    btn(isOpen ? 'Done' : 'Edit', function() { if (isOpen) open.delete(f); else open.add(f); draw(); }, isOpen ? 'Close the editor' : 'Edit this field', 'text-ab'),
+                    btn('↑', function() { if (i) { fields.splice(i - 1, 0, fields.splice(i, 1)[0]); redraw(); } }, 'Move up'),
+                    btn('↓', function() { if (i < fields.length - 1) { fields.splice(i + 1, 0, fields.splice(i, 1)[0]); redraw(); } }, 'Move down'),
+                    btn('Remove', function() {
+                        gwConfirm('Remove the field ' + (f.name || '(unnamed)') + '? Nothing is saved until you press Save.', { okLabel: 'Remove', danger: true })
+                            .then(function(yes) { if (yes) { fields.splice(i, 1); redraw(); } });
+                    }, 'Remove this field', 'text-ar')
+                ]),
+                desc, offers,
+                isOpen ? editor(f, head) : null
             ]);
         }
 
         function draw() {
             root.textContent = '';
+            painters = [];
             var fields = doc.fields;
+            if (!fields.length) root.appendChild(el('p', { class: 'text-xs text-t4', text: 'No fields: a tool is offered nothing to set.' }));
             fields.forEach(function(f, i) { root.appendChild(fieldCard(f, i, fields)); });
-            root.appendChild(btn('+ Add a field', function() {
-                fields.push({ name: '', label: '', description: '', type: 'choice', default: '', options: [] });
-                draw();
+            root.appendChild(btn('+ Add a variable', function() {
+                var f = { name: '', label: '', description: '', type: 'choice', default: '', options: [] };
+                fields.push(f); open.add(f);
+                redraw();
                 var last = root.querySelectorAll('[data-cs-field]');
                 last[last.length - 1].querySelector('input').focus();
-            }, 'Add a field', 'px-3 py-1'));
+            }, 'Add a variable', 'px-3 py-1'));
         }
+        function redraw() { draw(); touch(); }
+
+        // ── The two views of the one text ──
         function setMode(m) {
             if (m === 'form' && !load()) return;   // the JSON does not parse: stay
             if (m === 'json' && mode === 'form') write();
@@ -2856,6 +2965,7 @@ function submitExportCsv() {
                 gwToast('The JSON cannot be shown as a form: ' + err.message, 'error');
                 return false;
             }
+            open = new Set();
             draw();
             return true;
         }
@@ -2871,96 +2981,81 @@ function submitExportCsv() {
             box.value = JSON.stringify(out, null, 2) + '\n';
         }
 
-        views.classList.remove('hidden');
-        views.addEventListener('click', function(e) {
-            var b = e.target.closest('[data-cs-view]');
-            if (b) setMode(b.dataset.csView);
-        });
-        if (load()) setMode('form'); else setMode('json');
-        return {
-            // Before a save: the form's state into the textarea.
-            sync: function() { if (mode === 'form') write(); return true; },
-            // After a save or reset: the server's text back into the form.
-            reload: function() { if (mode === 'form') load(); }
-        };
-    };
-
-    /* ── Client setup: save / reset the settings file in place, repaint the per-tier preview ── */
-    (function() {
-        var card = document.getElementById('client-setup');
-        if (!card) return;
-        var form = document.getElementById('cs-form'), box = form.querySelector('textarea');
-        var resetBtn = document.getElementById('cs-reset'), table = document.getElementById('cs-preview');
-        var TIER = { local: 'Local only', azure: 'Azure', aws: 'AWS', both: 'Azure + AWS' };
-
-        function cell(tag, text, cls) {
-            var el = document.createElement(tag);
-            el.textContent = text;
-            if (cls) el.className = cls;
-            return el;
+        // ── Following an edit: ask the server what the text would offer ──
+        function say(text, ok) {
+            statusLine.textContent = text;
+            statusLine.className = 'text-xs ' + (ok ? 'text-ag' : 'text-ar');
         }
-        function paintPreview(preview, names) {
-            var byTier = {};
-            preview.forEach(function(p) {
-                byTier[p.account] = {};
-                p.fields.forEach(function(f) { byTier[p.account][f.name] = f; });
-            });
-            table.textContent = '';
-            var head = document.createElement('tr');
-            head.appendChild(cell('th', 'Variable'));
-            preview.forEach(function(p) { head.appendChild(cell('th', TIER[p.account] || p.account)); });
-            table.appendChild(document.createElement('thead')).appendChild(head);
-            var body = table.appendChild(document.createElement('tbody'));
-            if (!names.length) {
-                var empty = cell('td', 'The file has no fields.', 'text-xs text-t4');
-                empty.colSpan = preview.length + 1;
-                body.appendChild(document.createElement('tr')).appendChild(empty);
-            }
-            names.forEach(function(name) {
-                var row = body.appendChild(document.createElement('tr'));
-                row.appendChild(cell('td', name, 'font-mono text-xs text-t2'));
-                preview.forEach(function(p) {
-                    var f = byTier[p.account][name];
-                    var td = cell('td', f ? f['default'] : '—', 'font-mono text-xs ' + (f ? 'text-t2' : 'text-t4'));
-                    if (f) {
-                        td.appendChild(cell('span', '  ' + f.options.length + (f.options.length === 1 ? ' option' : ' options'), 'text-t4'));
-                        td.title = f.options.map(function(o) { return o.value; }).join(', ');
-                    }
-                    row.appendChild(td);
-                });
+        function sayUnknown(models) {
+            var unknown = document.getElementById('cs-unknown');
+            unknown.textContent = models.length ? 'Not a chat model of this gateway, so skipped for every account: ' + models.join(', ') : '';
+            unknown.classList.toggle('hidden', !models.length);
+        }
+        function setDirty(on) {
+            dirty = on;
+            dirtyMark.classList.toggle('hidden', !on);
+        }
+        function touch() {
+            setDirty(true);
+            clearTimeout(timer);
+            timer = setTimeout(check, 350);
+        }
+        function check() {
+            if (mode === 'form') write();
+            var data = new FormData();
+            data.append('settings', box.value);
+            var mine = ++seq;
+            gwPost('/admin/client-settings/check', data).then(function(reply) {
+                if (mine !== seq) return;
+                setResolved(reply.preview);
+                sayUnknown(reply.unknown_models);
+                say('✓ Valid: ' + reply.fields + (reply.fields === 1 ? ' variable.' : ' variables.') + ' Not saved yet.', true);
+            }).catch(function(err) {
+                if (mine !== seq) return;
+                stale = true;
+                painters.forEach(function(paint) { paint(); });
+                say('Cannot be saved yet: ' + err.message, false);
             });
         }
-        function paint(data) {
-            paintPreview(data.preview, data.names);
+        function saved(data) {
+            clearTimeout(timer); seq++;
             box.value = data.text;
-            editor.reload();
+            if (mode === 'form') load();
+            setResolved(data.preview);
+            sayUnknown(data.unknown_models);
+            setDirty(false);
+            say('', true);
             resetBtn.classList.toggle('hidden', !data.customized);
             document.getElementById('cs-error').classList.add('hidden');
-            var unknown = document.getElementById('cs-unknown');
-            unknown.textContent = data.unknown_models.length
-                ? 'Not a chat model of this gateway, so skipped for every account: ' + data.unknown_models.join(', ') : '';
-            unknown.classList.toggle('hidden', !data.unknown_models.length);
             var source = document.getElementById('cs-source');
             source.textContent = data.customized
                 ? 'Stored in ' + source.dataset.path + '; editing that file by hand works too and applies at the next request.'
                 : 'Showing the shipped example. Saving creates ' + source.dataset.path + ', which you can also edit by hand.';
         }
 
-        paintPreview({{ cs.preview | tojson }}, {{ cs.names | tojson }});
-        var editor = gwClientSetupEditor(form, box, {{ cs.tiers | tojson }});
+        setResolved({{ cs.preview | tojson }});
+        views.classList.remove('hidden');
+        views.addEventListener('click', function(e) {
+            var b = e.target.closest('[data-cs-view]');
+            if (b) setMode(b.dataset.csView);
+        });
+        if (load()) setMode('form'); else setMode('json');
+        form.addEventListener('input', touch);
+        form.addEventListener('change', touch);
+        window.addEventListener('beforeunload', function(e) { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
         form.addEventListener('submit', function(e) {
             e.preventDefault();
-            if (!editor.sync()) return;
+            if (mode === 'form') write();
             gwPost(form.action, new FormData(form)).then(function(data) {
-                paint(data);
-                gwToast('Client setup saved: ' + data.fields + (data.fields === 1 ? ' field.' : ' fields.'), 'ok');
-            }).catch(function(err) { gwToast(err.message, 'error'); });
+                saved(data);
+                gwToast('Client setup saved: ' + data.fields + (data.fields === 1 ? ' variable.' : ' variables.'), 'ok');
+            }).catch(function(err) { say('Not saved: ' + err.message, false); gwToast(err.message, 'error'); });
         });
         resetBtn.addEventListener('click', function() {
             gwConfirm('Remove your client settings file and offer the shipped example again?', { okLabel: 'Reset', danger: true }).then(function(yes) {
                 if (!yes) return;
                 gwPost('/admin/client-settings/reset', new FormData()).then(function(data) {
-                    paint(data);
+                    saved(data);
                     gwToast('Client setup reset to the shipped example.', 'ok');
                 }).catch(function(err) { gwToast(err.message, 'error'); });
             });

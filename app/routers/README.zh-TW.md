@@ -248,6 +248,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | `POST` | `/admin/client-rules/{rule_id}` | 儲存某個 check 的設定：開關、動作、文案、patch、寄信。偵測條件寫在程式裡，不可編輯 |
 | `POST` | `/admin/client-rules/{rule_id}/reset` | 回到程式內的預設值；已記錄的違規保留 |
 | `POST` | `/admin/client-settings` | 儲存 `client_settings.json`（表單欄位 `settings`，JSON 文字）：`GET /v1/settings` 提供的欄位。先驗證；不合格回 400，不寫入任何東西 |
+| `POST` | `/admin/client-settings/check` | 一份設定文字（表單欄位 `settings`）若儲存，各 tier 會得到什麼；不寫入：卡片編輯時的即時預覽。驗證相同，不合格回 400。不寫入任何東西，不記入稽核 |
 | `POST` | `/admin/client-settings/reset` | 移除 `client_settings.json`：改回提供內建的範例 |
 | `POST` | `/admin/client-rules/{rule_id}/mail` | 把該 check 的帳號排入寄信佇列（`only_unmailed=on\|off`）；回應後先寄第一批，其餘由寄信 job 分批寄出 |
 | `POST` | `/admin/client-rules/mail-all` | 把任何 check 下有未處理項目的帳號全部排入佇列 |
