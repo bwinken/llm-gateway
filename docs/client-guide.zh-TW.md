@@ -70,7 +70,9 @@ Windows 使用者可以在 Web UI 的 **Setup** 頁面下載已經設定好的 C
 | `GET /v1/usage` | 你每天的用量，以及今天和本月各模型的用量。見[用量紀錄](#用量紀錄) |
 | `GET /v1/service-accounts` | 你名下的服務帳號，以及各自的上限和本月用量。見[服務帳號](#服務帳號) |
 | `GET /v1/notices` | dashboard 要你修正的 client 設定。見[通知](#通知) |
+| `POST /v1/notices/resolved` | 告訴 gateway 你已經套用修正，全部或指定的通知。見[通知](#通知) |
 | `GET /v1/settings` | 工具可以幫你設定的 client 設定，每項都帶有說明、對你的帳號的建議值和其他選項。見[設定](#設定) |
+| `POST /v1/events` | 安裝工具回報它幫你安裝、更新或移除了什麼。見[安裝事件](#安裝事件) |
 | `POST /auth/api-key` | 用 AuthCenter 的 access token 換你的 API key，terminal 工具的登入方式。見[從 terminal 工具登入](#從-terminal-工具登入) |
 | `POST /v1/embeddings` | Embeddings（僅 vLLM） |
 | `POST /v1/rerank`、`/v1/score` | Rerank |
@@ -277,7 +279,24 @@ curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
 - `notices` 就是 dashboard 通知區塊顯示的內容：最近 `window_days` 天內 gateway 在你的 client 請求裡看到、而你還沒回報已修正的問題。沒有待辦時是空陣列。
 - 通知的 `patch` 是它的修正方式（前提是能靠設定修正）：要在 `~/.claude/settings.json` 的 `env` 區塊裡設定的變數（`set`），和要從裡面移除的變數（`unset`）。沒有 `patch` 的通知要用別的方式處理（更新 Claude Code、申請權限）。
 - 最上層的 `patch` 是實際要套用的那一份：把所有未處理的項目合併，再加上每個帳號都該有的設定。`covers` 是它能修正的通知，`manual` 是它修不了的。沒有待辦時不會出現。patch 裡不會有 key。
-- 這個端點只能讀。套用修正後，請到 dashboard 按 *I've applied it*；gateway 連續 `window_days` 天沒再看到同樣的問題時，通知也會自己消失。
+- 套用修正後要回報：在 dashboard 按 *I've applied it*，或由程式呼叫：
+
+```bash
+# 所有未處理的通知
+curl -X POST https://your-gateway/v1/notices/resolved -H "Authorization: Bearer sk-your-api-key"
+
+# 只回報其中幾項
+curl -X POST https://your-gateway/v1/notices/resolved -H "Authorization: Bearer sk-your-api-key" \
+  -H "Content-Type: application/json" -d '{"ids": ["CC001"]}'
+```
+
+```json
+{"object": "notices.resolved", "resolved": ["CC001"]}
+```
+
+- `resolved` 是原本未處理、現在已清掉的通知。沒有未處理項目的 id 不會出現，重複呼叫會回空陣列，兩者都不算錯誤。`400`：`ids` 不是 id 的陣列。
+- gateway 看不到你的設定檔，所以相信你說的。如果它又看到同樣的問題（另一台機器、patch 沒套成功），通知會在一小時內回來。gateway 連續 `window_days` 天沒再看到同樣的問題時，通知也會自己消失。
+- 這些呼叫會記在 gateway 的稽核紀錄裡，和 dashboard 的按鈕一樣。
 
 ## 設定
 
@@ -317,8 +336,55 @@ curl https://your-gateway/v1/settings -H "Authorization: Bearer sk-your-api-key"
 - 兩者都依你的 tier 而定，也就是你的雲端權限（沒有、Azure、AWS、兩者都有）：別的帳號可能拿到不同的預設值、不同的選項，或是你沒有的欄位。你不能用的模型不會出現在選項裡。
 - gateway 不知道你目前設了什麼：請和自己的 settings.json 比對。
 - 欄位會隨 gateway 的設定和你的權限改變，需要時再讀，不要留副本。回應裡不會有 key，而且這個端點只能讀：要不要套用、怎麼套用由工具決定。
+- 設定和[通知](#通知)回答的是兩個不同的問題。`/v1/settings` 是設定 client 時該設什麼；通知的 `patch` 是修正 gateway 看到的問題所需的最小改動。要把所有設定調成建議值，就先套用各項 default，再把通知最上層的 `patch` 疊上去；只想修正問題、不動使用者自己選過的值，就只套用 `patch`。gateway 不會替你合併，因為它不知道使用者選了哪些值。
 
-狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings`，合起來就是 dashboard 上看得到的資訊，加上工具設定 client 所需要的資料。它們在額度用完時一樣可以查，都不計費，也都不會回傳 API key：key 只會在登入之後交出（見下一節，或 dashboard）。
+## 安裝事件
+
+幫你安裝或設定東西的工具（terminal 工具、桌面程式）可以把它做了什麼告訴 gateway，讓管理員看得到大家在用哪些工具、哪些版本、在哪種作業系統上。一次回報一筆：
+
+```bash
+curl -X POST https://your-gateway/v1/events -H "Authorization: Bearer sk-your-api-key" \
+  -H "Content-Type: application/json" -d '{
+    "event": "installed", "tool": "gateway-tui", "tool_version": "0.3.1",
+    "component": "claude-code", "component_version": "2.1.310", "method": "npm",
+    "os": "windows", "os_version": "10.0.22631", "arch": "x64", "hostname": "pc-0421"
+  }'
+```
+
+```json
+{"object": "event", "recorded": true}
+```
+
+| 欄位 | | 說明 |
+|---|---|---|
+| `event` | 必填 | `installed`、`updated`、`uninstalled` 或 `settings_applied` |
+| `ok` | 選填 | 這次嘗試失敗時送 `false`（預設 `true`）。安裝失敗就是 `"event": "installed", "ok": false` |
+| `tool`、`tool_version` | 必填 | 回報的程式 |
+| `component` | 必填 | 這件事的對象，用它自己的名字：`claude-code`、`codex`、`vscode`、`claude-desktop`、`@modelcontextprotocol/server-github`、`anthropic-skills:pdf` |
+| `kind` | 選填 | 它是哪一類：`app`（獨立的程式，預設值）、`skill`、`mcp` 或 `plugin` |
+| `client` | 選填 | `skill`、`mcp`、`plugin` 是裝進哪個程式的，例如 `claude-code` |
+| `component_version`、`previous_version` | 選填 | 機器上現在的版本；更新時的前一個版本 |
+| `method` | 選填 | 安裝方式：`npm`、`native`、`offline` |
+| `os` | 必填 | `windows`、`linux` 或 `macos` |
+| `os_version`、`arch` | 選填 | 例如 `10.0.22631`、`Ubuntu 22.04 (WSL2)`；`x64`、`arm64` |
+| `hostname` | 選填 | 機器名稱。請一律送：沒有的話，你同一種 OS 的機器會被算成同一台 |
+| `message` | 選填 | 失敗原因或備註（保留 500 字） |
+
+skill、MCP server 或 plugin 要說明它是裝進哪個程式的：
+
+```json
+{"event": "installed", "tool": "gateway-tui", "tool_version": "0.3.1",
+ "kind": "mcp", "component": "@modelcontextprotocol/server-github", "component_version": "1.2.0",
+ "client": "claude-desktop", "os": "windows", "hostname": "pc-0421"}
+```
+
+- 名稱（`tool`、`client`、`method`、`arch`）只能用字母、數字、`.`、`_`、`-`，最長 40 字；`hostname` 用同樣的字元，最長 100 字；`component` 另外可以用 `@`、`/`、`:`、`+`，最長 100 字。版本最長 40 字，不能有空白。名稱會存成小寫。
+- 帳號就是 key 所屬的帳號。gateway 不認得的欄位會被忽略，所以新版工具可以送比舊版 gateway 會保留的更多。
+- `400`：有欄位不合格（`detail` 會說是哪一個）。`429`：你的帳號一小時內超過 300 筆。`503`：沒能存下來。
+- 這只是回報：不會改變帳號的任何東西，不論回應是什麼，工具都該繼續做它的事。它不會清掉通知，那是 `POST /v1/notices/resolved`。
+- 事件裡不要放 key。你自己的 key 出現在 `message` 和 `os_version` 時會被拿掉，出現在其他欄位則整筆被拒絕。
+
+狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings`，合起來就是 dashboard 上看得到的資訊，加上工具設定 client 所需要的資料。`POST /v1/notices/resolved` 和 `POST /v1/events` 則是工具用來回報的兩支。它們在額度用完時一樣可以用，都不計費，也都不會回傳 API key：key 只會在登入之後交出（見下一節，或 dashboard）。
 
 ## 從 terminal 工具登入
 
@@ -335,7 +401,7 @@ curl -X POST https://your-gateway/auth/api-key -H "Authorization: Bearer $AUTHCE
 {"object": "api_key", "username": "alice", "api_key": "sk-your-api-key", "legacy_key": false}
 ```
 
-3. 之後它就和其他 client 一樣用 API key：呼叫模型，以及讀 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings`。access token 不會再用到，其他端點也不接受它，用完就丟。
+3. 之後它就和其他 client 一樣用 API key：呼叫模型，以及使用 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings`、`/v1/events`。access token 不會再用到，其他端點也不接受它，用完就丟。
 
 - 拿到的永遠是你現有的 key。在第二台機器登入，不會讓第一台的 key 失效。
 - 第一次登入會建立帳號，和第一次開 dashboard 一樣。

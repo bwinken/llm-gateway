@@ -831,7 +831,7 @@ function submitExportCsv() {
                     <textarea name="message" rows="4" maxlength="4000" class="gw-input w-full text-sm py-1.5 px-2">{{ r.message }}</textarea>
                 </div>
                 <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-4 mb-2 gw-tip gw-tip-wide"
-                     data-tip="Optional. Environment variables for the env block of the user's ~/.claude/settings.json: one NAME=value per line, -NAME to remove one. The script the user downloads sets exactly these and touches nothing else in the file. Every account gets the first box. An account with Azure access also gets the second on top, one with AWS access the third on top of that (AWS wins where both set the same variable).">Settings patch <span class="normal-case tracking-normal font-normal text-t4">environment variables only · NAME=value per line · -NAME removes</span></div>
+                     data-tip="Optional. Environment variables for the env block of the user's ~/.claude/settings.json: one NAME=value per line, -NAME to remove one. The script the user downloads sets exactly these and touches nothing else in the file. Every account gets the first box. An account with Azure access also gets the second on top, one with AWS access the third on top of that (AWS wins where both set the same variable). Write NAME=@setup to leave a value to Client setup below: each account then gets the default that card shows for its tier, so the value is set in one place.">Settings patch <span class="normal-case tracking-normal font-normal text-t4">environment variables only · NAME=value per line · -NAME removes · NAME=@setup takes the value from Client setup</span></div>
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-x-4 gap-y-3">
                     <div>
                         <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Everyone <span class="normal-case tracking-normal font-normal">(local-only accounts get just this){% if r.needs_patch %} · <span style="color:#f5a623">required to turn this rule on</span>{% endif %}</span></label>
@@ -1015,7 +1015,7 @@ function submitExportCsv() {
     <div class="mb-4 max-w-3xl">
         <h2 class="text-sm font-bold text-t2 mb-1">Client setup</h2>
         <p class="text-xs text-t4 gw-tip gw-tip-wide"
-           data-tip="Each variable is one entry of the env block of Claude Code's settings.json. A tool applies the default as it is, or lets the user pick one of the options. Default and options can differ per tier, the account's cloud access: a value for Everyone, and one for Azure, AWS or Azure + AWS where those accounts should get something else (the most specific that applies wins). A model variable without options offers every chat model the account can see; without a default it suggests the gateway's fallback LLM. Separate from the client rules above and their patches.">
+           data-tip="Each variable is one entry of the env block of Claude Code's settings.json. A tool applies the default as it is, or lets the user pick one of the options. Default and options can differ per tier, the account's cloud access: a value for Everyone, and one for Azure, AWS or Azure + AWS where those accounts should get something else (the most specific that applies wins). A model variable without options offers every chat model the account can see; without a default it suggests the gateway's fallback LLM. Separate from the client rules above, except where a rule's patch says NAME=@setup: that account is then told the default shown here.">
             The variables a terminal tool offers when it sets Claude Code up for a user (<span class="font-mono">GET /v1/settings</span>).
             Each card shows what accounts get: the default, and what the user can pick instead. Press <span class="text-t2">Edit</span> to change one; the card follows your edit, and nothing applies until you save.
         </p>
@@ -1044,6 +1044,91 @@ function submitExportCsv() {
             <button type="button" id="cs-reset" class="gw-btn gw-btn-ghost text-sm px-3 py-2{{ '' if cs.customized else ' hidden' }}">Reset to the shipped example</button>
         </div>
     </form>
+</div>
+
+{# ── Client installs: what setup tools reported with POST /v1/events (app/services/client_events.py) ── #}
+<div id="client-installs" class="gw-card p-5 mb-6" style="border-left:3px solid #3dd68c">
+    <div class="mb-4 max-w-3xl">
+        <h2 class="text-sm font-bold text-t2 mb-1">Client installs</h2>
+        <p class="text-xs text-t4 gw-tip gw-tip-wide"
+           data-tip="A setup tool reports what it did on its user's machine: installed, updated or removed a component, or applied settings, with the version, the operating system and, if it sends it, the machine's name (without one, an account's machines of the same OS count as one). Everything here is what the tool said; the gateway cannot check it, and nothing is routed, limited or refused by it. An account can report at most {{ client_installs.max_per_hour if client_installs else '' }} events an hour.">
+            What setup tools say they installed for their users (<span class="font-mono">POST /v1/events</span>): which account has what, in which version, on which operating system.
+        </p>
+    </div>
+    {% if client_installs is none %}
+    <p class="text-xs text-ar">Client installs could not be loaded (has <span class="font-mono">alembic upgrade head</span> been run?).</p>
+    {% else %}
+    {% set ci = client_installs %}
+    <p class="text-xs text-t4 mb-3" id="client-installs-summary">
+        {% if ci.installs %}
+        {{ ci.accounts }} account{{ '' if ci.accounts == 1 else 's' }} in {{ ci.days }} days{% for o in ci.os %} · <span class="text-t2">{{ o.label }}</span> {{ o.machines }} machine{{ '' if o.machines == 1 else 's' }}{% endfor %}
+        {% else %}No tool has reported an install yet.{% endif %}
+    </p>
+    {% if ci.components %}
+    <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">What is installed <span class="text-t4 font-mono">{{ ci.components | length }}</span></div>
+    <div class="overflow-x-auto mb-4">
+    <table class="gw-table" id="client-install-components">
+        <thead><tr><th>Kind</th><th>Component</th><th>Accounts</th><th>Machines</th><th>Versions</th></tr></thead>
+        <tbody>
+            {% for c in ci.components %}
+            <tr>
+                <td class="text-xs text-t3">{{ c.kind }}</td>
+                <td class="text-sm text-t1">{{ c.component }}{% if c.clients %} <span class="text-xs text-t4">in {{ c.clients | join(', ') }}</span>{% endif %}</td>
+                <td class="font-mono text-xs text-t2">{{ c.accounts }}</td>
+                <td class="font-mono text-xs text-t2">{{ c.machines }}</td>
+                <td class="font-mono text-xs text-t3">{% for v in c.versions[:5] %}<span class="text-t1">{{ v.version or '—' }}</span> <span class="text-t4">· {{ v.machines }}</span>{{ ', ' if not loop.last }}{% endfor %}{% if c.versions | length > 5 %} <span class="text-t4">+{{ c.versions | length - 5 }} more</span>{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% endif %}
+    {% if ci.installs %}
+    <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">Installed now <span class="text-t4 font-mono">{{ ci.total }}</span>{% if ci.total > ci.installs | length %} <span class="normal-case tracking-normal font-normal text-t4">showing the newest {{ ci.installs | length }}</span>{% endif %}</div>
+    <div class="overflow-x-auto mb-4">
+    <table class="gw-table" id="client-installs-table">
+        <thead><tr><th>Account</th><th>Component</th><th>Version</th><th>OS</th><th>Machine</th><th>Installed by</th><th>Since</th></tr></thead>
+        <tbody>
+            {% for i in ci.installs %}
+            <tr>
+                <td class="text-sm"><a href="?q={{ i.username | urlencode }}#users" class="font-mono text-t1 hover:underline">{{ i.username }}</a></td>
+                <td class="text-sm text-t2">{{ i.component }}{% if i.kind != 'app' %} <span class="text-xs text-t4">{{ i.kind }}{% if i.client %} in {{ i.client }}{% endif %}</span>{% endif %}</td>
+                <td class="font-mono text-xs text-t1">{{ i.component_version or '—' }}</td>
+                <td class="text-xs text-t2 whitespace-nowrap">{{ i.os_label }}{% if i.os_version or i.arch %} <span class="text-t4">{{ i.os_version }} {{ i.arch }}</span>{% endif %}</td>
+                <td class="font-mono text-xs {{ 'text-t2' if i.hostname else 'text-t4' }}">{{ i.hostname or '—' }}</td>
+                <td class="text-xs text-t3 whitespace-nowrap">{{ i.tool }} <span class="font-mono text-t4">{{ i.tool_version }}</span>{% if i.method %} <span class="text-t4">· {{ i.method }}</span>{% endif %}</td>
+                <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ i.at }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% endif %}
+    {% if ci.events %}
+    <details id="client-events">
+        <summary class="cursor-pointer select-none text-xs text-t3">Recent events <span class="text-t4 font-mono">{{ ci.events | length }}</span>{% if ci.failed %} · <span class="text-ar">{{ ci.failed }} failed</span>{% endif %}</summary>
+        <div class="overflow-x-auto mt-2">
+        <table class="gw-table">
+            <thead><tr><th>Time</th><th>Account</th><th>Event</th><th>Component</th><th>OS</th><th>Machine</th><th>Tool</th><th>Result</th></tr></thead>
+            <tbody>
+                {% for e in ci.events %}
+                <tr>
+                    <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ e.at }}</td>
+                    <td class="text-sm"><a href="?q={{ e.username | urlencode }}#users" class="font-mono text-t1 hover:underline">{{ e.username }}</a></td>
+                    <td class="text-xs text-t2 whitespace-nowrap">{{ e.event }}</td>
+                    <td class="text-xs text-t2">{{ e.component }}{% if e.kind != 'app' %} <span class="text-t4">{{ e.kind }}{% if e.client %} in {{ e.client }}{% endif %}</span>{% endif %} <span class="font-mono text-t3">{% if e.previous_version %}{{ e.previous_version }} → {% endif %}{{ e.component_version }}</span></td>
+                    <td class="text-xs text-t3 whitespace-nowrap">{{ e.os_label }} <span class="text-t4">{{ e.os_version }} {{ e.arch }}</span></td>
+                    <td class="font-mono text-xs {{ 'text-t2' if e.hostname else 'text-t4' }}">{{ e.hostname or '—' }}</td>
+                    <td class="text-xs text-t3 whitespace-nowrap">{{ e.tool }} <span class="font-mono text-t4">{{ e.tool_version }}</span></td>
+                    <td class="text-xs">{% if e.ok %}<span class="text-ag">ok</span>{% else %}<span class="text-ar">failed</span>{% endif %}{% if e.message %} <span class="text-t3">· {{ e.message }}</span>{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </details>
+    {% endif %}
+    {% endif %}
 </div>
 
 </div>

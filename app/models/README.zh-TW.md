@@ -371,6 +371,7 @@ cost_usd = (uncached_input_tokens × input_price_per_1m
 | `client_rule_settings`（`ClientRuleSetting`） | admin 儲存過的一個內建 check（`rule_id`，例如 `CC001`） | 開關、動作、標題、訊息、給所有人以及 Azure / AWS 帳號的 patch、信件主旨、自動寄信與重複週期。沒有列 = 程式內的預設值。不含任何偵測條件 |
 | `client_violations`（`ClientViolation`） | check × 帳號 | 首次 / 最後看到的時間、Claude Code 版本、最後一次終端機提醒的日期、寄信狀態（`mailed_at`、`mail_attempted_at`、`mail_error`、`mail_requested_at`）、`resolved_at`（帳號表示已套用修正） |
 | `client_versions`（`ClientVersion`） | 帳號 × Claude Code 版本 | 最後看到的時間（來自 User-Agent） |
+| `client_events`（`ClientEvent`） | 安裝工具回報的一筆事件（`POST /v1/events`） | 時間、帳號、`event`（`installed` / `updated` / `uninstalled` / `settings_applied`）、`ok`、回報的 `tool` 與版本、`kind`（`app` / `skill` / `mcp` / `plugin`）、`component` 與版本（及前一版）、裝進哪個 `client`、`method`、`os` + `os_version` + `arch`、`hostname`、`message`。只新增不修改；目前安裝狀態由它推導（`client_events.installs`） |
 | `client_mail_log`（`ClientMailLog`） | 一次寄信嘗試 | 時間、帳號、收件地址、主旨、涵蓋的 check、原因（`requested` / `automatic` / `test`）、成功或失敗與錯誤、測試信是哪位 admin 寄的。只新增不修改；不存信件內容 |
 
 ## AuditLog 模型

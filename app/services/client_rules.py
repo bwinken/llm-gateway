@@ -13,7 +13,9 @@ notice which accounts send requests of a certain kind and reach those people:
   on its dashboard, with the patch (environment variables for the ``env``
   block of ``~/.claude/settings.json``, nothing else; a different set for
   local-only, Azure and AWS accounts) as text and as a download
-  (``.bat`` for Windows, ``.sh`` for Linux).
+  (``.bat`` for Windows, ``.sh`` for Linux). A patch may leave a variable's
+  value to Client setup (``NAME=@setup``): the account then gets what
+  ``GET /v1/settings`` suggests it, so that value is set in one place.
 - **Resolved**: the account can say "I've applied it" on its notice. The
   notice goes away at once and it is no longer mailed; the next violating
   request reopens it (the gateway cannot see a settings file, only requests).
@@ -63,9 +65,9 @@ from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_today
 from app.models.schema import ClientRuleSetting, ClientVersion, ClientViolation, User
-from app.services import client_checks, mailer
+from app.services import client_checks, client_settings, mailer
 from app.services.client_checks import Check, Facts, version_key
-from app.services.client_patch import dump_env, env_snippet, load_env, parse_env
+from app.services.client_patch import FROM_SETUP, dump_env, env_snippet, load_env, parse_env
 
 
 # How long after an account's last violation its notice (and its place in
@@ -139,17 +141,38 @@ def baseline_env() -> dict[str, str | None]:
     return parse_env(client_checks.BASELINE_ENV)
 
 
+def _from_setup(env: dict[str, str | None], azure: bool, aws: bool) -> dict[str, str | None]:
+    """``env`` with every ``NAME=@setup`` replaced by what Client setup
+    suggests an account of this tier (``client_settings.defaults``, what
+    ``GET /v1/settings`` calls the ``default``). A variable setup does not
+    offer this tier is left out: there is no value to tell the account."""
+    if FROM_SETUP not in env.values():
+        return env
+    try:
+        suggested = client_settings.defaults(azure, aws)
+    except Exception as exc:
+        logger.warning("Client setup defaults failed | error={}: {}", type(exc).__name__, exc)
+        suggested = {}
+    return {
+        name: (suggested[name] if value == FROM_SETUP else value)
+        for name, value in env.items() if value != FROM_SETUP or name in suggested
+    }
+
+
 def effective_env(rule: Any, azure: bool, aws: bool) -> dict[str, str | None]:
     """The patch one account gets: the base, then the Azure variant if it
-    has Azure access, then the AWS variant if it has AWS access, and, when
-    that leaves anything to apply, the settings every patch carries
-    (``baseline_env``; the check's own value wins). ``rule`` is anything
-    with ``patch`` / ``patch_azure`` / ``patch_aws`` in stored form."""
+    has Azure access, then the AWS variant if it has AWS access, with every
+    ``NAME=@setup`` replaced by Client setup's suggestion for that account
+    (``_from_setup``), and, when that leaves anything to apply, the settings
+    every patch carries (``baseline_env``; the check's own value wins).
+    ``rule`` is anything with ``patch`` / ``patch_azure`` / ``patch_aws`` in
+    stored form."""
     env = dict(load_env(rule.patch))
     if azure:
         env.update(load_env(rule.patch_azure))
     if aws:
         env.update(load_env(rule.patch_aws))
+    env = _from_setup(env, azure, aws)
     if env:
         for name, value in baseline_env().items():
             env.setdefault(name, value)
@@ -468,7 +491,15 @@ def clean_fields(form: dict[str, Any], check: Check | None = None) -> dict[str, 
         raise ValueError("Repeat days must be a whole number.")
     if not 0 <= repeat <= 365:
         raise ValueError("Repeat days must be between 0 and 365.")
-    patch = dump_env(parse_env(str(form.get("patch") or "")))
+    boxes = {name: parse_env(str(form.get(name) or "")) for name in ("patch", "patch_azure", "patch_aws")}
+    asked = sorted({name for env in boxes.values() for name, value in env.items() if value == FROM_SETUP})
+    unknown = [name for name in asked if name not in client_settings.names()] if asked else []
+    if unknown:
+        raise ValueError(
+            f"{', '.join(unknown)}={FROM_SETUP}: not a Client setup variable. "
+            "Add it under Client setup first, or write the value here."
+        )
+    patch = dump_env(boxes["patch"])
     if check is not None and check.needs_patch and form.get("enabled") and not patch:
         raise ValueError(
             f"{check.id} tells people to change a setting, so it needs a settings patch: "
@@ -477,8 +508,8 @@ def clean_fields(form: dict[str, Any], check: Check | None = None) -> dict[str, 
     return {
         "enabled": bool(form.get("enabled")), "action": action, "title": title, "message": message,
         "patch": patch,
-        "patch_azure": dump_env(parse_env(str(form.get("patch_azure") or ""))),
-        "patch_aws": dump_env(parse_env(str(form.get("patch_aws") or ""))),
+        "patch_azure": dump_env(boxes["patch_azure"]),
+        "patch_aws": dump_env(boxes["patch_aws"]),
         "email_subject": str(form.get("email_subject") or "").strip()[:200],
         "auto_email": bool(form.get("auto_email")), "email_repeat_days": repeat,
     }

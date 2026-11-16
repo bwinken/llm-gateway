@@ -98,6 +98,7 @@
 | 備份與還原演練紀錄 | ✅ | `restore-drill.log`、`drill.log` | |
 | Key 的發行與最後使用時間 | ✅ | `users.api_key_created_at` / `api_key_last_used_at` | |
 | 特殊權限一覽 | ✅ | admin *Special access* | |
+| 使用者機器上的工具盤點（誰裝了什麼、哪個版本、哪種 OS） | 🟡 | `client_events`：安裝工具以 `POST /v1/events` 自行回報（gateway 無法驗證）；admin *Client installs* 卡片 | 頁面上的搜尋、篩選與匯出 |
 | 控制項對照表 | 🟡 | 本目錄的四份清單是初版 | CMP-1：補上 🏢 / ❓ 的項目 |
 | 存取審查報表（可交給主管簽核） | ⬜ | | AUD-2 |
 | 稽核證據包一鍵產出 | ⬜ | | AUD-1 |

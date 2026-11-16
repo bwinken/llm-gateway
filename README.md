@@ -62,6 +62,98 @@ ANTHROPIC_BASE_URL=https://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key cla
 
 The **[Client Guide](docs/client-guide.md)** has every endpoint, Azure and Bedrock access, setup for Roo Code, Cursor and others, and the errors a client should handle.
 
+## Endpoints
+
+Grouped as `/docs` on a running gateway groups them (its tags). The API groups take the user's API key (`Authorization: Bearer` or `x-api-key`); `web` and `admin` are behind SSO.
+
+### `account`
+
+What the dashboard shows an account, as JSON, for programs that are not a browser: a status line, a terminal tool, a desktop app that sets clients up. Never billed, and they answer even when the budget is spent.
+
+| Endpoint | What it is for |
+|---|---|
+| `GET /v1/me` | Access (on-prem / Azure / AWS) and today's budget: limit, spent, remaining |
+| `GET /v1/status` | The account's models: up or down, load, price, what a down one falls back to |
+| `GET /v1/usage` | Usage per day, and today and this month by model |
+| `GET /v1/service-accounts` | The service accounts the user owns, with this month's usage |
+| `GET /v1/settings` | The recommended client settings for this account: per variable a default and the options to pick from |
+| `GET /v1/notices` | What is wrong with the account's client setup, and the settings that fix it |
+| `POST /v1/notices/resolved` | "I've applied the fix": clears the notices, all or by id |
+| `POST /v1/events` | A setup tool reports what it installed, updated or removed, in which version, on which OS and machine |
+
+### `v1`
+
+The models, through one base URL: the model name picks vLLM, Azure or Bedrock. Billed and counted against the budget unless noted. Every route here also answers without the `/v1` prefix, for clients whose base URL leaves it out.
+
+| Endpoint | What it is for |
+|---|---|
+| `GET /v1/models` | The models the account can use (not billed) |
+| `POST /v1/chat/completions` | OpenAI chat completions, with streaming |
+| `POST /v1/responses` | OpenAI Responses API |
+| `POST /v1/messages` | Anthropic Messages: what Claude Code and the Anthropic SDK call |
+| `POST /v1/messages/count_tokens`, `/v1/tokenize` | Count tokens without generating (not billed) |
+| `POST /v1/chat/completions/render` | The prompt a chat request becomes after the model's template, for debugging (not billed) |
+| `POST /v1/embeddings` | Embeddings (on-prem models) |
+| `POST /v1/rerank`, `/v1/score` | Reranking and relevance scores (on-prem models) |
+| `POST /v1/systemone` | System One typed decisions (on-prem models) |
+
+### `azure`
+
+Azure OpenAI only, for accounts with Azure access. A model name that is not an Azure one falls back to an Azure model, never to on-prem.
+
+| Endpoint | What it is for |
+|---|---|
+| `GET /azure/v1/models` | The Azure models |
+| `POST /azure/v1/chat/completions`, `/azure/v1/responses`, `/azure/v1/messages` | The same three APIs as under `v1` |
+| `POST /azure/v1/messages/count_tokens` | Count tokens (not billed) |
+
+### `aws`
+
+AWS Bedrock only, for accounts with AWS access.
+
+| Endpoint | What it is for |
+|---|---|
+| `GET /aws/v1/models` | The Bedrock models |
+| `POST /aws/v1/chat/completions`, `/aws/v1/messages` | Chat completions and Messages (no Responses API on Bedrock) |
+| `POST /aws/v1/messages/count_tokens` | Count tokens (not billed) |
+
+### `auth`
+
+| Endpoint | What it is for |
+|---|---|
+| `POST /auth/api-key` | Trade an SSO access token for the account's API key: how a terminal tool signs in. Takes the token, not an API key |
+
+### `health`
+
+No key needed, and not listed in `/docs`.
+
+| Endpoint | What it is for |
+|---|---|
+| `GET /healthz` | Liveness: the process answers |
+| `GET /readyz` | Readiness: the database is reachable (what a load balancer checks) |
+| `GET /metrics` | Prometheus metrics, when `METRICS_ENABLED` is set |
+
+### `web`
+
+The pages a user sees after signing in through SSO.
+
+| Endpoint | What it is for |
+|---|---|
+| `/dashboard` | Budget, usage, model status, the API key, client notices and their patch download, owned service accounts |
+| `/setup` | The Windows installer for Claude Code (can be turned off) |
+
+### `admin`
+
+For accounts with the `admin` scope.
+
+| Endpoint | What it is for |
+|---|---|
+| `/admin` | Accounts, limits, client rules and setup, security, reports (see [Run it as an admin](#run-it-as-an-admin)) |
+| `/admin/models` | Models, prices and fallbacks |
+| `/admin/api/*` | The JSON behind those pages: model config, audit log, exports |
+
+Request and response shapes are in the **[Client Guide](docs/client-guide.md)**.
+
 ## Configure it
 
 There are two files. Most day-to-day settings can also be changed in the admin panel.
@@ -100,7 +192,7 @@ Open `https://your-gateway` and sign in through SSO. Accounts with the `admin` s
 |---|---|
 | **Overview** | See spend per backend, requests and active users; review usage anomalies; export monthly cost reports |
 | **Users** | Set budgets and cloud caps, grant Azure or AWS access, disable accounts, create service accounts, view or regenerate keys; click a name for that account's usage, notices, key and change history |
-| **Clients** | Choose which client problems to detect, how users are told, and the settings patch they get; see who is affected and what mail went out |
+| **Clients** | Choose which client problems to detect, how users are told, and the settings patch they get; see who is affected and what mail went out; set what setup tools offer users; see what those tools installed, per account, machine and OS |
 | **Security** | IP allowlist, prompt guardrail, audit log |
 | **Settings** | Default budgets, concurrency limit, what happens when the cloud cap is spent, weekly report mails, site links |
 | **Models** | Add and edit models, prices and fallbacks; test a connection |
@@ -128,8 +220,9 @@ Everything the gateway does, where it is switched on, and what it needs in `.env
 | An API key, a dashboard and usage figures per user; SSO sign-in to the web UI | Always on | `AUTH_BASE_URL`, `AUTH_CENTER_APP_ID`, `AUTH_CENTER_PUBLIC_KEY_PATH` |
 | Sign-in for terminal tools (`POST /auth/api-key`: an AuthCenter token for the account's key) | Always on (needs its nginx location) | the same `AUTH_*` |
 | Service accounts for programs, with owners who see them on their dashboard | **Admin → Users** | – |
-| Account endpoints for tools: `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices`, `/v1/settings` | Always on | – |
+| Account endpoints for tools: `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` (and `POST /v1/notices/resolved` to report a fix), `/v1/settings` | Always on | – |
 | Client setup offered to tools (`/v1/settings`) | **Admin → Clients → Client setup** | – |
+| Install reports from setup tools (`POST /v1/events`): who installed which tool, skill or MCP server, in which version, on which OS | Always on; read in **Admin → Clients → Client installs** | – |
 | Setup page and Windows installer for Claude Code | On by default | `SETUP_PAGE_ENABLED=false` turns it off |
 
 **Cost and limits**

@@ -12,7 +12,10 @@
   whenever the token named an account: also when the account was then
   refused, but not for a token that was no token at all. That route has no
   oauth2-proxy in front, so anyone can post garbage to it, and garbage must
-  not be able to fill an append-only table.
+  not be able to fill an append-only table;
+- a notice reported as fixed by API key (``POST /v1/notices/resolved``), the
+  one write an API key has on its account: the handler names the account
+  (``note_actor``), and a request whose key was refused is not recorded.
 
 Being a middleware, it covers a new endpoint without anyone remembering to.
 Each row has the actor (JWT ``sub``), method, route template, path, status
@@ -70,6 +73,15 @@ _AUDITED_READS = re.compile(r"^/(admin/(users/\d+/api-key|api/export/.+)|dashboa
 _AUDITED_TOKEN_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/auth/api-key"),
 })
+# Authenticated by API key: the one thing a key may change about its account
+# outside the dashboard. The handler names the actor (``note_actor``), since
+# there is no token to read it from; recorded only when it did.
+_AUDITED_KEY_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("POST", "/v1/notices/resolved"),
+})
+# Recorded only for an identified actor: reachable without a login.
+_ACTOR_REQUIRED = _AUDITED_TOKEN_ROUTES | _AUDITED_KEY_ROUTES
+_ACTOR_NOTE = "_actor"
 # The whole model config: its handler notes a diff instead of the body.
 _BODY_NOT_RECORDED = frozenset({"/admin/api/config"})
 _TARGET_RE = re.compile(r"^/(?:admin/users|dashboard/app)/(\d+)(?:/|$)")
@@ -84,7 +96,7 @@ _current: ContextVar[dict | None] = ContextVar("audit_note", default=None)
 
 def is_audited(method: str, path: str) -> bool:
     method = method.upper()
-    if (method, path) in _AUDITED_TOKEN_ROUTES:
+    if (method, path) in _ACTOR_REQUIRED:
         return True
     if method in _UNSAFE:
         return is_cookie_auth_path(path) and (method, path) not in _NOT_AUDITED
@@ -99,6 +111,12 @@ def note(**fields: Any) -> None:
     holder = _current.get()
     if holder is not None:
         holder.update(fields)
+
+
+def note_actor(username: str) -> None:
+    """Name the account behind an API-key request (``_AUDITED_KEY_ROUTES``):
+    the middleware cannot read it from a token there."""
+    note(**{_ACTOR_NOTE: username, "via": "api_key"})
 
 
 def redact(value: Any, depth: int = 0) -> Any:
@@ -273,10 +291,12 @@ class AuditMiddleware:
                         detail["response"] = redact(json.loads(bytes(reply)))
                     except Exception:
                         pass
+            key_route = (method.upper(), path) in _AUDITED_KEY_ROUTES
+            # An API key is not a token: don't hand it to the token check.
+            actor = str(holder.pop(_ACTOR_NOTE, "") or "") if key_route else _actor(headers)
             detail.update(redact(holder))
             client = scope.get("client") or ("", 0)
             route = scope.get("route")
-            actor = _actor(headers)
             record = {
                 "actor": actor,
                 "method": method,
@@ -286,10 +306,10 @@ class AuditMiddleware:
                 "client": str(client[0] or ""),
                 "detail": detail,
             }
-            # A token route with nobody identified is not recorded (the
-            # refusal is in the log). No early return here: this is a
+            # A token or key route with nobody identified is not recorded
+            # (the refusal is in the log). No early return here: this is a
             # ``finally`` and a return would swallow the handler's exception.
-            if actor or (method.upper(), path) not in _AUDITED_TOKEN_ROUTES:
+            if actor or (method.upper(), path) not in _ACTOR_REQUIRED:
                 with anyio.CancelScope(shield=True):
                     try:
                         await anyio.to_thread.run_sync(_write, record)

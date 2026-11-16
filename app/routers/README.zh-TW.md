@@ -55,7 +55,9 @@ graph LR
 | `GET` | `/v1/status` | 呼叫者看得到的模型與 `state`(地端 `up` / `down`,雲端 `unchecked`)、負載、計費價格(`model_catalog.visible_models`)。驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
 | `GET` | `/v1/usage` | 呼叫者每個本地日的用量(`?days=`,1 到 90,預設 7)以及今天、本月各模型用量,經 `usage_rollup.aggregate` 讀取。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
 | `GET` | `/v1/service-accounts` | 呼叫者名下的服務帳號、每日上限與本月用量(合計與各模型)(`stats.get_owned_apps_summary`),不含 key。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `GET` | `/v1/notices` | 呼叫者尚未處理的 client 通知,以及以 `{set, unset}` 表示的 patch(`client_rules.notices_for` / `combined_for`)。唯讀;驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
+| `GET` | `/v1/notices` | 呼叫者尚未處理的 client 通知,以及以 `{set, unset}` 表示的 patch(`client_rules.notices_for` / `combined_for`)。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
+| `POST` | `/v1/notices/resolved` | 以 API key 回報 *I've applied it*:把呼叫者未處理的通知標為已修正,全部或 `ids` 指定的,走 dashboard 的 `client_rules.resolve` / `resolve_all`(`deps.resolve_client_notices`)。API key 對帳號唯一的寫入;會記入稽核紀錄(`audit._AUDITED_KEY_ROUTES`)。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
+| `POST` | `/v1/events` | 安裝工具在呼叫者機器上做了什麼:安裝 / 更新 / 移除 / 套用設定,對象是哪個 component(`kind`、`client`)、版本、OS 與 hostname(`client_events.clean` → `deps.record_client_event`)。供 admin 的 *Client installs* 卡片使用的回報;每帳號每小時 300 筆。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
 | `GET` | `/v1/settings` | 工具幫呼叫者設定 client 時可以提供的設定:每個變數的說明、`default` 與 `options`,依 tier(帳號的雲端權限)而不同,來自 admin 的 `client_settings.json`(`client_settings.fields_for`)。唯讀;驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
 | `POST` | `/v1/chat/completions`、`/chat/completions` | Chat 對話生成 | `vllm_forward_chat_completions`(vLLM) / `azure_forward_chat_completions`(Azure) / `bedrock_forward_chat_completions`(Bedrock) | `llm`, `vlm` |
 | `POST` | `/v1/responses`、`/responses` | Responses API(沒有 Bedrock dispatch:Bedrock alias 會 fallback 到 vLLM) | `vllm_forward_responses`(vLLM) / `azure_forward_responses`(Azure) | `llm`, `vlm` |

@@ -1,6 +1,7 @@
 """
-Admin *Clients* tab: client rules (settings, mail, mail log, patch preview)
-and client setup (``client_settings.json``).
+Admin *Clients* tab: client rules (settings, mail, mail log, patch preview),
+client setup (``client_settings.json``) and client installs (what setup tools
+reported, ``client_events``).
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ from app.core.database import get_session
 from app.core.logger import logger
 from app.models.schema import User
 from app.routers.admin.common import _local_label, _wants_json, router
-from app.services import audit, client_checks, client_mail, client_patch, client_rules, client_settings, mailer
+from app.services import (
+    audit, client_checks, client_events, client_mail, client_patch, client_rules, client_settings, mailer,
+)
 
 
 # ── Client rules (app/services/client_rules.py; the checks are code, in client_checks.py) ──
@@ -119,6 +122,35 @@ def _client_rules_view(session: Session, admin_user: User) -> dict:
         "mail_log": _mail_log_view(client_mail.mail_log(session)),
         "actions": client_rules.ACTIONS,
         "window_days": client_rules.WINDOW_DAYS,
+    }
+
+
+_OS_LABELS = {"windows": "Windows", "linux": "Linux", "macos": "macOS"}
+
+
+def _client_installs_view(session: Session) -> dict:
+    """The *Client installs* card: what setup tools reported
+    (``client_events``), times in Asia/Taipei."""
+    def row(event) -> dict:
+        return {
+            "at": _local_label(event.created_at), "username": event.username, "event": event.event, "ok": event.ok,
+            "tool": event.tool, "tool_version": event.tool_version,
+            "kind": event.kind, "component": event.component, "client": event.client,
+            "component_version": event.component_version,
+            "previous_version": event.previous_version, "method": event.method,
+            "os_label": _OS_LABELS.get(event.os, event.os), "os_version": event.os_version, "arch": event.arch,
+            "hostname": event.hostname, "message": event.message,
+        }
+
+    found = client_events.overview(session)
+    events = [row(event) for event in client_events.recent(session)]
+    return {
+        "installs": [row(event) for event in found["installs"]],
+        "total": found["total"], "accounts": found["accounts"], "days": found["days"],
+        "components": found["components"],
+        "os": [{"label": _OS_LABELS[o["os"]], "machines": o["machines"]} for o in found["os"]],
+        "events": events, "failed": sum(1 for event in events if not event["ok"]),
+        "max_per_hour": client_events.MAX_PER_HOUR,
     }
 
 

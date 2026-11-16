@@ -62,6 +62,98 @@ ANTHROPIC_BASE_URL=https://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key cla
 
 **[Client 指南](docs/client-guide.zh-TW.md)** 有完整內容：所有端點、Azure 與 Bedrock 的使用方式、Roo Code 與 Cursor 等工具的設定，以及 client 該處理的錯誤回應。
 
+## 端點
+
+分組方式和 gateway 上的 `/docs` 相同（它的 tag）。API 各組都用使用者的 API key（`Authorization: Bearer` 或 `x-api-key`）；`web` 和 `admin` 在 SSO 後面。
+
+### `account`
+
+把 dashboard 顯示給帳號看的內容以 JSON 提供給不是瀏覽器的程式：狀態列、terminal 工具、幫使用者設定 client 的桌面程式。不計費，額度用完時一樣會回應。
+
+| 端點 | 用途 |
+|---|---|
+| `GET /v1/me` | 權限（地端 / Azure / AWS）和今日額度：上限、已用、剩餘 |
+| `GET /v1/status` | 這個帳號的模型：是否正常、負載、價格、掛掉時由哪個模型代替 |
+| `GET /v1/usage` | 每天的用量，以及今天和本月各模型的用量 |
+| `GET /v1/service-accounts` | 使用者名下的服務帳號和本月用量 |
+| `GET /v1/settings` | 對這個帳號建議的 client 設定：每個變數的預設值和可選的值 |
+| `GET /v1/notices` | 這個帳號的 client 設定有什麼問題，以及能修正它的設定 |
+| `POST /v1/notices/resolved` | 「我已經套用修正」：清掉通知，全部或指定 id |
+| `POST /v1/events` | 安裝工具回報它安裝、更新或移除了什麼、哪個版本、在哪種 OS 和哪台機器 |
+
+### `v1`
+
+透過同一個 base URL 使用模型：模型名稱決定走 vLLM、Azure 還是 Bedrock。除非另外註明，都會計費並算進額度。這一組的每條路由不帶 `/v1` 前綴也會回應，給 base URL 沒寫 `/v1` 的 client 用。
+
+| 端點 | 用途 |
+|---|---|
+| `GET /v1/models` | 這個帳號可以用的模型（不計費） |
+| `POST /v1/chat/completions` | OpenAI chat completions，支援串流 |
+| `POST /v1/responses` | OpenAI Responses API |
+| `POST /v1/messages` | Anthropic Messages：Claude Code 和 Anthropic SDK 呼叫的就是這支 |
+| `POST /v1/messages/count_tokens`、`/v1/tokenize` | 只算 token、不產生內容（不計費） |
+| `POST /v1/chat/completions/render` | chat 請求套用模型 template 之後的 prompt，除錯用（不計費） |
+| `POST /v1/embeddings` | Embedding（地端模型） |
+| `POST /v1/rerank`、`/v1/score` | Rerank 與相關性分數（地端模型） |
+| `POST /v1/systemone` | System One 的型別化決策（地端模型） |
+
+### `azure`
+
+只走 Azure OpenAI，給有 Azure 權限的帳號。不是 Azure 模型的名稱會改用另一個 Azure 模型，不會退回地端。
+
+| 端點 | 用途 |
+|---|---|
+| `GET /azure/v1/models` | Azure 的模型 |
+| `POST /azure/v1/chat/completions`、`/azure/v1/responses`、`/azure/v1/messages` | 和 `v1` 底下相同的三種 API |
+| `POST /azure/v1/messages/count_tokens` | 計算 token（不計費） |
+
+### `aws`
+
+只走 AWS Bedrock，給有 AWS 權限的帳號。
+
+| 端點 | 用途 |
+|---|---|
+| `GET /aws/v1/models` | Bedrock 的模型 |
+| `POST /aws/v1/chat/completions`、`/aws/v1/messages` | Chat completions 與 Messages（Bedrock 沒有 Responses API） |
+| `POST /aws/v1/messages/count_tokens` | 計算 token（不計費） |
+
+### `auth`
+
+| 端點 | 用途 |
+|---|---|
+| `POST /auth/api-key` | 用 SSO 的 access token 換帳號的 API key：terminal 工具的登入方式。帶的是 token，不是 API key |
+
+### `health`
+
+不需要 key，也不會列在 `/docs`。
+
+| 端點 | 用途 |
+|---|---|
+| `GET /healthz` | 存活：程序有回應 |
+| `GET /readyz` | 就緒：連得到資料庫（load balancer 檢查的就是這支） |
+| `GET /metrics` | Prometheus 指標，設了 `METRICS_ENABLED` 才有 |
+
+### `web`
+
+使用者透過 SSO 登入後看到的頁面。
+
+| 端點 | 用途 |
+|---|---|
+| `/dashboard` | 額度、用量、模型狀態、API key、client 通知與 patch 下載、名下的服務帳號 |
+| `/setup` | Claude Code 的 Windows 安裝檔（可以關閉） |
+
+### `admin`
+
+給有 `admin` scope 的帳號。
+
+| 端點 | 用途 |
+|---|---|
+| `/admin` | 帳號、上限、client 規則與設定、安全、報表（見[管理](#管理)） |
+| `/admin/models` | 模型、價格與備援 |
+| `/admin/api/*` | 這些頁面背後的 JSON：模型設定、稽核紀錄、匯出 |
+
+請求與回應的格式見 **[Client 指南](docs/client-guide.zh-TW.md)**。
+
 ## 設定
 
 設定檔有兩個。日常會調整的項目大多也能在管理面板裡改。
@@ -100,7 +192,7 @@ Azure 與 Bedrock 模型放在 `[azure_models.*]`、`[bedrock_models.*]`；價�
 |---|---|
 | **Overview** | 查看各 backend 的花費、請求數與活躍使用者；檢視用量異常；匯出每月費用報表 |
 | **Users** | 設定預算與雲端上限、授權 Azure 或 AWS、停用帳號、建立服務帳號、查看或重新產生 key；點帳號名稱可看該帳號的用量、通知、key 與變更紀錄 |
-| **Clients** | 選擇要偵測哪些 client 問題、怎麼通知使用者、給他們什麼設定 patch；查看受影響的人和寄出的信 |
+| **Clients** | 選擇要偵測哪些 client 問題、怎麼通知使用者、給他們什麼設定 patch；查看受影響的人和寄出的信；設定安裝工具提供給使用者的選項；查看這些工具在每個帳號、每台機器、每種 OS 上裝了什麼 |
 | **Security** | IP allowlist、prompt guardrail、稽核紀錄 |
 | **Settings** | 預設預算、並行上限、雲端上限用完時的處理方式、週報信、網站連結 |
 | **Models** | 新增與編輯模型、價格、備援；測試連線 |
@@ -128,8 +220,9 @@ Gateway 的所有功能、在哪裡開啟，以及在 `.env` 需要設什麼。�
 | 每人一把 API key、儀表板與用量；Web UI 以 SSO 登入 | 一律開啟 | `AUTH_BASE_URL`、`AUTH_CENTER_APP_ID`、`AUTH_CENTER_PUBLIC_KEY_PATH` |
 | 終端機工具登入（`POST /auth/api-key`：用 AuthCenter token 換帳號的 key） | 一律開啟（需要對應的 nginx location） | 同上的 `AUTH_*` |
 | 給程式用的服務帳號，擁有者可在自己的儀表板看到 | **Admin → Users** | – |
-| 給工具用的帳號端點：`/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings` | 一律開啟 | – |
+| 給工具用的帳號端點：`/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`（以及回報已修正的 `POST /v1/notices/resolved`）、`/v1/settings` | 一律開啟 | – |
 | 提供給工具的 client 設定（`/v1/settings`） | **Admin → Clients → Client setup** | – |
+| 安裝工具的安裝回報（`POST /v1/events`）：誰裝了哪個工具、skill 或 MCP server、哪個版本、在哪種 OS | 一律開啟；在 **Admin → Clients → Client installs** 查看 | – |
 | Setup 頁與 Claude Code 的 Windows 安裝檔 | 預設開啟 | `SETUP_PAGE_ENABLED=false` 可關閉 |
 
 **成本與上限**

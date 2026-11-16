@@ -357,6 +357,18 @@ def _account(azure: bool, aws: bool) -> SimpleNamespace:
     return SimpleNamespace(can_use_azure=azure, can_use_bedrock=aws, is_admin=False)
 
 
+def defaults(azure: bool, aws: bool) -> dict[str, str]:
+    """``{NAME: default}`` as ``GET /v1/settings`` gives an account of this
+    tier: what a client-rule patch means by ``NAME=@setup``
+    (``client_rules.effective_env``)."""
+    return {field["name"]: field["default"] for field in fields_for(_account(azure, aws))}
+
+
+def names() -> frozenset[str]:
+    """The variables of the file in force."""
+    return frozenset(field.name for field in load())
+
+
 def preview(fields: tuple[Field, ...] | None = None) -> list[dict[str, Any]]:
     """Per kind of account (``ACCOUNTS``), the fields it is offered."""
     return [

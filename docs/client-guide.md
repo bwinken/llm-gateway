@@ -70,7 +70,9 @@ Windows users can get a pre-configured Claude Code installer from the **Setup** 
 | `GET /v1/usage` | Your usage per day, and today and this month by model. See [Usage history](#usage-history) |
 | `GET /v1/service-accounts` | The service accounts you own, with their limits and this month's usage. See [Service accounts](#service-accounts) |
 | `GET /v1/notices` | What the dashboard asks you to fix in your client's settings. See [Notices](#notices) |
+| `POST /v1/notices/resolved` | Tell the gateway you applied a fix, for all notices or the ones you name. See [Notices](#notices) |
 | `GET /v1/settings` | The client settings a tool can set up for you, each with a description, the suggested value and the other options for your account. See [Settings](#settings) |
+| `POST /v1/events` | A setup tool reports what it installed, updated or removed for you. See [Install events](#install-events) |
 | `POST /auth/api-key` | Your API key for an AuthCenter access token: how a terminal tool signs in. See [Signing in from a terminal tool](#signing-in-from-a-terminal-tool) |
 | `POST /v1/embeddings` | Embeddings (vLLM only) |
 | `POST /v1/rerank`, `/v1/score` | Reranking |
@@ -277,7 +279,24 @@ curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
 - `notices` is what the dashboard's notices panel shows you: the problems the gateway saw in your client's requests during the last `window_days` days that you have not reported as fixed. It is empty when there is nothing to do.
 - A notice's `patch` is its fix, when the fix is a setting: variables to `set` in the `env` block of `~/.claude/settings.json` and variables to remove from it (`unset`). A notice without `patch` needs something else (update Claude Code, ask for access).
 - The top-level `patch` is the one to apply: everything open, merged, with the settings every account should have. `covers` lists the notices it fixes, `manual` those it cannot. It is absent when nothing is open. A patch never holds a key.
-- This endpoint only reads. After applying a fix, press *I've applied it* on the dashboard; the notice also goes away by itself once the gateway has not seen the problem for `window_days` days.
+- After applying a fix, say so: press *I've applied it* on the dashboard, or from a program:
+
+```bash
+# everything that is open
+curl -X POST https://your-gateway/v1/notices/resolved -H "Authorization: Bearer sk-your-api-key"
+
+# only some
+curl -X POST https://your-gateway/v1/notices/resolved -H "Authorization: Bearer sk-your-api-key" \
+  -H "Content-Type: application/json" -d '{"ids": ["CC001"]}'
+```
+
+```json
+{"object": "notices.resolved", "resolved": ["CC001"]}
+```
+
+- `resolved` lists the notices that were open and are now cleared. An id with nothing open is left out and a second call answers an empty list; neither is an error. `400`: `ids` is not a list of ids.
+- The gateway cannot see your settings file, so it takes your word. If it sees the same problem again (a second machine, a patch that did not take), the notice comes back within the hour. A notice also goes away by itself once the gateway has not seen the problem for `window_days` days.
+- These calls are in the gateway's audit log, like the dashboard's button.
 
 ## Settings
 
@@ -317,8 +336,55 @@ curl https://your-gateway/v1/settings -H "Authorization: Bearer sk-your-api-key"
 - Both follow your tier, which is your cloud access (none, Azure, AWS, or both): another account may get a different default, different options, or a field you do not have. A model you cannot use is never offered.
 - The gateway does not know what you have set now: compare with your own settings.json.
 - The fields change with the gateway's configuration and your access, so read them when you need them rather than keeping a copy. Never a key, and read-only: applying a value is up to the tool.
+- Settings and [notices](#notices) are two answers to two questions. `/v1/settings` is what to set when a client is set up; a notice's `patch` is the least that fixes a problem the gateway saw. To put everything at the recommended values, apply the defaults and then the top-level notices `patch` on top; to fix a problem without touching what the user picked, apply the `patch` alone. The gateway does not merge them, because it does not know which values the user chose.
 
-`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` and `/v1/settings` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows, and what a tool needs to set a client up. All of them answer when your budget is spent, none is billed, and none returns an API key: a key is only ever handed out for a sign-in (next section, or the dashboard).
+## Install events
+
+A tool that installs or configures things for you (a terminal tool, a desktop app) can tell the gateway what it did, so your administrators can see which tools are in use, in which versions and on which operating systems. One event per request:
+
+```bash
+curl -X POST https://your-gateway/v1/events -H "Authorization: Bearer sk-your-api-key" \
+  -H "Content-Type: application/json" -d '{
+    "event": "installed", "tool": "gateway-tui", "tool_version": "0.3.1",
+    "component": "claude-code", "component_version": "2.1.310", "method": "npm",
+    "os": "windows", "os_version": "10.0.22631", "arch": "x64", "hostname": "pc-0421"
+  }'
+```
+
+```json
+{"object": "event", "recorded": true}
+```
+
+| Field | | What it is |
+|---|---|---|
+| `event` | required | `installed`, `updated`, `uninstalled` or `settings_applied` |
+| `ok` | optional | `false` when the attempt failed (default `true`). A failed install is `"event": "installed", "ok": false` |
+| `tool`, `tool_version` | required | The program reporting |
+| `component` | required | What the event is about, by its own name: `claude-code`, `codex`, `vscode`, `claude-desktop`, `@modelcontextprotocol/server-github`, `anthropic-skills:pdf` |
+| `kind` | optional | What sort of thing that is: `app` (a program of its own; the default), `skill`, `mcp` or `plugin` |
+| `client` | optional | For a `skill`, `mcp` or `plugin`: the program it was added to, such as `claude-code` |
+| `component_version`, `previous_version` | optional | The version now on the machine, and for an update the one before |
+| `method` | optional | How it was installed: `npm`, `native`, `offline` |
+| `os` | required | `windows`, `linux` or `macos` |
+| `os_version`, `arch` | optional | Which one: `10.0.22631`, `Ubuntu 22.04 (WSL2)`; `x64`, `arm64` |
+| `hostname` | optional | The machine's name. Send it: without one, your machines of the same OS count as one |
+| `message` | optional | Why it failed, or a note (500 characters are kept) |
+
+A skill, an MCP server or a plugin says what it was added to:
+
+```json
+{"event": "installed", "tool": "gateway-tui", "tool_version": "0.3.1",
+ "kind": "mcp", "component": "@modelcontextprotocol/server-github", "component_version": "1.2.0",
+ "client": "claude-desktop", "os": "windows", "hostname": "pc-0421"}
+```
+
+- Names (`tool`, `client`, `method`, `arch`) are letters, digits, `.`, `_` and `-`, 40 characters at most; `hostname` the same characters, 100 at most; `component` also takes `@`, `/`, `:` and `+`, 100 at most. Versions are 40 characters without spaces. Names are stored in lowercase.
+- The account is your key's. Fields the gateway does not know are ignored, so a newer tool can send more than an older gateway keeps.
+- `400`: a field does not validate (`detail` says which). `429`: more than 300 events in an hour from your account. `503`: it could not be stored.
+- This is a report and nothing else: it changes nothing about your account, and a tool should carry on whatever the answer. It does not clear a notice; that is `POST /v1/notices/resolved`.
+- Never put a key in an event. Your own key is taken out of `message` and `os_version`, and an event with it anywhere else is refused.
+
+`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` and `/v1/settings` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows, and what a tool needs to set a client up. `POST /v1/notices/resolved` and `POST /v1/events` are the two a tool writes with. All of them answer when your budget is spent, none is billed, and none returns an API key: a key is only ever handed out for a sign-in (next section, or the dashboard).
 
 ## Signing in from a terminal tool
 
@@ -335,7 +401,7 @@ curl -X POST https://your-gateway/auth/api-key -H "Authorization: Bearer $AUTHCE
 {"object": "api_key", "username": "alice", "api_key": "sk-your-api-key", "legacy_key": false}
 ```
 
-3. From then on it uses the API key, like every other client: for the models, and for `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` and `/v1/settings`. The access token is not needed again and nothing else accepts it; throw it away.
+3. From then on it uses the API key, like every other client: for the models, and for `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices`, `/v1/settings` and `/v1/events`. The access token is not needed again and nothing else accepts it; throw it away.
 
 - You always get your existing key. Signing in on a second machine does not change the key on the first.
 - A first sign-in creates your account, as a first visit to the dashboard does.

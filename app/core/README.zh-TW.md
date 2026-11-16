@@ -168,6 +168,8 @@ FastAPI dependency：驗證 API key、檢查每日額度與雲端上限，並佔
 | `get_today_usage(user)` | `dict` | 依後端拆分的今日花費與 token 數（`stats.get_user_daily_summary`）；短期 session |
 | `get_usage_history(user, days)` | `dict` | 供 `GET /v1/usage` 使用：最近 `days` 個本地日每日一筆（`stats.get_daily_trends`），以及今天、本月依模型、後端分列的用量（`stats.get_model_breakdown`）；短期 session |
 | `get_owned_apps(user)` | `list[dict]` | 供 `GET /v1/service-accounts` 使用：使用者名下的服務帳號與本月用量（`stats.get_owned_apps_summary`），已移除 API key；短期 session |
+| `resolve_client_notices(user, ids)` | `list[str]` | 供 `POST /v1/notices/resolved` 使用：透過 `client_rules.resolve_all` / `resolve` 把呼叫者未處理的通知標為已修正，全部（`ids` 為 None）或指定的；回傳被標掉的 id；儲存層故障時會拋出例外；短期 session |
+| `record_client_event(user, values)` | `None` | 供 `POST /v1/events` 使用：新增一筆事件（`values` 來自 `client_events.clean`）；超過每小時額度時拋出 `client_events.TooManyEvents`；短期 session |
 | `get_client_notices(user)` | `dict` | 供 `GET /v1/notices` 使用：`notices`（`client_rules.notices_for`）與 `combined`（`client_rules.combined_for`）；儲存層故障時視為沒有待辦；短期 session |
 
 所有額度相關的 429 都帶 `Retry-After`，值為距離下一個本地午夜的秒數（`timeutil`）。
