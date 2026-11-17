@@ -324,6 +324,24 @@ To restore after a real loss, into a fresh database (decrypt first: `gpg --decry
 docker exec -i llm-gateway-pg pg_restore -U "$PG_USER" --create -d postgres < FILE
 ```
 
+## Database Health Check
+
+`deploy/db-health.sh` lists what PostgreSQL is using and points out what needs attention. It only reads, and the gateway keeps serving:
+
+```bash
+bash deploy/db-health.sh
+```
+
+- **Disk**: every subdirectory of the data directory, every database, every table of the gateway database with its data, indexes, row estimate and dead rows, every index, and the tables of any other database above 100 MB in the same PostgreSQL.
+- **What stops space from being reclaimed**: replication slots nobody reads (PostgreSQL keeps the WAL for them forever), transactions left open (no table's dead rows can be removed meanwhile), prepared transactions, a failing WAL archive, autovacuum off.
+- **`usage_logs`**: rows, size, the days it covers, and how much of its id range is used.
+- **The gateway's own jobs**: how far the daily rollup has got, each scheduled job's last result.
+- **Memory**: PostgreSQL's memory settings, every container's current use, the gateway service, the host.
+
+It ends with one line saying where the space is and a list of anything it flagged (the thresholds are the constants at the top of the script). Exit status: 0 nothing to note, 1 something flagged, 2 cannot connect.
+
+It sends `SELECT` statements only, on a read-only connection with a 15-second statement limit and a 2-second lock wait, counts rows from PostgreSQL's statistics rather than scanning a table, and writes no file. It reads `PG_USER` / `PG_DB` from `deploy/.env` like `backup-db.sh` (`ENV_FILE`, `PG_CONTAINER` to override).
+
 ## PostgreSQL Data Migration (Volume Change)
 
 When moving PG data to a different volume (e.g., wrong disk mount, capacity expansion), using `pg_dumpall` logical backup is safest — unaffected by filesystem or permission differences.
@@ -367,6 +385,7 @@ docker compose -f deploy/docker-compose.yml up -d
     ├── pgdata/               # PostgreSQL data
     ├── setup.sh              # Deployment script
     ├── backup-db.sh          # Online database backup (pg_dump, verify, encrypt, retention)
+    ├── db-health.sh          # Read-only report: disk and memory use, what blocks space reclaim, usage_logs
     ├── restore-drill.sh      # Restore a backup into a throwaway container, log the result
     ├── migration/            # Gateway container, move to a new server, and its drill (own README)
     ├── gen-selfsigned-cert.sh               # Self-signed TLS cert for :443
