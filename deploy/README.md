@@ -141,6 +141,30 @@ systemctl --user disable --now llm-gateway-scan.timer llm-gateway-cleanup.timer
 
 Other scripts, run by hand from `~/opt/llm-gateway`: `scripts/migrate_sqlite_to_pg.py` (one-off SQLite → PostgreSQL data migration, `--dry-run` / `--sync`) and `scripts/azure_latency_probe.py` (splits Azure latency into phases, direct vs. through the gateway; `--help`).
 
+## Widening usage_logs.id
+
+Migration `f3a9c6d15e72` changes `usage_logs.id` from a 32-bit to a 64-bit number. Every request adds one row and a number is never reused, so the old id ended at 2,147,483,647 requests, whatever retention has deleted since; past that the gateway keeps serving but records no usage. How far along a database is:
+
+```bash
+docker exec llm-gateway-pg psql -U <PG_USER> -d <PG_DB> -c "SELECT last_value FROM usage_logs_id_seq"
+```
+
+Unlike the other migrations this one **rewrites the table** under an exclusive lock, and the API stalls until it is done (API-key auth reads `usage_logs` for the daily limit). Up to 1 GB of table and indexes that is a moment and `alembic upgrade head` just does it. Above that the migration stops, changing nothing, and `setup.sh` leaves the old version serving. Then:
+
+1. Check free disk: the rewrite needs room for a second copy of the table and its indexes (`SELECT pg_size_pretty(pg_total_relation_size('usage_logs'))`).
+2. If usage-log retention is planned too, turn it on first and let its first run finish (unless the id is close to its end). There is less to rewrite afterwards, and the rewrite is what gives the deleted rows' disk space back to the operating system.
+3. In a maintenance window, stop the gateway and run the migration with the confirmation:
+
+```bash
+systemctl --user stop llm-gateway
+(cd ~/opt/llm-gateway && USAGE_LOGS_REWRITE_OK=1 uv run alembic upgrade head)
+systemctl --user start llm-gateway
+```
+
+With the gateway in a container: `bash deploy/migration/compose.sh stop gateway`, then `USAGE_LOGS_REWRITE_OK=1 bash deploy/migration/compose.sh up -d` (the `migrate` service takes the confirmation from the shell and runs before the gateway starts). `load-backup.sh` gives the confirmation itself: when it migrates, the gateway is stopped and the data has just been restored, so a move to a new server widens the id on the way, taking that much longer.
+
+How long depends on the disk. As a measure, a throwaway PostgreSQL 16 rewrote 5 million rows (1.1 GB with indexes) in about 13 seconds. Interrupting it rolls everything back. Don't run it alongside a backup: `pg_dump` holds a lock on the table and the migration gives up after 5 seconds of waiting.
+
 ## Health Probes
 
 Two unauthenticated endpoints, served by the Gateway itself:

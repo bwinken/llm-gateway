@@ -197,7 +197,10 @@ ok "還原完成（${restore_s}s，schema $schema_before）：${counts//count_/}
 # ── 4. Migration ──
 info "執行 migration（alembic upgrade head）"
 t=$(date +%s)
-compose up --no-deps --exit-code-from migrate migrate > "$ERR_FILE" 2>&1 \
+# USAGE_LOGS_REWRITE_OK=1：把 usage_logs.id 改成 bigint 的 migration 會改寫整張表，資料表大時
+# 要這個確認才執行（避免在服務中的主機上不知情地卡住 API）。這裡 gateway 已經停了、資料剛還原，
+# 正是該做的時候；大的資料庫會多花一段時間，並需要再一份 usage_logs 大小的磁碟空間。
+USAGE_LOGS_REWRITE_OK=1 compose up --no-deps --exit-code-from migrate migrate > "$ERR_FILE" 2>&1 \
     || { tail -n 15 "$ERR_FILE" >&2; die "migration 失敗，gateway 沒有啟動（上面是 migrate 的輸出）"; }
 migrate_s=$(( $(date +%s) - t ))
 schema_after="$(psql_db "SELECT string_agg(version_num, ',') FROM alembic_version")"

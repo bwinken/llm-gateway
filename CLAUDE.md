@@ -323,6 +323,7 @@ Pitfalls:
 - Production is PostgreSQL. Migrations use PostgreSQL-only DDL, so verify them against a real PostgreSQL (a throwaway `initdb` cluster works; e.g. `/usr/lib/postgresql/16/bin` when installed), never SQLite. Check upgrade → downgrade → upgrade, then `alembic check` for model drift.
 - Migrations that touch `users` start with `SET LOCAL lock_timeout = '5s'` and add columns with a constant `server_default` (metadata-only on PG ≥ 11), so they are safe under live traffic.
 - Deploy order: `alembic upgrade head`, then restart.
+- A migration that rewrites `usage_logs` (a column type change, anything that is not metadata-only) stalls the API for the whole rewrite: API-key auth reads the table on every request. It measures the table first and refuses above a small size unless the operator confirms (`f3a9c6d15e72`, `USAGE_LOGS_REWRITE_OK=1`), because `setup.sh` and the `migrate` container run `alembic upgrade head` on every deploy (`load-backup.sh` gives the confirmation itself: the gateway is stopped there). `usage_logs.id` is `BigInteger` with an `Integer` variant for SQLite: a plain `BigInteger` primary key is not auto-numbered there and every insert in the tests fails (`TestUsageLogId`).
 - `usage_logs` is the billing and audit record. Retention cleanup is a deliberate governance decision, never an installer default.
 
 ## CI

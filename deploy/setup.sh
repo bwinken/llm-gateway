@@ -325,6 +325,7 @@ else
     info "新程式碼在 schema 未升級時啟動會導致 usage 記錄寫入失敗、dashboard 錯誤"
     info "請確認 PostgreSQL 已啟動且 .env 中的 DATABASE_URL 正確，然後重新執行 setup.sh"
     info "（若因 lock timeout 中止，代表當下有長查詢佔住資料表 — 稍後重跑即可）"
+    info "（若訊息提到 USAGE_LOGS_REWRITE_OK：usage_logs 太大，改 id 型別需要停機 — 見 deploy/README.md 的 Widening usage_logs.id）"
     exit 1
 fi
 
