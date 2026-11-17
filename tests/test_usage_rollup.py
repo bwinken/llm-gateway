@@ -313,3 +313,28 @@ class TestDauCountsPeopleOnly:
         db_session.add(UsageLog(user_id=9999, model="m", endpoint="/x", created_at=now))  # deleted account
         db_session.commit()
         assert get_dau_trends(db_session) == [{"date": local_today().isoformat(), "dau": 1}]
+
+
+class TestUsageLogId:
+    """One row per request and a serial number is never reused: the id is 64-bit."""
+
+    def test_the_id_is_64_bit_on_postgresql(self):
+        import sqlalchemy as sa
+        from sqlalchemy.dialects import postgresql
+        from sqlalchemy.schema import CreateTable
+
+        id_type = UsageLog.__table__.c.id.type
+        assert isinstance(id_type.dialect_impl(postgresql.dialect()), sa.BigInteger)
+        assert "id BIGSERIAL" in str(CreateTable(UsageLog.__table__).compile(dialect=postgresql.dialect()))
+
+    def test_sqlite_still_numbers_the_rows(self, db_session):
+        # A plain BIGINT primary key is not auto-numbered on SQLite.
+        rows = [UsageLog(user_id=1, model="m", endpoint="/v1/x") for _ in range(2)]
+        db_session.add_all(rows)
+        db_session.commit()
+        assert rows[0].id is not None and rows[1].id == rows[0].id + 1
+
+    def test_an_id_past_32_bits_is_stored(self, db_session):
+        db_session.add(UsageLog(id=2**31, user_id=1, model="m", endpoint="/v1/x"))
+        db_session.commit()
+        assert db_session.exec(select(UsageLog.id).where(UsageLog.id == 2**31)).one() == 2**31

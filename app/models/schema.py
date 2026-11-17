@@ -203,7 +203,15 @@ class UsageLog(SQLModel, table=True):
         Index("ix_usage_created_at", "created_at"),
     )
 
-    id: int | None = Field(default=None, primary_key=True)
+    # bigint: one row per request, and a serial number is never reused, so a
+    # 32-bit id ends at 2,147,483,647 requests however many rows retention
+    # has deleted (and a failed usage write never fails the request, so the
+    # gateway would go on serving without billing). SQLite only numbers a
+    # column declared INTEGER PRIMARY KEY, hence the variant for the tests.
+    id: int | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.BigInteger().with_variant(sa.Integer(), "sqlite"), primary_key=True),
+    )
     user_id: int = Field()
     model: str = Field(default="")
     model_type: str = Field(default="")

@@ -58,7 +58,11 @@ services:
     network_mode: host
     user: "${GATEWAY_UID:-1000}:${GATEWAY_GID:-1000}"
     env_file: ../.env
-    environment: *gateway-paths
+    environment:
+      <<: *gateway-paths
+      # 改寫整張 usage_logs 的 migration（f3a9c6d15e72）在資料表超過 1 GB 時要這個確認才會執行，
+      # 平常是空的；由執行 compose 的 shell 帶進來（load-backup.sh 會帶，見 deploy/README.md）
+      USAGE_LOGS_REWRITE_OK: ${USAGE_LOGS_REWRITE_OK:-}
     volumes: *gateway-volumes
     tmpfs:
       - /tmp

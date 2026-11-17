@@ -8,7 +8,7 @@ Defines PostgreSQL table structures using [SQLModel](https://sqlmodel.tiangolo.c
 
 | File | Description |
 |---|---|
-| `schema.py` | `User`, `AppOwner`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AnomalyEvent`, `ConcurrencyLease`, `IpAllowRule`, `AuditLog` — ten ORM models, plus helpers `service_account_clause()` / `service_account_names()` (who is a service account: the `is_service_account` column), `mask_api_key()` (key display in admin listings), `issue_api_key()` (the one way to (re)issue a key) and `is_legacy_api_key()` (keys older than the current format) |
+| `schema.py` | `User`, `AppOwner`, `UsageLog`, `UsageDaily`, `UsageRollupState`, `ScheduledJob`, `AnomalyEvent`, `ConcurrencyLease`, `IpAllowRule`, `ClientRuleSetting`, `ClientViolation`, `ClientVersion`, `ClientEvent`, `ClientMailLog`, `ReportSchedule`, `AuditLog` — sixteen ORM models, plus helpers `service_account_clause()` / `service_account_names()` (who is a service account: the `is_service_account` column), `mask_api_key()` (key display in admin listings), `issue_api_key()` (the one way to (re)issue a key) and `is_legacy_api_key()` (keys older than the current format) |
 
 ## ER Diagram
 
@@ -37,7 +37,7 @@ erDiagram
     }
 
     usage_logs {
-        INTEGER id PK "Auto-increment primary key"
+        BIGINT id PK "Auto-increment primary key (64-bit)"
         INTEGER user_id "Requesting user (no FK constraint)"
         VARCHAR model "Model alias (user-facing)"
         VARCHAR model_type "Type: llm/vlm/embedding/reranker/..."
@@ -239,7 +239,7 @@ classDiagram
 
 | Field | Type | Constraints | Default | Description |
 |---|---|---|---|---|
-| `id` | `INTEGER` | PK, auto-increment | — | Primary key |
+| `id` | `BIGINT` | PK, auto-increment | — | Primary key. 64-bit since migration `f3a9c6d15e72`: one row per request and a number is never reused, so a 32-bit id ended at 2,147,483,647 requests whatever retention deleted. `INTEGER` on SQLite (the tests), which only numbers an `INTEGER PRIMARY KEY`. The other tables keep 32-bit ids: none grows per request |
 | `user_id` | `INTEGER` | Composite index | — | Requesting user ID. No FK constraint: the rows outlive a deleted account (`delete_user` keeps them) |
 | `model` | `VARCHAR` | — | `""` | Model alias requested by user (user-facing name, not real_model) |
 | `model_type` | `VARCHAR` | — | `""` | Model type: `llm`, `vlm`, `embedding`, `vision_embedding`, `reranker`, `vision_reranker`, `systemone` |
@@ -364,7 +364,7 @@ Maps to `ip_allow_rules` table: the API IP allowlist (`app/services/ip_allowlist
 
 ## Client rule tables
 
-Four tables behind the admin *Clients* tab (`app/services/client_rules.py`; see Client rules in `docs/architecture.md`). They hold usernames and check ids, never foreign keys, so deleting an account or retiring a check leaves them alone.
+Five tables behind the admin *Clients* tab (`app/services/client_rules.py`; see Client rules in `docs/architecture.md`). They hold usernames and check ids, never foreign keys, so deleting an account or retiring a check leaves them alone.
 
 | Table (model) | One row per | Holds |
 |---|---|---|
@@ -373,6 +373,10 @@ Four tables behind the admin *Clients* tab (`app/services/client_rules.py`; see 
 | `client_versions` (`ClientVersion`) | account × Claude Code version | when it was last seen (from the User-Agent) |
 | `client_events` (`ClientEvent`) | event a setup tool reported (`POST /v1/events`) | when, account, `event` (`installed` / `updated` / `uninstalled` / `settings_applied`), `ok`, the reporting `tool` and its version, `kind` (`app` / `skill` / `mcp` / `plugin`), `component` and its version (and the previous one), the `client` it was added to, `method`, `os` + `os_version` + `arch`, `hostname`, `message`. Appended, never changed; what is installed now is derived (`client_events.installs`) |
 | `client_mail_log` (`ClientMailLog`) | mail attempt | when, account, address, subject, the checks it covered, why (`requested` / `automatic` / `test`), sent or failed with the error, the admin behind a test. Append-only; no mail body |
+
+## ReportSchedule Model
+
+Maps to `report_schedules` table: when each weekly report mail goes out and to whom (`app/services/weekly_reports.py`). One row per report (`name` = `usage` or `guardrail`, the primary key), written by the admin's *Weekly reports* card; a report without a row is off. `enabled`, `weekday` (0 = Monday) and `send_time` (`HH:MM`), both Asia/Taipei, `recipients` (comma-separated mailboxes of the company domain), `last_period` (the Monday of the week the last report was about: the job claims a week by moving it forward with a conditional UPDATE), `last_attempt_at`, `last_status`, `last_detail`, `updated_by` (a username), `updated_at` (naive UTC). It holds when and to whom, never what a report points out.
 
 ## AuditLog Model
 

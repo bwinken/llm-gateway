@@ -141,6 +141,30 @@ systemctl --user disable --now llm-gateway-scan.timer llm-gateway-cleanup.timer
 
 Other scripts, run by hand from `~/opt/llm-gateway`: `scripts/migrate_sqlite_to_pg.py` (one-off SQLite → PostgreSQL data migration, `--dry-run` / `--sync`) and `scripts/azure_latency_probe.py` (splits Azure latency into phases, direct vs. through the gateway; `--help`).
 
+## Widening usage_logs.id
+
+Migration `f3a9c6d15e72` changes `usage_logs.id` from a 32-bit to a 64-bit number. Every request adds one row and a number is never reused, so the old id ended at 2,147,483,647 requests, whatever retention has deleted since; past that the gateway keeps serving but records no usage. How far along a database is:
+
+```bash
+docker exec llm-gateway-pg psql -U <PG_USER> -d <PG_DB> -c "SELECT last_value FROM usage_logs_id_seq"
+```
+
+Unlike the other migrations this one **rewrites the table** under an exclusive lock, and the API stalls until it is done (API-key auth reads `usage_logs` for the daily limit). Up to 1 GB of table and indexes that is a moment and `alembic upgrade head` just does it. Above that the migration stops, changing nothing, and `setup.sh` leaves the old version serving. Then:
+
+1. Check free disk: the rewrite needs room for a second copy of the table and its indexes (`SELECT pg_size_pretty(pg_total_relation_size('usage_logs'))`).
+2. If usage-log retention is planned too, turn it on first and let its first run finish (unless the id is close to its end). There is less to rewrite afterwards, and the rewrite is what gives the deleted rows' disk space back to the operating system.
+3. In a maintenance window, stop the gateway and run the migration with the confirmation:
+
+```bash
+systemctl --user stop llm-gateway
+(cd ~/opt/llm-gateway && USAGE_LOGS_REWRITE_OK=1 uv run alembic upgrade head)
+systemctl --user start llm-gateway
+```
+
+With the gateway in a container: `bash deploy/migration/compose.sh stop gateway`, then `USAGE_LOGS_REWRITE_OK=1 bash deploy/migration/compose.sh up -d` (the `migrate` service takes the confirmation from the shell and runs before the gateway starts). `load-backup.sh` gives the confirmation itself: when it migrates, the gateway is stopped and the data has just been restored, so a move to a new server widens the id on the way, taking that much longer.
+
+How long depends on the disk. As a measure, a throwaway PostgreSQL 16 rewrote 5 million rows (1.1 GB with indexes) in about 13 seconds. Interrupting it rolls everything back. Don't run it alongside a backup: `pg_dump` holds a lock on the table and the migration gives up after 5 seconds of waiting.
+
 ## Health Probes
 
 Two unauthenticated endpoints, served by the Gateway itself:
@@ -300,6 +324,24 @@ To restore after a real loss, into a fresh database (decrypt first: `gpg --decry
 docker exec -i llm-gateway-pg pg_restore -U "$PG_USER" --create -d postgres < FILE
 ```
 
+## Database Health Check
+
+`deploy/db-health.sh` lists what PostgreSQL is using and points out what needs attention. It only reads, and the gateway keeps serving:
+
+```bash
+bash deploy/db-health.sh
+```
+
+- **Disk**: every subdirectory of the data directory, every database, every table of the gateway database with its data, indexes, row estimate and dead rows, every index, and the tables of any other database above 100 MB in the same PostgreSQL.
+- **What stops space from being reclaimed**: replication slots nobody reads (PostgreSQL keeps the WAL for them forever), transactions left open (no table's dead rows can be removed meanwhile), prepared transactions, a failing WAL archive, autovacuum off.
+- **`usage_logs`**: rows, size, the days it covers, and how much of its id range is used.
+- **The gateway's own jobs**: how far the daily rollup has got, each scheduled job's last result.
+- **Memory**: PostgreSQL's memory settings, every container's current use, the gateway service, the host.
+
+It ends with one line saying where the space is and a list of anything it flagged (the thresholds are the constants at the top of the script). Exit status: 0 nothing to note, 1 something flagged, 2 cannot connect.
+
+It sends `SELECT` statements only, on a read-only connection with a 15-second statement limit and a 2-second lock wait, counts rows from PostgreSQL's statistics rather than scanning a table, and writes no file. It reads `PG_USER` / `PG_DB` from `deploy/.env` like `backup-db.sh` (`ENV_FILE`, `PG_CONTAINER` to override).
+
 ## PostgreSQL Data Migration (Volume Change)
 
 When moving PG data to a different volume (e.g., wrong disk mount, capacity expansion), using `pg_dumpall` logical backup is safest — unaffected by filesystem or permission differences.
@@ -343,6 +385,7 @@ docker compose -f deploy/docker-compose.yml up -d
     ├── pgdata/               # PostgreSQL data
     ├── setup.sh              # Deployment script
     ├── backup-db.sh          # Online database backup (pg_dump, verify, encrypt, retention)
+    ├── db-health.sh          # Read-only report: disk and memory use, what blocks space reclaim, usage_logs
     ├── restore-drill.sh      # Restore a backup into a throwaway container, log the result
     ├── migration/            # Gateway container, move to a new server, and its drill (own README)
     ├── gen-selfsigned-cert.sh               # Self-signed TLS cert for :443
