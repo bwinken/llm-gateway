@@ -159,6 +159,7 @@ that can actually analyse it — confirmed against Langfuse Metrics API v2:
 | **client** (derived: the `X-Title` the client sends, else a known tool such as claude-code / roo-code / codex-cli, else the User-Agent's own product such as openai-python / curl; an endpoint family only without a User-Agent) | generation **`version`** + **categorical Score `client`** + **tag `client:<label>`** | **statisticable** — the observations view groups tokens, cost and latency by `version`; the `scores-categorical` view gives request distribution per software + day/month trend; the tag filters the Tracing list |
 | raw `User-Agent` header | `metadata.user_agent` | calibration / lookup only — **NOT** for statistics |
 | `real_model` / deployment | `metadata.real_model` | reference only |
+| model **alias** and `real_model`, once more | the **trace's** metadata: `model`, `real_model` (`observability.trace_metadata`) | the Users view and the Tracing list show traces only, where the generation's `model` cannot be seen: this is what tells which model an account used there. Reference only (a report still groups by the generation's `model`); strings of at most 200 characters, the SDK's limit for a trace value |
 | input/output/cached tokens | **`usageDetails`** map | native aggregatable measure |
 | gateway `_calc_cost` breakdown | **`costDetails`** map (manual → overrides Langfuse pricing) | accurate, matches billing |
 | temperature/top_p/max_tokens/reasoning_effort/stream | `modelParameters` | params view |
