@@ -732,6 +732,25 @@ def reset_langfuse_cache() -> None:
     _sample_rate = None
 
 
+# The SDK drops a trace-level value that is not a string or is longer.
+_TRACE_METADATA_MAX = 200
+
+
+def trace_metadata(rec: GenerationRecord) -> dict[str, str]:
+    """The model on the TRACE, beside its place on the generation.
+
+    Langfuse's Users view (and the Tracing list) shows traces only: the
+    generation's ``model`` and ``metadata.real_model`` are one click further
+    down, so which model an account used could not be read there. Reference
+    only: a report still groups by the generation's ``model``.
+    """
+    out: dict[str, str] = {}
+    for key, value in (("model", rec.model_alias), ("real_model", rec.real_model)):
+        if value:
+            out[key] = str(value)[:_TRACE_METADATA_MAX]
+    return out
+
+
 def record_generation(rec: GenerationRecord) -> None:
     """Fire-and-forget: emit one Langfuse generation for a completed request.
 
@@ -798,13 +817,15 @@ def record_generation(rec: GenerationRecord) -> None:
                 (anchor_ns + int(ttft_ms * 1_000_000)) / 1e9, tz=timezone.utc,
             )
 
-        # user_id / session_id / tags / trace_name are trace-level → propagate
-        # them to the generation span created within this context.
+        # user_id / session_id / tags / trace_name / trace metadata are
+        # trace-level → propagate them to the generation span created within
+        # this context.
         with propagate_attributes(
             user_id=rec.username,
             session_id=rec.session_id,
             tags=tags,
             trace_name=rec.endpoint,
+            metadata=trace_metadata(rec),
         ):
             gen = client.start_observation(
                 name=rec.endpoint,

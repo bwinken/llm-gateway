@@ -261,6 +261,30 @@ class TestRecordGeneration:
         assert "client:cline" in seen["tags"]
         assert "backend:vllm" in seen["tags"]
 
+    def test_the_model_is_on_the_trace_too(self):
+        # Langfuse's Users view lists traces only, and the generation's
+        # model is not shown there: the trace's own metadata carries it.
+        client = MagicMock()
+        seen: list[dict] = []
+
+        def _propagate(**kw):
+            seen.append(kw)
+            return contextlib.nullcontext()
+
+        with patch("app.services.observability.get_langfuse", return_value=client), \
+             patch("langfuse.propagate_attributes", _propagate):
+            record_generation(_make_record(model_alias="qwen3.6-27b", real_model="Qwen/Qwen3.6-27B"))
+            record_generation(_make_record(model_alias="x" * 500, real_model="", error="502", is_error=True))
+        assert seen[0]["metadata"] == {"model": "qwen3.6-27b", "real_model": "Qwen/Qwen3.6-27B"}
+        # The generation keeps its own: a report groups by its model.
+        first = client.start_observation.call_args_list[0].kwargs
+        assert first["model"] == "qwen3.6-27b"
+        assert first["metadata"]["real_model"] == "Qwen/Qwen3.6-27B"
+        # A failed request too. The SDK drops a trace value over 200
+        # characters (or not a string), so it is cut, and an empty one is
+        # left out.
+        assert seen[1]["metadata"] == {"model": "x" * 200}
+
     def test_the_client_is_the_generations_version(self):
         # What a report groups by: the Metrics API gives tokens, cost and
         # latency per top-level field of the generation, never per metadata
