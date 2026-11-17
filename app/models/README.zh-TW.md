@@ -8,7 +8,7 @@
 
 | 檔案 | 說明 |
 |---|---|
-| `schema.py` | `User`、`AppOwner`、`UsageLog`、`UsageDaily`、`UsageRollupState`、`ScheduledJob`、`AnomalyEvent`、`ConcurrencyLease`、`IpAllowRule`、`AuditLog` 十個 ORM Model，以及輔助函式 `service_account_clause()` / `service_account_names()`（誰是服務帳號：看 `is_service_account` 欄位）、`mask_api_key()`（Admin 列表的金鑰遮罩顯示）、`issue_api_key()`（發放／重發 key 的唯一入口）與 `is_legacy_api_key()`（判斷舊格式 key） |
+| `schema.py` | `User`、`AppOwner`、`UsageLog`、`UsageDaily`、`UsageRollupState`、`ScheduledJob`、`AnomalyEvent`、`ConcurrencyLease`、`IpAllowRule`、`ClientRuleSetting`、`ClientViolation`、`ClientVersion`、`ClientEvent`、`ClientMailLog`、`ReportSchedule`、`AuditLog` 十六個 ORM Model，以及輔助函式 `service_account_clause()` / `service_account_names()`（誰是服務帳號：看 `is_service_account` 欄位）、`mask_api_key()`（Admin 列表的金鑰遮罩顯示）、`issue_api_key()`（發放／重發 key 的唯一入口）與 `is_legacy_api_key()`（判斷舊格式 key） |
 
 ## ER Diagram
 
@@ -37,7 +37,7 @@ erDiagram
     }
 
     usage_logs {
-        INTEGER id PK "自動遞增主鍵"
+        BIGINT id PK "自動遞增主鍵 (64 位元)"
         INTEGER user_id "請求使用者 (無 FK 約束)"
         VARCHAR model "模型別名 (user-facing)"
         VARCHAR model_type "類型 llm/vlm/embedding/reranker/..."
@@ -239,7 +239,7 @@ classDiagram
 
 | 欄位 | 型別 | 約束 | 預設值 | 說明 |
 |---|---|---|---|---|
-| `id` | `INTEGER` | PK, auto-increment | — | 主鍵 |
+| `id` | `BIGINT` | PK, auto-increment | — | 主鍵。migration `f3a9c6d15e72` 起為 64 位元：每個請求一列、號碼不會重用，32 位元的 id 到 2,147,483,647 筆請求就用完，retention 刪了多少都一樣。在 SQLite（測試）上是 `INTEGER`，因為 SQLite 只會自動編號 `INTEGER PRIMARY KEY`。其他資料表維持 32 位元：沒有一張是每個請求長一列 |
 | `user_id` | `INTEGER` | 複合索引 | — | 發起請求的使用者 ID。未設 FK 約束：帳號刪除後資料列仍保留（`delete_user` 不刪） |
 | `model` | `VARCHAR` | — | `""` | 使用者請求的模型別名（user-facing name，非 real_model） |
 | `model_type` | `VARCHAR` | — | `""` | 模型類型。可能值：`llm`、`vlm`、`embedding`、`vision_embedding`、`reranker`、`vision_reranker`、`systemone` |
@@ -364,7 +364,7 @@ cost_usd = (uncached_input_tokens × input_price_per_1m
 
 ## Client rule 相關資料表
 
-管理面板 *Clients* 分頁背後的四張表（`app/services/client_rules.py`；詳見 `docs/architecture.md` 的 Client rules）。它們存的是 username 和 check id，不是 foreign key，所以刪除帳號或讓 check 退役都不會動到它們。
+管理面板 *Clients* 分頁背後的五張表（`app/services/client_rules.py`；詳見 `docs/architecture.md` 的 Client rules）。它們存的是 username 和 check id，不是 foreign key，所以刪除帳號或讓 check 退役都不會動到它們。
 
 | 資料表（model） | 每列代表 | 內容 |
 |---|---|---|
@@ -373,6 +373,10 @@ cost_usd = (uncached_input_tokens × input_price_per_1m
 | `client_versions`（`ClientVersion`） | 帳號 × Claude Code 版本 | 最後看到的時間（來自 User-Agent） |
 | `client_events`（`ClientEvent`） | 安裝工具回報的一筆事件（`POST /v1/events`） | 時間、帳號、`event`（`installed` / `updated` / `uninstalled` / `settings_applied`）、`ok`、回報的 `tool` 與版本、`kind`（`app` / `skill` / `mcp` / `plugin`）、`component` 與版本（及前一版）、裝進哪個 `client`、`method`、`os` + `os_version` + `arch`、`hostname`、`message`。只新增不修改；目前安裝狀態由它推導（`client_events.installs`） |
 | `client_mail_log`（`ClientMailLog`） | 一次寄信嘗試 | 時間、帳號、收件地址、主旨、涵蓋的 check、原因（`requested` / `automatic` / `test`）、成功或失敗與錯誤、測試信是哪位 admin 寄的。只新增不修改；不存信件內容 |
+
+## ReportSchedule 模型
+
+對應 `report_schedules` 資料表：每份週報信什麼時候寄、寄給誰（`app/services/weekly_reports.py`）。每份報表一列（`name` = `usage` 或 `guardrail`，主鍵），由管理面板的 *Weekly reports* 卡片寫入；沒有列的報表就是關閉的。欄位：`enabled`、`weekday`（0 = 星期一）與 `send_time`（`HH:MM`），兩者都是 Asia/Taipei；`recipients`（以逗號分隔的公司網域信箱）；`last_period`（上一份報表所屬那一週的星期一：job 用條件式 UPDATE 把它往前推來認領一週）；`last_attempt_at`、`last_status`、`last_detail`、`updated_by`（username）、`updated_at`（naive UTC）。這張表只存「什麼時候、寄給誰」，不存報表要點出什麼。
 
 ## AuditLog 模型
 
