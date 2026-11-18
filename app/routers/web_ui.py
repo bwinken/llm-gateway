@@ -546,7 +546,7 @@ def _model_changes(session: Session, user: User) -> list[dict]:
         logger.warning("Model changes failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
         return []
     for change in changes:
-        change["until_local"] = model_changes.local_day(change["until"])
+        change["until_local"] = model_changes.local_time(change["until"])
     return changes
 
 

@@ -198,7 +198,9 @@ def render_model_changes(
     """``(subject, html)`` of the mail to one account about the model
     changes in ``changes`` (each needs ``id``, ``title``, ``message``,
     ``email_subject``, ``show_until``), with ``renames`` as what this
-    account replaces (``model_changes.account_renames``). With
+    account replaces (``model_changes.account_renames``). It opens by saying
+    it is for Claude Code users only: the change is to Claude Code's
+    settings, and the audience is everyone of a tier. With
     ``PUBLIC_BASE_URL`` set it links straight to the account's model-change
     script. Everything an admin wrote is escaped."""
     public_url = mailer.settings()["public_url"]
@@ -210,6 +212,11 @@ def render_model_changes(
     parts = [
         '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222;line-height:1.6">',
         f"<p>Hi {html.escape(username)},</p>",
+        # Who this is for, before anything else: the change below is to
+        # Claude Code's settings, and most accounts are mailed.
+        '<p style="background:#f4f3ef;border-left:3px solid #a78bfa;padding:8px 12px;margin:12px 0">'
+        "<b>This mail is for Claude Code users only.</b> It is about the model names in your Claude Code "
+        "settings. If you do not use Claude Code with this gateway, you can ignore it.</p>",
     ]
     for number, change in enumerate(changes, 1):
         heading = f"{number}. {change.title}" if count > 1 else change.title
@@ -240,15 +247,15 @@ def render_model_changes(
     parts.append(
         "<p>By hand: open <code>~/.claude/settings.json</code> and replace the name in <code>model</code> and in "
         "the <code>env</code> variables that hold a model (<code>ANTHROPIC_MODEL</code>, "
-        "<code>ANTHROPIC_SMALL_FAST_MODEL</code>, ...). A project's own <code>.claude/settings.json</code> and "
-        "other tools that name the model need the same change; no script reaches those.</p>"
+        "<code>ANTHROPIC_SMALL_FAST_MODEL</code>, ...). A project's own <code>.claude/settings.json</code> "
+        "needs the same change; the script does not reach it.</p>"
     )
     until = max(change.show_until for change in changes)
     if public_url:
         link = html.escape(f"{public_url}/dashboard", quote=True)
         parts.append(
             f'<p><a href="{link}">Your dashboard</a> shows this notice and the script until '
-            f"{html.escape(model_changes.local_day(until))}.</p>"
+            f"{html.escape(model_changes.local_time(until))}.</p>"
         )
     references = ", ".join(html.escape(model_changes.ref(change.id)) for change in changes)
     parts.append(_footer(public_url, "sent to the accounts this model change is for", references))

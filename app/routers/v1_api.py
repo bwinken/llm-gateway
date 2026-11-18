@@ -667,9 +667,9 @@ def model_changes_for_account(user: User = Depends(get_current_user_unmetered)):
     ``changes`` lists each change being shown that concerns the account's
     tier (its cloud access: none, Azure, AWS or both): its ``id``
     (``MC3``), ``title`` and ``message``, the ``models`` to replace
-    (``{old: new}``, this tier's), the last local day it is shown
-    (``until``) and whether the account said it switched on its dashboard
-    (``applied``). ``retiring`` is every model name being replaced for
+    (``{old: new}``, this tier's), when it is open (``from`` and
+    ``until``, Asia/Taipei with its offset) and whether the account said
+    it switched on its dashboard (``applied``). ``retiring`` is every model name being replaced for
     this account, and ``patch.models`` the one rename map for all of it
     (a later change wins where two replace the same model).
 
@@ -679,9 +679,9 @@ def model_changes_for_account(user: User = Depends(get_current_user_unmetered)):
     value is exactly the old name; a bracket suffix (``old[1m]``) is
     kept. Add nothing: a user who chose another model keeps it.
 
-    Values are returned only while a change is being shown. Before an
-    admin announces one, after its last day and for an account no change
-    is for, all three are empty.
+    Values are returned only while a change is open: from its ``from``
+    until its ``until``. Before that (not announced, or scheduled), after
+    it and for an account no change is for, all three are empty.
 
     Read-only and never a key. Answers once the daily limit is spent.
     Plain ``def``.
@@ -693,7 +693,8 @@ def model_changes_for_account(user: User = Depends(get_current_user_unmetered)):
         if change["message"]:
             entry["message"] = change["message"]
         entry["models"] = change["renames"]
-        entry["until"] = model_changes.local_day(change["until"])
+        entry["from"] = model_changes.local_iso(change["from"])
+        entry["until"] = model_changes.local_iso(change["until"])
         entry["applied"] = change["applied"]
         changes.append(entry)
         renames.update(change["renames"])

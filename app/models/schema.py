@@ -488,8 +488,9 @@ class ModelChange(SQLModel, table=True):
     (app/services/model_changes.py): the notice people read (``title``,
     ``message``), which model names to replace with which (``renames``, JSON
     ``{old: new}``: the base for every account, and what accounts with Azure
-    / AWS access get on top, like a client rule's patch), and until when it
-    is shown on dashboards (``show_until``; ending one early sets it to now).
+    / AWS access get on top, like a client rule's patch), and from when
+    until when it is shown on dashboards (``show_from``, ``show_until``;
+    ending one early sets ``show_until`` to now).
 
     Who sees it follows from the renames: an account for which they come
     out empty (only the Azure box is filled, and it has no Azure access) is
@@ -506,6 +507,7 @@ class ModelChange(SQLModel, table=True):
     renames_azure: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
     renames_aws: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
     email_subject: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    show_from: NaiveDatetime = Field()
     show_until: NaiveDatetime = Field()
     created_by: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     updated_by: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))

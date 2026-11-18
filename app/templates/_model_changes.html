@@ -14,6 +14,7 @@
      style="background:rgba(167,139,250,0.05);border-color:rgba(167,139,250,0.3)">
     <div class="px-4 py-2.5 flex flex-wrap items-baseline gap-x-2">
         <span class="text-sm font-bold" style="color:#a78bfa">Model change</span>
+        <span class="font-mono text-[11px] px-1.5 py-0.5 rounded" style="background:rgba(167,139,250,0.12);color:#a78bfa" data-model-change-scope>Claude Code users</span>
         <span class="text-xs text-t3">
             {%- if n_open -%}{{ n_open }} model{{ '' if n_open == 1 else 's' }} you may be using {{ 'is' if n_open == 1 else 'are' }} being replaced
             {%- else -%}you marked {{ 'this' if n_changes == 1 else 'these' }} as done; the script stays here for your other machines
@@ -50,7 +51,7 @@
                 Windows: double-click the file. Linux: <code class="font-mono">sh claude-code-model-change.sh</code>. Run it on every machine you use Claude Code on, then restart Claude Code.
                 It replaces these names where <code class="font-mono">~/.claude/settings.json</code> has them (the <code class="font-mono">model</code> setting and the model
                 variables in <code class="font-mono">env</code>), leaves a model you chose yourself alone and saves a backup as settings.json.bak.
-                A project's own <code class="font-mono">.claude/settings.json</code> and other tools that name the model need the same change by hand.
+                A project's own <code class="font-mono">.claude/settings.json</code> needs the same change by hand.
             </div>
             <div class="mt-3 pt-3 flex flex-wrap items-center gap-3" style="border-top:1px solid rgba(167,139,250,0.12)">
                 {% if not c.applied %}

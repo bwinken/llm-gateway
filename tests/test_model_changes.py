@@ -1,10 +1,10 @@
 """Model changes (app/services/model_changes.py): telling accounts that a model
 is being replaced.
 
-An admin announces a change: a notice, the renames (old model -> new model,
-for everyone and what Azure / AWS accounts get on top) and the day until
-which it is shown. Every account the renames are for sees it on its dashboard
-until that day, with a script that replaces the names in its Claude Code
+An admin announces a change: a notice, the renames (old model name, new
+model name, and the tier each is for) and when it is shown (from, until).
+Every account the renames are for sees it on its dashboard between the two,
+with a script that replaces the names in its Claude Code
 settings, and can be mailed about it through the paced mail job.
 
 It is its own flow, apart from the client-rule notices: nothing was detected,
@@ -29,7 +29,7 @@ from unittest.mock import patch
 import pytest
 from sqlmodel import select
 
-from app.core.timeutil import local_today
+from app.core.timeutil import LOCAL_TZ
 from app.models.schema import ClientMailLog, ClientViolation, ModelChange, ModelChangeState, User
 from app.services import client_mail, client_patch, mailer, model_changes
 from tests.conftest import auth_header, web_auth_header
@@ -39,13 +39,26 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _day(offset: int = 30) -> str:
-    return (local_today() + timedelta(days=offset)).isoformat()
+def _at(days: float = 30) -> str:
+    """A time ``days`` from now, as the form's ``datetime-local`` value (Asia/Taipei)."""
+    return (datetime.now(LOCAL_TZ) + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M")
+
+
+def _rows(*rows: tuple[str, str, str], **kw) -> dict:
+    """The admin form as the page posts it: one row per model (old name, new
+    name, tier)."""
+    rows = rows or (("old-llm", "test-llm", "everyone"),)
+    form = {
+        "title": "test-llm is being replaced", "message": "It is switched off next month.", "show_until": _at(),
+        "old_model": [r[0] for r in rows], "new_model": [r[1] for r in rows], "tier": [r[2] for r in rows],
+    }
+    form.update(kw)
+    return form
 
 
 def _form(**kw) -> dict:
     form = {"title": "test-llm is being replaced", "message": "It is switched off next month.",
-            "renames": "old-llm -> test-llm", "show_until": _day()}
+            "renames": "old-llm -> test-llm", "show_until": _at()}
     form.update(kw)
     return form
 
@@ -282,13 +295,28 @@ class TestWhoIsTold:
         _change(db_session, renames="", renames_aws="bedrock-old -> bedrock-nova")
         assert model_changes.for_account(db_session, admin)[0]["renames"] == {"bedrock-old": "bedrock-nova"}
 
-    def test_it_is_shown_until_the_end_of_the_day_the_admin_set(self, db_session):
+    def test_it_is_shown_until_the_time_the_admin_set(self, db_session):
         user = _person(db_session, "local")
-        change = _change(db_session, show_until=_day(3))
-        assert model_changes.local_day(change.show_until) == _day(3)
+        until = _at(3)
+        change = _change(db_session, show_until=until)
+        assert model_changes.local_input(change.show_until) == until
         assert model_changes.for_account(db_session, user, change.show_until - timedelta(seconds=1))
         assert model_changes.for_account(db_session, user, change.show_until) == []
         assert model_changes.renames_for(db_session, user, change.show_until) == {}
+
+    def test_it_is_not_shown_before_it_opens(self, db_session):
+        user = _person(db_session, "local")
+        change = _change(db_session, show_from=_at(1), show_until=_at(2))
+        assert model_changes.state_of(change) == "scheduled" and not model_changes.is_showing(change)
+        assert model_changes.for_account(db_session, user) == []
+        assert model_changes.request_mail(db_session, change) == 0          # nobody is mailed about what is not open
+        found = model_changes.overview(db_session)
+        assert found["showing"] == [] and [c.id for c in found["scheduled"]] == [change.id]
+        opened = change.show_from + timedelta(seconds=1)
+        assert model_changes.state_of(change, opened) == "showing"
+        assert model_changes.for_account(db_session, user, opened)[0]["renames"] == {"old-llm": "test-llm"}
+        model_changes.end(db_session, change)                               # cancelled: it never opens
+        assert model_changes.state_of(change, opened) == "ended"
 
     def test_ending_it_takes_it_away_at_once(self, db_session):
         user = _person(db_session, "local")
@@ -327,7 +355,8 @@ class TestForm:
         for bad in (
             _form(title=""), _form(title="x" * 201), _form(message="x" * 4001),
             _form(renames=""), _form(renames="not a rename"),
-            _form(show_until=""), _form(show_until="soon"), _form(show_until=_day(-1)), _form(show_until=_day(400)),
+            _form(show_until=""), _form(show_until="soon"), _form(show_until=_at(-1)), _form(show_until=_at(400)),
+            _form(show_from="soon"), _form(show_from=_at(3), show_until=_at(2)), _form(show_from=_at(2), show_until=_at(2)),
         ):
             with pytest.raises(ValueError):
                 model_changes.clean_fields(bad)
@@ -347,10 +376,37 @@ class TestForm:
         ))
         assert json.loads(ok["renames_azure"]) == {"gone-model": "azure-gpt-4"}
 
-    def test_the_last_day_is_included(self):
-        values = model_changes.clean_fields(_form(show_until=_day(0)))
-        assert values["show_until"] > _now() and values["show_until"].tzinfo is None
-        assert model_changes.local_day(values["show_until"]) == _day(0)
+    def test_times_are_taipei_and_an_empty_start_is_now(self, db_session):
+        values = model_changes.clean_fields(_form(show_from="", show_until="2099-01-02T08:30"), now=datetime(2098, 12, 1))
+        assert values["show_from"] is None
+        assert values["show_until"] == datetime(2099, 1, 2, 0, 30)       # 08:30 in Taipei, stored as naive UTC
+        change = _change(db_session)
+        assert change.show_from <= _now() and model_changes.is_showing(change)
+        started = change.show_from
+        change = model_changes.save(db_session, model_changes.clean_fields(_form(title="Reworded")), by="admin", change=change)
+        assert change.show_from == started                               # an edit without a start keeps the one it had
+        change = model_changes.save(
+            db_session, model_changes.clean_fields(_form(show_from="2020-01-01T00:00")), by="admin", change=change,
+        )
+        assert change.show_from == datetime(2019, 12, 31, 16, 0) and model_changes.is_showing(change)
+
+    def test_the_forms_rows_are_the_three_tiers(self):
+        boxes = model_changes.rows_to_boxes([
+            ("old-llm", "test-llm", "everyone"), ("", "", "azure"), (" old-llm ", "azure-gpt-4", "Azure"),
+            ("bedrock-old", "bedrock-nova", "aws"), ("old-vlm", "test-vlm", ""),
+        ])
+        assert boxes == {
+            "renames": "old-llm -> test-llm\nold-vlm -> test-vlm", "renames_azure": "old-llm -> azure-gpt-4",
+            "renames_aws": "bedrock-old -> bedrock-nova",
+        }
+        values = model_changes.clean_fields(_form(**boxes))
+        assert model_changes.rows(SimpleNamespace(**values)) == [
+            {"old": "old-llm", "new": "test-llm", "tier": "everyone"}, {"old": "old-vlm", "new": "test-vlm", "tier": "everyone"},
+            {"old": "old-llm", "new": "azure-gpt-4", "tier": "azure"}, {"old": "bedrock-old", "new": "bedrock-nova", "tier": "aws"},
+        ]
+        for bad in ([("old-llm", "", "everyone")], [("", "test-llm", "everyone")], [("old-llm", "test-llm", "vip")]):
+            with pytest.raises(ValueError):
+                model_changes.rows_to_boxes(bad)
 
 
 class TestDashboard:
@@ -359,7 +415,8 @@ class TestDashboard:
         body = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
         assert 'id="modelChanges"' in body and f"MC{change.id}" in body
         assert "Retiring &lt;old&gt;" in body and "<old>" not in body          # what the admin wrote is escaped
-        assert "old-llm" in body and f"until {_day()}" in body
+        assert "old-llm" in body and f"until {model_changes.local_time(change.show_until)}" in body
+        assert "data-model-change-scope" in body                   # it says it is for Claude Code users
         assert "/dashboard/model-changes/patch.sh" in body
 
     def test_an_account_it_is_not_for_sees_nothing(self, client, db_session):
@@ -433,15 +490,39 @@ class TestDashboard:
 
 class TestAdmin:
     def test_announcing_a_change(self, client, db_session, admin_user):
-        resp = client.post("/admin/model-changes", data=_form(renames_azure="azure-old -> azure-gpt-4"), headers=_admin(admin_user))
+        until = _at(14)
+        form = _rows(("old-llm", "test-llm", "everyone"), ("azure-old", "azure-gpt-4", "azure"), ("", "", "everyone"), show_until=until)
+        resp = client.post("/admin/model-changes", data=form, headers=_admin(admin_user))
         assert resp.status_code == 200 and resp.json()["ref"].startswith("MC")
         [change] = db_session.exec(select(ModelChange)).all()
-        assert change.created_by == admin_user.username and json.loads(change.renames_azure) == {"azure-old": "azure-gpt-4"}
-        assert model_changes.local_day(change.show_until) == _day()
+        assert change.created_by == admin_user.username
+        assert json.loads(change.renames) == {"old-llm": "test-llm"} and json.loads(change.renames_azure) == {"azure-old": "azure-gpt-4"}
+        assert change.renames_aws == ""
+        assert model_changes.local_input(change.show_until) == until and model_changes.is_showing(change)   # open from now
 
-    def test_a_refused_form_creates_nothing(self, client, db_session, admin_user):
-        resp = client.post("/admin/model-changes", data=_form(renames="old -> no-such-model"), headers=_admin(admin_user))
-        assert resp.status_code == 400 and "no-such-model" in resp.json()["detail"]
+    def test_scheduling_one_for_later(self, client, db_session, admin_user, test_user):
+        form = _rows(show_from=_at(1), show_until=_at(8))
+        assert client.post("/admin/model-changes", data=form, headers=_admin(admin_user)).status_code == 200
+        [change] = db_session.exec(select(ModelChange)).all()
+        assert model_changes.state_of(change) == "scheduled"
+        assert 'id="modelChanges"' not in client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        card = body[body.index('id="model-changes"'):body.index('id="client-setup"')]
+        assert "Scheduled" in card and "Cancel it" in card and "Mail can be sent once it opens" in card
+
+    @pytest.mark.parametrize("form", [
+        _rows(("old", "no-such-model", "everyone")),
+        _rows(("old", "azure-gpt-4", "everyone")),          # an Azure model for accounts without Azure access
+        _rows(("old-llm", "", "everyone")),
+        _rows(("", "", "everyone")),                        # no model at all
+        _rows(("old-llm", "test-llm", "vip")),
+        _rows(show_until=""),
+        _rows(show_from=_at(9), show_until=_at(8)),
+        {**_rows(), "tier": []},                            # rows that do not line up
+    ])
+    def test_a_refused_form_creates_nothing(self, client, db_session, admin_user, form):
+        resp = client.post("/admin/model-changes", data=form, headers=_admin(admin_user))
+        assert resp.status_code == 400 and resp.json()["detail"]
         assert db_session.exec(select(ModelChange)).all() == []
 
     def test_only_admins(self, client, db_session, test_user):
@@ -449,25 +530,28 @@ class TestAdmin:
         headers = {**web_auth_header(sub=test_user.username), "Accept": "application/json"}
         for path in ("/admin/model-changes", f"/admin/model-changes/{change.id}", f"/admin/model-changes/{change.id}/end",
                      f"/admin/model-changes/{change.id}/mail"):
-            assert client.post(path, data=_form(), headers=headers).status_code == 403, path
+            assert client.post(path, data=_rows(), headers=headers).status_code == 403, path
+        assert client.get(f"/admin/model-changes/{change.id}/mail-preview", headers=headers).status_code == 403
         db_session.expire_all()
         assert model_changes.is_showing(db_session.get(ModelChange, change.id))
 
     def test_editing_and_ending(self, client, db_session, admin_user):
         change = _change(db_session)
+        until = _at(60)
         resp = client.post(
-            f"/admin/model-changes/{change.id}", data=_form(title="New wording", show_until=_day(60)), headers=_admin(admin_user),
+            f"/admin/model-changes/{change.id}",
+            data=_rows(("old-llm", "test-vlm", "everyone"), title="New wording", show_until=until), headers=_admin(admin_user),
         )
         assert resp.status_code == 200
         db_session.expire_all()
         change = db_session.get(ModelChange, change.id)
-        assert change.title == "New wording" and model_changes.local_day(change.show_until) == _day(60)
-        assert change.updated_by == admin_user.username
+        assert change.title == "New wording" and model_changes.local_input(change.show_until) == until
+        assert json.loads(change.renames) == {"old-llm": "test-vlm"} and change.updated_by == admin_user.username
         assert client.post(f"/admin/model-changes/{change.id}/end", headers=_admin(admin_user)).status_code == 200
         db_session.expire_all()
-        assert not model_changes.is_showing(db_session.get(ModelChange, change.id))
-        resp = client.post(f"/admin/model-changes/{change.id}", data=_form(), headers=_admin(admin_user))
-        assert resp.status_code == 400                               # an ended change is not brought back
+        assert model_changes.state_of(db_session.get(ModelChange, change.id)) == "ended"
+        resp = client.post(f"/admin/model-changes/{change.id}", data=_rows(), headers=_admin(admin_user))
+        assert resp.status_code == 400                               # an ended announcement is not brought back
         assert client.post("/admin/model-changes/999/end", headers=_admin(admin_user)).status_code == 404
 
     def test_the_card_lists_it_with_how_far_it_got(self, client, db_session, admin_user, test_user):
@@ -478,7 +562,12 @@ class TestAdmin:
         assert f'id="model-change-{change.id}"' in card and "Retire &lt;b&gt;old&lt;/b&gt;" in card
         assert "for everyone" in card and "1 switched" in card
         assert "gone-model not configured" in card                 # an old name the gateway no longer has
-        assert 'id="model-change-new"' in card
+        assert 'id="model-change-new"' in card and 'id="mc-row-template"' in card
+        # One row per model: old name, new name, who it is for.
+        assert 'name="old_model" value="gone-model"' in card and 'name="new_model" value="test-llm"' in card
+        assert '<option value="everyone" selected>Everyone</option>' in card
+        assert 'name="show_from"' in card and 'name="show_until"' in card
+        assert f"/admin/model-changes/{change.id}/mail-preview?audience=local" in card
 
     def test_the_admin_can_download_what_each_tier_gets(self, client, db_session, admin_user):
         change = _change(db_session, renames="", renames_azure="azure-old -> azure-gpt-4")
@@ -532,7 +621,8 @@ class TestMail:
         assert "Line one<br>line &lt;two&gt;" in body
         assert "old-llm" in body and "azure-gpt-4" in body          # this account's own renames
         assert 'href="https://gw.example.test/dashboard/model-changes/patch.bat"' in body
-        assert f"Reference: MC{change.id}" in body and _day() in body
+        assert f"Reference: MC{change.id}" in body and model_changes.local_time(change.show_until) in body
+        assert "for Claude Code users only" in body and body.index("Claude Code users only") < body.index("Retire &lt;b&gt;")
         [log] = db_session.exec(select(ClientMailLog)).all()
         assert (log.username, log.address, log.rule_ids, log.kind, log.ok) == ("alice", "alice@example.test", f"MC{change.id}", "model_change", True)
         assert _states(db_session, change)["alice"].mailed_at is not None
@@ -544,7 +634,7 @@ class TestMail:
         names = model_changes.audience(db_session, change)
         assert len(names) == 8 and admin_user.username in names      # the admin is a person too
         resp = client.post(f"/admin/model-changes/{change.id}/mail", data={"only_unmailed": "on"}, headers=_admin(admin_user))
-        assert resp.json() == {"ok": True, "queued": 8, "batch": 3, "interval_minutes": 10.0}
+        assert resp.json() == {"ok": True, "queued": 8, "skipped": [], "batch": 3, "interval_minutes": 10.0}
         assert len(mail_on) == 3
         assert client_mail.run_auto_mail(db_session) == "sent=3 failed=0 waiting=2"
         assert client_mail.run_auto_mail(db_session) == "sent=2 failed=0 waiting=0"
@@ -634,19 +724,51 @@ class TestMail:
         resp = client.post(f"/admin/model-changes/{live.id}/mail", headers=_admin(admin_user))
         assert resp.status_code == 400 and "not configured" in resp.json()["detail"]
 
-    def test_test_mail_shows_one_tiers_renames_and_is_in_the_mail_log(self, client, db_session, admin_user, mail_on):
+    def test_send_to_named_accounts_only(self, client, db_session, admin_user, mail_on):
+        for name in ("alice", "bob", "carol"):
+            _person(db_session, name)
         change = _change(db_session)
-        form = _form(title="As typed, not saved", renames="", renames_azure="azure-old -> azure-gpt-4")
-        resp = client.post(f"/admin/model-changes/{change.id}/mail-test", data={**form, "audience": "azure"}, headers=_admin(admin_user))
-        assert resp.json() == {"ok": True, "to": "admin@example.test", "detail": ""}
-        [(to, subject, body)] = mail_on
-        assert subject.startswith("[TEST] ") and "As typed, not saved" in subject and "azure-gpt-4" in body
-        log = db_session.exec(select(ClientMailLog)).one()
-        assert (log.kind, log.actor, log.rule_ids) == ("test", "admin", f"MC{change.id}")
-        resp = client.post(f"/admin/model-changes/{change.id}/mail-test", data={**form, "audience": "local"}, headers=_admin(admin_user))
-        assert resp.status_code == 400                               # that tier gets nothing from this change
-        resp = client.post(f"/admin/model-changes/{change.id}/mail-test", data={**form, "to": "x@elsewhere.test"}, headers=_admin(admin_user))
-        assert resp.status_code == 400 and len(mail_on) == 1
+        resp = client.post(f"/admin/model-changes/{change.id}/mail", data={"to": "alice, bob@example.test"}, headers=_admin(admin_user))
+        assert resp.json() == {"ok": True, "queued": 2, "skipped": [], "batch": 20, "interval_minutes": 10.0}
+        assert sorted(to for to, _, _ in mail_on) == ["alice@example.test", "bob@example.test"]
+        assert "carol" not in _states(db_session, change)
+        # Asked for by name: mailed again, though already mailed.
+        resp = client.post(f"/admin/model-changes/{change.id}/mail", data={"to": "alice"}, headers=_admin(admin_user))
+        assert resp.json()["queued"] == 1 and len(mail_on) == 3
+
+    def test_send_to_refuses_names_it_is_not_for_and_skips_who_switched(self, client, db_session, admin_user, mail_on):
+        alice = _person(db_session, "alice", can_use_azure=True)
+        _person(db_session, "local")
+        _person(db_session, "robot", can_use_azure=True, is_service_account=True)
+        change = _change(db_session, renames="", renames_azure="azure-old -> azure-gpt-4")
+        for names in ("alice, nobody", "local", "robot"):
+            resp = client.post(f"/admin/model-changes/{change.id}/mail", data={"to": names}, headers=_admin(admin_user))
+            assert resp.status_code == 400 and "Not accounts this announcement is for" in resp.json()["detail"], names
+        assert mail_on == [] and _states(db_session, change) == {}          # one bad name: nobody is queued
+        assert client.post(f"/admin/model-changes/{change.id}/mail", data={"to": " , "}, headers=_admin(admin_user)).status_code == 400
+        model_changes.set_applied(db_session, change.id, alice)
+        resp = client.post(f"/admin/model-changes/{change.id}/mail", data={"to": "alice"}, headers=_admin(admin_user))
+        assert resp.json()["queued"] == 0 and resp.json()["skipped"] == ["alice"] and mail_on == []
+
+    def test_the_mail_can_be_previewed_without_sending_it(self, client, db_session, admin_user, mail_on):
+        change = _change(db_session, title="Retire <b>old</b>", renames="", renames_azure="azure-old -> azure-gpt-4")
+        headers = web_auth_header(sub=admin_user.username, scopes=["admin"])
+        resp = client.get(f"/admin/model-changes/{change.id}/mail-preview?audience=azure", headers=headers)
+        assert resp.status_code == 200 and "text/html" in resp.headers["content-type"]
+        assert "Nothing was sent" in resp.text and "azure-gpt-4" in resp.text and "for Claude Code users only" in resp.text
+        assert "Retire &lt;b&gt;old&lt;/b&gt;" in resp.text and "<b>old</b>" not in resp.text
+        assert client.get(f"/admin/model-changes/{change.id}/mail-preview?audience=local", headers=headers).status_code == 404
+        assert client.get(f"/admin/model-changes/{change.id}/mail-preview?audience=vip", headers=headers).status_code == 400
+        assert client.get("/admin/model-changes/999/mail-preview", headers=headers).status_code == 404
+        assert mail_on == [] and db_session.exec(select(ClientMailLog)).all() == []
+        assert _states(db_session, change) == {}
+
+    def test_a_scheduled_announcement_mails_nobody_yet(self, client, db_session, admin_user, mail_on):
+        _person(db_session, "alice")
+        change = _change(db_session, show_from=_at(1), show_until=_at(2))
+        resp = client.post(f"/admin/model-changes/{change.id}/mail", headers=_admin(admin_user))
+        assert resp.status_code == 400 and "not opened yet" in resp.json()["detail"]
+        assert model_changes.request_mail_to(db_session, change, ["alice"]) == {"queued": 0, "skipped": []}
 
 
 class TestEndpoint:
@@ -663,16 +785,22 @@ class TestEndpoint:
 
     def test_nothing_is_returned_outside_a_change(self, client, db_session, test_user):
         assert self._get(client) == self.EMPTY                       # before any change
-        change = _change(db_session, show_until=_day(2))
+        change = _change(db_session, show_until=_at(2))
         assert self._get(client)["retiring"] == ["old-llm"]          # while it is shown
         model_changes.end(db_session, change)
         assert self._get(client) == self.EMPTY                       # after it
 
-    def test_the_last_day_is_the_last_day(self, client, db_session, test_user):
-        change = _change(db_session, show_until=_day(0))
-        assert self._get(client)["changes"][0]["until"] == _day(0)
+    def test_only_between_the_opening_and_the_ending_time(self, client, db_session, test_user):
+        change = _change(db_session, show_from=_at(1), show_until=_at(2))
+        assert self._get(client) == self.EMPTY                       # scheduled: not open yet
+        with patch("app.services.model_changes.utcnow", return_value=change.show_from):
+            [entry] = self._get(client)["changes"]                   # from the opening time on
+        assert entry["from"] == model_changes.local_iso(change.show_from) and entry["from"].endswith("+08:00")
+        assert entry["until"] == model_changes.local_iso(change.show_until)
+        with patch("app.services.model_changes.utcnow", return_value=change.show_until - timedelta(seconds=1)):
+            assert self._get(client)["retiring"] == ["old-llm"]
         with patch("app.services.model_changes.utcnow", return_value=change.show_until):
-            assert self._get(client) == self.EMPTY
+            assert self._get(client) == self.EMPTY                   # and not from the ending time on
 
     def test_what_is_retiring_and_the_patch_for_the_callers_tier(self, client, db_session, test_user):
         _person(db_session, "local")
@@ -686,7 +814,8 @@ class TestEndpoint:
             "object": "model_changes",
             "changes": [{
                 "id": f"MC{change.id}", "title": change.title, "message": change.message,
-                "models": {"old-llm": "test-llm"}, "until": _day(), "applied": False,
+                "models": {"old-llm": "test-llm"}, "from": model_changes.local_iso(change.show_from),
+                "until": model_changes.local_iso(change.show_until), "applied": False,
             }],
             "retiring": ["old-llm"],
             "patch": {"models": {"old-llm": "test-llm"}},
