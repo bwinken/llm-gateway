@@ -79,6 +79,7 @@ What the dashboard shows an account, as JSON, for programs that are not a browse
 | `GET /v1/settings` | The recommended client settings for this account: per variable a default and the options to pick from |
 | `GET /v1/notices` | What is wrong with the account's client setup, and the settings that fix it |
 | `POST /v1/notices/resolved` | "I've applied the fix": clears the notices, all or by id |
+| `GET /v1/model-changes` | The models being replaced for this account's tier, and the renames to apply; empty unless an announcement is switched on |
 | `POST /v1/events` | A setup tool reports what it installed, updated or removed, in which version, on which OS and machine |
 
 ### `v1`
@@ -192,7 +193,7 @@ Open `https://your-gateway` and sign in through SSO. Accounts with the `admin` s
 |---|---|
 | **Overview** | See spend per backend, requests and active users; review usage anomalies; export monthly cost reports |
 | **Users** | Set budgets and cloud caps, grant Azure or AWS access, disable accounts, create service accounts, view or regenerate keys; click a name for that account's usage, notices, key and change history |
-| **Clients** | Choose which client problems to detect, how users are told, and the settings patch they get; see who is affected and what mail went out; set what setup tools offer users; see what those tools installed, per account, machine and OS |
+| **Clients** | Choose which client problems to detect, how users are told, and the settings patch they get; see who is affected and what mail went out; announce a model that is being replaced (old name, new name and tier per model; shown while you have it switched on, with a script that renames it in their Claude Code settings; preview the mail, send it to all or to named accounts); set what setup tools offer users; see what those tools installed, per account, machine and OS |
 | **Security** | IP allowlist, prompt guardrail, audit log |
 | **Settings** | Default budgets, concurrency limit, what happens when the cloud cap is spent, weekly report mails, site links |
 | **Models** | Add and edit models, prices and fallbacks; test a connection |
@@ -220,7 +221,7 @@ Everything the gateway does, where it is switched on, and what it needs in `.env
 | An API key, a dashboard and usage figures per user; SSO sign-in to the web UI | Always on | `AUTH_BASE_URL`, `AUTH_CENTER_APP_ID`, `AUTH_CENTER_PUBLIC_KEY_PATH` |
 | Sign-in for terminal tools (`POST /auth/api-key`: an AuthCenter token for the account's key) | Always on (needs its nginx location) | the same `AUTH_*` |
 | Service accounts for programs, with owners who see them on their dashboard | **Admin → Users** | – |
-| Account endpoints for tools: `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` (and `POST /v1/notices/resolved` to report a fix), `/v1/settings` | Always on | – |
+| Account endpoints for tools: `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` (and `POST /v1/notices/resolved` to report a fix), `/v1/model-changes`, `/v1/settings` | Always on | – |
 | Client setup offered to tools (`/v1/settings`) | **Admin → Clients → Client setup** | – |
 | Install reports from setup tools (`POST /v1/events`): who installed which tool, skill or MCP server, in which version, on which OS | Always on; read in **Admin → Clients → Client installs** | – |
 | Setup page and Windows installer for Claude Code | On by default | `SETUP_PAGE_ENABLED=false` turns it off |

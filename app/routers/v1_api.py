@@ -48,6 +48,7 @@ from app.core.deps import (
     check_cloud_budget,
     effective_cloud_limit,
     get_client_notices,
+    get_model_changes,
     record_client_event,
     resolve_client_notices,
     get_current_user,
@@ -654,6 +655,52 @@ def client_notices(user: User = Depends(get_current_user_unmetered)):
     return body
 
 
+@router.get("/v1/model-changes", tags=["account"])
+def model_changes_for_account(user: User = Depends(get_current_user_unmetered)):
+    """The models that are being replaced, for this account: what an admin
+    announced (admin panel, *Model changes*) and is showing now. Its own
+    flow, apart from the notices of ``GET /v1/notices``: nothing was
+    detected, the account is simply one the change is for.
+
+    ``changes`` lists each change being shown that concerns the account's
+    tier (its cloud access: none, Azure, AWS or both): its ``id``
+    (``MC3``), ``title`` and ``message``, the ``models`` to replace
+    (``{old: new}``, this tier's) and whether the account said it
+    switched on its dashboard (``applied``). ``retiring`` is every model name being replaced for
+    this account, and ``patch.models`` the one rename map for all of it
+    (a later change wins where two replace the same model).
+
+    Applying the patch: replace the old name with the new one where
+    Claude Code's settings.json names a model (the ``model`` setting and
+    the ``env`` variables with ``MODEL`` in their name), only where the
+    value is exactly the old name; a bracket suffix (``old[1m]``) is
+    kept. Add nothing: a user who chose another model keeps it.
+
+    Values are returned only while an admin has a change switched on.
+    Before one is announced, once it is switched off and for an account no
+    change is for, all three are empty.
+
+    Read-only and never a key. Answers once the daily limit is spent.
+    Plain ``def``.
+    """
+    renames: dict[str, str] = {}
+    changes = []
+    for change in get_model_changes(user):
+        entry: dict[str, object] = {"id": change["ref"], "title": change["title"]}
+        if change["message"]:
+            entry["message"] = change["message"]
+        entry["models"] = change["renames"]
+        entry["applied"] = change["applied"]
+        changes.append(entry)
+        renames.update(change["renames"])
+    return {
+        "object": "model_changes",
+        "changes": changes,
+        "retiring": list(renames),
+        "patch": {"models": renames},
+    }
+
+
 @router.post("/v1/notices/resolved", tags=["account"])
 def client_notices_resolved(
     body: dict | None = Body(default=None),
@@ -666,8 +713,9 @@ def client_notices_resolved(
     ``{"ids": ["CC001", ...]}`` only those. The answer lists what was open
     and is now resolved (``resolved``, in the checks' order), so a repeated
     call answers an empty list and an id with nothing open is not an error.
-    The gateway cannot see a settings file and takes the account's word:
-    the next violating request reopens the notice by itself.
+    The gateway cannot see a settings file and takes the account's word
+    for two weeks (``client_rules.RESOLVED_QUIET_DAYS``): a notice comes
+    back only if its problem is still seen after that.
 
     The one write an API key has on its account, and in the audit log.
     Plain ``def``.

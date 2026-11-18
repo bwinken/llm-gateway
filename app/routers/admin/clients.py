@@ -1,17 +1,20 @@
 """
 Admin *Clients* tab: client rules (settings, mail, mail log, patch preview),
+model changes (a model that is being replaced: notice, renames, mail),
 client setup (``client_settings.json``) and client installs (what setup tools
 reported, ``client_events``).
 """
 
 from __future__ import annotations
 
+import html
 from types import SimpleNamespace
 
 from fastapi import BackgroundTasks, Depends, Form, HTTPException, Query, Request, Security
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlmodel import Session
 
+from app.core import config
 from app.core.auth import get_web_user
 from app.core.config import get_client_monthly_mail, set_client_monthly_mail
 from app.core.database import get_session
@@ -20,6 +23,7 @@ from app.models.schema import User
 from app.routers.admin.common import _local_label, _wants_json, router
 from app.services import (
     audit, client_checks, client_events, client_mail, client_patch, client_rules, client_settings, mailer,
+    model_changes,
 )
 
 
@@ -44,7 +48,6 @@ def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
         "patch_aws": client_patch.env_lines(client_patch.load_env(rule.patch_aws)),
         "has_patch": bool(rule.patch or rule.patch_azure or rule.patch_aws),
         "action": rule.action, "email_subject": rule.email_subject,
-        "auto_email": rule.auto_email, "email_repeat_days": rule.email_repeat_days,
         "customized": rule.customized, "updated_by": rule.updated_by,
         "hits": [
             {
@@ -52,8 +55,13 @@ def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
                 "first_seen": _local_label(v.first_seen_at), "last_seen": _local_label(v.last_seen_at),
                 "mailed": _local_label(v.mailed_at), "mail_error": v.mail_error,
                 "mailable": v.username in mailable,
-                # The account said it applied the fix and has not violated since.
+                # The account said it applied the fix, and its quiet days are not over
+                # (or it has not been seen since).
                 "resolved": _local_label(v.resolved_at) if client_rules.is_resolved(v) else "",
+                # ... but the problem was seen again since: not fixed everywhere. It can
+                # reopen from ``quiet_until`` on.
+                "still_seen": client_rules.still_seen(v),
+                "quiet_until": _local_label(client_rules.quiet_until(v)) if client_rules.is_resolved(v) else "",
                 # It said so, then violated again: open, and a new case for mail.
                 "reopened": _local_label(v.resolved_at) if v.resolved_at and not client_rules.is_resolved(v) else "",
                 # An admin asked for a mail that has not gone out yet.
@@ -122,6 +130,7 @@ def _client_rules_view(session: Session, admin_user: User) -> dict:
         "mail_log": _mail_log_view(client_mail.mail_log(session)),
         "actions": client_rules.ACTIONS,
         "window_days": client_rules.WINDOW_DAYS,
+        "quiet_days": client_rules.RESOLVED_QUIET_DAYS,
     }
 
 
@@ -163,14 +172,11 @@ def _client_rule_form(
     patch_azure: str = Form(""),
     patch_aws: str = Form(""),
     email_subject: str = Form(""),
-    auto_email: str = Form(""),
-    email_repeat_days: str = Form("0"),
 ) -> dict:
     return {
         "enabled": enabled == "on", "action": action, "title": title, "message": message,
         "patch": patch, "patch_azure": patch_azure, "patch_aws": patch_aws,
-        "email_subject": email_subject, "auto_email": auto_email == "on",
-        "email_repeat_days": email_repeat_days,
+        "email_subject": email_subject,
     }
 
 
@@ -336,8 +342,8 @@ def save_client_rule(
         raise HTTPException(status_code=400, detail=str(exc))
     client_rules.refresh()
     logger.info(
-        "Client rule saved | id={} enabled={} action={} auto_email={} admin={}",
-        rule.id, rule.enabled, rule.action, rule.auto_email, admin_user.username,
+        "Client rule saved | id={} enabled={} action={} admin={}",
+        rule.id, rule.enabled, rule.action, admin_user.username,
     )
     if _wants_json(request):
         return JSONResponse({"ok": True, "id": rule.id})
@@ -482,6 +488,273 @@ def preview_client_rule_patch(
     filename = f"claude-code-patch-{rule.id}-{audience}.{fmt}"
     return Response(
         content=client_patch.render_patch(fmt, f"{rule.id} {rule.name}", env, filename).encode("utf-8"),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ── Model changes (app/services/model_changes.py): a model that is being replaced ──
+
+_AUDIENCE_LABELS = {"local": "local-only", "azure": "Azure", "aws": "AWS"}
+
+
+# Who the mail preview greets: a placeholder, since the real mail greets each
+# account by its own name (and the admin looking at it is not the reader).
+_PREVIEW_NAME = "<account name>"
+
+
+def _model_change_view(session: Session, change) -> dict:
+    known = (
+        set(config.get_model_routing_snapshot()) | set(config.get_azure_models_snapshot())
+        | set(config.get_bedrock_models_snapshot())
+    )
+    rows = model_changes.rows(change)
+    return {
+        "id": change.id, "ref": model_changes.ref(change.id), "title": change.title, "message": change.message,
+        "shown": model_changes.is_showing(change), "rows": rows, "email_subject": change.email_subject,
+        "audience": model_changes.audience_label(change),
+        # Which kinds of account get anything from it: the mail preview's choices.
+        "previews": [
+            {"audience": name, "label": label}
+            for name, label in _AUDIENCE_LABELS.items() if model_changes.preview_renames(change, name)
+        ],
+        # Old names the gateway no longer has: already removed, or a typo.
+        "gone": sorted({row["old"] for row in rows} - known),
+        "created_by": change.created_by, "updated_by": change.updated_by,
+        "created": _local_label(change.created_at), "updated": _local_label(change.updated_at),
+        **model_changes.counts(session, change),
+    }
+
+
+def _model_changes_view(session: Session, admin_user: User) -> dict:
+    """The *Model changes* card: the announcements being shown, with who
+    each is for and how far it got, and those switched off."""
+    found = model_changes.overview(session)
+    return {
+        "showing": [_model_change_view(session, change) for change in found["showing"]],
+        "off": [_model_change_view(session, change) for change in found["off"]],
+        "tiers": [{"name": name, "label": label} for name, label, _ in model_changes.TIERS],
+        # What the model name boxes suggest: every model the gateway has.
+        "models": sorted(
+            set(config.get_model_routing_snapshot()) | set(config.get_azure_models_snapshot())
+            | set(config.get_bedrock_models_snapshot())
+        ),
+        "mail": mailer.status(),
+        "mail_pace": client_mail.mail_pace(),
+    }
+
+
+def _model_change_form(
+    title: str = Form(""),
+    message: str = Form(""),
+    old_model: list[str] = Form(default=[]),
+    new_model: list[str] = Form(default=[]),
+    tier: list[str] = Form(default=[]),
+    email_subject: str = Form(""),
+) -> dict:
+    """An announcement's form: one row per model (old name, new name, who
+    it is for), as the three rename texts ``clean_fields`` takes."""
+    if not len(old_model) == len(new_model) == len(tier):
+        raise HTTPException(status_code=400, detail="Every model row needs an old name, a new name and a tier.")
+    try:
+        boxes = model_changes.rows_to_boxes(list(zip(old_model, new_model, tier)))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"title": title, "message": message, **boxes, "email_subject": email_subject}
+
+
+def _model_change_or_404(session: Session, change_id: int):
+    change = model_changes.get(session, change_id)
+    if change is None:
+        raise HTTPException(status_code=404, detail="No such model change.")
+    return change
+
+
+@router.post("/model-changes")
+def create_model_change(
+    request: Request,
+    form: dict = Depends(_model_change_form),
+    shown: str = Form("on"),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Announce a model change. With ``shown=on`` (the form's default)
+    every account it has a model for sees it on its dashboard at once, with
+    the script that replaces the model names; with ``off`` it is saved
+    switched off, to be shown later. Nobody is mailed by this call: that is
+    the announcement's own mail buttons."""
+    on = shown.strip().lower() == "on"
+    try:
+        change = model_changes.save(session, model_changes.clean_fields(form), by=admin_user.username, shown=on)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Model change created | id={} audience={} shown={} admin={}",
+        model_changes.ref(change.id), model_changes.audience_label(change), on, admin_user.username,
+    )
+    audit.note(model_change=model_changes.ref(change.id))
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "id": change.id, "ref": model_changes.ref(change.id), "shown": on})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/model-changes/{change_id}")
+def save_model_change(
+    change_id: int,
+    request: Request,
+    form: dict = Depends(_model_change_form),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Save an announcement's wording and models. Whether it is shown is
+    its switch (``/shown``) and is not changed here. Dashboards and the
+    script follow at once; mail already sent is not sent again."""
+    change = _model_change_or_404(session, change_id)
+    try:
+        change = model_changes.save(session, model_changes.clean_fields(form), by=admin_user.username, change=change)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Model change saved | id={} audience={} shown={} admin={}",
+        model_changes.ref(change.id), model_changes.audience_label(change), change.shown, admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "id": change.id, "ref": model_changes.ref(change.id)})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/model-changes/{change_id}/shown")
+def set_model_change_shown(
+    change_id: int,
+    request: Request,
+    enabled: str = Form(""),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """The announcement's switch (``enabled=on|off``). On: it is on the
+    dashboard of every account it is for, in ``GET /v1/model-changes``, and
+    can be mailed. Off: it leaves all three at once and whoever is still
+    waiting for its mail is not mailed. It can be switched on again; who
+    said they switched and who was mailed is kept."""
+    value = enabled.strip().lower()
+    if value not in ("on", "off"):
+        raise HTTPException(status_code=400, detail="enabled must be on or off.")
+    change = model_changes.set_shown(session, _model_change_or_404(session, change_id), value == "on", by=admin_user.username)
+    logger.info(
+        "Model change switched {} | id={} admin={}", "on" if change.shown else "off",
+        model_changes.ref(change.id), admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "id": change.id, "shown": change.shown})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/model-changes/{change_id}/mail")
+def send_model_change_mail(
+    change_id: int,
+    request: Request,
+    background: BackgroundTasks,
+    to: str = Form(""),
+    only_unmailed: str = Form("on"),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Queue the announcement's mail. Without ``to``: to every account it
+    is for that has not said it switched: those never mailed about it
+    (default) or all of them. With ``to`` (account names, separated by
+    commas or spaces): to those accounts only, mailed before or not; each
+    must be an account the announcement is for. Paced like every other
+    mail: the first batch goes out after this reply, the mail job sends the
+    rest (``client_mail.mail_pace``)."""
+    change = _model_change_or_404(session, change_id)
+    if not model_changes.is_showing(change):
+        raise HTTPException(status_code=400, detail="This announcement is switched off: show it before mailing people about it.")
+    if not mailer.is_enabled():
+        raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
+    names = model_changes.split_names(to)
+    skipped: list[str] = []
+    if to.strip():
+        if not names:
+            raise HTTPException(status_code=400, detail="Send to: give one or more account names.")
+        try:
+            result = model_changes.request_mail_to(session, change, names)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        queued, skipped = result["queued"], result["skipped"]
+    else:
+        queued = model_changes.request_mail(session, change, only_unmailed == "on")
+    if queued:
+        background.add_task(client_mail.send_batch)
+    pace = client_mail.mail_pace()
+    logger.info(
+        "Model change mail queued | id={} accounts={} to={} only_unmailed={} admin={}",
+        model_changes.ref(change.id), queued, ",".join(names) or "all", only_unmailed == "on", admin_user.username,
+    )
+    audit.note(mail_queued=queued)
+    if _wants_json(request):
+        return JSONResponse({
+            "ok": True, "queued": queued, "skipped": skipped, "batch": pace["batch"],
+            "interval_minutes": round(pace["interval_s"] / 60, 1),
+        })
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.get("/model-changes/{change_id}/mail-preview", response_class=HTMLResponse)
+def preview_model_change_mail(
+    change_id: int,
+    audience: str = Query("local"),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """The announcement's mail as one kind of account gets it (``audience``:
+    ``local``, ``azure`` or ``aws``), as saved, in the browser, shown or
+    not. Nothing is sent and nothing is recorded."""
+    change = _model_change_or_404(session, change_id)
+    try:
+        renames = model_changes.preview_renames(change, audience.strip().lower() or "local")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not renames:
+        raise HTTPException(status_code=404, detail="That kind of account gets nothing from this announcement, so no mail.")
+    # The account's own name goes here in the real mail; the preview is nobody's.
+    subject, body = client_mail.render_model_changes(_PREVIEW_NAME, [change], renames)
+    banner = (
+        '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:13px;background:#f4f3ef;color:#52514e;'
+        'padding:10px 14px;margin-bottom:18px">'
+        f"<b>Preview</b> of {html.escape(model_changes.ref(change.id))} as {html.escape(_AUDIENCE_LABELS[audience.strip().lower() or 'local'])} "
+        f"accounts get it. Nothing was sent. Each account is greeted by its own name where this says "
+        f"<i>{html.escape(_PREVIEW_NAME)}</i>.<br>Subject: {html.escape(subject)}</div>"
+    )
+    return HTMLResponse(
+        '<!doctype html><html><head><meta charset="utf-8">'
+        f"<title>{html.escape(model_changes.ref(change.id))} mail preview</title></head>"
+        f'<body style="background:#ffffff;margin:24px;max-width:760px">{banner}{body}</body></html>'
+    )
+
+
+@router.get("/model-changes/{change_id}/patch.{fmt}")
+def preview_model_change_patch(
+    change_id: int,
+    fmt: str,
+    audience: str = Query("local"),
+    session: Session = Depends(get_session),
+):
+    """The script one kind of account downloads for a change alone
+    (``audience``: ``local``, ``azure`` or ``aws``; ``fmt``: ``bat`` or
+    ``sh``), for the admin to check."""
+    change = _model_change_or_404(session, change_id)
+    if fmt not in client_patch.PATCH_FORMATS:
+        raise HTTPException(status_code=404, detail="No such patch format.")
+    try:
+        renames = model_changes.preview_renames(change, audience)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not renames:
+        raise HTTPException(status_code=404, detail="This change replaces nothing for that audience.")
+    filename = f"claude-code-patch-{model_changes.ref(change.id)}-{audience}.{fmt}"
+    name = f"{model_changes.ref(change.id)} {change.title}"
+    return Response(
+        content=client_patch.render_patch(fmt, name, {}, filename, renames).encode("utf-8"),
         media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

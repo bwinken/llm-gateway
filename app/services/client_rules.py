@@ -17,14 +17,18 @@ notice which accounts send requests of a certain kind and reach those people:
   value to Client setup (``NAME=@setup``): the account then gets what
   ``GET /v1/settings`` suggests it, so that value is set in one place.
 - **Resolved**: the account can say "I've applied it" on its notice. The
-  notice goes away at once and it is no longer mailed; the next violating
-  request reopens it (the gateway cannot see a settings file, only requests).
+  notice goes away at once and it is no longer mailed or reminded, for at
+  least ``RESOLVED_QUIET_DAYS``: the gateway cannot see a settings file, so
+  it takes the account's word that long, whatever its requests show (a
+  second machine not patched yet, a session still running on the old
+  settings). A violating request after that reopens it.
 - **Reminder** (``action = "remind"``): the first violating request of each
   local day is answered with the message as an error, so it shows in the
   terminal; the retry goes through. App accounts are never reminded.
 - **Mail** (``client_mail.py``): to ``<username>@<COMPANY_EMAIL_DOMAIN>``
-  (``mailer``), sent by an admin's click or by the ``client_rule_mail`` job
-  for checks with ``auto_email``. One mail per account, about everything it
+  (``mailer``), only when an admin asks (a click on a mail button) or, with
+  the monthly reminder switched on, on the 1st of the month. No check mails
+  by itself. One mail per account, about everything it
   has open, with one patch that covers it all (``open_items``,
   ``combined_env``) and a link straight to its download.
 - **One patch per account**: the dashboard and the mail offer a single
@@ -76,6 +80,14 @@ from app.services.client_patch import FROM_SETUP, dump_env, env_snippet, load_en
 # stopped using Claude Code, is left alone: no notice, no mail. When it
 # trips the check again it starts over as a new case and is told again.
 WINDOW_DAYS = 15
+
+
+# How long an account that pressed "I've applied it" is left alone: for this
+# many days its notice stays away and it is neither mailed nor reminded,
+# even if the gateway still sees the problem. A violation seen after that
+# reopens the notice; one seen before only moves ``last_seen_at`` (the
+# admin's list shows it as still seen).
+RESOLVED_QUIET_DAYS = 14
 
 
 # One write per account per worker per hour, per check and per version.
@@ -194,8 +206,6 @@ class Rule:
     patch_azure: str
     patch_aws: str
     email_subject: str
-    auto_email: bool
-    email_repeat_days: int
     customized: bool    # an admin has saved this check's form
     updated_by: str
 
@@ -231,14 +241,13 @@ def _rule(check: Check, row: ClientRuleSetting | None) -> Rule:
             check=check, enabled=check.enabled, action="notice",
             title=check.title, message=check.message, patch=_default_patch(check.env),
             patch_azure=_default_patch(check.env_azure), patch_aws=_default_patch(check.env_aws),
-            email_subject="", auto_email=False, email_repeat_days=0, customized=False, updated_by="",
+            email_subject="", customized=False, updated_by="",
         )
     return Rule(
         check=check, enabled=bool(row.enabled), action=row.action if row.action in ACTIONS else "notice",
         title=row.title or check.title, message=row.message or "",
         patch=row.patch or "", patch_azure=row.patch_azure or "", patch_aws=row.patch_aws or "",
-        email_subject=row.email_subject or "", auto_email=bool(row.auto_email),
-        email_repeat_days=int(row.email_repeat_days or 0), customized=True, updated_by=row.updated_by or "",
+        email_subject=row.email_subject or "", customized=True, updated_by=row.updated_by or "",
     )
 
 
@@ -326,41 +335,38 @@ def _touch_version(session: Session, username: str, version: str, now: datetime)
 
 def _touch_violation(session: Session, rule_id: str, username: str, version: str, now: datetime) -> None:
     where = (ClientViolation.rule_id == rule_id, ClientViolation.username == username)
+    row = session.exec(select(ClientViolation).where(*where)).first()
+    if row is None:
+        session.add(ClientViolation(
+            rule_id=rule_id, username=username, client_version=version, first_seen_at=now, last_seen_at=now,
+        ))
+        try:
+            session.commit()
+        except IntegrityError:  # another worker added it first
+            session.rollback()
+        return
     values: dict[str, Any] = {"last_seen_at": now}
     if version:
         values["client_version"] = version
-    # Back after dropping out of the window (the account had stopped, or
-    # stopped using Claude Code): a new case. What was mailed, asked for or
-    # reported fixed belongs to the old one, so the account is told again.
-    fresh = {"mailed_at": None, "mail_attempted_at": None, "mail_error": "", "mail_requested_at": None, "resolved_at": None}
-    gone_since = now - timedelta(days=WINDOW_DAYS)
-    if session.execute(
-        update(ClientViolation).where(*where, ClientViolation.last_seen_at < gone_since).values(**values, **fresh)
-    ).rowcount:
-        session.commit()
-        return
-    # Back after the account said it applied the fix: open again, and a new
-    # case for mail (the mail it got was about the one it reported fixed).
-    # ``resolved_at`` stays, so the admin's list can say it was reported fixed.
-    reopened = {key: value for key, value in fresh.items() if key != "resolved_at"}
-    if session.execute(
-        update(ClientViolation)
-        .where(*where, ClientViolation.resolved_at.is_not(None),  # type: ignore[union-attr]
-               ClientViolation.resolved_at >= ClientViolation.last_seen_at, ClientViolation.resolved_at < now)
-        .values(**values, **reopened)
-    ).rowcount:
-        session.commit()
-        return
-    if session.execute(update(ClientViolation).where(*where).values(**values)).rowcount:
-        session.commit()
-        return
-    session.add(ClientViolation(
-        rule_id=rule_id, username=username, client_version=version, first_seen_at=now, last_seen_at=now,
-    ))
-    try:
-        session.commit()
-    except IntegrityError:  # another worker added it first
-        session.rollback()
+    fresh = {"mailed_at": None, "mail_attempted_at": None, "mail_error": "", "mail_requested_at": None}
+    if row.resolved_at is not None and now < row.resolved_at + timedelta(days=RESOLVED_QUIET_DAYS):
+        # The account said it applied the fix less than RESOLVED_QUIET_DAYS
+        # ago: it stays resolved (``is_resolved``), and this only records
+        # that the problem was still seen.
+        pass
+    elif row.last_seen_at < now - timedelta(days=WINDOW_DAYS):
+        # Back after dropping out of the window (the account had stopped, or
+        # stopped using Claude Code): a new case. What was mailed, asked for
+        # or reported fixed belongs to the old one, so the account is told again.
+        values.update(fresh, resolved_at=None)
+    elif is_resolved(row):
+        # Still at it after the quiet period: open again, and a new case for
+        # mail (the mail it got was about the one it reported fixed).
+        # ``resolved_at`` stays, so the admin's list can say it was reported
+        # fixed. Two workers doing this at once write the same thing.
+        values.update(fresh)
+    session.execute(update(ClientViolation).where(*where).values(**values))
+    session.commit()
 
 
 def _record(username: str, version: str, record_version: bool, rule_ids: list[str]) -> None:
@@ -377,6 +383,11 @@ def _claim_reminder(rule_id: str, username: str, version: str, today: str) -> bo
     workers: the conditional UPDATE is the claim."""
     with Session(engine) as session:
         _touch_violation(session, rule_id, username, version, utcnow())
+        row = session.exec(
+            select(ClientViolation).where(ClientViolation.rule_id == rule_id, ClientViolation.username == username)
+        ).first()
+        if row is None or is_resolved(row):
+            return False        # it said it applied the fix: left alone for RESOLVED_QUIET_DAYS
         claimed = session.execute(
             update(ClientViolation)
             .where(ClientViolation.rule_id == rule_id, ClientViolation.username == username,
@@ -485,12 +496,6 @@ def clean_fields(form: dict[str, Any], check: Check | None = None) -> dict[str, 
     action = str(form.get("action") or "notice").strip().lower()
     if action not in ACTIONS:
         raise ValueError(f"Action must be one of: {', '.join(ACTIONS)}.")
-    try:
-        repeat = int(str(form.get("email_repeat_days") or "0").strip() or 0)
-    except ValueError:
-        raise ValueError("Repeat days must be a whole number.")
-    if not 0 <= repeat <= 365:
-        raise ValueError("Repeat days must be between 0 and 365.")
     boxes = {name: parse_env(str(form.get(name) or "")) for name in ("patch", "patch_azure", "patch_aws")}
     asked = sorted({name for env in boxes.values() for name, value in env.items() if value == FROM_SETUP})
     unknown = [name for name in asked if name not in client_settings.names()] if asked else []
@@ -511,7 +516,6 @@ def clean_fields(form: dict[str, Any], check: Check | None = None) -> dict[str, 
         "patch_azure": dump_env(boxes["patch_azure"]),
         "patch_aws": dump_env(boxes["patch_aws"]),
         "email_subject": str(form.get("email_subject") or "").strip()[:200],
-        "auto_email": bool(form.get("auto_email")), "email_repeat_days": repeat,
     }
 
 
@@ -594,14 +598,34 @@ def is_stale(rule: Rule, seen: dict[str, Any] | None) -> bool:
 
 
 def is_resolved(violation: ClientViolation) -> bool:
-    """The account reported the fix and has not violated since."""
-    return violation.resolved_at is not None and violation.resolved_at >= violation.last_seen_at
+    """The account reported the fix, and has not been seen violating since
+    the ``RESOLVED_QUIET_DAYS`` after that were over. A violation inside
+    those days does not reopen it: the notice comes back two weeks after
+    "I've applied it" at the earliest, and only if the problem is still seen
+    then."""
+    return (
+        violation.resolved_at is not None
+        and violation.last_seen_at < violation.resolved_at + timedelta(days=RESOLVED_QUIET_DAYS)
+    )
+
+
+def still_seen(violation: ClientViolation) -> bool:
+    """Reported fixed, and seen violating again since: still resolved (the
+    quiet days are not over), but not fixed everywhere. For the admin."""
+    return is_resolved(violation) and violation.last_seen_at > violation.resolved_at  # type: ignore[operator]
+
+
+def quiet_until(violation: ClientViolation) -> datetime | None:
+    """When a resolved violation can reopen: the end of its quiet days."""
+    if violation.resolved_at is None:
+        return None
+    return violation.resolved_at + timedelta(days=RESOLVED_QUIET_DAYS)
 
 
 def resolve(session: Session, rule_id: str, username: str, now: datetime | None = None) -> bool:
     """Record that ``username`` says it applied the fix for ``rule_id``.
-    False when it has no such violation. The next violating request reopens
-    it (within the hour: ``last_seen_at`` is written at most hourly per worker)."""
+    False when it has no such violation. It is then left alone for
+    ``RESOLVED_QUIET_DAYS``; a violating request after that reopens it."""
     row = session.exec(
         select(ClientViolation).where(ClientViolation.rule_id == rule_id, ClientViolation.username == username)
     ).first()

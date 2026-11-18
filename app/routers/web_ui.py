@@ -31,7 +31,7 @@ from app.core.static_assets import static_url
 from app.core.logger import logger
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import LOCAL_TZ, local_month_start, seconds_until_local_midnight
-from app.services import client_patch, client_rules
+from app.services import client_patch, client_rules, model_changes
 from app.services.model_catalog import (
     catalog_keys,
     fallback_target,
@@ -437,7 +437,9 @@ def dashboard(
             legacy_app_keys=sum(1 for a in owned_apps if a.get("legacy_key")),
             client_notices=_client_notices(session, user),
             client_combined=_client_combined(session, user),
+            model_changes=_model_changes(session, user),
             client_notice_days=client_rules.WINDOW_DAYS,
+            client_quiet_days=client_rules.RESOLVED_QUIET_DAYS,
             api_key_env=client_patch.API_KEY_ENV,
             api_key_env_retired=client_patch.API_KEY_ENV_RETIRED,
             server_groups=server_groups,
@@ -536,6 +538,17 @@ def _client_combined(session: Session, user: User) -> dict | None:
         return None
 
 
+def _model_changes(session: Session, user: User) -> list[dict]:
+    """The model changes shown to this account (never takes the page down)."""
+    try:
+        changes = model_changes.for_account(session, user)
+    except Exception as exc:  # e.g. before `alembic upgrade`
+        session.rollback()
+        logger.warning("Model changes failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
+        return []
+    return changes
+
+
 @router.get("/dashboard/client-notices", response_class=HTMLResponse)
 def client_notices_panel(
     request: Request,
@@ -548,8 +561,68 @@ def client_notices_panel(
     return templates.TemplateResponse(
         request,
         "_client_notices.html",
-        {"client_notices": _client_notices(session, user), "client_combined": _client_combined(session, user)},
+        {
+            "client_notices": _client_notices(session, user), "client_combined": _client_combined(session, user),
+            "client_quiet_days": client_rules.RESOLVED_QUIET_DAYS,
+        },
     )
+
+
+@router.get("/dashboard/model-changes", response_class=HTMLResponse)
+def model_changes_panel(
+    request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """The dashboard's model-change panel alone (empty when no change is
+    being shown to the account): the page swaps it in after *I've switched*."""
+    return templates.TemplateResponse(request, "_model_changes.html", {"model_changes": _model_changes(session, user)})
+
+
+@router.get("/dashboard/model-changes/patch.{fmt}")
+def model_changes_patch(
+    fmt: str,
+    request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """The account's model-change script: the renames of every change it is
+    shown, for its tier (``model_changes.for_account``), as ``patch.bat``
+    (Windows) or ``patch.sh`` (Linux / macOS). One script however many
+    changes there are, and nothing but renames: the notices' patch is a
+    different download. Mail links here too, so a browser arriving after
+    the change was switched off is sent to the dashboard instead of a 404."""
+    if fmt not in client_patch.PATCH_FORMATS:
+        raise HTTPException(status_code=404, detail="No such patch format.")
+    changes = model_changes.for_account(session, user)
+    renames: dict[str, str] = {}
+    for change in changes:
+        renames.update(change["renames"])
+    if not renames:
+        if "text/html" in (request.headers.get("accept") or "").lower():
+            return RedirectResponse(url="/dashboard", status_code=303)
+        raise HTTPException(status_code=404, detail="No model change for this account.")
+    filename = f"{model_changes.PATCH_FILE}.{fmt}"
+    name = "model change " + ", ".join(change["ref"] for change in changes)
+    return _script_response(client_patch.render_patch(fmt, name, {}, filename, renames), filename)
+
+
+@router.post("/dashboard/model-changes/{change_id}/applied")
+def model_change_applied(
+    change_id: int,
+    request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """The user says they switched to the new model: the change folds on
+    their dashboard and they are no longer mailed about it. It stays listed,
+    with its script, for as long as the admin shows it."""
+    if not model_changes.set_applied(session, change_id, user):
+        raise HTTPException(status_code=404, detail="No such model change for this account.")
+    logger.info("Model change marked as done by the account | change={} user={}", model_changes.ref(change_id), user.username)
+    if "application/json" in (request.headers.get("accept") or "").lower():
+        return JSONResponse({"ok": True, "id": change_id})
+    return RedirectResponse(url="/dashboard", status_code=303)
 
 
 def _script_response(content: str, filename: str, secret: bool = False) -> Response:
@@ -592,7 +665,8 @@ def client_rules_resolved_all(
     session: Session = Depends(get_session),
 ):
     """"I've applied everything": every open notice of the account goes
-    away; each returns by itself if the gateway sees its problem again."""
+    away; each returns only if the gateway still sees its problem after
+    ``client_rules.RESOLVED_QUIET_DAYS``."""
     count = client_rules.resolve_all(session, user.username)
     logger.info("Client rules all marked as fixed by the account | user={} count={}", user.username, count)
     if "application/json" in (request.headers.get("accept") or "").lower():
@@ -608,9 +682,10 @@ def client_rule_resolved(
     session: Session = Depends(get_session),
 ):
     """The user says they applied the fix: their notice for this check goes
-    away and they are no longer mailed about it. The gateway cannot see a
-    settings file, so it takes their word; the next violating request
-    reopens the notice by itself."""
+    away and they are no longer mailed or reminded about it. The gateway
+    cannot see a settings file, so it takes their word for
+    ``client_rules.RESOLVED_QUIET_DAYS``; a violating request after that
+    reopens the notice."""
     if not client_rules.resolve(session, rule_id, user.username):
         raise HTTPException(status_code=404, detail="Nothing to mark as done for this account.")
     logger.info("Client rule marked as fixed by the account | rule={} user={}", rule_id, user.username)

@@ -368,7 +368,10 @@ class ClientRuleSetting(SQLModel, table=True):
     ``remind``), the notice text, the settings patch
     (environment variables for the ``env`` block of settings.json, as JSON:
     the base for every account and what Azure / AWS accounts get on top) and
-    mail (``auto_email``, again every ``email_repeat_days``, 0 = once).
+    the mail's subject. ``auto_email`` and ``email_repeat_days`` are retired:
+    a check no longer mails by itself (mail goes out on an admin's click or
+    by the monthly reminder), nothing reads or writes them, and the columns
+    stay so an older release can still run against this database.
     No row means the check's defaults. A row whose check was retired or
     removed from the code is ignored. Nothing here is part of a check's
     judgment: thresholds are constants in the code too.
@@ -419,8 +422,9 @@ class ClientViolation(SQLModel, table=True):
     # is done once mailed_at is not older than this.
     mail_requested_at: NaiveDatetime | None = Field(default=None)
     # When the account said "I've applied the fix" on its dashboard. The
-    # violation counts as resolved (no notice, no mail) while this is not
-    # older than last_seen_at: a later violation reopens it by itself.
+    # violation counts as resolved (no notice, no mail, no reminder) until
+    # it is seen again more than client_rules.RESOLVED_QUIET_DAYS after
+    # this: a violation inside those days only moves last_seen_at.
     resolved_at: NaiveDatetime | None = Field(default=None)
 
 
@@ -483,12 +487,69 @@ class ClientEvent(SQLModel, table=True):
     message: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
 
 
+class ModelChange(SQLModel, table=True):
+    """A model that is being replaced, as an admin announced it
+    (app/services/model_changes.py): the notice people read (``title``,
+    ``message``), which model names to replace with which (``renames``, JSON
+    ``{old: new}``: the base for every account, and what accounts with Azure
+    / AWS access get on top, like a client rule's patch), and whether it is
+    shown now (``shown``, a switch an admin turns on and off; there is no
+    schedule).
+
+    Who sees it follows from the renames: an account for which they come
+    out empty (only the Azure box is filled, and it has no Azure access) is
+    not shown the notice and not mailed. Rows are never deleted: the id is
+    in mail people received (``MC<id>``) and in the mail log. Timestamps are
+    naive UTC.
+    """
+    __tablename__ = "model_changes"
+
+    id: int | None = Field(default=None, primary_key=True)
+    title: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    message: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
+    renames: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
+    renames_azure: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
+    renames_aws: str = Field(default="", sa_column=sa.Column(sa.Text, nullable=False, server_default=""))
+    email_subject: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    shown: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
+    created_by: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    updated_by: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+    created_at: NaiveDatetime = Field(default_factory=_naive_utcnow)
+    updated_at: NaiveDatetime = Field(default_factory=_naive_utcnow)
+
+
+class ModelChangeState(SQLModel, table=True):
+    """What one account did about one model change, and its mail state: when
+    it pressed *I've switched* (``applied_at``; the notice then stays on its
+    dashboard folded, and it is no longer mailed), when an admin asked for
+    it to be mailed and how that went. A row exists only once one of those
+    happened.
+
+    ``change_id`` and ``username`` are not foreign keys: deleting an account
+    leaves the row, and readers skip names without an account. Timestamps
+    are naive UTC.
+    """
+    __tablename__ = "model_change_states"
+    __table_args__ = (sa.UniqueConstraint("change_id", "username", name="uq_model_change_states_change_user"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    change_id: int = Field(index=True)
+    username: str = Field(index=True)
+    applied_at: NaiveDatetime | None = Field(default=None)
+    mail_requested_at: NaiveDatetime | None = Field(default=None)
+    mail_attempted_at: NaiveDatetime | None = Field(default=None)
+    mailed_at: NaiveDatetime | None = Field(default=None)
+    mail_error: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+
+
 class ClientMailLog(SQLModel, table=True):
     """Every client-rule mail the gateway tried to send, one row per mail:
     who it was for, the address it went to, the checks it covered
-    (``rule_ids``, comma-separated ids), why it went out (``kind``:
-    ``requested`` by an admin's click or the monthly reminder, ``automatic``
-    for a check's own mail, ``test`` for an admin's test mail) and how it
+    (``rule_ids``, comma-separated ids: checks as ``CC001``, model changes
+    as ``MC3``), why it went out (``kind``: ``requested`` by an admin's
+    click or the monthly reminder, ``automatic`` for a check's own mail,
+    ``model_change`` for a model change, ``test`` for an admin's test mail)
+    and how it
     ended (``ok``, and the error summary when it failed). The admin's
     *Mail log* reads it; nothing updates a row.
 

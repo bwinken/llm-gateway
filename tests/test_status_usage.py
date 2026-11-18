@@ -49,7 +49,7 @@ def _no_nulls(value) -> bool:
     return value is not None
 
 
-PATHS = ["/v1/status", "/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/settings"]
+PATHS = ["/v1/status", "/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/settings", "/v1/model-changes"]
 
 
 class TestDocsGroups:
@@ -453,7 +453,7 @@ class TestNotices:
         values = dict(
             enabled=True, action=rule.action, title=rule.title, message=rule.message,
             patch=rule.patch, patch_azure=rule.patch_azure, patch_aws=rule.patch_aws,
-            email_subject=rule.email_subject, auto_email=rule.auto_email, email_repeat_days=rule.email_repeat_days,
+            email_subject=rule.email_subject,
         )
         values.update(kw)
         client_rules.save_settings(db_session, rule.check, values, updated_by="test")
@@ -584,8 +584,13 @@ class TestNoticesResolved:
         self._resolve(client, {"ids": [AUTO]})
         db_session.refresh(row)
         assert client_rules.is_resolved(row)
-        # The next violation reopens it, as after the dashboard's button.
+        # As after the dashboard's button: left alone for the quiet days, and
+        # reopened by a violation after them.
         row.last_seen_at = row.resolved_at + timedelta(minutes=5)
+        db_session.add(row)
+        db_session.commit()
+        assert self._notices(client)["notices"] == []
+        row.resolved_at -= timedelta(days=client_rules.RESOLVED_QUIET_DAYS + 1)
         db_session.add(row)
         db_session.commit()
         assert len(self._notices(client)["notices"]) == 1

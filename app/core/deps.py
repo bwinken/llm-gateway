@@ -440,6 +440,22 @@ def get_client_notices(user: User) -> dict:
         return {"notices": [], "combined": None}
 
 
+def get_model_changes(user: User) -> list[dict]:
+    """What the dashboard's model-change panel shows ``user``, for
+    ``GET /v1/model-changes``: ``model_changes.for_account``, the changes
+    being shown now that have renames for this account. Like the panel it
+    never fails the caller: a broken store reads as no change. Short-lived
+    session; blocking."""
+    from app.services import model_changes
+
+    try:
+        with Session(engine) as session:
+            return model_changes.for_account(session, user)
+    except Exception as exc:  # e.g. before `alembic upgrade`
+        logger.warning("Model changes failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
+        return []
+
+
 def resolve_client_notices(user: User, ids: list[str] | None) -> list[str]:
     """*I've applied it* by API key (``POST /v1/notices/resolved``): mark
     the caller's open notices as fixed, all of them (``ids`` None) or the

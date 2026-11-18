@@ -31,7 +31,7 @@ from app.core.logger import logger
 from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import local_month_start
 from app.models.schema import AnomalyEvent, User
-from app.routers.admin.clients import _client_installs_view, _client_rules_view
+from app.routers.admin.clients import _client_installs_view, _client_rules_view, _model_changes_view
 from app.routers.admin.common import router, templates
 from app.routers.admin.security import _audit_rows, _guardrail_view, _ip_allowlist_view
 from app.routers.admin.settings import _weekly_reports_view
@@ -137,6 +137,12 @@ def admin_page(
         logger.warning("Client rules view failed | error={}: {}", type(exc).__name__, exc)
         client_rules_view = None
     try:
+        model_changes_view = _model_changes_view(session, admin_user)
+    except Exception as exc:  # e.g. before `alembic upgrade`
+        session.rollback()
+        logger.warning("Model changes view failed | error={}: {}", type(exc).__name__, exc)
+        model_changes_view = None
+    try:
         client_installs_view = _client_installs_view(session)
     except Exception as exc:  # e.g. before `alembic upgrade`
         session.rollback()
@@ -207,6 +213,7 @@ def admin_page(
             "today_totals": today_totals,
             "budget_pressure": budget_pressure,
             "client_rules": client_rules_view,
+            "model_changes": model_changes_view,
             "client_setup": client_settings.status(),
             "client_installs": client_installs_view,
             "client_rule_attention": [

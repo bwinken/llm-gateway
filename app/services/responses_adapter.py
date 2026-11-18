@@ -176,7 +176,8 @@ def _drop_orphan_function_calls(
 # The Responses API rejects ``max_output_tokens`` below 16 (400
 # ``integer_below_min_value``). Claude Code and other Anthropic-SDK clients
 # probe a model's availability with ``max_tokens: 1`` — a legal Anthropic
-# request that vLLM and Bedrock accept — so without this floor every Azure
+# request that vLLM and most Bedrock models accept (for those that do not,
+# see ``bedrock_proxy._raise_max_tokens``) — so without this floor every Azure
 # alias looks "rejected" to the picker while the model itself is fine. A
 # request that asks for fewer tokens than the floor is raised to it: nobody
 # wants a 1-token answer, they want to know the model responds.
