@@ -48,7 +48,6 @@ def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
         "patch_aws": client_patch.env_lines(client_patch.load_env(rule.patch_aws)),
         "has_patch": bool(rule.patch or rule.patch_azure or rule.patch_aws),
         "action": rule.action, "email_subject": rule.email_subject,
-        "auto_email": rule.auto_email, "email_repeat_days": rule.email_repeat_days,
         "customized": rule.customized, "updated_by": rule.updated_by,
         "hits": [
             {
@@ -173,14 +172,11 @@ def _client_rule_form(
     patch_azure: str = Form(""),
     patch_aws: str = Form(""),
     email_subject: str = Form(""),
-    auto_email: str = Form(""),
-    email_repeat_days: str = Form("0"),
 ) -> dict:
     return {
         "enabled": enabled == "on", "action": action, "title": title, "message": message,
         "patch": patch, "patch_azure": patch_azure, "patch_aws": patch_aws,
-        "email_subject": email_subject, "auto_email": auto_email == "on",
-        "email_repeat_days": email_repeat_days,
+        "email_subject": email_subject,
     }
 
 
@@ -346,8 +342,8 @@ def save_client_rule(
         raise HTTPException(status_code=400, detail=str(exc))
     client_rules.refresh()
     logger.info(
-        "Client rule saved | id={} enabled={} action={} auto_email={} admin={}",
-        rule.id, rule.enabled, rule.action, rule.auto_email, admin_user.username,
+        "Client rule saved | id={} enabled={} action={} admin={}",
+        rule.id, rule.enabled, rule.action, admin_user.username,
     )
     if _wants_json(request):
         return JSONResponse({"ok": True, "id": rule.id})

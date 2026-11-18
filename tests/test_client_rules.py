@@ -4,8 +4,8 @@ The checks are code, each with a violation id (CC001, ...). A Messages
 request that trips an enabled check records a violation for the account;
 the account then sees the check's notice on its dashboard, can download a
 script that sets the check's environment variables in its settings.json,
-can be reminded once a day in the terminal, and can be mailed (by hand or
-automatically). An admin sets how each check is used, never what it
+can be reminded once a day in the terminal, and can be mailed (when an
+admin asks, or by the monthly reminder when it is on; never by itself). An admin sets how each check is used, never what it
 detects. The Claude Code version of every Messages request is recorded per
 account. None of it may fail a request, except the reminder an admin chose.
 """
@@ -53,7 +53,7 @@ def _configure(db_session, rule_id: str, **kw) -> client_rules.Rule:
     values = dict(
         enabled=True, action=rule.action, title=rule.title, message=rule.message,
         patch=rule.patch, patch_azure=rule.patch_azure, patch_aws=rule.patch_aws,
-        email_subject=rule.email_subject, auto_email=rule.auto_email, email_repeat_days=rule.email_repeat_days,
+        email_subject=rule.email_subject,
     )
     values.update(kw)
     rule = client_rules.save_settings(db_session, rule.check, values, updated_by="test")
@@ -72,6 +72,13 @@ def _messages(client, key: str = "sk-testkey123", ua: str | None = _UA, url: str
     with patch.object(client.__httpx_mock__, "post", side_effect=_post) as post:
         resp = client.post(url, json=body, headers=headers)
     return resp, post
+
+
+def _mail(db_session, now: datetime | None = None, only_unmailed: bool = False) -> str:
+    """How mail goes out: an admin asks ("mail everyone") and the mail job
+    runs. Nothing is mailed without the first half."""
+    client_mail.request_mail_all(db_session, only_unmailed, now)
+    return client_mail.run_auto_mail(db_session, now)
 
 
 def _violators(db_session, rule_id: str) -> list[str]:
@@ -203,9 +210,9 @@ class TestLifecycle:
 
     def test_a_deprecated_check_mails_nobody(self, client, db_session, admin_user, test_user, mail_on):
         with self._with(deprecated="on its way out"):
-            _configure(db_session, AUTO, auto_email=True)
+            _configure(db_session, AUTO)
             _violation(db_session, AUTO, "testuser")
-            assert "sent=0" in client_mail.run_auto_mail(db_session)
+            assert "sent=0" in _mail(db_session)
             assert client_mail.send_rule_mail(AUTO, only_unmailed=False) == {"sent": 0, "failed": 0}
             resp = client.post(f"/admin/client-rules/{AUTO}/mail", headers=_admin(admin_user))
             assert resp.status_code == 400 and "deprecated" in resp.json()["detail"]
@@ -354,7 +361,7 @@ class TestRequestPath:
         columns = set(ClientRuleSetting.__table__.columns.keys())
         assert columns == {
             "rule_id", "enabled", "action", "title", "message", "patch", "patch_azure", "patch_aws",
-            "email_subject", "auto_email", "email_repeat_days", "updated_by", "updated_at",
+            "email_subject", "auto_email", "email_repeat_days", "updated_by", "updated_at",   # the last two mail columns are retired, unread
         }
 
     def test_access_flags_reach_the_check(self, client, db_session, test_user):
@@ -708,11 +715,11 @@ class TestQuietAfterApplied:
         assert resp.status_code == 400 and resp.headers["X-Gateway-Reminder"] == AUTO
 
     def test_no_mail_in_the_quiet_days(self, db_session, test_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True, email_repeat_days=7)
+        _configure(db_session, AUTO)
         t0 = _now() - timedelta(days=20)
         self._resolved(db_session, t0)
         self._seen(db_session, t0 + timedelta(days=8))
-        assert "sent=0" in client_mail.run_auto_mail(db_session, t0 + timedelta(days=9))
+        assert "sent=0" in _mail(db_session, t0 + timedelta(days=9))
         assert client_mail.request_mail(db_session, AUTO, only_unmailed=False, now=t0 + timedelta(days=9)) == 0
         assert mail_on == []
 
@@ -856,7 +863,7 @@ class TestBaseline:
         assert client_rules.effective_env(removing, False, False) == {"X": "1", self.DISCOVERY: None}
 
     def test_the_user_gets_it_on_the_dashboard_in_the_download_and_in_mail(self, client, db_session, test_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True)                       # CC001's default patch
+        _configure(db_session, AUTO)                       # CC001's default patch
         _configure(db_session, OUTDATED)                                    # no patch of its own
         _violation(db_session, AUTO, "testuser")
         _violation(db_session, OUTDATED, "testuser")
@@ -869,7 +876,7 @@ class TestBaseline:
             text = client.get(url, headers=headers).text
             env = json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))["env"]
             assert env == {"CLAUDE_CODE_AUTO_MODE_SERVER": "0", self.DISCOVERY: "1"}, url
-        client_mail.run_auto_mail(db_session)
+        _mail(db_session)
         assert self.DISCOVERY in mail_on[0][2]
 
     def test_it_is_not_a_conflict_between_checks(self, db_session):
@@ -1030,17 +1037,17 @@ class TestResolved:
         assert 'id="clientNotice-CC001"' in self._page(client, test_user)
 
     def test_violating_again_after_the_quiet_days_is_a_new_case_for_mail(self, client, db_session, test_user, admin_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True)                    # no repeat: one mail per case
+        _configure(db_session, AUTO)
         row = _violation(db_session, AUTO, "testuser")
         start = row.last_seen_at
-        assert "sent=1" in client_mail.run_auto_mail(db_session, start)
+        assert "sent=1" in _mail(db_session, start)
         client_rules.resolve(db_session, AUTO, "testuser", start + timedelta(minutes=5))
-        assert "sent=0" in client_mail.run_auto_mail(db_session, start + timedelta(hours=7))
+        assert "sent=0" in _mail(db_session, start + timedelta(hours=7))
         soon = start + timedelta(days=2)
         client_rules._touch_violation(db_session, AUTO, "testuser", "2.1.0", soon)
         [row] = _violations(db_session, AUTO)
         assert client_rules.is_resolved(row) and row.mailed_at is not None        # inside the quiet days: nothing changes
-        assert "sent=0" in client_mail.run_auto_mail(db_session, soon)
+        assert "sent=0" in _mail(db_session, soon)
         again = start + timedelta(days=client_rules.RESOLVED_QUIET_DAYS, minutes=10)
         client_rules._touch_violation(db_session, AUTO, "testuser", "2.1.0", again)
         [row] = _violations(db_session, AUTO)
@@ -1049,7 +1056,7 @@ class TestResolved:
         body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
         card = body.split('id="client-rule-CC001"', 1)[1].split('id="client-rule-CC002"', 1)[0]
         assert "said fixed" in card and "not yet" in card
-        assert "sent=1" in client_mail.run_auto_mail(db_session, again)
+        assert "sent=1" in _mail(db_session, again, only_unmailed=True)       # "not mailed yet" includes it again
         assert len(mail_on) == 2
 
     def test_an_open_violation_seen_again_keeps_its_mail_state(self, db_session, test_user):
@@ -1079,11 +1086,11 @@ class TestResolved:
         assert resp.status_code == 303 and resp.headers["location"] == "/dashboard"
 
     def test_an_account_that_says_fixed_is_not_mailed(self, db_session, test_user, admin_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True)
+        _configure(db_session, AUTO)
         _violation(db_session, AUTO, "testuser")
         _violation(db_session, AUTO, "admin")
         assert client_rules.resolve(db_session, AUTO, "testuser")
-        assert "sent=1" in client_mail.run_auto_mail(db_session)
+        assert "sent=1" in _mail(db_session)
         assert [to for to, _, _ in mail_on] == ["admin@example.test"]
         assert client_mail.send_rule_mail(AUTO, only_unmailed=False) == {"sent": 1, "failed": 0}
         assert [to for to, _, _ in mail_on] == ["admin@example.test"] * 2
@@ -1112,13 +1119,14 @@ class TestAdminSettings:
         assert json.loads(rule.patch) == _ENV
         assert db_session.exec(select(ClientRuleSetting)).all() == []
 
-        form = {**_FORM, "patch_aws": "CLAUDE_CODE_AUTO_MODE_MODEL=claude-m", "auto_email": "on", "email_repeat_days": "7"}
+        form = {**_FORM, "patch_aws": "CLAUDE_CODE_AUTO_MODE_MODEL=claude-m", "auto_email": "on", "email_repeat_days": "7"}   # the last two: an old page
         resp = client.post(f"/admin/client-rules/{AUTO}", data=form, headers=_admin(admin_user))
         assert resp.status_code == 200 and resp.json() == {"ok": True, "id": "CC001"}
         db_session.expire_all()
         rule = client_rules.get_rule(db_session, AUTO)
         assert rule.customized and rule.updated_by == "admin" and rule.title == "Fix auto mode"
-        assert (rule.auto_email, rule.email_repeat_days) == (True, 7)
+        row = db_session.get(ClientRuleSetting, AUTO)
+        assert (row.auto_email, row.email_repeat_days) == (False, 0)      # retired: a form that still sends them changes nothing
         assert json.loads(rule.patch_aws) == {"CLAUDE_CODE_AUTO_MODE_MODEL": "claude-m"}
 
         _messages(client, safeguards={})          # still live in this worker
@@ -1153,7 +1161,6 @@ class TestAdminSettings:
         (AUTO, {"patch_aws": "just words"}, "NAME=value"),
         (AUTO, {"action": "block"}, "Action"),
         (AUTO, {"title": ""}, "title"),
-        (AUTO, {"email_repeat_days": "999"}, "between 0 and 365"),
         (AUTO, {"patch": ""}, "needs a settings patch"),
         (AUTO, {"patch": "", "patch_aws": "MODEL=claude-m"}, "Everyone box"),        # local-only accounts would get nothing
         (HTTP, {"patch": "   "}, "needs a settings patch"),
@@ -1384,10 +1391,10 @@ class TestMail:
         assert "Windows (.bat)" in body and "Linux (.sh)" in body and "macOS" not in body
 
     def test_every_mail_says_it_is_automated_and_not_to_reply(self, db_session, test_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True)
+        _configure(db_session, AUTO)
         _configure(db_session, OUTDATED)
         _violation(db_session, AUTO, "testuser")
-        client_mail.run_auto_mail(db_session)                       # one check
+        _mail(db_session)                                           # one check
         _violation(db_session, OUTDATED, "testuser")
         client_mail.send_rule_mail(OUTDATED, only_unmailed=False)   # two checks, by an admin's click
         draft = SimpleNamespace(id="CC001", title="t", message="", email_subject="")
@@ -1422,7 +1429,7 @@ class TestOneMailPerAccount:
     with one patch that covers them."""
 
     def _three(self, db_session):
-        _configure(db_session, AUTO, auto_email=True, title="Fix auto mode", patch='{"SERVER": "0", "MODEL": "local-m"}',
+        _configure(db_session, AUTO, title="Fix auto mode", patch='{"SERVER": "0", "MODEL": "local-m"}',
                    patch_aws='{"MODEL": "claude-m"}')
         _configure(db_session, HTTP, title="Use https", patch='{"ANTHROPIC_BASE_URL": "https://gw.example.test"}')
         _configure(db_session, OUTDATED, title="Update Claude Code")
@@ -1431,7 +1438,7 @@ class TestOneMailPerAccount:
 
     def test_several_open_checks_make_one_mail(self, db_session, test_user, mail_on):
         self._three(db_session)
-        assert "sent=1" in client_mail.run_auto_mail(db_session)
+        assert "sent=1" in _mail(db_session)
         [(to, subject, body)] = mail_on
         assert to == "testuser@example.test" and "3 things to change in your Claude Code setup" in subject
         for title in ("1. Fix auto mode", "2. Use https", "3. Update Claude Code"):
@@ -1444,7 +1451,7 @@ class TestOneMailPerAccount:
 
     def test_the_mail_links_straight_to_the_one_patch(self, db_session, test_user, mail_on, monkeypatch):
         self._three(db_session)
-        client_mail.run_auto_mail(db_session)
+        _mail(db_session)
         body = mail_on[0][2]
         for fmt in ("bat", "sh"):
             assert body.count(f'href="https://gw.example.test/dashboard/client-rules/all/patch.{fmt}"') == 1
@@ -1458,7 +1465,7 @@ class TestOneMailPerAccount:
 
     def test_the_mail_says_what_the_script_does_not_fix(self, db_session, test_user, mail_on):
         self._three(db_session)                                          # CC003 (update Claude Code) has no patch
-        client_mail.run_auto_mail(db_session)
+        _mail(db_session)
         body = mail_on[0][2]
         assert "One script fixes 2 of them" in body and "CC003 needs something else" in body
         assert "fixes them all" not in body
@@ -1476,29 +1483,30 @@ class TestOneMailPerAccount:
         assert "all/patch" not in body and "One script" not in body and "<pre" not in body
         assert 'href="https://gw.example.test/dashboard"' in body
 
-    def test_the_mail_covers_checks_without_automatic_mail_and_marks_them_all(self, db_session, test_user, mail_on):
-        self._three(db_session)                                          # only CC001 has automatic mail
+    def test_asked_for_under_one_check_the_mail_covers_and_marks_them_all(self, db_session, test_user, mail_on):
+        self._three(db_session)
+        assert client_mail.request_mail(db_session, AUTO) == 1           # the admin clicked under CC001 only
         client_mail.run_auto_mail(db_session)
         for rule_id in (AUTO, HTTP, OUTDATED):
             assert _violations(db_session, rule_id)[0].mailed_at is not None, rule_id
         client_mail.run_auto_mail(db_session, _now() + timedelta(days=3))
-        assert len(mail_on) == 1                                         # nothing new to say
+        assert len(mail_on) == 1                                         # asked once, mailed once
 
     def test_one_open_check_keeps_its_own_subject(self, db_session, test_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True, title="Fix auto mode", email_subject="Please fix auto mode")
+        _configure(db_session, AUTO, title="Fix auto mode", email_subject="Please fix auto mode")
         _violation(db_session, AUTO, "testuser")
-        client_mail.run_auto_mail(db_session)
+        _mail(db_session)
         [(_, subject, body)] = mail_on
         assert subject == "Please fix auto mode" and "1. " not in body and "Reference: CC001." in body
 
     def test_a_new_violation_later_sends_the_whole_list_again(self, db_session, test_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True, title="Fix auto mode")
-        _configure(db_session, HTTP, auto_email=True, title="Use https")
+        _configure(db_session, AUTO, title="Fix auto mode")
+        _configure(db_session, HTTP, title="Use https")
         _violation(db_session, AUTO, "testuser")
         now = _now()
-        client_mail.run_auto_mail(db_session, now)
+        _mail(db_session, now)
         _violation(db_session, HTTP, "testuser")
-        client_mail.run_auto_mail(db_session, now + timedelta(hours=1))
+        _mail(db_session, now + timedelta(hours=1), only_unmailed=True)   # asked again: it has something new
         assert len(mail_on) == 2
         assert "Fix auto mode" in mail_on[1][2] and "Use https" in mail_on[1][2]
 
@@ -1730,23 +1738,17 @@ class TestPacedMail:
         assert client_mail.run_auto_mail(db_session) == "sent=0 failed=0 waiting=0"
         assert sorted(to for to, _, _ in mail_on) == sorted(f"{n}@example.test" for n in names)   # each exactly once
 
-    def test_automatic_mail_is_paced_the_same_way(self, db_session, mail_on, monkeypatch):
-        monkeypatch.setenv("CLIENT_RULE_MAIL_BATCH", "4")
-        self._people(db_session, 6)
-        _configure(db_session, AUTO, auto_email=True)
-        assert client_mail.run_auto_mail(db_session) == "sent=4 failed=0 waiting=2"
-        assert client_mail.run_auto_mail(db_session) == "sent=2 failed=0 waiting=0"
-
-    def test_what_an_admin_asked_for_goes_first(self, db_session, mail_on, monkeypatch):
+    def test_the_oldest_request_goes_first(self, db_session, mail_on, monkeypatch):
         monkeypatch.setenv("CLIENT_RULE_MAIL_BATCH", "1")
-        self._people(db_session, 2)                       # user00, user01: due by automatic mail
-        _configure(db_session, AUTO, auto_email=True)
+        self._people(db_session, 2)                       # user00, user01 under CC001
         _configure(db_session, HTTP)
         db_session.add(User(username="zoe", password_hash="x", api_key="sk-zoe", daily_limit_usd=1.0))
         db_session.commit()
         _violation(db_session, HTTP, "zoe")
-        client_mail.request_mail(db_session, HTTP)       # an admin's click, for zoe
-        client_mail.run_auto_mail(db_session)
+        now = _now()
+        client_mail.request_mail(db_session, HTTP, now=now - timedelta(hours=1))      # zoe was asked for first
+        client_mail.request_mail(db_session, AUTO, now=now)
+        client_mail.run_auto_mail(db_session, now)
         assert [to for to, _, _ in mail_on] == ["zoe@example.test"]
 
     def test_there_is_a_pause_between_mails_not_before_the_first(self, db_session, mail_on, monkeypatch):
@@ -1817,12 +1819,13 @@ class TestQuietAccounts:
         assert client_rules.WINDOW_DAYS == 15
 
     def test_after_fifteen_quiet_days_nothing_is_shown_or_mailed(self, client, db_session, test_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True, email_repeat_days=7)
+        _configure(db_session, AUTO)
         row = _violation(db_session, AUTO, "testuser")
         page = lambda: client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text  # noqa: E731
         row.last_seen_at = _now() - timedelta(days=14)
         db_session.add(row)
         db_session.commit()
+        assert client_mail.request_mail(db_session, AUTO) == 1                  # an admin asks, on day 14
         assert 'id="clientNotice-CC001"' in page() and client_mail.due_accounts(db_session) == ["testuser"]
         row.last_seen_at = _now() - timedelta(days=15, minutes=1)
         db_session.add(row)
@@ -1832,8 +1835,8 @@ class TestQuietAccounts:
 
     def test_coming_back_is_a_new_case(self, client, db_session, test_user, mail_on):
         """Mailed once, reported fixed, then quiet for a month: on the next
-        violation the account is told again, as if for the first time."""
-        _configure(db_session, AUTO, auto_email=True)                           # "Once": no reminders
+        violation it is a new case: shown again, and "not mailed yet" again."""
+        _configure(db_session, AUTO)
         long_ago = _now() - timedelta(days=40)
         _violation(db_session, AUTO, "testuser", mailed_at=long_ago, mail_attempted_at=long_ago,
                    resolved_at=long_ago, mail_requested_at=long_ago)
@@ -1848,7 +1851,8 @@ class TestQuietAccounts:
         assert (row.mailed_at, row.mail_attempted_at, row.resolved_at, row.mail_requested_at) == (None, None, None, None)
         assert abs((row.first_seen_at - (long_ago - timedelta(hours=1))).total_seconds()) < 1   # the first time stays on record
         assert 'id="clientNotice-CC001"' in client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
-        assert client_mail.run_auto_mail(db_session) == "sent=1 failed=0 waiting=0"
+        assert client_mail.run_auto_mail(db_session) == "sent=0 failed=0 waiting=0"          # and still nobody is mailed unasked
+        assert _mail(db_session, only_unmailed=True) == "sent=1 failed=0 waiting=0"
 
     def test_a_violation_inside_the_window_keeps_its_state(self, client, db_session, test_user):
         recent = _now() - timedelta(days=3)
@@ -1860,19 +1864,6 @@ class TestQuietAccounts:
         client_rules.refresh()
         _messages(client, safeguards={})
         assert _violations(db_session, AUTO)[0].mailed_at is not None           # not a new case: no second "first" mail
-
-    def test_a_reminder_only_goes_to_an_account_seen_again_since_its_last_mail(self, db_session, test_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True, email_repeat_days=7)
-        _violation(db_session, AUTO, "testuser")
-        start = _now()
-        client_mail.run_auto_mail(db_session, start)
-        # Day 8: inside the 15-day window, a week since the mail, but not seen doing it since: it fixed it.
-        assert client_mail.run_auto_mail(db_session, start + timedelta(days=8)) == "sent=0 failed=0 waiting=0"
-        row = _violations(db_session, AUTO)[0]
-        row.last_seen_at = start + timedelta(days=8, minutes=30)                # no, still doing it
-        db_session.add(row)
-        db_session.commit()
-        assert client_mail.run_auto_mail(db_session, start + timedelta(days=8, hours=1)) == "sent=1 failed=0 waiting=0"
 
 
 class TestMonthlyReminder:
@@ -1992,102 +1983,91 @@ class TestMonthlyReminder:
                 assert config.get_client_monthly_mail() is expected, raw
 
 
-class TestRegularReminders:
-    """Weekly or monthly: a check's "remind again" is a repeat in days."""
+class TestNothingIsMailedUnasked:
+    """Mail goes out when an admin asks for it, or by the monthly reminder
+    when an admin switched that on. Nothing else: a check never mails by itself."""
 
-    def _still_violating(self, db_session, when: datetime) -> None:
-        for row in _violations(db_session, AUTO):
-            row.last_seen_at = when
-            db_session.add(row)
-        db_session.commit()
-
-    @pytest.mark.parametrize("days", [7, 30])
-    def test_an_account_that_keeps_violating_is_reminded_every_period(self, db_session, test_user, mail_on, days):
-        _configure(db_session, AUTO, auto_email=True, email_repeat_days=days)
-        _violation(db_session, AUTO, "testuser")
-        start = _now()
-        client_mail.run_auto_mail(db_session, start)
-        for period in (1, 2, 3):
-            almost = start + timedelta(days=days * period - 1)
-            self._still_violating(db_session, almost)
-            client_mail.run_auto_mail(db_session, almost)
-            assert len(mail_on) == period                      # not yet
-            due = start + timedelta(days=days * period, minutes=5)
-            self._still_violating(db_session, due)
-            client_mail.run_auto_mail(db_session, due)
-            assert len(mail_on) == period + 1
-            # the period is counted from the mail before, whenever it went out
-            for row in _violations(db_session, AUTO):
-                row.mailed_at = row.mail_attempted_at = start + timedelta(days=days * period)
-                db_session.add(row)
-            db_session.commit()
-
-    def test_an_account_that_stopped_is_not_reminded(self, db_session, test_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True, email_repeat_days=7)
-        _violation(db_session, AUTO, "testuser")
-        start = _now()
-        client_mail.run_auto_mail(db_session, start)
-        client_mail.run_auto_mail(db_session, start + timedelta(days=8))    # last violation is 8 days old: outside the window
-        assert len(mail_on) == 1
-
-    def test_the_form_offers_weekly_and_monthly(self, client, db_session, admin_user):
-        _configure(db_session, AUTO, email_repeat_days=30)
-        _configure(db_session, HTTP, email_repeat_days=10)       # a value saved before the choices existed
+    def _card(self, client, admin_user) -> str:
         body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
-        auto = body.split('id="client-rule-CC001"', 1)[1].split('id="client-rule-CC002"', 1)[0]
-        for value, label in (("0", "Once"), ("7", "Every week"), ("30", "Every month")):
-            assert f'<option value="{value}"' in auto and label in auto
-        assert '<option value="30" selected' in auto
-        http = body.split('id="client-rule-CC002"', 1)[1].split('id="client-rule-CC003"', 1)[0]
-        assert '<option value="10" selected' in http and "Every 10 days" in http
+        return body.split('id="client-rule-CC001"', 1)[1].split('id="client-rule-CC002"', 1)[0]
 
+    def test_a_violation_alone_mails_nobody(self, db_session, test_user, mail_on):
+        _configure(db_session, AUTO)
+        row = _violation(db_session, AUTO, "testuser")
+        start = row.last_seen_at
+        for later in (timedelta(0), timedelta(minutes=10), timedelta(days=1), timedelta(days=8), timedelta(days=31)):
+            row.last_seen_at = start + later                           # still doing it
+            db_session.add(row)
+            db_session.commit()
+            assert client_mail.run_auto_mail(db_session, start + later) == "sent=0 failed=0 waiting=0", later
+        assert mail_on == [] and client_mail.due_accounts(db_session, start + timedelta(days=31)) == []
 
-class TestAutoMail:
-    def test_only_a_check_that_asks_for_it_starts_a_mail(self, db_session, test_user, admin_user, mail_on):
-        _configure(db_session, HTTP, title="quiet one")
-        _configure(db_session, AUTO, title="loud one", auto_email=True)
-        _violation(db_session, HTTP, "testuser")           # only the check without automatic mail
-        _violation(db_session, AUTO, "admin")
-        assert "sent=1" in client_mail.run_auto_mail(db_session)
-        assert [to for to, _, _ in mail_on] == ["admin@example.test"]
+    def test_not_on_the_first_of_the_month_either_while_the_reminder_is_off(self, db_session, test_user, mail_on):
+        first = TestMonthlyReminder.FIRST
+        _configure(db_session, AUTO)
+        db_session.add(ClientViolation(rule_id=AUTO, username="testuser", first_seen_at=first - timedelta(hours=2),
+                                       last_seen_at=first - timedelta(hours=2)))
+        db_session.commit()
+        assert client_mail.run_auto_mail(db_session, first) == "sent=0 failed=0 waiting=0"
+        with patch.object(client_mail.config, "get_client_monthly_mail", return_value=True):
+            assert client_mail.run_auto_mail(db_session, first) == "sent=1 failed=0 waiting=0 monthly_queued=1"
+        assert [to for to, _, _ in mail_on] == ["testuser@example.test"]
 
-    def test_a_check_that_is_off_mails_nobody(self, db_session, test_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True, enabled=False)
+    def test_a_setting_saved_by_an_older_release_mails_nobody(self, db_session, test_user, mail_on):
+        """``auto_email`` used to make a check mail by itself. The column is
+        still there; nothing reads it."""
+        _configure(db_session, AUTO)
+        row = db_session.get(ClientRuleSetting, AUTO)
+        row.auto_email, row.email_repeat_days = True, 7
+        db_session.add(row)
+        db_session.commit()
+        client_rules.refresh()
         _violation(db_session, AUTO, "testuser")
-        client_mail.run_auto_mail(db_session)
-        assert mail_on == []
+        assert client_mail.run_auto_mail(db_session) == "sent=0 failed=0 waiting=0" and mail_on == []
+        rule = client_rules.get_rule(db_session, AUTO)
+        assert not hasattr(rule, "auto_email") and not hasattr(rule, "email_repeat_days")
 
-    def test_once_unless_a_repeat_is_set(self, db_session, test_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True)
+    def test_the_rule_form_says_so_and_offers_no_automatic_mail(self, client, db_session, admin_user):
+        card = self._card(client, admin_user)
+        assert 'name="auto_email"' not in card and 'name="email_repeat_days"' not in card
+        assert "data-cr-mail-when" in card and "never mails by itself" in card
+
+    def test_an_admins_click_mails_once(self, db_session, test_user, mail_on):
+        _configure(db_session, AUTO)
         _violation(db_session, AUTO, "testuser")
         now = _now()
-        client_mail.run_auto_mail(db_session, now)
-        client_mail.run_auto_mail(db_session, now + timedelta(days=30))
+        assert client_mail.request_mail(db_session, AUTO, now=now) == 1
+        assert client_mail.run_auto_mail(db_session, now) == "sent=1 failed=0 waiting=0"
+        for later in (timedelta(minutes=10), timedelta(days=7), timedelta(days=14)):
+            for row in _violations(db_session, AUTO):                  # still violating
+                row.last_seen_at = now + later
+                db_session.add(row)
+            db_session.commit()
+            assert client_mail.run_auto_mail(db_session, now + later) == "sent=0 failed=0 waiting=0", later
         assert len(mail_on) == 1
 
-        _configure(db_session, AUTO, auto_email=True, email_repeat_days=7)
-        client_mail.run_auto_mail(db_session, now + timedelta(days=6))
-        assert len(mail_on) == 1
-        for row in _violations(db_session, AUTO):          # still violating a week later
-            row.last_seen_at = now + timedelta(days=8)
-            db_session.add(row)
-        db_session.commit()
-        client_mail.run_auto_mail(db_session, now + timedelta(days=8))
-        assert len(mail_on) == 2
+    def test_a_check_that_is_off_mails_nobody(self, db_session, test_user, mail_on):
+        _configure(db_session, AUTO, enabled=False)
+        _violation(db_session, AUTO, "testuser")
+        assert "sent=0" in _mail(db_session)
+        assert mail_on == []
 
     def test_accounts_outside_the_window_are_left_alone(self, db_session, test_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True)
+        _configure(db_session, AUTO)
         row = _violation(db_session, AUTO, "testuser")
         row.last_seen_at = _now() - timedelta(days=client_rules.WINDOW_DAYS + 1)
         db_session.add(row)
         db_session.commit()
-        client_mail.run_auto_mail(db_session)
+        assert "sent=0" in _mail(db_session)
         assert mail_on == []
 
+
+class TestMailJob:
     def test_a_failure_is_retried_later_not_every_run(self, db_session, test_user, mail_on):
-        _configure(db_session, AUTO, auto_email=True)
+        _configure(db_session, AUTO)
         _violation(db_session, AUTO, "testuser")
         now = _now()
+        client_mail.request_mail(db_session, AUTO, now=now)
         with patch.object(mailer, "_send_sync", side_effect=TimeoutError("x")) as failing:
             client_mail.run_auto_mail(db_session, now)
             client_mail.run_auto_mail(db_session, now + timedelta(minutes=10))
@@ -2097,8 +2077,9 @@ class TestAutoMail:
         assert _violations(db_session, AUTO)[0].mail_error == ""
 
     def test_job_is_idle_while_mail_is_unconfigured(self, db_session, test_user):
-        _configure(db_session, AUTO, auto_email=True)
+        _configure(db_session, AUTO)
         _violation(db_session, AUTO, "testuser")
+        client_mail.request_mail(db_session, AUTO)
         assert client_mail.run_auto_mail(db_session) == "mail not configured"
         assert _violations(db_session, AUTO)[0].mail_attempted_at is None
 
@@ -2148,12 +2129,12 @@ class TestMailLog:
 
     def test_the_log_says_why_each_mail_went_out(self, db_session, mail_on):
         self._person(db_session, "asked", HTTP)
-        self._person(db_session, "auto", AUTO)
+        self._person(db_session, "unasked", AUTO)
         _configure(db_session, HTTP, patch="ANTHROPIC_BASE_URL=https://gw.example.test")
-        _configure(db_session, AUTO, auto_email=True)
+        _configure(db_session, AUTO)
         client_mail.request_mail(db_session, HTTP)
         client_mail.run_auto_mail(db_session)
-        assert {row.username: row.kind for row in self._log(db_session)} == {"asked": "requested", "auto": "automatic"}
+        assert {row.username: row.kind for row in self._log(db_session)} == {"asked": "requested"}     # nobody else is mailed
 
     def test_test_mail_is_recorded_under_the_admin_who_sent_it(self, client, db_session, admin_user, mail_on):
         url = f"/admin/client-rules/{AUTO}/mail-test"

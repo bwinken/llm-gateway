@@ -453,7 +453,7 @@ class TestNotices:
         values = dict(
             enabled=True, action=rule.action, title=rule.title, message=rule.message,
             patch=rule.patch, patch_azure=rule.patch_azure, patch_aws=rule.patch_aws,
-            email_subject=rule.email_subject, auto_email=rule.auto_email, email_repeat_days=rule.email_repeat_days,
+            email_subject=rule.email_subject,
         )
         values.update(kw)
         client_rules.save_settings(db_session, rule.check, values, updated_by="test")

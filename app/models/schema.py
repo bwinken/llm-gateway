@@ -368,7 +368,10 @@ class ClientRuleSetting(SQLModel, table=True):
     ``remind``), the notice text, the settings patch
     (environment variables for the ``env`` block of settings.json, as JSON:
     the base for every account and what Azure / AWS accounts get on top) and
-    mail (``auto_email``, again every ``email_repeat_days``, 0 = once).
+    the mail's subject. ``auto_email`` and ``email_repeat_days`` are retired:
+    a check no longer mails by itself (mail goes out on an admin's click or
+    by the monthly reminder), nothing reads or writes them, and the columns
+    stay so an older release can still run against this database.
     No row means the check's defaults. A row whose check was retired or
     removed from the code is ignored. Nothing here is part of a check's
     judgment: thresholds are constants in the code too.

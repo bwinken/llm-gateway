@@ -3,10 +3,11 @@ has open, sent paced, with every attempt in the mail log.
 
 - **What is sent**: ``render_digest`` (``render_mail`` for one check), from
   the account's ``client_rules.open_items`` and one ``combined_env`` patch.
-- **Who is due**: an admin's click queues (``request_mail`` for one check's
-  accounts, ``request_mail_all`` for everyone with something open), a check's
-  ``auto_email`` and its reminder, and the monthly reminder
-  (``queue_monthly``). ``due_list`` is the one answer.
+- **Who is due**: only who was asked for. An admin's click queues
+  (``request_mail`` for one check's accounts, ``request_mail_all`` for
+  everyone with something open), and so does the monthly reminder when an
+  admin switched it on (``queue_monthly``). Nothing else makes an account
+  due: no check mails by itself. ``due_list`` is the one answer.
 - **How it goes out**: ``send_due``, one batch per run (``mail_pace``), from
   the ``client_rule_mail`` job (``MAIL_JOB``) or right after a click
   (``send_batch``). ``_send_digests`` claims each account before sending, so
@@ -86,7 +87,7 @@ def mail_pace() -> dict[str, Any]:
     """How fast mail goes out, so a long list never reaches the mail server
     as one burst: at most ``batch`` mails per run of the mail job, ``pause_s``
     apart, one run every ``interval_s``. Whatever is left waits for the next
-    run. An admin's click is paced the same way as automatic mail."""
+    run. An admin's click and the monthly reminder are paced the same way."""
     return {
         "batch": max(1, int(env_seconds("CLIENT_RULE_MAIL_BATCH", 20))),
         "pause_s": env_seconds("CLIENT_RULE_MAIL_PAUSE_S", 2.0),
@@ -525,20 +526,6 @@ def _send_model_changes(
     return sent, failed
 
 
-def _auto_due(violation: ClientViolation, repeat_days: int, now: datetime) -> bool:
-    if violation.mail_attempted_at is None:
-        return True
-    if violation.mail_attempted_at > now - timedelta(seconds=MAIL_RETRY_S):
-        return False
-    if violation.mail_error or violation.mailed_at is None:
-        return True  # the last attempt failed
-    # A reminder is for an account still doing it: seen again since its last mail.
-    return (
-        repeat_days > 0 and violation.mailed_at <= now - timedelta(days=repeat_days)
-        and violation.last_seen_at > violation.mailed_at
-    )
-
-
 def is_queued(violation: ClientViolation, now: datetime | None = None) -> bool:
     """An admin asked for this account to be mailed and it has not happened
     yet (a failed attempt waits ``MAIL_RETRY_S`` before the next)."""
@@ -658,28 +645,23 @@ def queue_monthly(session: Session, now: datetime | None = None) -> int:
 
 
 def due_list(session: Session, now: datetime | None = None) -> list[tuple[str, str]]:
-    """Accounts waiting for a mail, in the order they will get it, each with
-    why (the mail log's ``kind``): first those an admin or the monthly
-    reminder asked for (``requested``, oldest request first), then those
-    due by a check's automatic mail (``automatic``). Deprecated checks never
-    make an account due."""
+    """Accounts waiting for a mail, in the order they will get it (oldest
+    request first), each with why (the mail log's ``kind``, always
+    ``requested``): an admin's click or the monthly reminder asked for it.
+    Nothing else makes an account due: a check never mails by itself, and
+    neither does a deprecated one when asked."""
     now = now or utcnow()
     requested: list[tuple[datetime, str]] = []
-    automatic: list[str] = []
     service = service_account_names(session)
     for username, items in open_items(session, now).items():
         if username in service:
             continue
-        live = [(rule, row) for rule, row in items if not rule.deprecated]
-        asked = [row.mail_requested_at for _, row in live if _request_due(row, now)]
+        asked = [row.mail_requested_at for rule, row in items if not rule.deprecated and _request_due(row, now)]
         if asked:
             requested.append((min(asked), username))
-        elif any(rule.auto_email and _auto_due(row, rule.email_repeat_days, now) for rule, row in live):
-            automatic.append(username)
-    ordered = [(username, "requested") for _, username in sorted(requested)]
-    ordered += [(username, "automatic") for username in sorted(automatic)]
-    if not ordered:
+    if not requested:
         return []
+    ordered = [(username, "requested") for _, username in sorted(requested)]
     names = [username for username, _ in ordered]
     known = set(session.exec(select(User.username).where(User.username.in_(names))).all())  # type: ignore[attr-defined]
     return [(username, why) for username, why in ordered if username in known]
@@ -739,14 +721,15 @@ def send_rule_mail(rule_id: str, only_unmailed: bool = True, bind=None) -> dict[
 
 
 def run_auto_mail(session: Session, now: datetime | None = None) -> str:
-    """The ``client_rule_mail`` job: one batch per run. On the monthly
-    reminder's day it first queues everyone who still has something open
-    (``queue_monthly``). An account is due
-    when an admin (or the monthly reminder) asked for it, or when one of its open checks has
-    ``auto_email`` and has not been mailed (or is due again by that check's
-    ``email_repeat_days``: weekly, monthly, ...). It gets one mail about
-    everything it has open, which stamps all of it, so the shortest repeat
-    among its checks sets the pace. Deprecated checks mail nobody."""
+    """The ``client_rule_mail`` job: one batch per run of what is waiting.
+
+    The job sends nothing by its own decision. It delivers, at the mail
+    pace, what was asked for: the accounts an admin queued with a mail
+    button (client rules or a model change) and, only while the monthly
+    reminder is switched on, those ``queue_monthly`` queues on the 1st.
+    With the reminder off and no click, every run sends nothing. An account
+    gets one mail about everything it has open. Deprecated checks mail
+    nobody."""
     if not mailer.is_enabled():
         return "mail not configured"
     monthly = queue_monthly(session, now)

@@ -26,8 +26,9 @@ notice which accounts send requests of a certain kind and reach those people:
   local day is answered with the message as an error, so it shows in the
   terminal; the retry goes through. App accounts are never reminded.
 - **Mail** (``client_mail.py``): to ``<username>@<COMPANY_EMAIL_DOMAIN>``
-  (``mailer``), sent by an admin's click or by the ``client_rule_mail`` job
-  for checks with ``auto_email``. One mail per account, about everything it
+  (``mailer``), only when an admin asks (a click on a mail button) or, with
+  the monthly reminder switched on, on the 1st of the month. No check mails
+  by itself. One mail per account, about everything it
   has open, with one patch that covers it all (``open_items``,
   ``combined_env``) and a link straight to its download.
 - **One patch per account**: the dashboard and the mail offer a single
@@ -205,8 +206,6 @@ class Rule:
     patch_azure: str
     patch_aws: str
     email_subject: str
-    auto_email: bool
-    email_repeat_days: int
     customized: bool    # an admin has saved this check's form
     updated_by: str
 
@@ -242,14 +241,13 @@ def _rule(check: Check, row: ClientRuleSetting | None) -> Rule:
             check=check, enabled=check.enabled, action="notice",
             title=check.title, message=check.message, patch=_default_patch(check.env),
             patch_azure=_default_patch(check.env_azure), patch_aws=_default_patch(check.env_aws),
-            email_subject="", auto_email=False, email_repeat_days=0, customized=False, updated_by="",
+            email_subject="", customized=False, updated_by="",
         )
     return Rule(
         check=check, enabled=bool(row.enabled), action=row.action if row.action in ACTIONS else "notice",
         title=row.title or check.title, message=row.message or "",
         patch=row.patch or "", patch_azure=row.patch_azure or "", patch_aws=row.patch_aws or "",
-        email_subject=row.email_subject or "", auto_email=bool(row.auto_email),
-        email_repeat_days=int(row.email_repeat_days or 0), customized=True, updated_by=row.updated_by or "",
+        email_subject=row.email_subject or "", customized=True, updated_by=row.updated_by or "",
     )
 
 
@@ -498,12 +496,6 @@ def clean_fields(form: dict[str, Any], check: Check | None = None) -> dict[str, 
     action = str(form.get("action") or "notice").strip().lower()
     if action not in ACTIONS:
         raise ValueError(f"Action must be one of: {', '.join(ACTIONS)}.")
-    try:
-        repeat = int(str(form.get("email_repeat_days") or "0").strip() or 0)
-    except ValueError:
-        raise ValueError("Repeat days must be a whole number.")
-    if not 0 <= repeat <= 365:
-        raise ValueError("Repeat days must be between 0 and 365.")
     boxes = {name: parse_env(str(form.get(name) or "")) for name in ("patch", "patch_azure", "patch_aws")}
     asked = sorted({name for env in boxes.values() for name, value in env.items() if value == FROM_SETUP})
     unknown = [name for name in asked if name not in client_settings.names()] if asked else []
@@ -524,7 +516,6 @@ def clean_fields(form: dict[str, Any], check: Check | None = None) -> dict[str, 
         "patch_azure": dump_env(boxes["patch_azure"]),
         "patch_aws": dump_env(boxes["patch_aws"]),
         "email_subject": str(form.get("email_subject") or "").strip()[:200],
-        "auto_email": bool(form.get("auto_email")), "email_repeat_days": repeat,
     }
 
 

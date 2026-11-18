@@ -577,6 +577,10 @@ class TestMail:
         self._people(db_session, 3)
         _change(db_session)
         assert client_mail.run_auto_mail(db_session) == "sent=0 failed=0 waiting=0"
+        # Not by the monthly reminder either: that one is for open notices.
+        first = datetime(2026, 12, 1, 1, 30)                         # 2026-12-01 09:30 in Taipei
+        with patch.object(client_mail.config, "get_client_monthly_mail", return_value=True):
+            assert client_mail.run_auto_mail(db_session, first) == "sent=0 failed=0 waiting=0"
         assert mail_on == []
 
     def test_who_is_queued(self, db_session, mail_on):
