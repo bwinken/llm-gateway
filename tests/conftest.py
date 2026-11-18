@@ -320,7 +320,7 @@ IP_ALLOWLIST_OFF: dict[str, Any] = {
 # return_value={**OVERFLOW_OFF, "mode": "enforce", ...})``.
 OVERFLOW_OFF: dict[str, Any] = {
     "mode": "off",
-    "waiting_high": 8,
+    "waiting_high": 12,
     "waiting_low": 2,
     "consecutive": 2,
     "grab_max": 2,
@@ -328,7 +328,7 @@ OVERFLOW_OFF: dict[str, Any] = {
     "min_stay_min": 10,
     "idle_min": 5,
     "budget_stop_pct": 85,
-    "daily_budget_usd": 0.0,
+    "daily_budget_usd": 100.0,
 }
 
 GUARDRAIL_OFF: dict[str, Any] = {

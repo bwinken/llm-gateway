@@ -158,7 +158,7 @@ class TestGrab:
         heavy = _person(db_session, "heavy")
         _used(db_session, light, 1_000)
         _used(db_session, heavy, 90_000)
-        with _settings(grab_max=1), _overflows_to(), _queue(9):
+        with _settings(grab_max=1), _overflows_to(), _queue(13):
             overflow.tick(db_session)
             assert _open(db_session) == []
             overflow.tick(db_session)
@@ -217,9 +217,9 @@ class TestGrab:
         _used(db_session, _person(db_session, "busy"))
         base = overflow.utcnow()
         with _settings(consecutive=1, min_stay_min=0), _overflows_to():
-            with _queue(9):
+            with _queue(13):
                 overflow.tick(db_session, now=base)
-            with _queue(5):  # under 8, over 2
+            with _queue(5):  # under 12, over 2
                 for minute in (1, 2, 3):
                     overflow.tick(db_session, now=base + timedelta(minutes=minute))
         assert _open(db_session) == ["busy"]
@@ -230,14 +230,14 @@ class TestGrab:
             assert (server.high, server.low) == (30, 10)
         with _settings(), _overflows_to(overflow_waiting_high=1, overflow_waiting_low=5):  # nonsense: the gateway's
             server = overflow.servers()[LLM_URL]
-            assert (server.high, server.low) == (8, 2)
+            assert (server.high, server.low) == (12, 2)
 
     def test_the_state_is_one_row_a_server_however_long_it_runs(self, db_session):
-        with _settings(), _overflows_to(), _queue(9):
+        with _settings(), _overflows_to(), _queue(13):
             for _ in range(6):
                 overflow.tick(db_session)
         rows = db_session.exec(select(OverflowServer)).all()
-        assert [(r.base_url, r.over_streak, r.waiting) for r in rows] == [(LLM_URL, 6, 9)]
+        assert [(r.base_url, r.over_streak, r.waiting) for r in rows] == [(LLM_URL, 6, 13)]
         assert len(db_session.exec(select(OverflowBudget)).all()) == 1
 
 
@@ -333,7 +333,7 @@ class TestLease:
         assert _open(db_session) == []
 
     def test_it_runs_as_a_claimed_job(self, db_session):
-        with _settings(), _overflows_to(), _queue(9):
+        with _settings(), _overflows_to(), _queue(13):
             assert scheduler.run_if_due(overflow.JOB) == "ok"
             assert scheduler.run_if_due(overflow.JOB) is None  # claimed for this interval
         job = db_session.get(ScheduledJob, overflow.JOB_NAME)
@@ -636,7 +636,7 @@ def _admin():
 class TestAdmin:
     def test_the_card_is_on_the_limits_tab_and_lists_who_is_on_the_cloud(self, client, db_session, admin_user, plain_user):
         _used(db_session, plain_user, model="azure-gpt-4", backend="azure", overflow_row=True, cost="1.5")
-        with _settings(), _overflows_to(), _queue(9):
+        with _settings(), _overflows_to(), _queue(13):
             _stay(db_session, "plain")
             overflow.tick(db_session)
             body = client.get("/admin", headers=_admin()).text
@@ -787,10 +787,14 @@ class TestSettings:
         }):
             s = config.get_overflow_settings()
         assert s["mode"] == "off" and s["daily_budget_usd"] == 0.0
-        assert (s["waiting_high"], s["waiting_low"], s["grab_max"]) == (8, 2, 2)
+        assert (s["waiting_high"], s["waiting_low"], s["grab_max"]) == (12, 2, 2)
 
     def test_defaults(self):
         from app.core import config
         with patch.dict(config.APP_CONFIG, {}, clear=True):
             s = config.get_overflow_settings()
         assert s == OVERFLOW_OFF
+        # off until an admin switches it on; then the owner's defaults apply
+        assert (s["mode"], s["daily_budget_usd"], s["waiting_high"], s["waiting_low"], s["consecutive"]) == (
+            "off", 100.0, 12, 2, 2,
+        )

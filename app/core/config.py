@@ -999,12 +999,12 @@ def set_cloud_budget_fallback(enabled: bool) -> None:
 # app/services/overflow.py): while an on-prem server's waiting queue is over
 # a threshold, the overflow job moves accounts to the cloud model each local
 # model names in `overflow_to`, and back once the queue is short again.
-# "Off" is a mode, as for the concurrency limit. The daily budget defaults to
-# $0: switching to enforce moves nobody until an admin has set one.
+# "Off" is a mode, as for the concurrency limit, and it is the default: the
+# daily budget's default ($100) is spent only once an admin switches it on.
 OVERFLOW_MODES: tuple[str, ...] = ("off", "monitor", "enforce")
 # key in [app] -> (default, minimum, maximum); all whole numbers.
 _OVERFLOW_INT_KEYS: dict[str, tuple[int, int, int]] = {
-    "overflow_waiting_high": (8, 1, 100_000),     # grab above this many waiting requests
+    "overflow_waiting_high": (12, 1, 100_000),    # grab at or above this many waiting requests
     "overflow_waiting_low": (2, 0, 100_000),      # release at or below this many
     "overflow_consecutive": (2, 1, 100),          # readings in a row before acting
     "overflow_grab_max": (2, 1, 100),             # accounts moved to the cloud per round, at most
@@ -1015,6 +1015,9 @@ _OVERFLOW_INT_KEYS: dict[str, tuple[int, int, int]] = {
 }
 _OVERFLOW_MODE_KEY = "overflow_mode"
 _OVERFLOW_BUDGET_KEY = "overflow_daily_budget_usd"
+# What overflow may spend a day when nothing is set. It is spent only once
+# an admin switches the mode on (the mode's default is off).
+DEFAULT_OVERFLOW_DAILY_BUDGET_USD = 100.0
 
 
 def get_overflow_settings() -> dict[str, Any]:
@@ -1023,8 +1026,9 @@ def get_overflow_settings() -> dict[str, Any]:
     ``overflow_`` prefix (``waiting_high``, ``waiting_low``, ``consecutive``,
     ``grab_max``, ``release_per_round``, ``min_stay_min``, ``idle_min``,
     ``budget_stop_pct``) and ``daily_budget_usd``. A missing or invalid value
-    is its default, an invalid mode is ``off`` and an invalid budget is $0:
-    a typo never starts sending requests to the cloud. Never raises;
+    is its default ($100 a day for the budget), an invalid mode is ``off``
+    and a budget that cannot be read as a number is $0: a typo never starts
+    sending requests to the cloud, or spending on it. Never raises;
     auto-reloads."""
     _check_auto_reload()
     mode = str(APP_CONFIG.get(_OVERFLOW_MODE_KEY) or "off").strip().lower()
@@ -1043,7 +1047,7 @@ def get_overflow_settings() -> dict[str, Any]:
     if out["waiting_low"] >= out["waiting_high"]:
         out["waiting_high"] = _OVERFLOW_INT_KEYS["overflow_waiting_high"][0]
         out["waiting_low"] = _OVERFLOW_INT_KEYS["overflow_waiting_low"][0]
-    raw_budget = APP_CONFIG.get(_OVERFLOW_BUDGET_KEY, 0)
+    raw_budget = APP_CONFIG.get(_OVERFLOW_BUDGET_KEY, DEFAULT_OVERFLOW_DAILY_BUDGET_USD)
     try:
         budget = 0.0 if isinstance(raw_budget, bool) else float(raw_budget)
     except (TypeError, ValueError):

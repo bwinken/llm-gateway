@@ -71,9 +71,9 @@ concurrency_offpeak_weekends = false
 #   "monitor" — record who would be moved; nothing is moved
 #   "enforce" — moved accounts are served by the cloud
 overflow_mode = "off"
-overflow_daily_budget_usd = 0      # what overflow may spend per day, all accounts; 0 = nobody is moved
+overflow_daily_budget_usd = 100    # what overflow may spend per day, all accounts; 0 = nobody is moved
 overflow_budget_stop_pct = 85      # share of the budget at which no further account is moved
-overflow_waiting_high = 8          # waiting requests at or above which accounts are moved
+overflow_waiting_high = 12         # waiting requests at or above which accounts are moved
 overflow_waiting_low = 2           # ... at or below which they are moved back (must be lower)
 overflow_consecutive = 2           # readings in a row (30 s apart) before anyone is moved
 overflow_grab_max = 2              # accounts moved to the cloud per round, at most

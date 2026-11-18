@@ -53,6 +53,7 @@ class TestContent:
         assert entries["overflow-stay"].default == f"{d['min_stay_min']} minutes"
         assert entries["overflow-idle"].default == f"{d['idle_min']} minutes"
         assert entries["overflow-stop"].default == str(d["budget_stop_pct"])
+        assert entries["overflow-budget"].default == f"${config.DEFAULT_OVERFLOW_DAILY_BUDGET_USD:g}"
         assert entries["concurrency-local"].default == str(config.DEFAULT_CONCURRENCY_LIMIT)
         assert entries["concurrency-cloud"].default == str(config.DEFAULT_CONCURRENCY_CLOUD_LIMIT)
 

@@ -26,8 +26,9 @@ accounts are never moved.
 
 Everything fails toward on-prem: a stay is a lease the job renews each
 round, so a job that stops (or a server whose queue cannot be read) lets the
-stays lapse; a broken snapshot or setting moves nobody; the daily budget
-defaults to $0. The request path never raises.
+stays lapse; a broken snapshot or setting moves nobody; overflow is off
+until an admin switches it on, and a budget that cannot be read is $0. The
+request path never raises.
 
 The overflowed request is an ordinary cloud request for billing: the cloud
 model's price, on the account's daily limit, ``usage_logs.overflow`` saying

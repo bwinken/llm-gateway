@@ -1810,7 +1810,7 @@ function submitExportCsv() {
             </div>
             <div class="text-[11px] mt-1 {{ 'text-ar' if overflow.budget_state == 'spent' and os.mode == 'enforce' else 'text-t4' }}">
                 {% if os.mode != 'enforce' %}not spending
-                {% elif overflow.budget_usd <= 0 %}no budget set: nobody is moved
+                {% elif overflow.budget_usd <= 0 %}budget is $0: nobody is moved
                 {% elif overflow.budget_state == 'spent' %}budget spent: everyone is back on-prem
                 {% elif overflow.budget_state == 'closing' %}past {{ os.budget_stop_pct }}%: nobody new is moved
                 {% else %}budget open{% endif %}
@@ -1897,7 +1897,7 @@ function submitExportCsv() {
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <fieldset class="rounded-lg p-3 bg-n1">
                 <legend class="text-[11px] font-bold text-t3 uppercase tracking-wider px-1">1 · Is it on, and for how much</legend>
-                <p class="text-[11px] text-t4 mb-3">Nothing is moved until there is a budget. <a href="/admin/guide#overflow-budget" class="text-ab hover:underline">Why</a></p>
+                <p class="text-[11px] text-t4 mb-3">Everyone is moved back once the day's budget is spent. <a href="/admin/guide#overflow-budget" class="text-ab hover:underline">Why</a></p>
                 <div class="flex flex-wrap items-end gap-3">
                     <div>
                         <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Mode</label>

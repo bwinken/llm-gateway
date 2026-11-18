@@ -213,15 +213,16 @@ SECTIONS: tuple[Section, ...] = (
                 id="overflow-budget",
                 name="Daily budget",
                 keys=("[app].overflow_daily_budget_usd",),
-                default="$0",
+                default="$100",
                 what="What overflow may spend on the cloud per day (Asia/Taipei), all accounts together. Once spent, everyone is moved back until midnight.",
                 why="Overflow sends requests to a paid backend without anyone choosing to; a pool bounds what that can cost in a day.",
                 tradeoffs=(
-                    "$0 until you set it: switching the mode on cannot spend anything by accident.",
+                    "It has a default, so switching the mode on starts spending up to $100 a day without a second step. The mode itself is off by default; that is the guard.",
+                    "$0 moves nobody. A value in config.toml that is not a number counts as $0, not as the default.",
                     "The spend is summed by the job once a round, not per request, so it can overshoot by one round's worth.",
                     "When it runs out at the worst hour, the queue is full again. Too small a budget buys little; watch the card for a few days.",
                 ),
-                decided="A site-wide pool, shown on the card, on top of each account's own daily limit.",
+                decided="A site-wide pool, shown on the card, on top of each account's own daily limit. The owner set its default to $100 a day.",
             ),
             Entry(
                 id="overflow-stop",
@@ -236,7 +237,7 @@ SECTIONS: tuple[Section, ...] = (
                 id="overflow-thresholds",
                 name="Move at ≥ / Back at ≤",
                 keys=("[app].overflow_waiting_high", "[app].overflow_waiting_low", "overflow_waiting_high / _low on a model"),
-                default="8 / 2",
+                default="12 / 2",
                 what="Waiting requests on a server at or above which accounts are moved to the cloud, and at or below which they are moved back. Between the two nothing moves.",
                 why="With one threshold the queue would drop below it right after a move, accounts would be released, it would rise again: endless back and forth, each crossing costing a cold cache.",
                 tradeoffs=(
