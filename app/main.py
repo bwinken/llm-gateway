@@ -86,6 +86,14 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(ip_allowlist.refresh)
     allowlist_task = asyncio.create_task(ip_allowlist.refresh_loop())
 
+    # Peak overflow: one worker a round reads the on-prem queues and moves
+    # accounts onto the cloud or back (its own, shorter tick: the health
+    # loop's pace); every worker keeps its copy of who is on the cloud.
+    from app.services import overflow
+    job_tasks.append(asyncio.create_task(job_loop(overflow.JOB, tick=max(overflow.tick_seconds(), 5.0))))
+    await asyncio.to_thread(overflow.refresh)
+    overflow_task = asyncio.create_task(overflow.refresh_loop())
+
     # Launch background health checker
     health_task = asyncio.create_task(health_check_loop(interval=30))
     logger.info("{} ready.", APP_TITLE)
@@ -93,7 +101,9 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    for task in (health_task, lease_task, rollup_task, allowlist_task, client_rules_task, *job_tasks):
+    for task in (
+        health_task, lease_task, rollup_task, allowlist_task, client_rules_task, overflow_task, *job_tasks,
+    ):
         task.cancel()
         try:
             await task

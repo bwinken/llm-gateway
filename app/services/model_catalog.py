@@ -49,6 +49,14 @@ def hidden_cloud_backends(user: User) -> frozenset[str]:
     return frozenset(hidden)
 
 
+def visible_usage_rows(rows: list[dict], user: User) -> list[dict]:
+    """The usage rows an account is shown: not those of a cloud backend it
+    may not use (``hidden_cloud_backends``), except peak-overflow rows, which
+    the gateway put there and which are on the account's bill."""
+    hidden = hidden_cloud_backends(user)
+    return [r for r in rows if r["backend"] not in hidden or r.get("overflow")]
+
+
 def catalog_keys(
     snapshots: dict[str, dict[str, dict]], pricing_map: dict, order: dict[str, dict[str, int]],
 ) -> dict[tuple[str, str], tuple]:
@@ -71,6 +79,8 @@ def usage_row_key(row: dict, catalog: dict[tuple[str, str], tuple]) -> tuple:
     return (
         type_rank(row["type"]),
         catalog.get((row["backend"], row["model"])) or unknown_key(row["model"]),
+        # A model's peak-overflow row sits right under its own.
+        bool(row.get("overflow")),
     )
 
 

@@ -13,6 +13,7 @@
     .gw-grant-azure.is-on   { background: rgba(167,139,250,0.18); border-color: rgba(167,139,250,0.4); color: #cab9ff; }
     .gw-grant-bedrock.is-on { background: rgba(255,153,51,0.15);  border-color: rgba(255,153,51,0.4);  color: #ffcb8a; }
     .gw-grant-waive.is-on   { background: rgba(52,211,153,0.15);  border-color: rgba(52,211,153,0.4);  color: #86efac; }
+    .gw-grant-overflow.is-on { background: rgba(99,152,255,0.14); border-color: rgba(99,152,255,0.4);  color: #a9c5ff; }
     .sa-chip { display: inline-flex; align-items: baseline; gap: .375rem; padding: .3rem .65rem; border-radius: .5rem;
                border: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.02); font-size: .75rem; color: #c4c9d4; }
     .sa-chip:hover { border-color: rgba(99,152,255,0.35); }
@@ -1739,6 +1740,170 @@ function submitExportCsv() {
     </div>
 </div>
 
+{# ── Cloud Overflow (peak overflow, app/services/overflow.py) ── #}
+<div id="cloud-overflow" class="gw-card p-5 mb-6 gw-anim gw-d5 xl:col-span-2" style="border-left:3px solid #ff9933">
+    {% if overflow is none %}
+    <h2 class="text-sm font-bold text-t2 mb-1">Cloud Overflow</h2>
+    <p class="text-xs text-ar">Unavailable: its tables are missing. Run <code class="font-mono">alembic upgrade head</code>.</p>
+    {% else %}
+    {% set os = overflow.settings %}
+    <div class="flex flex-wrap items-start justify-between gap-4">
+        <div class="max-w-2xl">
+            <h2 class="text-sm font-bold text-t2 mb-1">Cloud Overflow
+                {% if os.mode == 'enforce' %}<span class="ml-1.5 text-[11px] font-semibold" style="color:#ff9933">● on</span>
+                {% elif os.mode == 'monitor' %}<span class="ml-1.5 text-[11px] font-semibold text-aa">● monitor (nothing is moved)</span>
+                {% else %}<span class="ml-1.5 text-[11px] font-semibold text-t4">off</span>{% endif %}
+            </h2>
+            <p class="text-xs text-t4 gw-tip gw-tip-wide"
+               data-tip="Every {{ overflow.job.tick_s|int }} s the gateway reads each on-prem server's waiting queue. At or above the upper threshold for the set number of readings in a row, it moves the accounts using that server most to the cloud model its models name (Models → When congested, overflow to). An account is moved whole and stays at least the minimum stay, so its conversations keep their prompt cache. At or below the lower threshold, accounts are moved back one round at a time: idle ones first, then the longest on the cloud. Between the two thresholds nothing moves. A moved request is billed at the cloud model's price, counts toward the account's own daily limit, and shows on its dashboard as overflow. It is not screened by the guardrail. Service accounts and accounts with Overflow turned off (Users tab) are never moved. If the cloud refuses a moved request, it is served on-prem. Monitor records who would be moved and moves nobody.">
+                While an on-prem server is congested, serve some accounts' requests for its models from the cloud, within a daily budget.
+                Accounts are moved whole, never request by request.
+            </p>
+        </div>
+        <div class="text-right">
+            <div class="text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1">Spent today</div>
+            <div class="text-sm font-mono text-t1">${{ "%.2f"|format(overflow.spent_usd) }} <span class="text-t4">of ${{ "%g"|format(overflow.budget_usd) }}</span></div>
+            <div class="rounded-full h-1.5 overflow-hidden bg-n3 mt-1.5" style="width:180px;margin-left:auto">
+                <div class="h-1.5 rounded-full" style="width: {{ overflow.budget_pct|round(1) }}%; background:{{ '#f87171' if overflow.budget_state == 'spent' else ('#f5a623' if overflow.budget_state == 'closing' else '#ff9933') }}"></div>
+            </div>
+            <div class="text-[11px] mt-1 {{ 'text-ar' if overflow.budget_state == 'spent' and os.mode == 'enforce' else 'text-t4' }}">
+                {% if os.mode != 'enforce' %}not spending
+                {% elif overflow.budget_usd <= 0 %}no budget set: nobody is moved
+                {% elif overflow.budget_state == 'spent' %}budget spent: everyone is back on-prem
+                {% elif overflow.budget_state == 'closing' %}past {{ os.budget_stop_pct }}%: nobody new is moved
+                {% else %}budget open{% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="overflow-x-auto mt-4">
+        <table class="gw-table">
+            <thead><tr>
+                <th>On-prem model</th><th>Overflows to</th>
+                <th style="text-align:right" class="gw-tip" data-tip="Requests waiting in the server's queue at the last reading">Waiting</th>
+                <th style="text-align:right" class="gw-tip" data-tip="Move accounts to the cloud at or above the first number; move them back at or below the second">Thresholds</th>
+                <th style="text-align:right">On the cloud</th>
+            </tr></thead>
+            <tbody>
+                {% for srv in overflow.servers %}
+                <tr>
+                    <td class="whitespace-nowrap">{% for m in srv.models %}<code class="text-sm font-mono text-t1">{{ m.alias }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+                    <td class="whitespace-nowrap">{% for m in srv.models %}<code class="text-sm font-mono text-t3">{{ m.to }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+                    <td class="text-right text-sm font-mono {{ 'text-aa' if srv.waiting is not none and srv.waiting >= srv.high else 'text-t2' }}">
+                        {{ srv.waiting if srv.waiting is not none else '—' }}
+                        {% if srv.over_streak %}<span class="text-[11px] text-aa">· over ×{{ srv.over_streak }}</span>{% endif %}
+                        {% if srv.under_streak and srv.on_cloud %}<span class="text-[11px] text-t4">· under ×{{ srv.under_streak }}</span>{% endif %}
+                    </td>
+                    <td class="text-right text-sm font-mono text-t3">≥ {{ srv.high }} / ≤ {{ srv.low }}</td>
+                    <td class="text-right text-sm font-mono text-t2">{{ srv.on_cloud }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="text-center py-5 text-sm text-t4">
+                    No on-prem model overflows yet. Open <a href="/admin/models" class="text-ab hover:underline">Models</a>, pick an on-prem model and set <b>When congested, overflow to</b>.
+                </td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if overflow.on_cloud %}
+    <h3 class="text-xs font-bold text-t2 mt-4 mb-1">On the cloud now ({{ overflow.on_cloud|length }})</h3>
+    <div class="overflow-x-auto" style="max-height:260px;overflow-y:auto">
+        <table class="gw-table">
+            <thead><tr><th>Account</th><th>For</th><th>Since (Asia/Taipei)</th><th style="text-align:right">Minutes</th><th style="text-align:right">Cost today</th><th>Why</th></tr></thead>
+            <tbody>
+                {% for st in overflow.on_cloud %}
+                <tr>
+                    <td class="text-sm font-mono text-t1">{{ st.username }}{% if st.mode == 'monitor' %} <span class="gw-badge gw-badge-muted">monitor</span>{% endif %}{% if st.lapsed %} <span class="gw-badge gw-badge-off">lapsed</span>{% endif %}</td>
+                    <td class="text-xs font-mono text-t3">{{ st.models|join(', ') }}</td>
+                    <td class="text-sm font-mono text-t3 whitespace-nowrap">{{ overflow_local(st.entered_at) }}</td>
+                    <td class="text-right text-sm font-mono text-t3">{{ st.minutes }}</td>
+                    <td class="text-right text-sm font-mono text-t2">${{ "%.4f"|format(st.cost_today) }}</td>
+                    <td class="text-xs text-t4">{{ st.reason_in }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {% if overflow.recent %}
+    <details class="mt-3">
+        <summary class="text-xs text-t3 cursor-pointer select-none">Moved back recently ({{ overflow.recent|length }})</summary>
+        <div class="overflow-x-auto mt-2" style="max-height:260px;overflow-y:auto">
+            <table class="gw-table">
+                <thead><tr><th>Account</th><th>For</th><th>Moved</th><th>Back</th><th style="text-align:right">Minutes</th><th>Why back</th></tr></thead>
+                <tbody>
+                    {% for st in overflow.recent %}
+                    <tr>
+                        <td class="text-sm font-mono text-t2">{{ st.username }}{% if st.mode == 'monitor' %} <span class="gw-badge gw-badge-muted">monitor</span>{% endif %}</td>
+                        <td class="text-xs font-mono text-t3">{{ st.models|join(', ') }}</td>
+                        <td class="text-sm font-mono text-t3 whitespace-nowrap">{{ overflow_local(st.entered_at) }}</td>
+                        <td class="text-sm font-mono text-t3 whitespace-nowrap">{{ overflow_local(st.released_at) }}</td>
+                        <td class="text-right text-sm font-mono text-t3">{{ st.minutes }}</td>
+                        <td class="text-xs text-t4">{{ st.reason_out }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </details>
+    {% endif %}
+
+    <form action="/admin/overflow" method="POST" class="flex flex-wrap items-end gap-3 mt-4 pt-4" style="border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Mode</label>
+            <select name="mode" class="gw-input text-sm py-1.5 px-2">
+                {% for m in overflow.modes %}
+                <option value="{{ m }}" {{ 'selected' if m == os.mode else '' }}>{{ {'off': 'Off', 'monitor': 'Monitor — record only', 'enforce': 'On — move to the cloud'}[m] }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="What overflow may spend on the cloud per day (Asia/Taipei), all accounts together. Once it is spent everyone is moved back on-prem until midnight. $0 = nobody is moved.">Daily budget</label>
+            <div class="flex items-center gap-1"><span class="text-sm text-t4">$</span>
+                <input type="number" step="0.1" min="0" required name="daily_budget_usd" value="{{ '%g'|format(os.daily_budget_usd) }}" class="gw-input w-24 text-sm font-mono py-1.5 px-2"></div>
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="Share of the daily budget at which no further account is moved. Those already on the cloud stay until they are moved back, so the budget is not hit with everyone returning at once.">Stop at %</label>
+            <input type="number" step="1" min="1" max="100" required name="budget_stop_pct" value="{{ os.budget_stop_pct }}" class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="Waiting requests on a server at or above which accounts are moved to the cloud. A model can set its own in Models.">Move at ≥</label>
+            <input type="number" step="1" min="1" required name="waiting_high" value="{{ os.waiting_high }}" class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="Waiting requests at or below which accounts are moved back. Must be below the first threshold: between the two nothing moves, which keeps accounts from being moved back and forth.">Back at ≤</label>
+            <input type="number" step="1" min="0" required name="waiting_low" value="{{ os.waiting_low }}" class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="How many readings in a row ({{ overflow.job.tick_s|int }} s apart) must be over, or under, before anyone is moved. One reading alone is noise.">In a row</label>
+            <input type="number" step="1" min="1" required name="consecutive" value="{{ os.consecutive }}" class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="Accounts moved to the cloud per round, at most: one when the queue is just over the threshold, this many at twice the threshold.">Move per round</label>
+            <input type="number" step="1" min="1" required name="grab_max" value="{{ os.grab_max }}" class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="Accounts moved back per round once the queue is short again.">Back per round</label>
+            <input type="number" step="1" min="1" required name="release_per_round" value="{{ os.release_per_round }}" class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="Minutes an account stays on the cloud at least, however short the queue gets.">Min stay (min)</label>
+            <input type="number" step="1" min="0" required name="min_stay_min" value="{{ os.min_stay_min }}" class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="An account with no finished request for this many minutes is idle: it is moved back first, since neither side holds a warm prompt cache for it any more.">Idle after (min)</label>
+            <input type="number" step="1" min="1" required name="idle_min" value="{{ os.idle_min }}" class="gw-input w-20 text-sm font-mono py-1.5 px-2">
+        </div>
+        <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
+    </form>
+    <p class="text-[11px] text-t4 mt-2">
+        Last round: {% if overflow.job.last_started_at %}{{ overflow_local(overflow.job.last_started_at) }} · {{ overflow.job.last_status }}{% if overflow.job.last_detail %} · <span class="font-mono">{{ overflow.job.last_detail }}</span>{% endif %}{% else %}not run yet{% endif %}
+    </p>
+    {% endif %}
+</div>
+
 </div>
 </div>
 
@@ -2364,7 +2529,10 @@ function submitExportCsv() {
                        title: ['No AWS Bedrock access', 'AWS Bedrock granted'] },
             waive:   { key: 'concurrency_waived',
                        ask: function(n, on) { return n + ': ' + (on ? 'apply the concurrency limit again' : 'waive the concurrency limit') + '?'; },
-                       title: ['Concurrency limit applies — click to waive', 'Concurrency limit waived — click to apply it'] }
+                       title: ['Concurrency limit applies — click to waive', 'Concurrency limit waived — click to apply it'] },
+            overflow: { key: 'can_overflow_cloud',
+                       ask: function(n, on) { return n + ': ' + (on ? 'keep this account on-prem (no cloud overflow)? It is moved back at once.' : 'allow cloud overflow while on-prem is congested?'); },
+                       title: ['Always on-prem — click to allow cloud overflow', 'May be served by the cloud while on-prem is congested — click to keep this account on-prem'] }
         };
 
         function flash(el, ok) {

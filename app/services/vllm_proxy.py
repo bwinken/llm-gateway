@@ -112,6 +112,20 @@ def _resolve_model(
     )
 
 
+def peek_route(model_name: str, allowed_types: list[str]) -> tuple[str, dict[str, Any]] | None:
+    """The alias and route ``_resolve_model`` would serve ``model_name``
+    from, without its log lines; None where it would refuse. For code that
+    must know the on-prem server before the request is forwarded (peak
+    overflow, ``v1_api._overflow_plan``): the same maps, the same liveness
+    view and the same fallback rule, so the two cannot disagree."""
+    _check_auto_reload()
+    route = MODEL_ROUTING.get(model_name)
+    if route and route["type"] in allowed_types and is_alive(route["base_url"]):
+        return model_name, route
+    picked = model_fallback.pick(model_name, allowed_types, MODEL_ROUTING, FALLBACK_MAP, is_alive)
+    return (picked[0], picked[1]) if picked else None
+
+
 def _get_downstream_headers(route: dict[str, Any]) -> dict[str, str]:
     """Build headers for the downstream request, including API key if configured."""
     headers: dict[str, str] = {"Content-Type": "application/json"}

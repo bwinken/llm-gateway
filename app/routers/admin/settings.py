@@ -1,6 +1,7 @@
 """
-Admin *Settings* tab: the gateway-wide limits (daily, cloud, concurrency,
-cloud-budget fallback), the weekly reports and the site links.
+Admin *Limits* and *Settings* tabs: the gateway-wide limits (daily, cloud,
+concurrency, cloud-budget fallback, cloud overflow), the weekly reports and
+the site links.
 """
 
 from __future__ import annotations
@@ -14,20 +15,23 @@ from sqlmodel import Session
 from app.core.auth import get_web_user
 from app.core.config import (
     CONCURRENCY_MODES,
+    OVERFLOW_MODES,
     get_concurrency_cloud_limit,
+    get_overflow_settings,
     parse_hhmm,
     set_cloud_budget_fallback,
     set_concurrency_offpeak,
     set_concurrency_settings,
     set_cloud_daily_limit,
     set_default_daily_limit,
+    set_overflow_settings,
     set_site_links,
 )
 from app.core.database import get_session
 from app.core.logger import logger
 from app.models.schema import ReportSchedule, User
 from app.routers.admin.common import _limit_usd, _wants_json, router
-from app.services import audit, concurrency, mailer, langfuse_reader, weekly_reports
+from app.services import audit, concurrency, mailer, langfuse_reader, overflow, weekly_reports
 
 
 @router.post("/default-limit")
@@ -352,4 +356,69 @@ async def update_concurrency_offpeak(
             "ok": True, "start": start, "end": end, "weekends": weekends,
             "active": concurrency.is_offpeak(),
         })
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+# ── Cloud overflow ──
+
+# Form field -> what an admin reads in a refusal.
+_OVERFLOW_FIELDS: dict[str, str] = {
+    "waiting_high": "Move accounts at",
+    "waiting_low": "Move back at",
+    "consecutive": "Readings in a row",
+    "grab_max": "Moved per round",
+    "release_per_round": "Moved back per round",
+    "min_stay_min": "Minimum stay",
+    "idle_min": "Idle after",
+    "budget_stop_pct": "Stop moving at",
+}
+
+
+@router.post("/overflow")
+async def update_overflow(
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Save peak overflow's settings (``[app].overflow_*``; see
+    ``app/services/overflow.py``).
+
+    Form fields: ``mode`` (``off`` / ``monitor`` / ``enforce``), the whole
+    numbers of ``_OVERFLOW_FIELDS`` and ``daily_budget_usd`` (>= 0; $0 means
+    nothing overflows). A field left out keeps its stored value; the lower
+    threshold must be below the upper one. Which model overflows to which
+    cloud model is per model, in Admin -> Models. Switching the mode off
+    moves everyone back at once.
+    """
+    form = await request.form()
+    values = dict(get_overflow_settings())
+    mode = str(form.get("mode") or values["mode"]).strip().lower()
+    if mode not in OVERFLOW_MODES:
+        raise HTTPException(status_code=400, detail=f"mode must be one of: {', '.join(OVERFLOW_MODES)}.")
+    values["mode"] = mode
+    for name, label in _OVERFLOW_FIELDS.items():
+        raw = str(form.get(name) or "").strip()
+        if not raw:
+            continue
+        try:
+            values[name] = int(raw)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"{label} must be a whole number.")
+    if form.get("daily_budget_usd") not in (None, ""):
+        values["daily_budget_usd"] = _limit_usd(form.get("daily_budget_usd"), "daily_budget_usd")
+    try:
+        set_overflow_settings(values)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Cloud overflow settings saved | {} admin={}",
+        " ".join(f"{k}={v}" for k, v in values.items()), admin_user.username,
+    )
+    if mode == "off":
+        moved_back = overflow.release_all(session, "overflow switched off")
+        if moved_back:
+            logger.info("Cloud overflow switched off: {} account(s) moved back on-prem", moved_back)
+    overflow.refresh()
+    if _wants_json(request):
+        return JSONResponse({"ok": True, **values})
     return RedirectResponse(url="/admin", status_code=303)

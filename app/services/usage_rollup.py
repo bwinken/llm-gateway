@@ -59,8 +59,10 @@ _DAY_STATEMENT_TIMEOUT_MS = 600_000
 # pg_try_advisory_xact_lock key of the rollup writer.
 _LOCK_KEY = 0x75736167_64617931  # "usagday1"
 
-DIMENSIONS = ("day", "user_id", "backend", "model", "model_type", "endpoint")
-_GROUP_COLUMNS = ("user_id", "backend", "model", "model_type", "endpoint")
+# ``overflow`` (usage_logs.overflow): cloud usage the gateway chose during a
+# peak, apart from cloud usage the account chose.
+DIMENSIONS = ("day", "user_id", "backend", "model", "model_type", "endpoint", "overflow")
+_GROUP_COLUMNS = ("user_id", "backend", "model", "model_type", "endpoint", "overflow")
 
 
 class RollupBusy(RuntimeError):
@@ -123,13 +125,16 @@ def _as_decimal(value) -> Decimal:
     return Decimal(str(value))
 
 
-def _merge(out: dict[tuple, dict], rows, n_dims: int, day_index: int | None) -> None:
+def _merge(
+    out: dict[tuple, dict], rows, n_dims: int, day_index: int | None,
+    bool_indexes: frozenset[int] = frozenset(),
+) -> None:
     for row in rows:
         requests = int(row[n_dims] or 0)
         if requests == 0:
             continue
         key = tuple(
-            _as_date(v) if i == day_index else v
+            _as_date(v) if i == day_index else (bool(v) if i in bool_indexes else v)
             for i, v in enumerate(row[:n_dims])
         )
         entry = out.get(key)
@@ -157,7 +162,8 @@ def aggregate(
 
     Returns ``{key: {"requests", "input_tokens", "output_tokens",
     "cost_usd" (Decimal), "empty_turns"}}`` where ``key`` is the tuple of
-    ``dims`` values in the order given (``day`` as a ``date``); with no dims
+    ``dims`` values in the order given (``day`` as a ``date``, ``overflow``
+    as a ``bool``); with no dims
     the single key is ``()``. Groups without requests are absent.
 
     Days up to the rollup watermark come from ``usage_daily``, the rest from
@@ -171,6 +177,8 @@ def aggregate(
         return {}
 
     day_index = dims.index("day") if "day" in dims else None
+    # SQLite hands a boolean column back as 0 / 1; the key is a bool either way.
+    bool_indexes = frozenset(i for i, d in enumerate(dims) if d == "overflow")
     watermark = rolled_through(session)
     split = start if watermark is None else min(max(start, watermark + timedelta(days=1)), end)
     out: dict[tuple, dict] = {}
@@ -193,7 +201,7 @@ def aggregate(
             stmt = stmt.where(UsageDaily.user_id.in_(ids))  # type: ignore[attr-defined]
         if cols:
             stmt = stmt.group_by(*cols)
-        _merge(out, session.exec(stmt).all(), len(dims), day_index)
+        _merge(out, session.exec(stmt).all(), len(dims), day_index, bool_indexes)
 
     if end > split:
         cols = [
@@ -216,7 +224,7 @@ def aggregate(
             stmt = stmt.where(UsageLog.user_id.in_(ids))  # type: ignore[attr-defined]
         if cols:
             stmt = stmt.group_by(*cols)
-        _merge(out, session.exec(stmt).all(), len(dims), day_index)
+        _merge(out, session.exec(stmt).all(), len(dims), day_index, bool_indexes)
 
     return out
 

@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 
 from fastapi import Depends, HTTPException, Query, Request, Security
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from sqlalchemy import case, delete, update
+from sqlalchemy import case, delete, false as sa_false, update
 from sqlmodel import Session, func, select
 
 from app.core.auth import get_web_user
@@ -39,7 +39,7 @@ from app.routers.admin.common import (
     router,
     templates,
 )
-from app.services import concurrency
+from app.services import concurrency, overflow
 from app.services.stats import get_monthly_all_users_usage
 
 
@@ -74,6 +74,7 @@ USER_TABLE_STATUSES: dict[str, str] = {
     "cloud_cap": "Own cloud cap",
     "waived": "Concurrency waived",
     "waiver_changed": "Waiver not the default",
+    "no_overflow": "No cloud overflow",
     "disabled": "Disabled",
     # Not a permission: tracks how many keys still predate the current format
     # (schema.is_legacy_api_key). Deliberately not in SPECIAL_ACCESS_KEYS.
@@ -90,7 +91,7 @@ STALE_KEY_DAYS = 90
 # each linking to its filter. The waiver counts only what differs from an
 # account kind's default (users are created limited, service accounts waived).
 SPECIAL_ACCESS_KEYS: tuple[str, ...] = (
-    "azure", "bedrock", "cloud_cap", "waiver_changed", "disabled",
+    "azure", "bedrock", "cloud_cap", "waiver_changed", "no_overflow", "disabled",
 )
 
 
@@ -124,9 +125,14 @@ def _key_use_label(last_used: datetime | None, now: datetime) -> str:
 def _status_clause(status: str, is_apps: bool):
     """The WHERE clause of a Users / Apps table filter (None for "all").
     ``special`` is every account with something other than the defaults of
-    its kind: a flag granted, its own cloud cap, or the concurrency waiver
-    flipped from what new accounts of that kind get."""
+    its kind: a flag granted, its own cloud cap, the concurrency waiver
+    flipped from what new accounts of that kind get, or (a person) peak
+    overflow turned off."""
     waived_differs = (User.concurrency_waived == False) if is_apps else (User.concurrency_waived == True)  # noqa: E712
+    # Peak overflow is allowed unless an admin turned it off, and a service
+    # account is never moved whatever its flag says: only a person with it
+    # off differs from the default.
+    no_overflow = sa_false() if is_apps else (User.can_overflow_cloud == False)  # noqa: E712
     clauses = {
         "azure": User.can_use_azure == True,  # noqa: E712
         "bedrock": User.can_use_bedrock == True,  # noqa: E712
@@ -134,12 +140,13 @@ def _status_clause(status: str, is_apps: bool):
         "cloud_cap": User.cloud_daily_limit_usd.is_not(None),  # type: ignore[union-attr]
         "waived": User.concurrency_waived == True,  # noqa: E712
         "waiver_changed": waived_differs,
+        "no_overflow": no_overflow,
         "disabled": User.is_disabled == True,  # noqa: E712
         "legacy_key": legacy_api_key_clause(),
         "stale_key": _stale_key_clause(),
     }
     if status == "special":
-        return clauses["cloud"] | clauses["cloud_cap"] | waived_differs
+        return clauses["cloud"] | clauses["cloud_cap"] | waived_differs | no_overflow
     return clauses.get(status)
 
 
@@ -276,6 +283,7 @@ def _user_table(
             "can_use_azure": u.can_use_azure,
             "can_use_bedrock": u.can_use_bedrock,
             "concurrency_waived": u.concurrency_waived,
+            "can_overflow_cloud": u.can_overflow_cloud,
             "key_legacy": is_legacy_api_key(u.api_key),
             "key_use": _key_use_label(u.api_key_last_used_at, now_naive),
             "key_stale": _is_stale(u, now_naive),
@@ -745,6 +753,43 @@ def toggle_concurrency_waive(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+@router.post("/users/{user_id}/toggle-overflow")
+def toggle_overflow(
+    user_id: int,
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Flip the account's can_overflow_cloud flag: whether peak overflow
+    (app/services/overflow.py) may serve its on-prem requests from the cloud.
+    Turning it off moves the account back at once; a request already sent to
+    the cloud finishes there."""
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    target.can_overflow_cloud = not target.can_overflow_cloud
+    session.add(target)
+    session.commit()
+    _overflow_changed(session, target, admin_user)
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "can_overflow_cloud": target.can_overflow_cloud})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+def _overflow_changed(session: Session, target: User, admin_user: User | None = None) -> None:
+    """After an account's can_overflow_cloud was written: log it, and when
+    it is now off, end the account's stays on the cloud and reload this
+    worker's copy (the other workers follow within ``overflow.REFRESH_S``)."""
+    logger.info(
+        "Cloud overflow {} | user={} admin={}",
+        "allowed" if target.can_overflow_cloud else "turned off",
+        target.username, admin_user.username if admin_user else "-",
+    )
+    if not target.can_overflow_cloud:
+        overflow.release_account(session, target.username, "overflow turned off for this account")
+        overflow.refresh()
+
+
 @router.post("/users/{user_id}/delete")
 def delete_user(
     user_id: int,
@@ -855,6 +900,7 @@ def list_users_api(
             "daily_limit_usd": u.daily_limit_usd,
             "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
             "concurrency_waived": u.concurrency_waived,
+            "can_overflow_cloud": u.can_overflow_cloud,
             "is_service_account": u.is_service_account,
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
@@ -948,6 +994,9 @@ def update_user_api(
         )
     if "concurrency_waived" in body:
         target.concurrency_waived = _strict_bool(body["concurrency_waived"], "concurrency_waived")
+    overflow_written = "can_overflow_cloud" in body
+    if overflow_written:
+        target.can_overflow_cloud = _strict_bool(body["can_overflow_cloud"], "can_overflow_cloud")
     if "owner_ids" in body:
         current = _current_owner_ids(session, user_id)
         owners = _owners_by_id(session, body["owner_ids"], current)
@@ -962,6 +1011,8 @@ def update_user_api(
     session.add(target)
     session.commit()
     session.refresh(target)
+    if overflow_written:
+        _overflow_changed(session, target)
     return {"ok": True, "user_id": target.id}
 
 

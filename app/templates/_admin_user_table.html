@@ -103,6 +103,12 @@
             {{ toggle_form(u, 'bedrock', 'toggle-bedrock', u.can_use_bedrock, 'AWS', 'AWS Bedrock granted', 'No AWS Bedrock access') }}
             {{ toggle_form(u, 'waive', 'toggle-concurrency-waive', u.concurrency_waived, 'Waive',
                            'Concurrency limit waived — click to apply it', 'Concurrency limit applies — click to waive') }}
+            {# Service accounts are never moved to the cloud: no switch to show. #}
+            {% if not is_apps %}
+            {{ toggle_form(u, 'overflow', 'toggle-overflow', u.can_overflow_cloud, 'Overflow',
+                           'May be served by the cloud while on-prem is congested — click to keep this account on-prem',
+                           'Always on-prem — click to allow cloud overflow') }}
+            {% endif %}
             {% if not u.is_self %}
             {# The rare, heavy actions sit behind one ⋯ button, away from the
                toggles: a <details>, so it opens without JS too. #}

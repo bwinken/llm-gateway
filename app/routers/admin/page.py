@@ -32,7 +32,7 @@ from app.core.server_state import get_metrics, is_alive
 from app.core.timeutil import local_month_start
 from app.models.schema import AnomalyEvent, User
 from app.routers.admin.clients import _client_installs_view, _client_rules_view, _model_changes_view
-from app.routers.admin.common import router, templates
+from app.routers.admin.common import _local_label, router, templates
 from app.routers.admin.security import _audit_rows, _guardrail_view, _ip_allowlist_view
 from app.routers.admin.settings import _weekly_reports_view
 from app.routers.admin.users import (
@@ -43,7 +43,7 @@ from app.routers.admin.users import (
     _table_state,
     _user_table,
 )
-from app.services import client_rules, client_settings, concurrency, guardrail
+from app.services import client_rules, client_settings, concurrency, guardrail, overflow
 from app.services.stats import (
     get_budget_pressure,
     get_today_totals,
@@ -176,6 +176,13 @@ def admin_page(
         logger.warning("Weekly reports view failed | error={}: {}", type(exc).__name__, exc)
         weekly_reports_view = None
 
+    try:
+        overflow_view = overflow.status(session)
+    except Exception as exc:  # before `alembic upgrade`: the card says so
+        session.rollback()
+        logger.warning("Cloud overflow view failed | error={}: {}", type(exc).__name__, exc)
+        overflow_view = None
+
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -234,6 +241,8 @@ def admin_page(
             "guardrail": _guardrail_view(),
             "ip_allowlist": ip_allowlist_view,
             "weekly_reports": weekly_reports_view,
+            "overflow": overflow_view,
+            "overflow_local": _local_label,
             "special_access": _special_access_summary(session),
             "guardrail_categories": guardrail.QWEN3GUARD_CATEGORIES,
             "guardrail_model_family": guardrail.GUARD_MODEL_FAMILY,
