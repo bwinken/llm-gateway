@@ -77,7 +77,7 @@ What the dashboard shows an account, as JSON, for programs that are not a browse
 | `GET /v1/usage` | Usage per day, and today and this month by model |
 | `GET /v1/service-accounts` | The service accounts the user owns, with this month's usage |
 | `GET /v1/settings` | The recommended client settings for this account: per variable a default and the options to pick from |
-| `GET /v1/notices` | What is wrong with the account's client setup, and the settings that fix it |
+| `GET /v1/notices` | What is wrong with the account's client setup, and the settings that fix it; and the models being replaced, with what to use instead |
 | `POST /v1/notices/resolved` | "I've applied the fix": clears the notices, all or by id |
 | `POST /v1/events` | A setup tool reports what it installed, updated or removed, in which version, on which OS and machine |
 
@@ -192,7 +192,7 @@ Open `https://your-gateway` and sign in through SSO. Accounts with the `admin` s
 |---|---|
 | **Overview** | See spend per backend, requests and active users; review usage anomalies; export monthly cost reports |
 | **Users** | Set budgets and cloud caps, grant Azure or AWS access, disable accounts, create service accounts, view or regenerate keys; click a name for that account's usage, notices, key and change history |
-| **Clients** | Choose which client problems to detect, how users are told, and the settings patch they get; see who is affected and what mail went out; set what setup tools offer users; see what those tools installed, per account, machine and OS |
+| **Clients** | Choose which client problems to detect, how users are told, and the settings patch they get; see who is affected and what mail went out; announce a model that is being replaced (to everyone or one tier, shown until a day you pick, with a script that renames it in their settings, and mail); set what setup tools offer users; see what those tools installed, per account, machine and OS |
 | **Security** | IP allowlist, prompt guardrail, audit log |
 | **Settings** | Default budgets, concurrency limit, what happens when the cloud cap is spent, weekly report mails, site links |
 | **Models** | Add and edit models, prices and fallbacks; test a connection |

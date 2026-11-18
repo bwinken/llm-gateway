@@ -9,6 +9,10 @@ vLLM module. A cloud proxy takes shared code from ``billing.py`` and
 and no database; ``client_rules`` (checks, violations, notices) builds on it;
 ``client_mail`` (digest, queue, mail log) builds on both. Never the other way
 round, and client setup (``client_settings``) reads neither rules nor mail.
+
+**Model changes.** ``model_changes`` (who a replaced model is announced to)
+builds on ``client_patch`` and ``client_rules``; ``client_mail`` sends its
+mail. The rules know nothing of it, and it never sends by itself.
 """
 
 from __future__ import annotations
@@ -69,6 +73,14 @@ def test_the_client_modules_depend_one_way():
     assert not patch & CLIENT_MODULES
     assert rules & CLIENT_MODULES == {"client_patch"}
     assert mail & CLIENT_MODULES == {"client_patch", "client_rules"}
+
+
+def test_model_changes_sit_between_the_rules_and_the_mail():
+    changes = _service_imports("model_changes")
+    assert {"client_patch", "client_rules"} <= changes         # the walk does find imports
+    assert not changes & {"client_mail", "mailer"}             # every send path is client_mail.send_due
+    assert "model_changes" in _service_imports("client_mail")
+    assert "model_changes" not in _service_imports("client_rules") | _service_imports("client_patch")
 
 
 def test_the_patch_module_reads_no_database():

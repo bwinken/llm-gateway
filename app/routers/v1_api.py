@@ -72,7 +72,9 @@ from app.services.azure_proxy import (
     azure_forward_messages,
     azure_forward_responses,
 )
-from app.services import audit, client_events, client_rules, client_settings, concurrency, guardrail, model_catalog
+from app.services import (
+    audit, client_events, client_rules, client_settings, concurrency, guardrail, model_catalog, model_changes,
+)
 from app.services.model_order import natural_key
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
@@ -622,9 +624,20 @@ def client_notices(user: User = Depends(get_current_user_unmetered)):
     ``patch``. The top-level ``patch`` is the account's one patch for
     everything open (what the dashboard offers as a download): ``covers``
     lists the checks it fixes and ``manual`` those no setting can fix
-    (update Claude Code, ask for access). It is absent when nothing is
-    open. A patch only ever sets or removes variables in the ``env`` block
-    of settings.json, and never holds a key.
+    (update Claude Code, ask for access). It is absent when there is
+    nothing to apply. A patch only ever sets or removes variables in the
+    ``env`` block of settings.json, and never holds a key.
+
+    ``model_changes`` is the dashboard's model-change panel: the models an
+    admin announced as being replaced, for this account, each with its
+    ``id`` (``MC3``), ``title``, ``message``, the ``models`` to replace
+    (``{old: new}``), the last local day it is shown (``until``) and
+    whether the account said it switched (``applied``). The top-level
+    ``patch`` then also has ``models``, every rename merged: replace the
+    old name with the new one where settings.json names a model (its
+    ``model`` setting and the ``env`` variables with ``MODEL`` in their
+    name), only where the value is exactly the old name, before setting
+    the variables.
 
     Read-only: reporting a notice as fixed is ``POST /v1/notices/resolved``.
     Answers once the daily limit is spent. Plain ``def``.
@@ -648,9 +661,27 @@ def client_notices(user: User = Depends(get_current_user_unmetered)):
         "window_days": client_rules.WINDOW_DAYS,
         "notices": notices,
     }
+    renames: dict[str, str] = {}
+    changes = []
+    for change in found["model_changes"]:
+        entry = {"id": change["ref"], "title": change["title"]}
+        if change["message"]:
+            entry["message"] = change["message"]
+        entry["models"] = change["renames"]
+        entry["until"] = model_changes.local_day(change["until"])
+        entry["applied"] = change["applied"]
+        changes.append(entry)
+        renames.update(change["renames"])
+    body["model_changes"] = changes
     combined = found["combined"]
-    if combined:
-        body["patch"] = {**_patch(combined["env"]), "covers": combined["covered"], "manual": combined["manual"]}
+    if combined or renames:
+        body["patch"] = {
+            **_patch(combined["env"] if combined else {}),
+            "covers": combined["covered"] if combined else [],
+            "manual": combined["manual"] if combined else [],
+        }
+        if renames:
+            body["patch"]["models"] = renames
     return body
 
 

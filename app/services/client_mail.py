@@ -14,8 +14,14 @@ has open, sent paced, with every attempt in the mail log.
 - **The mail log** (``client_mail_log``): ``record_mail`` writes every
   attempt, test mail and the weekly reports' included; it never raises.
 
+- **Model changes** (``model_changes.py``): the mail about a model that is
+  being replaced (``render_model_changes``) goes out through the same
+  ``send_due``, in what is left of the batch after the notices, so the two
+  together never exceed the pace.
+
 What a violation is, whether it still counts and which patch an account gets
-are ``client_rules``'; this module only reads them.
+are ``client_rules``'; who a model change is for and who is waiting for its
+mail are ``model_changes``'. This module only reads them.
 """
 
 from __future__ import annotations
@@ -39,7 +45,7 @@ from app.models.schema import (
     service_account_clause,
     service_account_names,
 )
-from app.services import mailer
+from app.services import mailer, model_changes
 from app.services.client_patch import env_snippet
 from app.services.client_rules import (
     audience_flags,
@@ -152,17 +158,7 @@ def render_digest(
         done = "them" if count > 1 else "it"
         parts.append(f'<p><a href="{link}">Open your dashboard</a> to see {notice} and mark {done} as done.</p>')
     references = ", ".join(html.escape(rule.id) for rule in rule_list)
-    # The sender is a system mailbox nobody reads: say so, and say where
-    # help is when the admin has set a support link.
-    help_line = ""
-    support = _support_url(public_url)
-    if support:
-        help_line = f' For help, use <a href="{html.escape(support, quote=True)}">the support page</a>.'
-    parts.append(
-        '<p style="color:#888;font-size:12px;border-top:1px solid #e3e6ea;padding-top:10px;margin-top:18px">'
-        f"This is an automated message from {html.escape(APP_TITLE)}, sent because of requests from your account. "
-        f"Please do not reply to it: replies are not read.{help_line} Reference: {references}.</p></div>"
-    )
+    parts.append(_footer(public_url, "sent because of requests from your account", references))
     return subject, "".join(parts)
 
 
@@ -179,6 +175,84 @@ def _support_url(public_url: str) -> str:
     if url.startswith("/") and not url.startswith("//") and public_url:
         return public_url + url
     return ""
+
+
+def _footer(public_url: str, why: str, references: str) -> str:
+    """The closing lines of every mail to an account: the sender is a system
+    mailbox nobody reads, so say so, and say where help is when the admin
+    has set a support link."""
+    help_line = ""
+    support = _support_url(public_url)
+    if support:
+        help_line = f' For help, use <a href="{html.escape(support, quote=True)}">the support page</a>.'
+    return (
+        '<p style="color:#888;font-size:12px;border-top:1px solid #e3e6ea;padding-top:10px;margin-top:18px">'
+        f"This is an automated message from {html.escape(APP_TITLE)}, {why}. "
+        f"Please do not reply to it: replies are not read.{help_line} Reference: {references}.</p></div>"
+    )
+
+
+def render_model_changes(
+    username: str, changes: list[Any], renames: dict[str, str],
+) -> tuple[str, str]:
+    """``(subject, html)`` of the mail to one account about the model
+    changes in ``changes`` (each needs ``id``, ``title``, ``message``,
+    ``email_subject``, ``show_until``), with ``renames`` as what this
+    account replaces (``model_changes.account_renames``). With
+    ``PUBLIC_BASE_URL`` set it links straight to the account's one patch
+    download. Everything an admin wrote is escaped."""
+    public_url = mailer.settings()["public_url"]
+    count = len(changes)
+    if count == 1:
+        subject = (changes[0].email_subject or f"[{APP_TITLE}] {changes[0].title}").strip()
+    else:
+        subject = f"[{APP_TITLE}] {count} model changes: please update your Claude Code setup"
+    parts = [
+        '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222;line-height:1.6">',
+        f"<p>Hi {html.escape(username)},</p>",
+    ]
+    for number, change in enumerate(changes, 1):
+        heading = f"{number}. {change.title}" if count > 1 else change.title
+        parts.append(f'<p style="font-size:16px;font-weight:600;margin-bottom:4px">{html.escape(heading)}</p>')
+        if change.message:
+            parts.append("<p>" + html.escape(change.message).replace("\n", "<br>") + "</p>")
+    rows = "".join(
+        '<tr><td style="padding:4px 14px 4px 0;font-family:Consolas,monospace">' + html.escape(old) + "</td>"
+        '<td style="padding:4px 14px 4px 0;color:#888">&rarr;</td>'
+        '<td style="padding:4px 0;font-family:Consolas,monospace;font-weight:600">' + html.escape(new) + "</td></tr>"
+        for old, new in renames.items()
+    )
+    parts.append(
+        '<p style="font-size:16px;font-weight:600;margin-bottom:4px">What to change</p>'
+        "<p>Wherever your Claude Code setup names a model on the left, name the one on the right instead:</p>"
+        f'<table style="border-collapse:collapse;font-size:13px;margin-bottom:8px">{rows}</table>'
+    )
+    if public_url:
+        base = html.escape(f"{public_url}/dashboard/client-rules/all/patch", quote=True)
+        parts.append(
+            '<p style="font-size:16px;font-weight:600;margin-bottom:4px">The quickest way: one script</p>'
+            "<p>Download it, run it on each machine you use Claude Code on and restart Claude Code: "
+            f'<a href="{base}.bat">Windows (.bat)</a> &middot; <a href="{base}.sh">Linux (.sh)</a>. '
+            "It only replaces these names where <code>~/.claude/settings.json</code> has them "
+            "(the <code>model</code> setting and the model variables in <code>env</code>), leaves a model you chose "
+            "yourself alone and keeps a backup. You may be asked to sign in first.</p>"
+        )
+    parts.append(
+        "<p>By hand: open <code>~/.claude/settings.json</code> and replace the name in <code>model</code> and in "
+        "the <code>env</code> variables that hold a model (<code>ANTHROPIC_MODEL</code>, "
+        "<code>ANTHROPIC_SMALL_FAST_MODEL</code>, ...). A project's own <code>.claude/settings.json</code> and "
+        "other tools that name the model need the same change; no script reaches those.</p>"
+    )
+    until = max(change.show_until for change in changes)
+    if public_url:
+        link = html.escape(f"{public_url}/dashboard", quote=True)
+        parts.append(
+            f'<p><a href="{link}">Your dashboard</a> shows this notice and the script until '
+            f"{html.escape(model_changes.local_day(until))}.</p>"
+        )
+    references = ", ".join(html.escape(model_changes.ref(change.id)) for change in changes)
+    parts.append(_footer(public_url, "sent to the accounts this model change is for", references))
+    return subject, "".join(parts)
 
 
 def render_mail(rule: Any, username: str, env: dict[str, str | None]) -> tuple[str, str]:
@@ -357,6 +431,61 @@ def _send_digests(
     return sent, failed
 
 
+def _send_model_changes(
+    session: Session, usernames: list[str], now: datetime | None = None, pause_s: float = 0.0,
+    pause_first: bool = False,
+) -> tuple[int, int]:
+    """Mail each account once about every model change it is waiting for a
+    mail about (``model_changes.mail_items``), ``pause_s`` apart, stamp the
+    outcome on each state the mail covered and write it to the mail log.
+    ``pause_first``: mail went out just before this call, so the first one
+    here waits too. Returns (sent, failed) in accounts."""
+    usernames = list(dict.fromkeys(usernames))
+    if not usernames:
+        return 0, 0
+    by_account = model_changes.mail_items(session, now, MAIL_RETRY_S, usernames)
+    users = {
+        u.username: u
+        for u in session.exec(select(User).where(User.username.in_(list(by_account)))).all()  # type: ignore[attr-defined]
+    }
+    jobs = []
+    for username in usernames:
+        items = by_account.get(username)
+        user = users.get(username)
+        if not items or user is None:
+            continue
+        changes = [change for change, _ in items]
+        renames = model_changes.account_renames(user, changes)
+        if not renames:      # its access changed since it was queued: the change is no longer for it
+            continue
+        subject, body = render_model_changes(username, changes, renames)
+        # Read now: the commit below expires these rows, and the claim must
+        # compare with the attempt as it was when this mail was prepared.
+        jobs.append((
+            username, [state.id for _, state in items], items[0][1].mail_attempted_at, subject, body,
+            [model_changes.ref(c.id) for c in changes],
+        ))
+    session.commit()                # nothing is held open while mail is being sent
+    sent = failed = 0
+    for position, (username, state_ids, attempted_before, subject, body, refs) in enumerate(jobs):
+        stamp = now if now is not None else utcnow()
+        if not model_changes.claim_mail(session, state_ids[0], attempted_before, stamp):
+            continue
+        if (position or pause_first) and pause_s > 0:
+            time.sleep(pause_s)
+        address = mailer.address_for(username)
+        ok, error = mailer.send(address, subject, body)
+        stamp = now if now is not None else utcnow()
+        model_changes.stamp_mail(session, state_ids, stamp, ok, error)
+        sent += ok
+        failed += not ok
+        record_mail(
+            session, username=username, address=address, subject=subject, rule_ids=refs,
+            kind="model_change", ok=ok, error=error, now=stamp,
+        )
+    return sent, failed
+
+
 def _auto_due(violation: ClientViolation, repeat_days: int, now: datetime) -> bool:
     if violation.mail_attempted_at is None:
         return True
@@ -524,12 +653,20 @@ def due_accounts(session: Session, now: datetime | None = None) -> list[str]:
 
 def send_due(session: Session, now: datetime | None = None) -> dict[str, int]:
     """Send one batch: the first ``mail_pace()["batch"]`` accounts that are
-    waiting, a pause apart. ``waiting`` is what is left for the next run."""
+    waiting, a pause apart: those due a mail about their notices first, then,
+    in what is left of the batch, those waiting for a mail about a model
+    change. ``waiting`` is what is left for the next run."""
     pace = mail_pace()
     due = due_list(session, now)
     batch = due[:pace["batch"]]
     sent, failed = _send_digests(session, [username for username, _ in batch], now, pace["pause_s"], dict(batch))
-    return {"sent": sent, "failed": failed, "waiting": len(due) - len(batch)}
+    changes_due = model_changes.due_mail(session, now, MAIL_RETRY_S)
+    changes_batch = changes_due[:pace["batch"] - len(batch)]
+    more_sent, more_failed = _send_model_changes(session, changes_batch, now, pace["pause_s"], pause_first=bool(batch))
+    return {
+        "sent": sent + more_sent, "failed": failed + more_failed,
+        "waiting": len(due) - len(batch) + len(changes_due) - len(changes_batch),
+    }
 
 
 def send_batch(bind=None) -> dict[str, int]:

@@ -740,7 +740,7 @@ class TestBaseline:
             import base64
             import re
             text = client.get(url, headers=headers).text
-            env = json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))
+            env = json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))["env"]
             assert env == {"CLAUDE_CODE_AUTO_MODE_SERVER": "0", self.DISCOVERY: "1"}, url
         client_mail.run_auto_mail(db_session)
         assert self.DISCOVERY in mail_on[0][2]
@@ -784,7 +784,7 @@ class TestDashboard:
             import base64
             import re
             text = client.get(url, headers=headers).text
-            return json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))
+            return json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))["env"]
 
         for azure, aws, model in ((False, False, "local-m"), (True, False, "azure-m"), (False, True, "claude-m"), (True, True, "claude-m")):
             test_user.can_use_azure, test_user.can_use_bedrock = azure, aws
@@ -1471,7 +1471,7 @@ class TestEverythingAtOnce:
         import base64
         import re
         text = client.get(f"/dashboard/client-rules/all/patch.{fmt}", headers=web_auth_header(sub=user.username)).text
-        return json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))
+        return json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))["env"]
 
     def test_two_notices_offer_one_patch_for_both(self, client, db_session, test_user):
         self._two(db_session)
@@ -2115,7 +2115,7 @@ class TestKeyPatch:
     def _env(text: str) -> dict:
         import base64
         import re
-        return json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))
+        return json.loads(base64.b64decode(re.search(r"Buffer\.from\('([^']+)'", text).group(1)))["env"]
 
     def test_it_sets_the_accounts_own_key_and_nothing_else(self, client, db_session, test_user, admin_user):
         assert client_patch.API_KEY_ENV == "ANTHROPIC_AUTH_TOKEN"

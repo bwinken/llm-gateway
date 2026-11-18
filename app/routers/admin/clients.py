@@ -1,25 +1,30 @@
 """
 Admin *Clients* tab: client rules (settings, mail, mail log, patch preview),
+model changes (a model that is being replaced: notice, renames, mail),
 client setup (``client_settings.json``) and client installs (what setup tools
 reported, ``client_events``).
 """
 
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 from fastapi import BackgroundTasks, Depends, Form, HTTPException, Query, Request, Security
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlmodel import Session
 
+from app.core import config
 from app.core.auth import get_web_user
 from app.core.config import get_client_monthly_mail, set_client_monthly_mail
 from app.core.database import get_session
 from app.core.logger import logger
+from app.core.timeutil import local_today
 from app.models.schema import User
 from app.routers.admin.common import _local_label, _wants_json, router
 from app.services import (
     audit, client_checks, client_events, client_mail, client_patch, client_rules, client_settings, mailer,
+    model_changes,
 )
 
 
@@ -482,6 +487,246 @@ def preview_client_rule_patch(
     filename = f"claude-code-patch-{rule.id}-{audience}.{fmt}"
     return Response(
         content=client_patch.render_patch(fmt, f"{rule.id} {rule.name}", env, filename).encode("utf-8"),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ── Model changes (app/services/model_changes.py): a model that is being replaced ──
+
+_AUDIENCE_LABELS = {"local": "local-only", "azure": "Azure", "aws": "AWS"}
+
+
+def _model_change_view(session: Session, change, shown: bool) -> dict:
+    known = (
+        set(config.get_model_routing_snapshot()) | set(config.get_azure_models_snapshot())
+        | set(config.get_bedrock_models_snapshot())
+    )
+    boxes = {name: client_patch.load_renames(getattr(change, name)) for name in ("renames", "renames_azure", "renames_aws")}
+    view = {
+        "id": change.id, "ref": model_changes.ref(change.id), "title": change.title, "message": change.message,
+        **{name: client_patch.rename_lines(renames) for name, renames in boxes.items()},
+        "email_subject": change.email_subject,
+        "until": model_changes.local_day(change.show_until),
+        "audience": model_changes.audience_label(change),
+        # What each kind of account replaces, as saved.
+        "preview": [
+            {"audience": name, "label": label, "renames": model_changes.preview_renames(change, name)}
+            for name, label in _AUDIENCE_LABELS.items()
+        ],
+        # Old names the gateway no longer has: already removed, or a typo.
+        "gone": sorted({old for renames in boxes.values() for old in renames} - known),
+        "created_by": change.created_by, "updated_by": change.updated_by,
+        "created": _local_label(change.created_at),
+    }
+    if shown:
+        view.update(model_changes.counts(session, change))
+    return view
+
+
+def _model_changes_view(session: Session, admin_user: User) -> dict:
+    """The *Model changes* card: the changes being shown, with who each is
+    for and how far it got, and the ones that ended."""
+    found = model_changes.overview(session)
+    today = local_today()
+    return {
+        "showing": [_model_change_view(session, change, True) for change in found["showing"]],
+        "ended": [_model_change_view(session, change, False) for change in found["ended"]],
+        "mail": mailer.status(),
+        "mail_pace": client_mail.mail_pace(),
+        "my_address": mailer.address_for(admin_user.username),
+        "today": today.isoformat(),
+        "default_until": (today + timedelta(days=model_changes.DEFAULT_DAYS)).isoformat(),
+        "max_until": (today + timedelta(days=model_changes.MAX_DAYS)).isoformat(),
+    }
+
+
+def _model_change_form(
+    title: str = Form(""),
+    message: str = Form(""),
+    renames: str = Form(""),
+    renames_azure: str = Form(""),
+    renames_aws: str = Form(""),
+    email_subject: str = Form(""),
+    show_until: str = Form(""),
+) -> dict:
+    return {
+        "title": title, "message": message, "renames": renames, "renames_azure": renames_azure,
+        "renames_aws": renames_aws, "email_subject": email_subject, "show_until": show_until,
+    }
+
+
+def _model_change_or_404(session: Session, change_id: int):
+    change = model_changes.get(session, change_id)
+    if change is None:
+        raise HTTPException(status_code=404, detail="No such model change.")
+    return change
+
+
+@router.post("/model-changes")
+def create_model_change(
+    request: Request,
+    form: dict = Depends(_model_change_form),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Announce a model change: from now until the end of *Show until*
+    (Asia/Taipei) every account it has renames for sees it on its dashboard,
+    with the script that replaces the model names. Nobody is mailed by this
+    call: that is the change's own mail button."""
+    try:
+        change = model_changes.save(session, model_changes.clean_fields(form), by=admin_user.username)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Model change created | id={} audience={} until={} admin={}",
+        model_changes.ref(change.id), model_changes.audience_label(change), change.show_until, admin_user.username,
+    )
+    audit.note(model_change=model_changes.ref(change.id))
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "id": change.id, "ref": model_changes.ref(change.id)})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/model-changes/{change_id}")
+def save_model_change(
+    change_id: int,
+    request: Request,
+    form: dict = Depends(_model_change_form),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Save a change that is being shown: its wording, its renames and until
+    when it is shown. Dashboards and the script follow at once; mail already
+    sent is not sent again."""
+    change = _model_change_or_404(session, change_id)
+    if not model_changes.is_showing(change):
+        raise HTTPException(status_code=400, detail="This model change has ended. Create a new one instead.")
+    try:
+        change = model_changes.save(session, model_changes.clean_fields(form), by=admin_user.username, change=change)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Model change saved | id={} audience={} until={} admin={}",
+        model_changes.ref(change.id), model_changes.audience_label(change), change.show_until, admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "id": change.id, "ref": model_changes.ref(change.id)})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/model-changes/{change_id}/end")
+def end_model_change(
+    change_id: int,
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Stop showing a change now: it leaves every dashboard and the script,
+    and whoever is still waiting for its mail is not mailed."""
+    change = model_changes.end(session, _model_change_or_404(session, change_id), by=admin_user.username)
+    logger.info("Model change ended | id={} admin={}", model_changes.ref(change.id), admin_user.username)
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "id": change.id})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/model-changes/{change_id}/mail")
+def send_model_change_mail(
+    change_id: int,
+    request: Request,
+    background: BackgroundTasks,
+    only_unmailed: str = Form("on"),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Queue a mail to the accounts a change is for that have not said they
+    switched: those never mailed about it (default) or all of them. Paced
+    like every other mail: the first batch goes out after this reply, the
+    mail job sends the rest (``client_mail.mail_pace``)."""
+    change = _model_change_or_404(session, change_id)
+    if not model_changes.is_showing(change):
+        raise HTTPException(status_code=400, detail="This model change has ended: nobody is mailed about it.")
+    if not mailer.is_enabled():
+        raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
+    unmailed_only = only_unmailed == "on"
+    queued = model_changes.request_mail(session, change, unmailed_only)
+    if queued:
+        background.add_task(client_mail.send_batch)
+    pace = client_mail.mail_pace()
+    logger.info(
+        "Model change mail queued | id={} accounts={} only_unmailed={} admin={}",
+        model_changes.ref(change.id), queued, unmailed_only, admin_user.username,
+    )
+    audit.note(mail_queued=queued)
+    if _wants_json(request):
+        return JSONResponse({
+            "ok": True, "queued": queued, "batch": pace["batch"],
+            "interval_minutes": round(pace["interval_s"] / 60, 1),
+        })
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/model-changes/{change_id}/mail-test")
+def test_model_change_mail(
+    change_id: int,
+    form: dict = Depends(_model_change_form),
+    to: str = Form(""),
+    audience: str = Form("local"),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Send the mail of a change as its form stands (saved or not) to one
+    address of the company domain, the admin's own by default. ``audience``
+    picks whose renames the mail shows (a local-only, an Azure or an AWS
+    account)."""
+    change = _model_change_or_404(session, change_id)
+    if not mailer.is_enabled():
+        raise HTTPException(status_code=400, detail="Mail is not configured (see .env).")
+    to = to.strip() or mailer.address_for(admin_user.username)
+    if not mailer.in_company_domain(to):
+        raise HTTPException(status_code=400, detail=f"Test mail goes to @{mailer.settings()['domain']} addresses only.")
+    try:
+        draft = SimpleNamespace(id=change.id, **model_changes.clean_fields(form))
+        renames = model_changes.preview_renames(draft, audience.strip().lower() or "local")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not renames:
+        raise HTTPException(status_code=400, detail="This change replaces nothing for that kind of account, so it gets no mail.")
+    subject, body = client_mail.render_model_changes(to.partition("@")[0], [draft], renames)
+    subject = "[TEST] " + subject
+    ok, error = mailer.send(to, subject, body)
+    client_mail.record_mail(
+        session, address=to, subject=subject, rule_ids=[model_changes.ref(change.id)], kind="test", ok=ok,
+        error=error, actor=admin_user.username,
+    )
+    audit.note(mail_test_to=to, mail_test_ok=ok)
+    return JSONResponse({"ok": ok, "to": to, "detail": error})
+
+
+@router.get("/model-changes/{change_id}/patch.{fmt}")
+def preview_model_change_patch(
+    change_id: int,
+    fmt: str,
+    audience: str = Query("local"),
+    session: Session = Depends(get_session),
+):
+    """The script one kind of account downloads for a change alone
+    (``audience``: ``local``, ``azure`` or ``aws``; ``fmt``: ``bat`` or
+    ``sh``), for the admin to check."""
+    change = _model_change_or_404(session, change_id)
+    if fmt not in client_patch.PATCH_FORMATS:
+        raise HTTPException(status_code=404, detail="No such patch format.")
+    try:
+        renames = model_changes.preview_renames(change, audience)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not renames:
+        raise HTTPException(status_code=404, detail="This change replaces nothing for that audience.")
+    filename = f"claude-code-patch-{model_changes.ref(change.id)}-{audience}.{fmt}"
+    name = f"{model_changes.ref(change.id)} {change.title}"
+    return Response(
+        content=client_patch.render_patch(fmt, name, {}, filename, renames).encode("utf-8"),
         media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

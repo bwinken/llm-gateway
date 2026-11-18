@@ -40,6 +40,7 @@
             Windows: double-click the file. Linux: <code class="font-mono">sh claude-code-patch.sh</code>.
             It sets only the variables shown here in <code class="font-mono">~/.claude/settings.json</code>, leaves the rest of
             the file alone and saves a backup as settings.json.bak. Restart Claude Code afterwards.
+            {% if client_renames %}<span data-client-renames>It also replaces the model names listed under Model change below.</span>{% endif %}
         </div>
         {% if fix.manual %}
         <div class="text-t3 text-xs mt-1.5" data-client-manual>

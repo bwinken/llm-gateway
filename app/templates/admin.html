@@ -1009,6 +1009,150 @@ function submitExportCsv() {
     {% endif %}
 </div>
 
+{# ── Model changes: a model that is being replaced (app/services/model_changes.py) ── #}
+{% macro mc_fields(c, mc) %}
+                <div class="max-w-3xl">
+                    <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Title</label>
+                    <input type="text" name="title" required maxlength="200" value="{{ c.title if c else '' }}" placeholder="qwen-coder is being replaced by qwen-coder-2" class="gw-input w-full text-sm py-1.5 px-2">
+                    <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mt-3 mb-1.5">Message</label>
+                    <textarea name="message" rows="3" maxlength="4000" placeholder="When the old model is switched off, and anything else people should know." class="gw-input w-full text-sm py-1.5 px-2">{{ c.message if c else '' }}</textarea>
+                </div>
+                <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mt-4 mb-2 gw-tip gw-tip-wide"
+                     data-tip="One old-model -> new-model per line. The script the user downloads replaces the old name with the new one wherever ~/.claude/settings.json has it: the model setting and the env variables that hold a model (a name with a suffix such as old[1m] keeps its suffix). It adds nothing, so a user who chose another model keeps it. Every account gets the first box. An account with Azure access also gets the second on top, one with AWS access the third on top of that (AWS wins where both replace the same model). An account that gets no line at all is not shown the change and not mailed: fill only the Azure box for a change that is for Azure accounts.">Models to replace <span class="normal-case tracking-normal font-normal text-t4">old-model -&gt; new-model per line · who gets a line sees the change</span></div>
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-x-4 gap-y-3">
+                    <div>
+                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Everyone <span class="normal-case tracking-normal font-normal">(local-only accounts get just this)</span></label>
+                        <textarea name="renames" rows="3" spellcheck="false" placeholder="old-model -> new-model" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ c.renames if c else '' }}</textarea>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">Azure accounts <span class="normal-case tracking-normal font-normal">(on top)</span></label>
+                        <textarea name="renames_azure" rows="3" spellcheck="false" placeholder="old-model -> new-model" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ c.renames_azure if c else '' }}</textarea>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5">AWS accounts <span class="normal-case tracking-normal font-normal">(on top, wins over Azure)</span></label>
+                        <textarea name="renames_aws" rows="3" spellcheck="false" placeholder="old-model -> new-model" class="gw-input w-full text-xs font-mono py-1.5 px-2">{{ c.renames_aws if c else '' }}</textarea>
+                    </div>
+                </div>
+                <div class="flex flex-wrap items-end gap-4 mt-4">
+                    <div>
+                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide"
+                               data-tip="The last day (Asia/Taipei) the change is on dashboards and in the script. It stays there the whole time, also for an account that pressed 'I've switched' (folded, so the script is still at hand for a second machine).">Show until</label>
+                        <input type="date" name="show_until" required min="{{ mc.today }}" max="{{ mc.max_until }}" value="{{ c.until if c else mc.default_until }}" class="gw-input text-sm font-mono py-1.5 px-2">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip" data-tip="Empty: the gateway's name and the title.">Mail subject</label>
+                        <input type="text" name="email_subject" maxlength="200" value="{{ c.email_subject if c else '' }}" placeholder="default" class="gw-input w-72 text-sm py-1.5 px-2">
+                    </div>
+                </div>
+{% endmacro %}
+<div id="model-changes" class="gw-card p-5 mb-6" style="border-left:3px solid #a78bfa">
+    <div class="mb-4 max-w-3xl">
+        <h2 class="text-sm font-bold text-t2 mb-1">Model changes</h2>
+        <p class="text-xs text-t4">
+            Tell people that a model is being replaced, before you remove it. Until the day you pick, every account the change is for sees it on its dashboard
+            with a script that replaces the old model name with the new one in its Claude Code settings, and you can mail those accounts.
+            A change can be for everyone or for one tier: an account only sees it when one of the boxes below gives it a line.
+        </p>
+    </div>
+    {% if model_changes is none %}
+    <p class="text-xs text-ar">Model changes could not be loaded (has <span class="font-mono">alembic upgrade head</span> been run?).</p>
+    {% else %}
+    {% set mc = model_changes %}
+    <div class="text-[11px] font-bold text-t3 uppercase tracking-wider mb-2">Being shown <span class="text-t4 font-mono">{{ mc.showing | length }}</span></div>
+    {% for c in mc.showing %}
+    <details id="model-change-{{ c.id }}" class="mb-2 rounded" style="border:1px solid rgba(255,255,255,0.06)">
+        <summary class="cursor-pointer select-none px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span class="font-mono text-xs px-1.5 py-0.5 rounded" style="background:rgba(255,255,255,0.05);color:#a78bfa">{{ c.ref }}</span>
+            <span class="text-sm font-semibold text-t1">{{ c.title }}</span>
+            <span class="text-xs text-t4">for {{ c.audience }} · until <span class="font-mono">{{ c.until }}</span></span>
+            {% if c.gone %}<span class="gw-badge gw-tip gw-tip-wide" style="background:rgba(245,166,35,0.14);color:#f5a623" data-tip="Not a model the gateway has any more: already removed, or a typo. The script still replaces the name.">{{ c.gone | join(', ') }} not configured</span>{% endif %}
+            <span class="ml-auto text-xs font-mono">{{ c.accounts }} account{{ '' if c.accounts == 1 else 's' }} <span class="text-t4">· {{ c.applied }} switched · {{ c.mailed }} mailed{% if c.queued %}</span> <span style="color:#f5a623">· {{ c.queued }} waiting for mail</span><span class="text-t4">{% endif %}</span></span>
+        </summary>
+        <div class="px-3 pb-3 pt-1">
+            <p class="text-xs text-t4 max-w-3xl mb-3">
+                Created {{ c.created }} by {{ c.created_by or 'an admin' }}{% if c.updated_by and c.updated_by != c.created_by %}, last saved by {{ c.updated_by }}{% endif %}.
+                {% if c.failed %}<span class="text-ar">{{ c.failed }} mail{{ '' if c.failed == 1 else 's' }} failed and will be tried again: see the mail log above.</span>{% endif %}
+            </p>
+            <form action="/admin/model-changes/{{ c.id }}" method="POST" data-mc-form="save" data-ref="{{ c.ref }}">
+                {{ mc_fields(c, mc) }}
+                <div class="mt-4 flex flex-wrap items-center gap-2">
+                    <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
+                    <span class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="What each kind of account downloads for this change alone, as saved: .bat for Windows, .sh for Linux. A link is a 404 when that audience gets no line.">Scripts:
+                        {% for p in c.preview %}{{ p.label }}
+                        {% if p.renames %}<a href="/admin/model-changes/{{ c.id }}/patch.bat?audience={{ p.audience }}" class="text-ab hover:underline">.bat</a>
+                        <a href="/admin/model-changes/{{ c.id }}/patch.sh?audience={{ p.audience }}" class="text-ab hover:underline">.sh</a>{% else %}<span class="text-t4">none</span>{% endif %}{{ ' · ' if not loop.last }}{% endfor %}</span>
+                    <span class="ml-auto flex flex-wrap items-center gap-2 gw-tip gw-tip-wide"
+                          data-tip="Mails this change as the form stands now, saved or not, to the address in the box: yours by default, any address of the company domain. 'As' picks whose renames the mail shows.">
+                        <label class="text-xs text-t4">Test mail to</label>
+                        <input type="text" name="to" value="{{ mc.my_address }}" aria-label="Test mail address" class="gw-input w-56 text-xs font-mono py-1.5 px-2" {{ 'disabled' if not mc.mail.enabled }}>
+                        <label class="text-xs text-t4">as</label>
+                        <select name="audience" aria-label="Test mail audience" class="gw-input text-xs py-1.5 px-2" {{ 'disabled' if not mc.mail.enabled }}>
+                            <option value="local">local-only account</option><option value="azure">Azure account</option><option value="aws">AWS account</option>
+                        </select>
+                        <button type="button" data-mc-test class="gw-btn gw-btn-ghost text-sm px-3 py-2" {{ 'disabled' if not mc.mail.enabled }}>Send test mail</button>
+                        <span data-mc-test-result class="text-xs font-mono text-t4"></span>
+                    </span>
+                </div>
+            </form>
+            <div class="mt-3 pt-3 flex flex-wrap items-center gap-2" style="border-top:1px solid rgba(255,255,255,0.05)">
+                {% set unmailed = c.accounts - c.mailed if c.accounts > c.mailed else 0 %}
+                <form action="/admin/model-changes/{{ c.id }}/mail" method="POST" data-mc-form="mail" data-ref="{{ c.ref }}" data-who="every account it is for that was not mailed about it yet" class="inline">
+                    <input type="hidden" name="only_unmailed" value="on">
+                    <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-2" {{ 'disabled' if not mc.mail.enabled }}>Mail those not mailed yet</button>
+                </form>
+                <form action="/admin/model-changes/{{ c.id }}/mail" method="POST" data-mc-form="mail" data-ref="{{ c.ref }}" data-who="every account it is for, again" class="inline">
+                    <input type="hidden" name="only_unmailed" value="off">
+                    <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-2" {{ 'disabled' if not mc.mail.enabled }}>Mail everyone again</button>
+                </form>
+                <span class="text-xs text-t4">{% if mc.mail.enabled %}Accounts that pressed “I've switched” are never mailed. Sent in batches: at most {{ mc.mail_pace.batch }} every {{ '%g' | format(mc.mail_pace.interval_s / 60) }} min.{% else %}Mail is off (see Client rules above).{% endif %}</span>
+                <form action="/admin/model-changes/{{ c.id }}/end" method="POST" data-mc-form="end" data-ref="{{ c.ref }}" class="inline ml-auto">
+                    <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-2">Stop showing now</button>
+                </form>
+            </div>
+        </div>
+    </details>
+    {% else %}
+    <p class="text-xs text-t4 mb-2">No model change is being shown.</p>
+    {% endfor %}
+
+    <details id="model-change-new" class="mt-3 rounded" style="border:1px solid rgba(255,255,255,0.06)">
+        <summary class="cursor-pointer select-none px-3 py-2 text-sm font-semibold text-ab">Announce a model change</summary>
+        <div class="px-3 pb-3 pt-1">
+            <form action="/admin/model-changes" method="POST" data-mc-form="create">
+                {{ mc_fields(none, mc) }}
+                <div class="mt-4 flex flex-wrap items-center gap-3">
+                    <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Show it on dashboards</button>
+                    <span class="text-xs text-t4">Nobody is mailed until you press a mail button on the change.</span>
+                </div>
+            </form>
+        </div>
+    </details>
+
+    {% if mc.ended %}
+    <details id="model-changes-ended" class="mt-4 pt-3" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <summary class="cursor-pointer select-none text-xs text-t3">Ended <span class="text-t4 font-mono">{{ mc.ended | length }}</span></summary>
+        <div class="overflow-x-auto mt-2">
+        <table class="gw-table">
+            <thead><tr><th>Id</th><th>Title</th><th>For</th><th>Replaced</th><th>Shown until</th><th>By</th></tr></thead>
+            <tbody>
+                {% for c in mc.ended %}
+                <tr>
+                    <td class="font-mono text-xs text-t3">{{ c.ref }}</td>
+                    <td class="text-sm text-t2">{{ c.title }}</td>
+                    <td class="text-xs text-t3">{{ c.audience }}</td>
+                    <td class="font-mono text-xs text-t3">{% for box in (c.renames, c.renames_azure, c.renames_aws) %}{% if box %}<div class="whitespace-pre-line">{{ box }}</div>{% endif %}{% endfor %}</td>
+                    <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ c.until }}</td>
+                    <td class="text-xs text-t3">{{ c.created_by }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </details>
+    {% endif %}
+    {% endif %}
+</div>
+
 {# ── Client setup: the fields GET /v1/settings offers a terminal tool (app/services/client_settings.py) ── #}
 {% set cs = client_setup %}
 <div id="client-setup" class="gw-card p-5 mb-6" style="border-left:3px solid #4da3ff">
@@ -2555,6 +2699,53 @@ function submitExportCsv() {
                         if (btn) btn.disabled = false;
                     });
             });
+        });
+    })();
+
+    /* ── Model changes: forms post as JSON, then the page reloads; the test
+       mail button posts the change's form as it stands (saved or not). ── */
+    (function() {
+        var card = document.getElementById('model-changes');
+        if (!card) return;
+        card.addEventListener('submit', function(e) {
+            var form = e.target, kind = form.dataset.mcForm, ref = form.dataset.ref;
+            if (!kind) return;
+            e.preventDefault();
+            var ask = null;
+            if (kind === 'mail') {
+                ask = { text: 'Mail ' + ref + ' to ' + form.dataset.who + '? Accounts that said they switched are left out.', okLabel: 'Mail them' };
+            } else if (kind === 'end') {
+                ask = { text: 'Stop showing ' + ref + ' now? It leaves every dashboard and the script, and nobody else is mailed about it.', okLabel: 'Stop showing', danger: true };
+            }
+            (ask ? gwConfirm(ask.text, ask) : Promise.resolve(true)).then(function(ok) {
+                if (!ok) return;
+                var btn = form.querySelector('button[type="submit"]');
+                if (btn) btn.disabled = true;
+                gwPost(form.action, new FormData(form))
+                    .then(function(data) {
+                        if (kind !== 'mail') { saveAdminScroll(); window.location.reload(); return; }
+                        gwToast(data.queued
+                            ? data.queued + ' account' + (data.queued === 1 ? '' : 's') + ' queued: ' + data.batch + ' mails every ' + data.interval_minutes + ' min.'
+                            : 'Nobody to mail: everyone was mailed already or said they switched.', data.queued ? 'ok' : 'info');
+                        if (data.queued) { saveAdminScroll(); setTimeout(function() { window.location.reload(); }, 1200); }
+                        else if (btn) btn.disabled = false;
+                    })
+                    .catch(function(err) {
+                        gwToast('Model change — ' + err.message, 'error');
+                        if (btn) btn.disabled = false;
+                    });
+            });
+        });
+        card.addEventListener('click', function(e) {
+            var btn = e.target.closest ? e.target.closest('[data-mc-test]') : null;
+            if (!btn) return;
+            var form = btn.closest('form'), out = form.querySelector('[data-mc-test-result]');
+            btn.disabled = true;
+            out.textContent = 'sending…';
+            gwPost(form.getAttribute('action') + '/mail-test', new FormData(form))
+                .then(function(data) { out.textContent = data.ok ? 'sent to ' + data.to : 'failed: ' + (data.detail || 'see the log'); })
+                .catch(function(err) { out.textContent = err.message; })
+                .then(function() { btn.disabled = false; });
         });
     })();
 

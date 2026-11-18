@@ -56,6 +56,9 @@
 {# ── Client-rule notices for this account: the shared partial, also served alone ── #}
 {% include "_client_notices.html" %}
 
+{# ── Model changes shown to this account: the shared partial, also served alone ── #}
+{% include "_model_changes.html" %}
+
 {# ── First-time setup: only until the account has made its first request,
    and only where the Setup page is offered (SETUP_PAGE_ENABLED) ── #}
 {% if total_reqs == 0 and today_reqs == 0 and setup_page_enabled() %}
@@ -1057,6 +1060,30 @@ result = client.system_one(
             .catch(function(err) { btn.disabled = false; gwToast('Could not save that — ' + err.message, 'error'); });
     });
 })();
+
+/* "I've switched" on a model change: post it, then take the panel again from
+   the server (GET /dashboard/model-changes): the change stays, folded. */
+document.addEventListener('submit', function(e) {
+    var form = e.target;
+    if (!(form.hasAttribute && form.hasAttribute('data-model-change-applied'))) return;
+    e.preventDefault();
+    var btn = form.querySelector('button');
+    btn.disabled = true;
+    fetch(form.getAttribute('action'), { method: 'POST', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function() {
+            gwToast('Marked as done. The notice and its script stay here for your other machines.', 'ok');
+            return fetch('/dashboard/model-changes', { headers: { 'Accept': 'text/html' }, credentials: 'same-origin' })
+                .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+                .then(function(html) {
+                    var panel = document.getElementById('modelChanges');
+                    if (!panel) return;
+                    if (html.trim()) panel.outerHTML = html; else panel.remove();
+                })
+                .catch(function() { window.location.reload(); });
+        })
+        .catch(function(err) { btn.disabled = false; gwToast('Could not save that — ' + err.message, 'error'); });
+});
 </script>
 
 {# ── API Key Modal ── #}

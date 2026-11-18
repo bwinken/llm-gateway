@@ -423,21 +423,28 @@ def get_owned_apps(user: User) -> list[dict]:
 
 def get_client_notices(user: User) -> dict:
     """What the dashboard's notices panel shows ``user``, for
-    ``GET /v1/notices``: ``notices`` (``client_rules.notices_for``) and
+    ``GET /v1/notices``: ``notices`` (``client_rules.notices_for``),
     ``combined``, the account's one patch (``client_rules.combined_for``,
-    None when nothing is open). Like the panel it never fails the caller: a
-    broken store reads as nothing open. Short-lived session; blocking."""
-    from app.services import client_rules
+    None when nothing is open), and ``model_changes``, the dashboard's
+    model-change panel (``model_changes.for_account``). Like the panels it
+    never fails the caller: a broken store reads as nothing open.
+    Short-lived session; blocking."""
+    from app.services import client_rules, model_changes
 
+    found: dict = {"notices": [], "combined": None, "model_changes": []}
     try:
         with Session(engine) as session:
-            return {
-                "notices": client_rules.notices_for(session, user),
-                "combined": client_rules.combined_for(session, user),
-            }
+            found["notices"] = client_rules.notices_for(session, user)
+            found["combined"] = client_rules.combined_for(session, user)
     except Exception as exc:  # e.g. before `alembic upgrade`
         logger.warning("Client notices failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
-        return {"notices": [], "combined": None}
+        return {"notices": [], "combined": None, "model_changes": []}
+    try:
+        with Session(engine) as session:
+            found["model_changes"] = model_changes.for_account(session, user)
+    except Exception as exc:
+        logger.warning("Model changes failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
+    return found
 
 
 def resolve_client_notices(user: User, ids: list[str] | None) -> list[str]:
