@@ -110,7 +110,7 @@ async def lifespan(app: FastAPI):
 # (its router's, or its own in v1_api, where two groups share a router).
 OPENAPI_TAGS = [
     {"name": "account", "description": "What an account can read and report about itself, by API key: budget, "
-     "models, usage, service accounts, client notices, client settings, and what a setup tool installed. "
+     "models, usage, service accounts, client notices, model changes, client settings, and what a setup tool installed. "
      "Never billed; what a terminal tool or a desktop window is built against."},
     {"name": "v1", "description": "The unified inference API (OpenAI- and Anthropic-compatible): on-prem models, "
      "plus the Azure and AWS models the account may use. Also served without the /v1 prefix."},

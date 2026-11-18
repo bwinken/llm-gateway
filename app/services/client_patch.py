@@ -19,9 +19,10 @@ a user who chose another model keeps it. Renames are applied before the
 variables are set.
 
 This module knows no check, no account and no database. Which variables an
-account gets is ``client_rules.effective_env`` / ``combined_env``, which
-renames ``model_changes.renames_for``; the API key patch (``key_env``) is the
-one patch that is about neither.
+account gets is ``client_rules.effective_env`` / ``combined_env`` (the
+notices' patch), which renames ``model_changes.renames_for`` (the
+model-change script, a download of its own); the API key patch
+(``key_env``) is the one patch that is about neither.
 """
 
 from __future__ import annotations

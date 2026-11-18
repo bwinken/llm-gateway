@@ -437,7 +437,6 @@ def dashboard(
             legacy_app_keys=sum(1 for a in owned_apps if a.get("legacy_key")),
             client_notices=_client_notices(session, user),
             client_combined=_client_combined(session, user),
-            client_renames=_model_renames(session, user),
             model_changes=_model_changes(session, user),
             client_notice_days=client_rules.WINDOW_DAYS,
             api_key_env=client_patch.API_KEY_ENV,
@@ -551,16 +550,6 @@ def _model_changes(session: Session, user: User) -> list[dict]:
     return changes
 
 
-def _model_renames(session: Session, user: User) -> dict[str, str]:
-    """The renames in this account's one patch (never takes the page down)."""
-    try:
-        return model_changes.renames_for(session, user)
-    except Exception as exc:
-        session.rollback()
-        logger.warning("Model renames failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
-        return {}
-
-
 @router.get("/dashboard/client-notices", response_class=HTMLResponse)
 def client_notices_panel(
     request: Request,
@@ -573,10 +562,7 @@ def client_notices_panel(
     return templates.TemplateResponse(
         request,
         "_client_notices.html",
-        {
-            "client_notices": _client_notices(session, user), "client_combined": _client_combined(session, user),
-            "client_renames": _model_renames(session, user),
-        },
+        {"client_notices": _client_notices(session, user), "client_combined": _client_combined(session, user)},
     )
 
 
@@ -589,6 +575,34 @@ def model_changes_panel(
     """The dashboard's model-change panel alone (empty when no change is
     being shown to the account): the page swaps it in after *I've switched*."""
     return templates.TemplateResponse(request, "_model_changes.html", {"model_changes": _model_changes(session, user)})
+
+
+@router.get("/dashboard/model-changes/patch.{fmt}")
+def model_changes_patch(
+    fmt: str,
+    request: Request,
+    user: User = Security(get_web_user, scopes=["read"]),
+    session: Session = Depends(get_session),
+):
+    """The account's model-change script: the renames of every change it is
+    shown, for its tier (``model_changes.for_account``), as ``patch.bat``
+    (Windows) or ``patch.sh`` (Linux / macOS). One script however many
+    changes there are, and nothing but renames: the notices' patch is a
+    different download. Mail links here too, so a browser arriving after
+    the last day is sent to the dashboard instead of a 404."""
+    if fmt not in client_patch.PATCH_FORMATS:
+        raise HTTPException(status_code=404, detail="No such patch format.")
+    changes = model_changes.for_account(session, user)
+    renames: dict[str, str] = {}
+    for change in changes:
+        renames.update(change["renames"])
+    if not renames:
+        if "text/html" in (request.headers.get("accept") or "").lower():
+            return RedirectResponse(url="/dashboard", status_code=303)
+        raise HTTPException(status_code=404, detail="No model change for this account.")
+    filename = f"{model_changes.PATCH_FILE}.{fmt}"
+    name = "model change " + ", ".join(change["ref"] for change in changes)
+    return _script_response(client_patch.render_patch(fmt, name, {}, filename, renames), filename)
 
 
 @router.post("/dashboard/model-changes/{change_id}/applied")
@@ -626,28 +640,20 @@ def client_rules_patch_all(
 ):
     """The account's one patch: the patches of everything it has open
     merged (``client_rules.combined_for``; the variant for this account:
-    local-only, Azure or AWS) and the renames of every model change it is
-    shown (``model_changes.renames_for``), as ``patch.bat`` (Windows) or
-    ``patch.sh`` (Linux / macOS). There is no per-check and no per-change
-    download: one notice or five, it is the same single script. Mail links
-    here too, so a browser arriving with nothing left to apply is sent to
-    the dashboard instead of a 404."""
+    local-only, Azure or AWS), as ``patch.bat`` (Windows) or ``patch.sh``
+    (Linux / macOS). There is no per-check download: one notice or five, it
+    is the same single script. Mail links here too, so a browser arriving
+    with nothing left to apply is sent to the dashboard instead of a 404."""
     if fmt not in client_patch.PATCH_FORMATS:
         raise HTTPException(status_code=404, detail="No such patch format.")
     combined = client_rules.combined_for(session, user)
-    env = combined["env"] if combined else {}
-    changes = model_changes.for_account(session, user)
-    renames: dict[str, str] = {}
-    for change in changes:
-        renames.update(change["renames"])
-    if not env and not renames:
+    if combined is None or not combined["env"]:
         if "text/html" in (request.headers.get("accept") or "").lower():
             return RedirectResponse(url="/dashboard", status_code=303)
         raise HTTPException(status_code=404, detail="No settings patch for this account.")
     filename = f"claude-code-patch.{fmt}"
-    covers = (combined["covered"] if env else []) + [change["ref"] for change in changes]
-    name = "fixes for " + ", ".join(covers)
-    return _script_response(client_patch.render_patch(fmt, name, env, filename, renames), filename)
+    name = "fixes for " + ", ".join(combined["covered"])
+    return _script_response(client_patch.render_patch(fmt, name, combined["env"], filename), filename)
 
 
 @router.post("/dashboard/client-rules/all/resolved")

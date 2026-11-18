@@ -199,8 +199,8 @@ def render_model_changes(
     changes in ``changes`` (each needs ``id``, ``title``, ``message``,
     ``email_subject``, ``show_until``), with ``renames`` as what this
     account replaces (``model_changes.account_renames``). With
-    ``PUBLIC_BASE_URL`` set it links straight to the account's one patch
-    download. Everything an admin wrote is escaped."""
+    ``PUBLIC_BASE_URL`` set it links straight to the account's model-change
+    script. Everything an admin wrote is escaped."""
     public_url = mailer.settings()["public_url"]
     count = len(changes)
     if count == 1:
@@ -228,7 +228,7 @@ def render_model_changes(
         f'<table style="border-collapse:collapse;font-size:13px;margin-bottom:8px">{rows}</table>'
     )
     if public_url:
-        base = html.escape(f"{public_url}/dashboard/client-rules/all/patch", quote=True)
+        base = html.escape(f"{public_url}/dashboard/model-changes/patch", quote=True)
         parts.append(
             '<p style="font-size:16px;font-weight:600;margin-bottom:4px">The quickest way: one script</p>'
             "<p>Download it, run it on each machine you use Claude Code on and restart Claude Code: "

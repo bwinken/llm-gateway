@@ -4,8 +4,12 @@ is being replaced.
 An admin announces a change: a notice, the renames (old model -> new model,
 for everyone and what Azure / AWS accounts get on top) and the day until
 which it is shown. Every account the renames are for sees it on its dashboard
-until that day, with the one script that replaces the names in its Claude
-Code settings, and can be mailed about it through the paced mail job.
+until that day, with a script that replaces the names in its Claude Code
+settings, and can be mailed about it through the paced mail job.
+
+It is its own flow, apart from the client-rule notices: nothing was detected,
+so a change is not a violation. Its own panel, its own script, its own
+endpoint (``GET /v1/model-changes``).
 """
 
 from __future__ import annotations
@@ -356,7 +360,7 @@ class TestDashboard:
         assert 'id="modelChanges"' in body and f"MC{change.id}" in body
         assert "Retiring &lt;old&gt;" in body and "<old>" not in body          # what the admin wrote is escaped
         assert "old-llm" in body and f"until {_day()}" in body
-        assert "/dashboard/client-rules/all/patch.sh" in body
+        assert "/dashboard/model-changes/patch.sh" in body
 
     def test_an_account_it_is_not_for_sees_nothing(self, client, db_session):
         local = _person(db_session, "local")
@@ -365,32 +369,49 @@ class TestDashboard:
         assert 'id="modelChanges"' not in body
         assert client.get("/dashboard/model-changes", headers=web_auth_header(sub=local.username)).text.strip() == ""
 
-    def test_the_one_script_carries_the_renames(self, client, db_session, test_user):
+    def test_its_script_carries_the_renames_of_the_accounts_tier(self, client, db_session, test_user):
+        local = _person(db_session, "local")
         change = _change(db_session, renames="old-llm -> test-llm", renames_azure="azure-old -> azure-gpt-4")
         for fmt in ("bat", "sh"):
-            resp = client.get(f"/dashboard/client-rules/all/patch.{fmt}", headers=web_auth_header(sub=test_user.username))
-            assert resp.status_code == 200 and f"claude-code-patch.{fmt}" in resp.headers["content-disposition"]
+            resp = client.get(f"/dashboard/model-changes/patch.{fmt}", headers=web_auth_header(sub=test_user.username))
+            assert resp.status_code == 200 and f"claude-code-model-change.{fmt}" in resp.headers["content-disposition"]
             assert _payload(resp.text) == {"env": {}, "models": {"old-llm": "test-llm", "azure-old": "azure-gpt-4"}}
             assert f"MC{change.id}" in resp.text
+        resp = client.get("/dashboard/model-changes/patch.sh", headers=web_auth_header(sub=local.username))
+        assert _payload(resp.text)["models"] == {"old-llm": "test-llm"}          # a local-only account's own
+        assert client.get("/dashboard/model-changes/patch.exe", headers=web_auth_header(sub=local.username)).status_code == 404
 
-    def test_with_an_open_notice_it_is_still_one_script(self, client, db_session, test_user):
-        _change(db_session)
+    def test_it_is_not_a_notice_and_its_script_is_not_the_notices_patch(self, client, db_session, test_user):
+        """A model change is its own flow: nothing was detected, so it is not
+        among the violations, and neither script carries the other's work."""
+        from app.services import client_rules
+
+        change = _change(db_session)
+        headers = web_auth_header(sub=test_user.username)
+        assert client_rules.notices_for(db_session, test_user) == []
+        assert client.get("/dashboard/client-notices", headers=headers).text.strip() == ""
+        assert client.get("/dashboard/client-rules/all/patch.sh", headers=headers).status_code == 404
         db_session.add(ClientViolation(rule_id="CC001", username=test_user.username, first_seen_at=_now(), last_seen_at=_now()))
         db_session.commit()
-        headers = web_auth_header(sub=test_user.username)
-        payload = _payload(client.get("/dashboard/client-rules/all/patch.sh", headers=headers).text)
-        assert payload["models"] == {"old-llm": "test-llm"}
-        assert payload["env"]["CLAUDE_CODE_AUTO_MODE_SERVER"] == "0"
-        panel = client.get("/dashboard/client-notices", headers=headers).text
-        assert "data-client-renames" in panel                      # the notices panel says the script does both
+        notices = _payload(client.get("/dashboard/client-rules/all/patch.sh", headers=headers).text)
+        assert notices["models"] == {} and notices["env"]["CLAUDE_CODE_AUTO_MODE_SERVER"] == "0"
+        assert _payload(client.get("/dashboard/model-changes/patch.sh", headers=headers).text) == {
+            "env": {}, "models": {"old-llm": "test-llm"},
+        }
+        # "I've applied everything" on the notices says nothing about the model change.
+        assert client_rules.resolve_all(db_session, test_user.username) == 1
+        assert model_changes.for_account(db_session, test_user)[0]["applied"] is False
+        assert _states(db_session, change) == {}
 
-    def test_without_anything_to_apply_there_is_no_script(self, client, db_session, test_user):
+    def test_there_is_a_script_only_while_a_change_is_shown(self, client, db_session, test_user):
         headers = web_auth_header(sub=test_user.username)
-        assert client.get("/dashboard/client-rules/all/patch.sh", headers=headers).status_code == 404
+        assert client.get("/dashboard/model-changes/patch.sh", headers=headers).status_code == 404
         change = _change(db_session)
-        assert client.get("/dashboard/client-rules/all/patch.sh", headers=headers).status_code == 200
+        assert client.get("/dashboard/model-changes/patch.sh", headers=headers).status_code == 200
         model_changes.end(db_session, change)
-        assert client.get("/dashboard/client-rules/all/patch.sh", headers=headers).status_code == 404
+        assert client.get("/dashboard/model-changes/patch.sh", headers=headers).status_code == 404
+        late = client.get("/dashboard/model-changes/patch.sh", headers={**headers, "Accept": "text/html"}, follow_redirects=False)
+        assert late.status_code == 303 and late.headers["location"] == "/dashboard"   # a mail link opened too late
 
     def test_i_have_switched(self, client, db_session, test_user):
         change = _change(db_session)
@@ -399,8 +420,8 @@ class TestDashboard:
         assert resp.json() == {"ok": True, "id": change.id}
         panel = client.get("/dashboard/model-changes", headers=web_auth_header(sub=test_user.username)).text
         assert "data-model-change-done" in panel and "data-model-change-applied" not in panel
-        assert "/dashboard/client-rules/all/patch.bat" in panel    # folded, with the script still there
-        assert client.get("/dashboard/client-rules/all/patch.bat", headers=headers).status_code == 200
+        assert "/dashboard/model-changes/patch.bat" in panel       # folded, with the script still there
+        assert client.get("/dashboard/model-changes/patch.bat", headers=headers).status_code == 200
 
     def test_a_change_that_is_not_the_accounts_is_a_404(self, client, db_session):
         local = _person(db_session, "local")
@@ -510,7 +531,7 @@ class TestMail:
         assert "Retire &lt;b&gt;old&lt;/b&gt;" in body and "<b>old</b>" not in body
         assert "Line one<br>line &lt;two&gt;" in body
         assert "old-llm" in body and "azure-gpt-4" in body          # this account's own renames
-        assert 'href="https://gw.example.test/dashboard/client-rules/all/patch.bat"' in body
+        assert 'href="https://gw.example.test/dashboard/model-changes/patch.bat"' in body
         assert f"Reference: MC{change.id}" in body and _day() in body
         [log] = db_session.exec(select(ClientMailLog)).all()
         assert (log.username, log.address, log.rule_ids, log.kind, log.ok) == ("alice", "alice@example.test", f"MC{change.id}", "model_change", True)
@@ -628,41 +649,97 @@ class TestMail:
         assert resp.status_code == 400 and len(mail_on) == 1
 
 
-class TestNoticesEndpoint:
-    """``GET /v1/notices`` shows what the dashboard shows, for a client that is
-    not a browser."""
+class TestEndpoint:
+    """``GET /v1/model-changes``: the dashboard's model-change panel for a client
+    that is not a browser. Which models are being replaced, and the renames
+    for the caller's tier."""
 
-    def test_the_change_and_the_renames_in_the_one_patch(self, client, db_session, test_user):
-        change = _change(db_session, renames="old-llm -> test-llm", renames_aws="bedrock-old -> bedrock-nova")
-        body = client.get("/v1/notices", headers=auth_header()).json()
-        assert body["model_changes"] == [{
-            "id": f"MC{change.id}", "title": change.title, "message": change.message,
-            "models": {"old-llm": "test-llm", "bedrock-old": "bedrock-nova"}, "until": _day(), "applied": False,
-        }]
-        assert body["notices"] == []
-        assert body["patch"] == {
-            "set": {}, "unset": [], "covers": [], "manual": [],
-            "models": {"old-llm": "test-llm", "bedrock-old": "bedrock-nova"},
+    def _get(self, client, key: str = "sk-testkey123") -> dict:
+        resp = client.get("/v1/model-changes", headers=auth_header(key))
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    EMPTY = {"object": "model_changes", "changes": [], "retiring": [], "patch": {"models": {}}}
+
+    def test_nothing_is_returned_outside_a_change(self, client, db_session, test_user):
+        assert self._get(client) == self.EMPTY                       # before any change
+        change = _change(db_session, show_until=_day(2))
+        assert self._get(client)["retiring"] == ["old-llm"]          # while it is shown
+        model_changes.end(db_session, change)
+        assert self._get(client) == self.EMPTY                       # after it
+
+    def test_the_last_day_is_the_last_day(self, client, db_session, test_user):
+        change = _change(db_session, show_until=_day(0))
+        assert self._get(client)["changes"][0]["until"] == _day(0)
+        with patch("app.services.model_changes.utcnow", return_value=change.show_until):
+            assert self._get(client) == self.EMPTY
+
+    def test_what_is_retiring_and_the_patch_for_the_callers_tier(self, client, db_session, test_user):
+        _person(db_session, "local")
+        _person(db_session, "azure", can_use_azure=True)
+        change = _change(
+            db_session, renames="old-llm -> test-llm", renames_azure="old-llm -> azure-gpt-4",
+            renames_aws="bedrock-old -> bedrock-nova",
+        )
+        local = self._get(client, "sk-local")
+        assert local == {
+            "object": "model_changes",
+            "changes": [{
+                "id": f"MC{change.id}", "title": change.title, "message": change.message,
+                "models": {"old-llm": "test-llm"}, "until": _day(), "applied": False,
+            }],
+            "retiring": ["old-llm"],
+            "patch": {"models": {"old-llm": "test-llm"}},
         }
+        assert self._get(client, "sk-azure")["patch"] == {"models": {"old-llm": "azure-gpt-4"}}
+        both = self._get(client)                                     # the fixture's account has Azure and AWS
+        assert both["retiring"] == ["old-llm", "bedrock-old"]
+        assert both["patch"] == {"models": {"old-llm": "azure-gpt-4", "bedrock-old": "bedrock-nova"}}
 
-    def test_next_to_an_open_notice(self, client, db_session, test_user):
-        _change(db_session)
-        db_session.add(ClientViolation(rule_id="CC001", username=test_user.username, first_seen_at=_now(), last_seen_at=_now()))
-        db_session.commit()
-        patch_ = client.get("/v1/notices", headers=auth_header()).json()["patch"]
-        assert patch_["covers"] == ["CC001"] and patch_["set"]["CLAUDE_CODE_AUTO_MODE_SERVER"] == "0"
-        assert patch_["models"] == {"old-llm": "test-llm"}
+    def test_a_change_for_another_tier_is_not_returned(self, client, db_session, test_user):
+        _person(db_session, "local")
+        _change(db_session, renames="", renames_azure="azure-old -> azure-gpt-4")
+        assert self._get(client, "sk-local") == self.EMPTY
+        assert self._get(client)["retiring"] == ["azure-old"]
+
+    def test_several_changes_make_one_patch(self, client, db_session, test_user):
+        first = _change(db_session, renames="old-llm -> test-llm\nold-vlm -> test-vlm")
+        second = _change(db_session, renames="old-llm -> test-vlm")
+        body = self._get(client)
+        assert [c["id"] for c in body["changes"]] == [f"MC{first.id}", f"MC{second.id}"]
+        assert body["retiring"] == ["old-llm", "old-vlm"]
+        assert body["patch"] == {"models": {"old-llm": "test-vlm", "old-vlm": "test-vlm"}}    # the later change wins
 
     def test_switched_is_reported_and_nothing_is_null(self, client, db_session, test_user):
         change = _change(db_session, message="")
         model_changes.set_applied(db_session, change.id, test_user)
-        body = client.get("/v1/notices", headers=auth_header()).json()
-        [entry] = body["model_changes"]
+        body = self._get(client)
+        [entry] = body["changes"]
         assert entry["applied"] is True and "message" not in entry
+        assert body["retiring"] == ["old-llm"]                       # still returned: the patch is for other machines too
         assert "null" not in json.dumps(body)
+
+    def test_it_reads_and_never_shows_a_key(self, client, db_session, test_user):
+        change = _change(db_session)
+        assert test_user.api_key not in client.get("/v1/model-changes", headers=auth_header()).text
+        for method in ("post", "put", "patch", "delete"):
+            assert getattr(client, method)("/v1/model-changes", headers=auth_header()).status_code == 405
+        assert client.get("/model-changes", headers=auth_header()).status_code == 404     # only under /v1
+        assert client.get("/v1/model-changes").status_code == 401
+        assert _states(db_session, change) == {}
+
+    def test_it_answers_once_the_budget_is_spent(self, client, db_session, test_user):
+        _change(db_session)
+        test_user.daily_limit_usd = 0.0
+        db_session.add(test_user)
+        db_session.commit()
+        assert self._get(client)["retiring"] == ["old-llm"]
+
+    def test_the_notices_endpoint_knows_nothing_of_it(self, client, db_session, test_user):
+        _change(db_session)
+        assert client.get("/v1/notices", headers=auth_header()).json() == {"object": "notices", "window_days": 15, "notices": []}
 
     def test_a_broken_store_reads_as_no_change(self, client, db_session, test_user):
         _change(db_session)
         with patch("app.services.model_changes.for_account", side_effect=RuntimeError("no such table")):
-            body = client.get("/v1/notices", headers=auth_header()).json()
-        assert body == {"object": "notices", "window_days": 15, "notices": [], "model_changes": []}
+            assert self._get(client) == self.EMPTY

@@ -4,8 +4,9 @@
 
    A change stays here until the day its admin set, whatever the account does: pressing
    "I've switched" only folds it (and stops mail), so the script is still at hand for a
-   second machine. There is one script per account, the same download the notices panel
-   offers: it carries every rename listed here next to the notices' variables. #}
+   second machine. This is its own flow, apart from the client-rule notices: its own
+   panel and its own script (GET /dashboard/model-changes/patch.{bat,sh}), which carries
+   every rename listed here and nothing else. #}
 {% if model_changes %}
 {% set n_changes = model_changes|length %}
 {% set n_open = model_changes|rejectattr('applied')|list|length %}
@@ -42,11 +43,11 @@
             </div>
             <div class="flex flex-wrap items-center gap-2 mt-3">
                 <span class="text-t1 font-semibold mr-1">Let one script do it</span>
-                <a href="/dashboard/client-rules/all/patch.bat" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Windows (.bat)</a>
-                <a href="/dashboard/client-rules/all/patch.sh" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Linux (.sh)</a>
+                <a href="/dashboard/model-changes/patch.bat" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Windows (.bat)</a>
+                <a href="/dashboard/model-changes/patch.sh" class="gw-btn gw-btn-primary text-sm px-3 py-1.5">Linux (.sh)</a>
             </div>
             <div class="text-t4 text-xs mt-2">
-                Windows: double-click the file. Linux: <code class="font-mono">sh claude-code-patch.sh</code>. Run it on every machine you use Claude Code on, then restart Claude Code.
+                Windows: double-click the file. Linux: <code class="font-mono">sh claude-code-model-change.sh</code>. Run it on every machine you use Claude Code on, then restart Claude Code.
                 It replaces these names where <code class="font-mono">~/.claude/settings.json</code> has them (the <code class="font-mono">model</code> setting and the model
                 variables in <code class="font-mono">env</code>), leaves a model you chose yourself alone and saves a backup as settings.json.bak.
                 A project's own <code class="font-mono">.claude/settings.json</code> and other tools that name the model need the same change by hand.

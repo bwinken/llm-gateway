@@ -18,10 +18,14 @@ script that does the edit:
   ``show_until``, whatever the account does: *I've switched* folds it away
   and stops mail, but the notice and its script stay available (for a
   second machine).
-- **The script** is the account's one patch download, with the renames of
-  every change it is shown (``renames_for``) next to the variables of its
-  open notices (``client_rules.combined_for``). What a rename does to
-  settings.json is ``client_patch.apply_renames``.
+- **The script** (``/dashboard/model-changes/patch.{bat,sh}``) carries the
+  renames of every change the account is shown (``renames_for``) and
+  nothing else. What a rename does to settings.json is
+  ``client_patch.apply_renames``.
+- **Its own flow.** A change is not a violation: nothing was detected. It
+  is not among the notices (``GET /v1/notices``), its script is not the
+  notices' patch, and "I've applied it" there does not touch it. By API key
+  it is ``GET /v1/model-changes``.
 - **Mail** goes out only when an admin asks (``request_mail``), to the
   accounts the change is for that have not said they switched, through the
   client-rule mail job and its pace (``client_mail.send_due``). This module
@@ -50,6 +54,10 @@ from app.services.client_rules import AUDIENCES, audience_flags, audience_of, st
 
 # How a change is named in mail, the mail log and the API: ``MC`` + its id.
 REF_PREFIX = "MC"
+
+
+# The script an account downloads for its changes: this name + ``.bat`` / ``.sh``.
+PATCH_FILE = "claude-code-model-change"
 
 
 # The furthest day a change can be shown until.
@@ -144,8 +152,8 @@ def for_account(session: Session, user: User, now: datetime | None = None) -> li
 
 
 def renames_for(session: Session, user: User, now: datetime | None = None) -> dict[str, str]:
-    """The renames in the account's one patch: those of every change it is
-    shown, merged (a later change wins where two replace the same model),
+    """The renames in the account's model-change script: those of every
+    change it is shown, merged (a later change wins where two replace the same model),
     whether or not it said it switched: a rename already applied changes
     nothing, and the script is also for the account's other machines."""
     renames: dict[str, str] = {}

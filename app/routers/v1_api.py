@@ -48,6 +48,7 @@ from app.core.deps import (
     check_cloud_budget,
     effective_cloud_limit,
     get_client_notices,
+    get_model_changes,
     record_client_event,
     resolve_client_notices,
     get_current_user,
@@ -624,20 +625,9 @@ def client_notices(user: User = Depends(get_current_user_unmetered)):
     ``patch``. The top-level ``patch`` is the account's one patch for
     everything open (what the dashboard offers as a download): ``covers``
     lists the checks it fixes and ``manual`` those no setting can fix
-    (update Claude Code, ask for access). It is absent when there is
-    nothing to apply. A patch only ever sets or removes variables in the
-    ``env`` block of settings.json, and never holds a key.
-
-    ``model_changes`` is the dashboard's model-change panel: the models an
-    admin announced as being replaced, for this account, each with its
-    ``id`` (``MC3``), ``title``, ``message``, the ``models`` to replace
-    (``{old: new}``), the last local day it is shown (``until``) and
-    whether the account said it switched (``applied``). The top-level
-    ``patch`` then also has ``models``, every rename merged: replace the
-    old name with the new one where settings.json names a model (its
-    ``model`` setting and the ``env`` variables with ``MODEL`` in their
-    name), only where the value is exactly the old name, before setting
-    the variables.
+    (update Claude Code, ask for access). It is absent when nothing is
+    open. A patch only ever sets or removes variables in the ``env`` block
+    of settings.json, and never holds a key.
 
     Read-only: reporting a notice as fixed is ``POST /v1/notices/resolved``.
     Answers once the daily limit is spent. Plain ``def``.
@@ -661,10 +651,45 @@ def client_notices(user: User = Depends(get_current_user_unmetered)):
         "window_days": client_rules.WINDOW_DAYS,
         "notices": notices,
     }
+    combined = found["combined"]
+    if combined:
+        body["patch"] = {**_patch(combined["env"]), "covers": combined["covered"], "manual": combined["manual"]}
+    return body
+
+
+@router.get("/v1/model-changes", tags=["account"])
+def model_changes_for_account(user: User = Depends(get_current_user_unmetered)):
+    """The models that are being replaced, for this account: what an admin
+    announced (admin panel, *Model changes*) and is showing now. Its own
+    flow, apart from the notices of ``GET /v1/notices``: nothing was
+    detected, the account is simply one the change is for.
+
+    ``changes`` lists each change being shown that concerns the account's
+    tier (its cloud access: none, Azure, AWS or both): its ``id``
+    (``MC3``), ``title`` and ``message``, the ``models`` to replace
+    (``{old: new}``, this tier's), the last local day it is shown
+    (``until``) and whether the account said it switched on its dashboard
+    (``applied``). ``retiring`` is every model name being replaced for
+    this account, and ``patch.models`` the one rename map for all of it
+    (a later change wins where two replace the same model).
+
+    Applying the patch: replace the old name with the new one where
+    Claude Code's settings.json names a model (the ``model`` setting and
+    the ``env`` variables with ``MODEL`` in their name), only where the
+    value is exactly the old name; a bracket suffix (``old[1m]``) is
+    kept. Add nothing: a user who chose another model keeps it.
+
+    Values are returned only while a change is being shown. Before an
+    admin announces one, after its last day and for an account no change
+    is for, all three are empty.
+
+    Read-only and never a key. Answers once the daily limit is spent.
+    Plain ``def``.
+    """
     renames: dict[str, str] = {}
     changes = []
-    for change in found["model_changes"]:
-        entry = {"id": change["ref"], "title": change["title"]}
+    for change in get_model_changes(user):
+        entry: dict[str, object] = {"id": change["ref"], "title": change["title"]}
         if change["message"]:
             entry["message"] = change["message"]
         entry["models"] = change["renames"]
@@ -672,17 +697,12 @@ def client_notices(user: User = Depends(get_current_user_unmetered)):
         entry["applied"] = change["applied"]
         changes.append(entry)
         renames.update(change["renames"])
-    body["model_changes"] = changes
-    combined = found["combined"]
-    if combined or renames:
-        body["patch"] = {
-            **_patch(combined["env"] if combined else {}),
-            "covers": combined["covered"] if combined else [],
-            "manual": combined["manual"] if combined else [],
-        }
-        if renames:
-            body["patch"]["models"] = renames
-    return body
+    return {
+        "object": "model_changes",
+        "changes": changes,
+        "retiring": list(renames),
+        "patch": {"models": renames},
+    }
 
 
 @router.post("/v1/notices/resolved", tags=["account"])
