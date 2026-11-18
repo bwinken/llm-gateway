@@ -22,6 +22,7 @@
                     {% if u.can_use_azure %}<span class="gw-badge" style="color:#cab9ff;background:rgba(167,139,250,0.12);border-color:rgba(167,139,250,0.3)">Azure</span>{% endif %}
                     {% if u.can_use_bedrock %}<span class="gw-badge" style="color:#ffcb8a;background:rgba(255,153,51,0.1);border-color:rgba(255,153,51,0.3)">AWS</span>{% endif %}
                     {% if u.concurrency_waived %}<span class="gw-badge gw-badge-muted">Concurrency waived</span>{% endif %}
+                    {% if not u.is_service_account and not u.can_overflow_cloud %}<span class="gw-badge gw-badge-muted">No cloud overflow</span>{% endif %}
                 </div>
             </div>
         </div>

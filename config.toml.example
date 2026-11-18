@@ -60,6 +60,27 @@ concurrency_offpeak_start = ""
 concurrency_offpeak_end = ""
 concurrency_offpeak_weekends = false
 
+# Cloud overflow (admin panel → Limits → "Cloud Overflow" card): while an
+# on-prem server's waiting queue is over a threshold, the gateway moves the
+# accounts using it most to the cloud model its models name (`overflow_to`
+# on a [models.*] entry), and back once the queue is short again. Accounts
+# are moved whole, never request by request. Edit these on the card; why
+# each default is what it is: admin panel → Guide.
+# overflow_mode:
+#   "off"     — nobody is moved (default)
+#   "monitor" — record who would be moved; nothing is moved
+#   "enforce" — moved accounts are served by the cloud
+overflow_mode = "off"
+overflow_daily_budget_usd = 100    # what overflow may spend per day, all accounts; 0 = nobody is moved
+overflow_budget_stop_pct = 85      # share of the budget at which no further account is moved
+overflow_waiting_high = 12         # waiting requests at or above which accounts are moved
+overflow_waiting_low = 2           # ... at or below which they are moved back (must be lower)
+overflow_consecutive = 2           # readings in a row (30 s apart) before anyone is moved
+overflow_grab_max = 2              # accounts moved to the cloud per round, at most
+overflow_release_per_round = 1     # accounts moved back per round
+overflow_min_stay_min = 10         # minutes an account stays on the cloud at least
+overflow_idle_min = 5              # minutes without a request = idle (moved back first)
+
 # API IP allowlist (admin panel → "IP Allowlist" card): which accounts may
 # call /v1, /azure and /aws from which addresses (the web UI and health checks
 # are never checked). The rules (address range; everyone, or listed accounts /
@@ -191,6 +212,10 @@ api_key = "your-api-key"
 # reasoning_effort_map = { high = "xhigh" }
 # reasoning_efforts = []   # this model takes no effort knob: always stripped
 # hidden = false          # Hide from user-facing pages and /v1/models (still usable via API)
+# overflow_to = "my-azure-gpt"   # Cloud overflow: the Azure / AWS llm/vlm alias that serves this model for the
+#                                # accounts moved while this server is congested ([app].overflow_*). Unset = never.
+# overflow_waiting_high = 20     # This server's own thresholds instead of [app].overflow_waiting_high / _low
+# overflow_waiting_low = 5
 # native_messages = false # Set true when the downstream vLLM (>= 0.11.1) serves the native
 #                         # Anthropic /v1/messages endpoint: Anthropic requests (Claude Code)
 #                         # are forwarded as-is instead of translated via the OpenAI pivot.

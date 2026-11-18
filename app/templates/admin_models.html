@@ -563,6 +563,7 @@ function listItem(kind, alias, info) {
     const badges = [];
     if (info.is_reasoning) badges.push(pill('think', 'rgba(77,217,232,0.10)', '#4dd9e8', 'is_reasoning'));
     if (info.rate_limit_fallback) badges.push(pill('429', 'rgba(245,166,35,0.10)', '#f5a623', 'On 429, retries on ' + info.rate_limit_fallback));
+    if (info.overflow_to) badges.push(pill('overflow', 'rgba(255,153,51,0.10)', '#ff9933', 'While congested, overflows to ' + info.overflow_to));
     if (info.hidden) badges.push(pill('hidden', 'rgba(255,255,255,0.05)', '#868da0', 'Hidden from GET /v1/models and the dashboard (still served by alias)'));
     const marker = bad
         ? '<span class="w-1.5 h-1.5 rounded-full bg-ar shrink-0" title="Missing required fields"></span>'
@@ -890,6 +891,7 @@ function renderRouting(kind, alias, info) {
             <div class="space-y-3">
                 ${visibleRow}
                 ${checkRow(kind, alias, 'native_messages', info.native_messages === true, 'Native Anthropic /v1/messages pass-through', nativeTip)}
+                ${renderOverflow(alias, info)}
                 <p class="mc-hint">If this server is down, <code class="font-mono">${escHtml(info.type)}</code> requests fall back to
                     <span class="text-t3">${fb ? escHtml(fb) : 'the first alive ' + escHtml(info.type) + ' server'}</span>
                     — change it under <a href="#settings" class="text-ab hover:underline">Fallbacks &amp; pricing</a>.</p>
@@ -929,6 +931,48 @@ function renderRouting(kind, alias, info) {
                 </div>
                 ${candidates.length ? '' : `<span class="mc-hint">Add another ${BACKENDS[kind].short} llm/vlm model to use as a target.</span>`}
             </div>
+        </div>`;
+}
+
+// Peak overflow of an on-prem llm / vlm model (app/services/overflow.py): the
+// cloud model that serves it for the accounts moved while its server is
+// congested, and optionally this server's own waiting thresholds.
+function renderOverflow(alias, info) {
+    if (!CLOUD_TYPES.includes(info.type)) return '';
+    const current = info.overflow_to || '';
+    const groups = ['azure', 'bedrock'].map(kind => {
+        const aliases = Object.entries(mapOf(kind))
+            .filter(([, o]) => CLOUD_TYPES.includes(o.type || 'llm')).map(([a]) => a);
+        if (!aliases.length) return '';
+        return `<optgroup label="${escAttr(BACKENDS[kind].short)}">` + aliases.map(a =>
+            `<option value="${escAttr(a)}" ${a === current ? 'selected' : ''}>${escHtml(a)}</option>`).join('') + '</optgroup>';
+    }).join('');
+    const known = ['azure', 'bedrock'].some(kind => current in mapOf(kind));
+    const stale = current && !known
+        ? `<option value="${escAttr(current)}" selected>${escHtml(current)} (not a cloud model)</option>` : '';
+    const tip = 'While this model\'s server is congested (Admin → Limits → Cloud Overflow), requests for it from the '
+        + 'accounts the gateway moved are served by this cloud model instead, at the cloud model\'s price. '
+        + 'Pick a model of similar ability; for Claude Code on AWS, a Claude entry with native Messages keeps prompt caching. '
+        + 'Nothing = this model never overflows.';
+    const thTip = 'This server\'s own waiting-queue thresholds, instead of the gateway-wide pair on the Cloud Overflow card. '
+        + 'Blank = use the gateway-wide value.';
+    return `
+        <div class="flex flex-col gap-1">
+            <span class="mc-label gw-tip gw-tip-wide" data-tip="${escAttr(tip)}">When congested, overflow to</span>
+            <div class="flex items-center gap-3 flex-wrap">
+                <select ${fieldAttrs('vllm', alias, 'overflow_to', 'opt')} onchange="setField(this); renderEditor()" class="gw-input text-sm py-1.5 px-2 min-w-[220px]">
+                    <option value="">Nothing — always on-prem</option>
+                    ${stale}${groups}
+                </select>
+                ${current ? `
+                <span class="mc-label gw-tip gw-tip-wide" data-tip="${escAttr(thTip)}">move at ≥</span>
+                <input type="number" min="1" step="1" ${fieldAttrs('vllm', alias, 'overflow_waiting_high', 'int')} oninput="setField(this)"
+                       value="${info.overflow_waiting_high ?? ''}" placeholder="default" class="gw-input w-24 text-sm font-mono py-1.5 px-2">
+                <span class="mc-label">back at ≤</span>
+                <input type="number" min="0" step="1" ${fieldAttrs('vllm', alias, 'overflow_waiting_low', 'int')} oninput="setField(this)"
+                       value="${info.overflow_waiting_low ?? ''}" placeholder="default" class="gw-input w-24 text-sm font-mono py-1.5 px-2">` : ''}
+            </div>
+            ${groups ? '' : '<span class="mc-hint">Add an Azure or AWS llm/vlm model to overflow to.</span>'}
         </div>`;
 }
 
@@ -1273,6 +1317,7 @@ function referencesTo(kind, alias) {
     const out = [];
     for (const [t, a] of Object.entries(config[BACKENDS[kind].fb])) if (a === alias) out.push(`${t} fallback`);
     for (const [a, info] of Object.entries(mapOf(kind))) if (info.rate_limit_fallback === alias) out.push(`${a} (429)`);
+    if (kind !== 'vllm') for (const [a, info] of Object.entries(mapOf('vllm'))) if (info.overflow_to === alias) out.push(`${a} (overflow)`);
     return out;
 }
 
@@ -1404,6 +1449,8 @@ function renameModel(kind, from, to) {
     const fb = config[BACKENDS[kind].fb];
     for (const t of Object.keys(fb)) if (fb[t] === from) fb[t] = to;
     for (const info of Object.values(map)) if (info.rate_limit_fallback === from) info.rate_limit_fallback = to;
+    // On-prem models that overflow to this cloud model follow its new name.
+    if (kind !== 'vllm') for (const info of Object.values(mapOf('vllm'))) if (info.overflow_to === from) info.overflow_to = to;
     config.display_order[kind] = config.display_order[kind].map(a => a === from ? to : a);
     select(kind, to);
 }
@@ -1422,6 +1469,7 @@ function deleteSelected() {
     const fb = config[BACKENDS[kind].fb];
     for (const t of Object.keys(fb)) if (fb[t] === alias) delete fb[t];
     for (const info of Object.values(mapOf(kind))) if (info.rate_limit_fallback === alias) delete info.rate_limit_fallback;
+    if (kind !== 'vllm') for (const info of Object.values(mapOf('vllm'))) if (info.overflow_to === alias) delete info.overflow_to;
     if (next) select(kind, next); else select('settings');
 }
 

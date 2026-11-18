@@ -315,6 +315,22 @@ IP_ALLOWLIST_OFF: dict[str, Any] = {
     "mode": "off",
 }
 
+# Peak overflow off, with the shipped defaults for everything else. A test
+# turns it on with ``patch("app.services.overflow.get_overflow_settings",
+# return_value={**OVERFLOW_OFF, "mode": "enforce", ...})``.
+OVERFLOW_OFF: dict[str, Any] = {
+    "mode": "off",
+    "waiting_high": 12,
+    "waiting_low": 2,
+    "consecutive": 2,
+    "grab_max": 2,
+    "release_per_round": 1,
+    "min_stay_min": 10,
+    "idle_min": 5,
+    "budget_stop_pct": 85,
+    "daily_budget_usd": 100.0,
+}
+
 GUARDRAIL_OFF: dict[str, Any] = {
     "enabled": False, "active": False, "base_url": "", "api_key": "", "api_key_set": False,
     "model": "Qwen/Qwen3Guard-Gen-4B", "timeout_s": 3.0, "action": "monitor",
@@ -443,6 +459,10 @@ _ALL_PATCHES = [
     # developer's own client_settings.json (tests of the file patch this again).
     lambda: patch("app.services.client_settings.SETTINGS_PATH", Path("/nonexistent/client_settings.json")),
     lambda: patch("app.services.ip_allowlist.get_ip_allowlist_settings", return_value=dict(IP_ALLOWLIST_OFF)),
+    # Peak overflow stays off whatever a local config.toml says; its tests
+    # patch in their own settings (tests/test_overflow.py).
+    lambda: patch("app.services.overflow.engine", _test_engine),
+    lambda: patch("app.services.overflow.get_overflow_settings", side_effect=lambda: dict(OVERFLOW_OFF)),
 ]
 
 
@@ -461,6 +481,8 @@ def _patch_all():
     from contextlib import ExitStack
 
     import app.services.auth_throttle as auth_throttle
+    import app.services.overflow as overflow  # same, for the engine / settings patches
+    overflow.reset()  # who is on the cloud is module state too
     ip_allowlist.reset()  # the per-worker snapshot is module state
     client_rules.reset()  # so are the client rules and their write throttles
     import app.services.client_settings as client_settings

@@ -128,6 +128,13 @@ class User(SQLModel, table=True):
     # are created waived (batch jobs legitimately run many requests at once);
     # an admin can un-waive one to limit it.
     concurrency_waived: bool = Field(default=False)
+    # May this account's local requests be served by a cloud model while its
+    # on-prem server is congested (app/services/overflow.py)? True for
+    # everyone unless an admin turns it off: the answer to "may this
+    # account's prompts leave the premises", separate from can_use_azure /
+    # can_use_bedrock (which let the account pick a cloud model itself).
+    # Service accounts are never moved, whatever this says.
+    can_overflow_cloud: bool = Field(default=True)
     # An account for a program rather than a person: made by an admin, used
     # only by API key (an SSO sign-in under its name is refused), owned by
     # the people in ``app_owners``, left out of the per-person figures and
@@ -223,6 +230,11 @@ class UsageLog(SQLModel, table=True):
     # "bedrock". Lets billing/limits/reports split cloud spend from on-prem
     # spend without parsing the endpoint label.
     backend: str = Field(default="vllm", sa_column=sa.Column(sa.String, nullable=False, server_default="vllm"))
+    # The account asked for an on-prem model and the gateway served it from
+    # the cloud because that model's server was congested
+    # (app/services/overflow.py). ``backend`` / ``model`` / ``cost_usd`` are
+    # the cloud model's, as billed; this only says why it went there.
+    overflow: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
     created_at: NaiveDatetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -230,7 +242,7 @@ class UsageDaily(SQLModel, table=True):
     """Per-local-day rollup of ``usage_logs`` (app/services/usage_rollup.py).
 
     One row per (Asia/Taipei day, user, backend, model, model_type,
-    endpoint): a user produces a handful of rows a day however many requests
+    endpoint, overflow): a user produces a handful of rows a day however many requests
     they make. Written only by ``scripts/rollup_usage_daily.py``, and only
     for closed days; gateway workers never touch it. Reports read closed
     days here and the rest from ``usage_logs``
@@ -252,6 +264,10 @@ class UsageDaily(SQLModel, table=True):
     model: str = Field(primary_key=True)
     model_type: str = Field(primary_key=True)
     endpoint: str = Field(primary_key=True)
+    # usage_logs.overflow: cloud usage the gateway chose (peak overflow) is
+    # kept apart from cloud usage the account chose.
+    overflow: bool = Field(default=False, sa_column=sa.Column(
+        sa.Boolean, primary_key=True, nullable=False, server_default=sa.false()))
     requests: int = Field(default=0, sa_column=sa.Column(sa.BigInteger, nullable=False))
     input_tokens: int = Field(default=0, sa_column=sa.Column(sa.BigInteger, nullable=False))
     output_tokens: int = Field(default=0, sa_column=sa.Column(sa.BigInteger, nullable=False))
@@ -286,6 +302,65 @@ class ScheduledJob(SQLModel, table=True):
     last_finished_at: NaiveDatetime | None = Field(default=None)
     last_status: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
     last_detail: str = Field(default="", sa_column=sa.Column(sa.String, nullable=False, server_default=""))
+
+
+class OverflowServer(SQLModel, table=True):
+    """Peak overflow's view of one on-prem server (app/services/overflow.py):
+    its latest waiting queue and how many readings in a row were above the
+    upper / below the lower threshold. One row per ``base_url``, updated in
+    place by the overflow job each round, so "N readings in a row" holds
+    whichever worker runs the round. Never grows."""
+    __tablename__ = "overflow_servers"
+
+    base_url: str = Field(primary_key=True)
+    waiting: int | None = Field(default=None)
+    running: int | None = Field(default=None)
+    over_streak: int = Field(default=0)
+    under_streak: int = Field(default=0)
+    updated_at: NaiveDatetime = Field(default_factory=_naive_utcnow)
+
+
+class OverflowStay(SQLModel, table=True):
+    """One stay of an account on the cloud for one congested on-prem server.
+
+    Inserted when the overflow job moves the account, ``released_at`` set
+    when it moves it back; kept afterwards (it answers "why was this account
+    on the cloud at 14:05"). While ``released_at`` is NULL and ``expires_at``
+    is ahead, the account's requests for that server's models go to each
+    model's ``overflow_to``. The job pushes ``expires_at`` forward every
+    round: if the job stops, every stay lapses and traffic returns on-prem.
+
+    ``username`` is not a foreign key (like the client-rule tables), so
+    ``delete_user`` leaves the rows. Timestamps are naive UTC.
+    """
+    __tablename__ = "overflow_stays"
+    __table_args__ = (
+        Index("ix_overflow_stays_open", "released_at", "base_url"),
+        Index("ix_overflow_stays_entered", "entered_at"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    username: str = Field(index=True)
+    base_url: str = Field()
+    # The mode the job ran in when it moved the account: "enforce" (requests
+    # really go to the cloud) or "monitor" (recorded only).
+    mode: str = Field(default="enforce")
+    entered_at: NaiveDatetime = Field(default_factory=_naive_utcnow)
+    expires_at: NaiveDatetime = Field(default_factory=_naive_utcnow)
+    released_at: NaiveDatetime | None = Field(default=None)
+    reason_in: str = Field(default="")
+    reason_out: str = Field(default="")
+
+
+class OverflowBudget(SQLModel, table=True):
+    """What peak overflow has spent per local (Asia/Taipei) day: the sum of
+    that day's ``usage_logs`` rows marked ``overflow``, written by the
+    overflow job each round so the request path never sums it. One row a day."""
+    __tablename__ = "overflow_budget"
+
+    day: date = Field(primary_key=True)
+    spent_usd: Decimal = Field(default=Decimal("0"), sa_column=sa.Column(sa.Numeric(16, 6), nullable=False, default=0))
+    updated_at: NaiveDatetime = Field(default_factory=_naive_utcnow)
 
 
 class AnomalyEvent(SQLModel, table=True):

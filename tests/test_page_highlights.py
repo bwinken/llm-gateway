@@ -223,7 +223,7 @@ class TestTabs:
             assert panel_of(card) == "security", card
         for card in (
             ">Concurrency Limit</h2>", ">Off-peak hours", ">Default Daily Limit</h2>", ">Cloud Daily Limit</h2>",
-            ">Cloud Budget Fallback</h2>",
+            ">Cloud Budget Fallback</h2>", 'id="cloud-overflow"',
         ):
             assert panel_of(card) == "limits", card
         for card in ('id="weekly-reports"', ">Site Links</h2>"):

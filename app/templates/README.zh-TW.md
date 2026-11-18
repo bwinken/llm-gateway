@@ -215,7 +215,7 @@ Admin 在 auth 階段免檢查停用旗標，因此這頁永遠不會擋到 admi
 
 ### `_admin_tabs.html` — 管理分頁列
 
-由 `admin.html`（`on_admin_page = true`：Overview / Users / Clients / Security / Limits / Settings 為 `data-tab` 按鈕）與 `admin_models.html`（`on_admin_page = false`：改為連到 `/admin#<tab>` 的連結）引入。最後一個分頁 **Models** 一律是連到 `/admin/models` 的連結。
+由 `admin.html`（`on_admin_page = true`：Overview / Users / Clients / Security / Limits / Settings 為 `data-tab` 按鈕）與 `admin_models.html`（`on_admin_page = false`：改為連到 `/admin#<tab>` 的連結）引入。其後是兩個連到獨立頁面的連結：**Models**（`/admin/models`）與 **Guide**（`/admin/guide`，該頁設定 `admin_section = 'guide'`，讓自己的分頁顯示為作用中）。
 
 ### 片段模板（Partials）
 

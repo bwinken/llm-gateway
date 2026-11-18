@@ -64,6 +64,47 @@ def _validate_reasoning_keys(label: str, alias: str, info: dict) -> None:
             )
 
 
+def _validate_overflow(alias: str, info: dict, cloud_types: dict[str, str]) -> None:
+    """Peak overflow on an on-prem entry (``config._LOCAL_ROUTING_KEYS``):
+    ``overflow_to`` must name a cloud model the chat endpoints can serve,
+    on a model they serve too; the server's own waiting thresholds are whole
+    numbers, the lower one below the upper one. Empty = unset."""
+    target = info.get("overflow_to")
+    if target not in (None, ""):
+        if not isinstance(target, str):
+            raise HTTPException(status_code=400, detail=f"Model '{alias}' field 'overflow_to' must be an alias string.")
+        if info.get("type") not in ("llm", "vlm"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model '{alias}' cannot overflow: only llm / vlm models are served by the cloud.",
+            )
+        if target not in cloud_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model '{alias}' overflow_to '{target}' is not an Azure or AWS model.",
+            )
+        if cloud_types[target] not in ("llm", "vlm"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model '{alias}' overflow_to '{target}' has type '{cloud_types[target]}'; it must be llm or vlm.",
+            )
+    thresholds: dict[str, int] = {}
+    for key in ("overflow_waiting_high", "overflow_waiting_low"):
+        value = info.get(key)
+        if value in (None, ""):
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise HTTPException(status_code=400, detail=f"Model '{alias}' field '{key}' must be a whole number >= 0.")
+        thresholds[key] = value
+    if thresholds.get("overflow_waiting_high") == 0:
+        raise HTTPException(status_code=400, detail=f"Model '{alias}' field 'overflow_waiting_high' must be at least 1.")
+    if len(thresholds) == 2 and thresholds["overflow_waiting_low"] >= thresholds["overflow_waiting_high"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{alias}': overflow_waiting_low must be below overflow_waiting_high.",
+        )
+
+
 def _validate_rate_limit_fallback(
     label: str, alias: str, info: dict, models: dict,
 ) -> None:
@@ -311,6 +352,14 @@ async def save_config_api(
                     status_code=400,
                     detail=f"{label} '{alias}' field '{key}' has wrong type.",
                 )
+    # What an on-prem model may overflow to: the cloud models as this save
+    # leaves them (a section the payload omits stays as stored).
+    stored = get_config_data()
+    cloud_types: dict[str, str] = {}
+    for section, sent in (("azure_models", azure_models), ("bedrock_models", bedrock_models)):
+        for cloud_alias, cloud_info in (sent if sent is not None else stored[section]).items():
+            if isinstance(cloud_info, dict):
+                cloud_types[cloud_alias] = str(cloud_info.get("type") or "llm")
     for alias, info in models.items():
         if not isinstance(info, dict):
             raise HTTPException(status_code=400, detail=f"Invalid model entry: {alias}")
@@ -339,6 +388,7 @@ async def save_config_api(
                     detail=f"Model '{alias}' field '{key}' must be non-negative.",
                 )
         _check_internal("Model", alias, info)
+        _validate_overflow(alias, info, cloud_types)
         _validate_reasoning_keys("Model", alias, info)
         for key in _MODEL_PRICING_KEYS:
             if key not in info:

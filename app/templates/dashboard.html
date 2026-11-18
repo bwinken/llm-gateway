@@ -87,6 +87,12 @@
                     of <span class="text-t1 font-semibold font-mono">${{ '%g'|format(user.daily_limit_usd) }}</span> daily limit
                     · <span class="font-mono text-t2">{{ today_reqs }}</span> request{{ '' if today_reqs == 1 else 's' }}
                 </div>
+                {% if overflow_today_cost > 0 %}
+                <div class="mt-1 text-xs text-t3 gw-tip gw-tip-wide"
+                     data-tip="Some of your requests for an on-prem model were served by a cloud model while on-prem was congested. They are billed at the cloud model's price and count toward your daily limit. Cost by Model (Usage tab) lists them as overflow.">
+                    <span class="font-mono text-t2">{{ money(overflow_today_cost) }}</span> of it is cloud overflow
+                </div>
+                {% endif %}
             </div>
             <div class="sm:text-right">
                 <div class="text-[11px] font-bold uppercase tracking-wider text-t3">Remaining</div>
@@ -528,6 +534,7 @@
                         <span class="inline-block w-2.5 h-2.5 rounded-sm mr-2 align-middle" style="background:{{ bcolor }}"></span>
                         <code class="text-sm font-mono font-medium text-t1">{{ m.model }}</code>
                         {% if m.type %}<span class="text-[10px] text-t4 ml-1.5">{{ m.type }}</span>{% endif %}
+                        {% if m.overflow %}<span class="gw-badge gw-badge-muted ml-1.5 gw-tip gw-tip-wide" data-tip="You asked for an on-prem model while its server was congested, and the gateway served these requests from this cloud model instead. They are billed at this model's price and count toward your daily limit.">overflow</span>{% endif %}
                     </td>
                     <td class="text-right text-sm font-mono text-t3">{{ m.requests }}</td>
                     <td class="text-right text-sm font-mono text-t3">{{ format_token(m.input_tokens) }}</td>
@@ -582,6 +589,11 @@
         return String(n);
     }
 
+    // A model's peak-overflow usage is a row (and a slice) of its own.
+    function mbKey(g, r) { return g.backend + '|' + r.model + (r.overflow ? '|overflow' : ''); }
+    var MB_OVERFLOW_TIP = 'You asked for an on-prem model while its server was congested, and the gateway served these requests '
+        + 'from this cloud model instead. They are billed at this model\'s price and count toward your daily limit.';
+
     // One slice per model, capped at 4 per backend (ramp length): beyond
     // that the smallest rows fold into an "Other" slice so tiny slivers
     // don't shred the ring. The table below always lists every model.
@@ -594,7 +606,7 @@
             var rows = g.rows.slice().sort(function (a, b) { return b.cost_usd - a.cost_usd; });
             var shown = rows.length <= ramp.length ? rows : rows.slice(0, ramp.length - 1);
             shown.forEach(function (r, i) {
-                slices.push({ label: r.model + ' · ' + g.label, cost: r.cost_usd, share: r.share, color: ramp[i], keys: [g.backend + '|' + r.model] });
+                slices.push({ label: r.model + (r.overflow ? ' (overflow)' : '') + ' · ' + g.label, cost: r.cost_usd, share: r.share, color: ramp[i], keys: [mbKey(g, r)] });
             });
             if (rows.length > ramp.length) {
                 var rest = rows.slice(ramp.length - 1);
@@ -603,7 +615,7 @@
                     cost: rest.reduce(function (a, r) { return a + r.cost_usd; }, 0),
                     share: rest.reduce(function (a, r) { return a + r.share; }, 0),
                     color: ramp[ramp.length - 1],
-                    keys: rest.map(function (r) { return g.backend + '|' + r.model; })
+                    keys: rest.map(function (r) { return mbKey(g, r); })
                 });
             }
         });
@@ -693,11 +705,12 @@
                 + '<td class="py-1.5 text-right text-[11px] font-mono font-medium text-t2">$' + g.cost_usd.toFixed(4) + '</td>'
                 + '<td class="py-1.5"></td></tr>';
             g.rows.forEach(function (m) {
-                var color = colors[g.backend + '|' + m.model] || dot;
+                var color = colors[mbKey(g, m)] || dot;
                 html += '<tr><td class="whitespace-nowrap">'
                     + '<span class="inline-block w-2.5 h-2.5 rounded-sm mr-2 align-middle" style="background:' + color + '"></span>'
                     + '<code class="text-sm font-mono font-medium text-t1">' + mbEsc(m.model) + '</code>'
                     + (m.type ? '<span class="text-[10px] text-t4 ml-1.5">' + mbEsc(m.type) + '</span>' : '')
+                    + (m.overflow ? '<span class="gw-badge gw-badge-muted ml-1.5 gw-tip gw-tip-wide" data-tip="' + mbEsc(MB_OVERFLOW_TIP) + '">overflow</span>' : '')
                     + '</td>'
                     + '<td class="text-right text-sm font-mono text-t3">' + m.requests + '</td>'
                     + '<td class="text-right text-sm font-mono text-t3">' + mbFmtTok(m.input_tokens) + '</td>'

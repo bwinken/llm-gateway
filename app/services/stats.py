@@ -47,11 +47,13 @@ def get_user_daily_summary(session: Session, user_id: int) -> dict:
 
     Also splits today's cost by backend (``azure_cost_usd`` /
     ``bedrock_cost_usd`` — the remainder is on-prem/vLLM) so the dashboard
-    can show the per-cloud sub-budgets.
+    can show the per-cloud sub-budgets, and says how much of it was peak
+    overflow (``overflow_cost_usd``, part of the two cloud figures).
     """
     today_start = local_day_start_utc()
     azure_case = sa_case((UsageLog.backend == "azure", UsageLog.cost_usd), else_=0)
     bedrock_case = sa_case((UsageLog.backend == "bedrock", UsageLog.cost_usd), else_=0)
+    overflow_case = sa_case((UsageLog.overflow.is_(True), UsageLog.cost_usd), else_=0)  # type: ignore[attr-defined]
     stmt = (
         select(
             func.coalesce(func.sum(UsageLog.input_tokens), 0).label("total_input"),
@@ -60,6 +62,7 @@ def get_user_daily_summary(session: Session, user_id: int) -> dict:
             func.count(UsageLog.id).label("total_requests"),
             func.coalesce(func.sum(azure_case), 0).label("azure_cost"),
             func.coalesce(func.sum(bedrock_case), 0).label("bedrock_cost"),
+            func.coalesce(func.sum(overflow_case), 0).label("overflow_cost"),
         )
         .where(UsageLog.user_id == user_id)
         .where(UsageLog.created_at >= today_start)
@@ -76,6 +79,9 @@ def get_user_daily_summary(session: Session, user_id: int) -> dict:
         "azure_cost_usd": azure_cost,
         "bedrock_cost_usd": bedrock_cost,
         "vllm_cost_usd": total_cost - azure_cost - bedrock_cost,
+        # The part of the cloud cost that is peak overflow: requests for an
+        # on-prem model the gateway served from the cloud.
+        "overflow_cost_usd": float(row[6]) if row else 0.0,
     }
 
 
@@ -326,23 +332,30 @@ def get_model_breakdown(
     local (Asia/Taipei) month — the same window as
     ``get_user_monthly_summary`` so the per-model costs sum to the Monthly
     Cost card; ``"day"`` is the local day — the same window as
-    ``get_user_daily_summary`` and the Today's Cost card.
+    ``get_user_daily_summary`` and the Today's Cost card. A row with
+    ``overflow`` true is cloud usage from peak overflow
+    (``app/services/overflow.py``): shown to the account whatever cloud
+    access it has, since it is on its bill.
     """
     start = local_today() if period == "day" else local_month_start()
     groups = aggregate(
-        session, start, _tomorrow(), ("model", "model_type", "backend"), user_ids=[user_id],
+        session, start, _tomorrow(), ("model", "model_type", "backend", "overflow"), user_ids=[user_id],
     )
     rows = [
         {
             "model": model,
             "type": model_type,
             "backend": backend or "vllm",
+            # Peak overflow: a cloud model the gateway served in place of a
+            # congested on-prem one. Its own row, apart from the same model
+            # asked for by name.
+            "overflow": bool(overflow),
             "requests": int(entry["requests"]),
             "input_tokens": int(entry["input_tokens"]),
             "output_tokens": int(entry["output_tokens"]),
             "cost_usd": round(float(entry["cost_usd"]), 6),
         }
-        for (model, model_type, backend), entry in groups.items()
+        for (model, model_type, backend, overflow), entry in groups.items()
     ]
     rows.sort(key=lambda r: r["cost_usd"], reverse=True)
     return rows

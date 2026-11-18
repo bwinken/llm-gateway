@@ -150,6 +150,19 @@ _CLOUD_ROUTING_KEYS: tuple[str, ...] = (
     "rate_limit_fallback",
 )
 
+# Local-only routing policy on [models.<type>.*] entries: peak overflow
+# (app/services/overflow.py). Internal, not surfaced via /v1/models.
+# `overflow_to`: alias of the Azure / Bedrock model that serves this model's
+# requests for the accounts the overflow job moved while this model's server
+# is congested. No value = this model never overflows.
+# `overflow_waiting_high` / `overflow_waiting_low`: this server's own
+# waiting-queue thresholds, instead of the gateway-wide pair in [app].
+_LOCAL_ROUTING_KEYS: tuple[str, ...] = (
+    "overflow_to",
+    "overflow_waiting_high",
+    "overflow_waiting_low",
+)
+
 
 def _warn_bad_rate_limit_fallbacks(label: str, models: dict[str, dict[str, Any]]) -> None:
     """Flag `rate_limit_fallback` targets that can never be used. Only a
@@ -343,6 +356,9 @@ def _build_config(raw: dict[str, Any]) -> tuple[
             for reasoning_key in _MODEL_REASONING_KEYS:
                 if reasoning_key in model_cfg:
                     entry[reasoning_key] = model_cfg[reasoning_key]
+            for routing_key in _LOCAL_ROUTING_KEYS:
+                if model_cfg.get(routing_key) not in (None, ""):
+                    entry[routing_key] = model_cfg[routing_key]
             for price_key in _MODEL_PRICING_KEYS:
                 if price_key in model_cfg:
                     entry[price_key] = float(model_cfg[price_key])
@@ -605,6 +621,9 @@ def save_config(
         for reasoning_key in _MODEL_REASONING_KEYS:
             if reasoning_key in info:
                 entry[reasoning_key] = info[reasoning_key]
+        for routing_key in _LOCAL_ROUTING_KEYS:
+            if info.get(routing_key) not in (None, ""):
+                entry[routing_key] = info[routing_key]
         for price_key in _MODEL_PRICING_KEYS:
             if price_key in info:
                 entry[price_key] = float(info[price_key])
@@ -974,6 +993,91 @@ def get_cloud_budget_fallback() -> bool:
 def set_cloud_budget_fallback(enabled: bool) -> None:
     """Persist ``[app].cloud_budget_fallback`` to config.toml and reload."""
     _save_app_keys({_CLOUD_BUDGET_FALLBACK_KEY: bool(enabled)})
+
+
+# Peak overflow (admin panel → Limits → "Cloud Overflow" card; applied by
+# app/services/overflow.py): while an on-prem server's waiting queue is over
+# a threshold, the overflow job moves accounts to the cloud model each local
+# model names in `overflow_to`, and back once the queue is short again.
+# "Off" is a mode, as for the concurrency limit, and it is the default: the
+# daily budget's default ($100) is spent only once an admin switches it on.
+OVERFLOW_MODES: tuple[str, ...] = ("off", "monitor", "enforce")
+# key in [app] -> (default, minimum, maximum); all whole numbers.
+_OVERFLOW_INT_KEYS: dict[str, tuple[int, int, int]] = {
+    "overflow_waiting_high": (12, 1, 100_000),    # grab at or above this many waiting requests
+    "overflow_waiting_low": (2, 0, 100_000),      # release at or below this many
+    "overflow_consecutive": (2, 1, 100),          # readings in a row before acting
+    "overflow_grab_max": (2, 1, 100),             # accounts moved to the cloud per round, at most
+    "overflow_release_per_round": (1, 1, 100),    # accounts moved back per round
+    "overflow_min_stay_min": (10, 0, 1440),       # an account stays at least this long
+    "overflow_idle_min": (5, 1, 1440),            # no request for this long = idle (released first)
+    "overflow_budget_stop_pct": (85, 1, 100),     # stop moving accounts at this share of the budget
+}
+_OVERFLOW_MODE_KEY = "overflow_mode"
+_OVERFLOW_BUDGET_KEY = "overflow_daily_budget_usd"
+# What overflow may spend a day when nothing is set. It is spent only once
+# an admin switches the mode on (the mode's default is off).
+DEFAULT_OVERFLOW_DAILY_BUDGET_USD = 100.0
+
+
+def get_overflow_settings() -> dict[str, Any]:
+    """Peak overflow's settings: ``mode`` (``off`` / ``monitor`` /
+    ``enforce``), the whole numbers of ``_OVERFLOW_INT_KEYS`` without their
+    ``overflow_`` prefix (``waiting_high``, ``waiting_low``, ``consecutive``,
+    ``grab_max``, ``release_per_round``, ``min_stay_min``, ``idle_min``,
+    ``budget_stop_pct``) and ``daily_budget_usd``. A missing or invalid value
+    is its default ($100 a day for the budget), an invalid mode is ``off``
+    and a budget that cannot be read as a number is $0: a typo never starts
+    sending requests to the cloud, or spending on it. Never raises;
+    auto-reloads."""
+    _check_auto_reload()
+    mode = str(APP_CONFIG.get(_OVERFLOW_MODE_KEY) or "off").strip().lower()
+    if mode not in OVERFLOW_MODES:
+        mode = "off"
+    out: dict[str, Any] = {"mode": mode}
+    for key, (default, low, high) in _OVERFLOW_INT_KEYS.items():
+        raw = APP_CONFIG.get(key, default)
+        try:
+            value = default if isinstance(raw, bool) else int(raw)
+        except (TypeError, ValueError):
+            value = default
+        if not low <= value <= high:
+            value = default
+        out[key.removeprefix("overflow_")] = value
+    if out["waiting_low"] >= out["waiting_high"]:
+        out["waiting_high"] = _OVERFLOW_INT_KEYS["overflow_waiting_high"][0]
+        out["waiting_low"] = _OVERFLOW_INT_KEYS["overflow_waiting_low"][0]
+    raw_budget = APP_CONFIG.get(_OVERFLOW_BUDGET_KEY, DEFAULT_OVERFLOW_DAILY_BUDGET_USD)
+    try:
+        budget = 0.0 if isinstance(raw_budget, bool) else float(raw_budget)
+    except (TypeError, ValueError):
+        budget = 0.0
+    if not math.isfinite(budget) or budget < 0:
+        budget = 0.0
+    out["daily_budget_usd"] = budget
+    return out
+
+
+def set_overflow_settings(values: dict[str, Any]) -> None:
+    """Persist peak overflow's settings (the keys ``get_overflow_settings``
+    returns, all of them). Callers validate first; this re-checks so a bad
+    value can never reach config.toml through some other path."""
+    mode = values.get("mode")
+    if mode not in OVERFLOW_MODES:
+        raise ValueError(f"overflow mode must be one of {OVERFLOW_MODES}, got {mode!r}")
+    keys: dict[str, Any] = {_OVERFLOW_MODE_KEY: mode}
+    for key, (_default, low, high) in _OVERFLOW_INT_KEYS.items():
+        value = values.get(key.removeprefix("overflow_"))
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            raise ValueError(f"{key} must be a whole number from {low} to {high}, got {value!r}")
+        keys[key] = value
+    if keys["overflow_waiting_low"] >= keys["overflow_waiting_high"]:
+        raise ValueError("overflow_waiting_low must be below overflow_waiting_high")
+    budget = values.get("daily_budget_usd")
+    if isinstance(budget, bool) or not isinstance(budget, (int, float)) or not math.isfinite(budget) or budget < 0:
+        raise ValueError(f"overflow_daily_budget_usd must be a number >= 0, got {budget!r}")
+    keys[_OVERFLOW_BUDGET_KEY] = float(budget)
+    _save_app_keys(keys)
 
 
 # Client rules: mail everyone who still has something open on the 1st of

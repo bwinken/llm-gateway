@@ -35,9 +35,9 @@ from app.services import client_patch, client_rules, model_changes
 from app.services.model_catalog import (
     catalog_keys,
     fallback_target,
-    hidden_cloud_backends as _hidden_cloud_backends,
     resolve_prices as _resolve_prices,
     usage_row_key,
+    visible_usage_rows,
 )
 from app.services.model_order import (
     catalog_key,
@@ -141,16 +141,13 @@ def _build_model_breakdown(
 
     Group order is fixed (on-prem first) with unknown backend values appended
     so no spend can vanish from the breakdown — except the cloud backends the
-    user has no access to (``_hidden_cloud_backends``), which are left out of
-    the rows and the total alike. Each row gets its share of that total.
+    user has no access to (``model_catalog.visible_usage_rows``), which are
+    left out of the rows and the total alike; peak-overflow rows stay, marked
+    ``overflow``. Each row gets its share of that total.
     Shared by the dashboard page render and the refresh API so both always
     agree.
     """
-    hidden = _hidden_cloud_backends(user)
-    breakdown_rows = [
-        r for r in get_model_breakdown(session, user.id, period=period)
-        if r["backend"] not in hidden
-    ]
+    breakdown_rows = visible_usage_rows(get_model_breakdown(session, user.id, period=period), user)
     total_cost = sum(r["cost_usd"] for r in breakdown_rows)
     backend_labels = _BACKEND_LABELS
     backend_order = ["vllm", "azure", "bedrock"]
@@ -425,6 +422,7 @@ def dashboard(
             azure_today_cost=round(azure_today_cost, 4),
             bedrock_today_cost=round(bedrock_today_cost, 4),
             vllm_today_cost=round(today["vllm_cost_usd"], 4),
+            overflow_today_cost=round(today["overflow_cost_usd"], 4),
             cloud_limit=cloud_limit,
             cloud_today_cost=round(cloud_today_cost, 4),
             cloud_usage_percent=round(cloud_usage_percent, 1),

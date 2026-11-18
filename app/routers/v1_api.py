@@ -73,7 +73,17 @@ from app.services.azure_proxy import (
     azure_forward_messages,
     azure_forward_responses,
 )
-from app.services import audit, client_events, client_rules, client_settings, concurrency, guardrail, model_catalog
+from app.services import (
+    audit,
+    billing,
+    client_events,
+    client_rules,
+    client_settings,
+    concurrency,
+    guardrail,
+    model_catalog,
+    overflow,
+)
 from app.services.model_order import natural_key
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
@@ -81,6 +91,7 @@ from app.services.bedrock_proxy import (
     bedrock_forward_messages,
 )
 from app.services.vllm_proxy import (
+    peek_route,
     vllm_forward_chat_completions,
     vllm_forward_count_tokens,
     vllm_forward_messages,
@@ -170,6 +181,110 @@ def _route_to_bedrock(alias: str, user: User, *, quiet: bool = False) -> bool:
     return False
 
 
+# Response header of a request the account sent to an on-prem model and the
+# gateway served from the cloud because that model's server is congested
+# (peak overflow, app/services/overflow.py).
+_OVERFLOW_HEADER = "X-Overflow"
+_CHAT_TYPES = ["llm", "vlm"]
+
+
+async def _overflow_plan(
+    request: Request, user: User, alias: str, *, bedrock: bool = True,
+) -> tuple[str, str, str] | None:
+    """``(backend, cloud alias, on-prem alias)`` when this on-prem request is
+    to be served by the cloud instead (peak overflow), else None.
+
+    The rule acts on the on-prem model the request would really be served by
+    (``peek_route``: the alias itself, or its stand-in when it is unknown or
+    its server is down), so a client naming a model the gateway does not
+    have overflows with everyone else on that server. The account must be on
+    the cloud for that server (``overflow.target_for``, this worker's
+    snapshot) and the model's ``overflow_to`` a cloud model this endpoint
+    dispatches to (``bedrock=False`` for ``/v1/responses``). An account with
+    cloud access of its own keeps its cloud cap: once that is spent it stays
+    on-prem rather than being refused. Never raises: any doubt is on-prem.
+    """
+    try:
+        located = peek_route(alias, _CHAT_TYPES)
+        if located is None:
+            return None
+        local_alias, route = located
+        target = overflow.target_for(user, route)
+        if target is None:
+            return None
+        backend = overflow.cloud_backend(target)
+        if backend is None or (backend == "bedrock" and not bedrock):
+            return None
+        if (user.can_use_azure or user.can_use_bedrock) and not await run_in_threadpool(
+            check_cloud_budget, user, backend, allow_fallback=True
+        ):
+            return None
+        return backend, target, local_alias
+    except Exception as exc:
+        logger.warning(
+            "Overflow plan failed (served on-prem) | user={} model={} error={}: {}",
+            user.username, alias, type(exc).__name__, exc,
+        )
+        return None
+
+
+async def _overflow_dispatch(
+    request: Request, user: User, alias: str, endpoint: str, *, azure, bedrock=None,
+) -> Response | None:
+    """Serve this on-prem request from the cloud when peak overflow says so
+    (``_overflow_plan``); None means "serve it on-prem as usual".
+
+    ``azure`` / ``bedrock`` are the endpoint's cloud forwarders. They read the
+    model from the request body, so the body's ``model`` is set to the cloud
+    alias for the call (``request.json()`` hands every reader the one cached
+    dict) and put back if the attempt fails. An attempt that fails before
+    the client received anything (any error status, or the forwarder
+    raising) is not the client's answer: the account asked for an on-prem
+    model, so it gets one. The usage row is marked through
+    ``billing.mark_overflow``; overflowed requests skip the guardrail, which
+    screens local traffic only.
+    """
+    plan = await _overflow_plan(request, user, alias, bedrock=bedrock is not None)
+    if plan is None:
+        return None
+    backend, cloud_alias, local_alias = plan
+    try:
+        body = await request.json()
+    except Exception:
+        return None
+    if not isinstance(body, dict):
+        return None
+    had_model, asked = "model" in body, body.get("model")
+    body["model"] = cloud_alias
+    billing.mark_overflow(local_alias)
+    problem: str | None = None
+    response: Response | None = None
+    try:
+        response = await (azure if backend == "azure" else bedrock)(request, user)
+        if response.status_code >= 400:
+            problem = f"HTTP {response.status_code}"
+    except HTTPException as exc:
+        problem = f"HTTP {exc.status_code}"
+    except Exception as exc:
+        problem = type(exc).__name__
+    if problem is not None or response is None:
+        if had_model:
+            body["model"] = asked
+        else:
+            body.pop("model", None)
+        billing.clear_overflow()
+        logger.warning(
+            "Overflow to {} failed ({}), served on-prem | user={} model={} cloud_model={} endpoint={}",
+            backend, problem, user.username, local_alias, cloud_alias, endpoint,
+        )
+        return None
+    try:
+        response.headers[_OVERFLOW_HEADER] = f"{local_alias} is busy; served by {cloud_alias}"
+    except Exception:  # an alias a header cannot carry: the response matters more
+        pass
+    return response
+
+
 def _concurrency_pool(*, bedrock: bool = True):
     """Resolver for ``deps.limited``: which concurrency pool a ``/v1/*``
     request counts against, ``cloud`` when the handler below will send it to
@@ -181,7 +296,11 @@ def _concurrency_pool(*, bedrock: bool = True):
     because the cloud cap is spent (``cloud_budget_fallback``) is ``local``:
     it loads the GPUs, so it must not get the wider cloud limit. With the
     fallback off the handler either goes to the cloud or answers 429, so the
-    cap is not read here. Only runs while the limit applies to the account.
+    cap is not read here. An on-prem request that peak overflow sends to the
+    cloud (``_overflow_plan``, the handler's own check) is ``cloud``; should
+    that attempt fail and the request be served on-prem after all, it keeps
+    the cloud slot it was admitted with. Only runs while the limit applies
+    to the account.
     """
     async def pool(request: Request, user: User) -> str:
         alias = await _peek_model_alias(request)
@@ -190,6 +309,10 @@ def _concurrency_pool(*, bedrock: bool = True):
         elif alias and bedrock and _route_to_bedrock(alias, user, quiet=True):
             backend = "bedrock"
         else:
+            # An on-prem request peak overflow sends to the cloud counts
+            # there: it does not load the GPUs.
+            if await _overflow_plan(request, user, alias, bedrock=bedrock) is not None:
+                return "cloud"
             return "local"
         if get_cloud_budget_fallback() and not await run_in_threadpool(
             check_cloud_budget, user, backend, allow_fallback=True
@@ -493,7 +616,7 @@ USAGE_MAX_DAYS = 90
 def _model_usage_row(row: dict) -> dict:
     """One model's usage as the account endpoints give it: the backend under
     its client-facing name (``onprem`` / ``azure`` / ``aws``)."""
-    return {
+    out = {
         "model": row["model"],
         "backend": model_catalog.BACKEND_NAMES.get(row["backend"], row["backend"]),
         "type": row["type"],
@@ -502,6 +625,13 @@ def _model_usage_row(row: dict) -> dict:
         "output_tokens": row["output_tokens"],
         "cost_usd": row["cost_usd"],
     }
+    if "overflow" in row:
+        # The account's own usage (``/v1/usage``). True: it asked for an
+        # on-prem model and the gateway served it from this cloud model
+        # while on-prem was congested. Service accounts are never moved, so
+        # their rows have no such key.
+        out["overflow"] = bool(row["overflow"])
+    return out
 
 
 @router.get("/v1/usage", tags=["account"])
@@ -517,19 +647,20 @@ def usage_history(
     month so far, with one ``models`` row per model and backend in the
     dashboard's order. Like the dashboard, the month leaves out a cloud
     backend the account no longer has access to; the days count everything
-    (as the daily budget does).
+    (as the daily budget does). A row with ``overflow`` true is a cloud
+    model the gateway served in place of a congested on-prem one: it is
+    listed whatever cloud access the account has, and is on its bill.
 
     Answers once the daily limit is spent. Plain ``def``: it reads the
     database and awaits nothing.
     """
     history = get_usage_history(user, days)
-    hidden = model_catalog.hidden_cloud_backends(user)
     catalog = model_catalog.current_catalog_keys()
 
     def by_model(rows: list[dict]) -> dict:
         """Totals and one row per model and backend, in the dashboard's
         order, without the cloud backends the account may not use."""
-        rows = model_catalog.sort_usage_rows([r for r in rows if r["backend"] not in hidden], catalog)
+        rows = model_catalog.sort_usage_rows(model_catalog.visible_usage_rows(rows, user), catalog)
         return {
             "requests": sum(r["requests"] for r in rows),
             "input_tokens": sum(r["input_tokens"] for r in rows),
@@ -830,6 +961,13 @@ async def chat_completions(request: Request, user: User = Depends(limited_v1_use
         if await _cloud_budget_gate(user, "bedrock", alias, "/v1/chat/completions"):
             return await bedrock_forward_chat_completions(request, user)
         budget_fallback = "bedrock"
+    # Peak overflow: an account moved to the cloud while this server is congested.
+    overflowed = await _overflow_dispatch(
+        request, user, alias, "/v1/chat/completions",
+        azure=azure_forward_chat_completions, bedrock=bedrock_forward_chat_completions,
+    )
+    if overflowed is not None:
+        return overflowed
     # Guardrail: local (vLLM) traffic only, cloud-budget fallbacks included.
     blocked = await guardrail.screen(request, user, "chat_completions", "/v1/chat/completions", "vllm")
     if blocked is not None:
@@ -1173,6 +1311,12 @@ async def responses(request: Request, user: User = Depends(limited_v1_responses_
         if await _cloud_budget_gate(user, "azure", alias, "/v1/responses"):
             return await azure_forward_responses(request, user)
         budget_fallback = "azure"
+    # Peak overflow (Azure only: this endpoint has no Bedrock dispatch).
+    overflowed = await _overflow_dispatch(
+        request, user, alias, "/v1/responses", azure=azure_forward_responses,
+    )
+    if overflowed is not None:
+        return overflowed
     # Guardrail: local (vLLM) traffic only, cloud-budget fallbacks included.
     blocked = await guardrail.screen(request, user, "responses", "/v1/responses", "vllm")
     if blocked is not None:
@@ -1216,6 +1360,13 @@ async def messages(request: Request, user: User = Depends(limited_v1_user)):
         if await _cloud_budget_gate(user, "bedrock", alias, "/v1/messages"):
             return await bedrock_forward_messages(request, user)
         budget_fallback = "bedrock"
+    # Peak overflow: an account moved to the cloud while this server is congested.
+    overflowed = await _overflow_dispatch(
+        request, user, alias, "/v1/messages",
+        azure=azure_forward_messages, bedrock=bedrock_forward_messages,
+    )
+    if overflowed is not None:
+        return overflowed
     # Guardrail: local (vLLM) traffic only, cloud-budget fallbacks included.
     blocked = await guardrail.screen(request, user, "messages", "/v1/messages", "vllm")
     if blocked is not None:

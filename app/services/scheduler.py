@@ -46,6 +46,9 @@ class Job:
     interval: Callable[[], float]
     # The job body: gets a fresh Session, returns a one-line summary.
     run: Callable[[Session], str]
+    # A job that runs every few seconds: its "done" line goes to DEBUG (its
+    # own events are what is worth a line), failures are still warnings.
+    quiet: bool = False
 
 
 def env_seconds(name: str, default: float) -> float:
@@ -116,7 +119,7 @@ def run_if_due(job: Job, bind=None) -> str | None:
         with Session(bind) as session:
             detail = job.run(session) or ""
         status = "ok"
-        logger.info("Scheduled job {} done | {}", job.name, detail)
+        (logger.debug if job.quiet else logger.info)("Scheduled job {} done | {}", job.name, detail)
     except Exception as exc:
         status, detail = "error", f"{type(exc).__name__}: {exc}"
         logger.warning("Scheduled job {} failed | error={}", job.name, detail)

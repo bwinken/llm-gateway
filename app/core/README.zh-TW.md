@@ -61,6 +61,7 @@ Alias 在 `[models.*]`、`[azure_models.*]`、`[bedrock_models.*]` 之間必須�
 - `_MODEL_REASONING_KEYS` — 不對外揭露：`reasoning_efforts`（下游實際接受的等級）與 `reasoning_effort_map`（逐級指定改寫目標）。由 `app/services/reasoning_effort.py` 使用；不設定則照原樣轉送。
 - `_MODEL_PRICING_KEYS` — `input_price_per_1m`、`output_price_per_1m`，以及可選的 `cached_input_price_per_1m`（快取讀取）與 `cache_write_input_price_per_1m`（快取寫入）。優先於 `[pricing.<type>]`，後者再 fallback 到 `[pricing]` 預設值（`_default`）。
 - `_CLOUD_ROUTING_KEYS` — 僅 `[azure_models.*]` / `[bedrock_models.*]`，不對外揭露：`rate_limit_fallback`（遇到 429 時接手的**同一後端** alias）
+- `_LOCAL_ROUTING_KEYS` — 僅 `[models.*]`，不對外揭露：`overflow_to`（尖峰溢流時，替被移到雲端的帳號服務此模型的 Azure / AWS alias）、`overflow_waiting_high` / `overflow_waiting_low`（此 server 自己的門檻）
 
 **關鍵函式：**
 

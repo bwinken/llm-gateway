@@ -136,6 +136,7 @@ def _log_usage_sync(
     cost: Decimal,
     endpoint: str,
     backend: str = "vllm",
+    overflow: bool = False,
 ) -> None:
     """Synchronous DB write — meant to run in a thread via run_in_executor."""
     try:
@@ -149,6 +150,7 @@ def _log_usage_sync(
                 cost_usd=cost,
                 endpoint=endpoint,
                 backend=backend,
+                overflow=overflow,
             )
             session.add(log)
             session.commit()
@@ -377,6 +379,28 @@ def _warn_if_slow_headers(user: User, model: str, endpoint: str, backend: str) -
         logger.warning("slow-headers hook failed: {}", exc)
 
 
+# Peak overflow (app/services/overflow.py): the unified /v1 dispatch marks a
+# request it is about to send to the cloud in place of a congested on-prem
+# model, and the usage row carries the mark. A contextvar, like the request
+# meta: the cloud proxies know nothing of it, and the stream that bills later
+# runs in a copy of this context. Holds the on-prem alias that was asked for.
+_overflow_from: contextvars.ContextVar[str | None] = contextvars.ContextVar("overflow_from", default=None)
+
+
+def mark_overflow(local_alias: str) -> None:
+    """This request is served by the cloud for ``local_alias`` (peak overflow)."""
+    _overflow_from.set(local_alias)
+
+
+def clear_overflow() -> None:
+    """The overflow attempt was given up: the request is served on-prem after all."""
+    _overflow_from.set(None)
+
+
+def overflow_from() -> str | None:
+    return _overflow_from.get()
+
+
 def _submit_background(fn: Any, *args: Any) -> None:
     """Run ``fn(*args)`` off the event loop, fire-and-forget: the usage-log
     DB write and the Langfuse generation.
@@ -484,4 +508,7 @@ def _log_usage(
         user.id, user.username,
         model, model_type, input_tokens, output_tokens, cost, endpoint,
         backend,
+        # Only a cloud row is ever an overflow row: a request that fell back
+        # on-prem after a failed attempt is ordinary local usage.
+        backend != "vllm" and _overflow_from.get() is not None,
     )
