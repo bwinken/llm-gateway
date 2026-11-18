@@ -84,7 +84,7 @@
                     <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5">I've applied it</button>
                 </form>
                 <span class="text-t4 text-xs">
-                    Hides this notice. It comes back by itself if the gateway sees the same problem again.
+                    Hides this notice for at least {{ client_quiet_days }} days. After that it comes back if the gateway still sees the same problem.
                     Last seen {{ n.seen_local }}{% if n.client_version %} with Claude Code {{ n.client_version }}{% endif %}.
                 </span>
             </div>

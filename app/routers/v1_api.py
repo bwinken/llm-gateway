@@ -718,8 +718,9 @@ def client_notices_resolved(
     ``{"ids": ["CC001", ...]}`` only those. The answer lists what was open
     and is now resolved (``resolved``, in the checks' order), so a repeated
     call answers an empty list and an id with nothing open is not an error.
-    The gateway cannot see a settings file and takes the account's word:
-    the next violating request reopens the notice by itself.
+    The gateway cannot see a settings file and takes the account's word
+    for two weeks (``client_rules.RESOLVED_QUIET_DAYS``): a notice comes
+    back only if its problem is still seen after that.
 
     The one write an API key has on its account, and in the audit log.
     Plain ``def``.

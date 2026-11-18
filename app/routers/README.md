@@ -189,7 +189,7 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 | `GET` | `/dashboard/install-claude-code.bat` | Windows Claude Code installer download, `setup/install-claude-code.bat` with `__USER_API_KEY__` replaced by the caller's key and line endings normalized to CRLF (404 when the template is absent) |
 | `GET` | `/dashboard/client-notices` | The dashboard's client-rule notices panel alone (`_client_notices.html`; empty when nothing is open). The page swaps it in after *I've applied it* |
 | `GET` | `/dashboard/client-rules/all/patch.{bat,sh}` | The account's one settings patch: everything it has open, merged (`client_rules.combined_for`). There is no download per check. 404 when there is nothing to apply (a browser is redirected to `/dashboard`: mail links here) |
-| `POST` | `/dashboard/client-rules/{rule_id}/resolved` | *I've applied it*: hide this notice until the gateway sees the problem again. JSON with `Accept: application/json` |
+| `POST` | `/dashboard/client-rules/{rule_id}/resolved` | *I've applied it*: hide this notice for at least two weeks; it returns only if the gateway still sees the problem after that. JSON with `Accept: application/json` |
 | `POST` | `/dashboard/client-rules/all/resolved` | *I've applied everything*: the same for every open notice |
 | `GET` | `/dashboard/api-key/patch.{bat,sh}` | The caller's own key as a settings patch: sets `ANTHROPIC_AUTH_TOKEN`, removes `ANTHROPIC_API_KEY` (`client_patch.key_env`). What to run after regenerating. `Cache-Control: no-store`, recorded in the audit log |
 | `GET` | `/setup` | Claude Code installer page (Windows). 404, like the installer download, with `SETUP_PAGE_ENABLED=false` |

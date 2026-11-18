@@ -419,8 +419,9 @@ class ClientViolation(SQLModel, table=True):
     # is done once mailed_at is not older than this.
     mail_requested_at: NaiveDatetime | None = Field(default=None)
     # When the account said "I've applied the fix" on its dashboard. The
-    # violation counts as resolved (no notice, no mail) while this is not
-    # older than last_seen_at: a later violation reopens it by itself.
+    # violation counts as resolved (no notice, no mail, no reminder) until
+    # it is seen again more than client_rules.RESOLVED_QUIET_DAYS after
+    # this: a violation inside those days only moves last_seen_at.
     resolved_at: NaiveDatetime | None = Field(default=None)
 
 

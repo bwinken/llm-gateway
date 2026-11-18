@@ -1051,10 +1051,10 @@ result = client.system_one(
             .then(function() {
                 if (all) {
                     document.getElementById('clientNotices').remove();
-                    gwToast('All marked as done. A notice returns if the gateway sees its problem again.', 'ok');
+                    gwToast('All marked as done. A notice returns only if the gateway still sees its problem after {{ client_quiet_days }} days.', 'ok');
                     return;
                 }
-                gwToast('Marked as done. The notice returns if the gateway sees the problem again.', 'ok');
+                gwToast('Marked as done. The notice returns only if the gateway still sees the problem after {{ client_quiet_days }} days.', 'ok');
                 return repaint();
             })
             .catch(function(err) { btn.disabled = false; gwToast('Could not save that — ' + err.message, 'error'); });

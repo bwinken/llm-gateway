@@ -57,8 +57,13 @@ def _client_rule_view(session: Session, rule, seen: dict | None) -> dict:
                 "first_seen": _local_label(v.first_seen_at), "last_seen": _local_label(v.last_seen_at),
                 "mailed": _local_label(v.mailed_at), "mail_error": v.mail_error,
                 "mailable": v.username in mailable,
-                # The account said it applied the fix and has not violated since.
+                # The account said it applied the fix, and its quiet days are not over
+                # (or it has not been seen since).
                 "resolved": _local_label(v.resolved_at) if client_rules.is_resolved(v) else "",
+                # ... but the problem was seen again since: not fixed everywhere. It can
+                # reopen from ``quiet_until`` on.
+                "still_seen": client_rules.still_seen(v),
+                "quiet_until": _local_label(client_rules.quiet_until(v)) if client_rules.is_resolved(v) else "",
                 # It said so, then violated again: open, and a new case for mail.
                 "reopened": _local_label(v.resolved_at) if v.resolved_at and not client_rules.is_resolved(v) else "",
                 # An admin asked for a mail that has not gone out yet.
@@ -127,6 +132,7 @@ def _client_rules_view(session: Session, admin_user: User) -> dict:
         "mail_log": _mail_log_view(client_mail.mail_log(session)),
         "actions": client_rules.ACTIONS,
         "window_days": client_rules.WINDOW_DAYS,
+        "quiet_days": client_rules.RESOLVED_QUIET_DAYS,
     }
 
 

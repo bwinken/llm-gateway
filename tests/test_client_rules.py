@@ -609,6 +609,133 @@ class TestPatch:
         return subprocess.run(["node", "-e", line[len('node -e "'):-1]], env=env, capture_output=True, text=True, timeout=60)
 
 
+class TestQuietAfterApplied:
+    """After "I've applied it" the account is left alone for
+    ``RESOLVED_QUIET_DAYS``, whatever its requests show: the notice comes back
+    two weeks later at the earliest, and only if the problem is still seen."""
+
+    QUIET = timedelta(days=client_rules.RESOLVED_QUIET_DAYS)
+
+    def _resolved(self, db_session, at: datetime, **kw) -> ClientViolation:
+        row = _violation(db_session, AUTO, "testuser", **kw)
+        row.first_seen_at = row.last_seen_at = at - timedelta(hours=1)
+        db_session.add(row)
+        db_session.commit()
+        assert client_rules.resolve(db_session, AUTO, "testuser", at)
+        return row
+
+    def _seen(self, db_session, at: datetime) -> ClientViolation:
+        client_rules._touch_violation(db_session, AUTO, "testuser", "2.1.0", at)
+        [row] = _violations(db_session, AUTO)
+        return row
+
+    def test_it_is_two_weeks(self):
+        assert client_rules.RESOLVED_QUIET_DAYS == 14
+
+    def test_still_seen_inside_the_quiet_days_stays_hidden(self, db_session, test_user):
+        t0 = _now() - timedelta(days=20)
+        self._resolved(db_session, t0)
+        for later in (timedelta(minutes=30), timedelta(days=3), self.QUIET - timedelta(minutes=1)):
+            row = self._seen(db_session, t0 + later)
+            assert client_rules.is_resolved(row) and client_rules.still_seen(row), later
+            assert row.last_seen_at == t0 + later                    # the admin still sees it was seen
+            assert client_rules.notices_for(db_session, test_user, t0 + later) == []
+            assert client_rules.open_items(db_session, t0 + later) == {}
+
+    def test_still_seen_after_them_it_is_shown_again(self, db_session, test_user):
+        t0 = _now() - timedelta(days=20)
+        self._resolved(db_session, t0)
+        self._seen(db_session, t0 + timedelta(days=13))              # ignored
+        at = t0 + self.QUIET + timedelta(minutes=1)
+        row = self._seen(db_session, at)
+        assert not client_rules.is_resolved(row) and row.resolved_at == t0
+        assert [n["rule_id"] for n in client_rules.notices_for(db_session, test_user, at)] == [AUTO]
+
+    def test_not_seen_after_them_it_stays_away(self, db_session, test_user):
+        """Seen during the quiet days (the second machine, patched a day
+        later) and never again: the end of the quiet days reopens nothing."""
+        t0 = _now() - timedelta(days=20)
+        self._resolved(db_session, t0)
+        self._seen(db_session, t0 + timedelta(days=1))
+        [row] = _violations(db_session, AUTO)
+        assert client_rules.is_resolved(row)
+        assert client_rules.notices_for(db_session, test_user, t0 + self.QUIET + timedelta(days=1)) == []
+
+    def test_pressed_late_it_still_gets_its_two_weeks(self, db_session, test_user):
+        """Last seen long ago, pressed just now: a violation tomorrow is past
+        the 15-day window of the old one, and must not count as a new case."""
+        last_seen = _now() - timedelta(days=client_rules.WINDOW_DAYS - 1)
+        row = _violation(db_session, AUTO, "testuser")
+        row.first_seen_at = row.last_seen_at = last_seen
+        db_session.add(row)
+        db_session.commit()
+        pressed = last_seen + timedelta(days=client_rules.WINDOW_DAYS - 2)
+        client_rules.resolve(db_session, AUTO, "testuser", pressed)
+        row = self._seen(db_session, pressed + timedelta(days=5))    # 18 days after it was last seen
+        assert row.resolved_at == pressed and client_rules.is_resolved(row)
+        row = self._seen(db_session, pressed + self.QUIET + timedelta(hours=1))
+        assert not client_rules.is_resolved(row)
+
+    def test_pressing_again_starts_another_two_weeks(self, db_session, test_user):
+        t0 = _now() - timedelta(days=30)
+        self._resolved(db_session, t0)
+        reopened = t0 + self.QUIET + timedelta(hours=1)
+        assert not client_rules.is_resolved(self._seen(db_session, reopened))
+        client_rules.resolve(db_session, AUTO, "testuser", reopened + timedelta(hours=1))
+        row = self._seen(db_session, reopened + timedelta(days=10))
+        assert client_rules.is_resolved(row)
+
+    def test_no_terminal_reminder_in_the_quiet_days(self, client, db_session, test_user):
+        _configure(db_session, AUTO, action="remind")
+        resp, _ = _messages(client, safeguards={})
+        assert resp.status_code == 400 and resp.headers["X-Gateway-Reminder"] == AUTO
+        assert client_rules.resolve(db_session, AUTO, "testuser")
+        [row] = _violations(db_session, AUTO)
+        row.reminded_on = "2000-01-01"                               # another day: a reminder would be due
+        db_session.add(row)
+        db_session.commit()
+        client_rules.reset()
+        client_rules.refresh()
+        resp, _ = _messages(client, safeguards={})
+        assert resp.status_code == 200 and "X-Gateway-Reminder" not in resp.headers
+        row.resolved_at -= self.QUIET + timedelta(minutes=1)         # two weeks on
+        row.last_seen_at = row.resolved_at
+        db_session.add(row)
+        db_session.commit()
+        client_rules.reset()
+        client_rules.refresh()
+        resp, _ = _messages(client, safeguards={})
+        assert resp.status_code == 400 and resp.headers["X-Gateway-Reminder"] == AUTO
+
+    def test_no_mail_in_the_quiet_days(self, db_session, test_user, mail_on):
+        _configure(db_session, AUTO, auto_email=True, email_repeat_days=7)
+        t0 = _now() - timedelta(days=20)
+        self._resolved(db_session, t0)
+        self._seen(db_session, t0 + timedelta(days=8))
+        assert "sent=0" in client_mail.run_auto_mail(db_session, t0 + timedelta(days=9))
+        assert client_mail.request_mail(db_session, AUTO, only_unmailed=False, now=t0 + timedelta(days=9)) == 0
+        assert mail_on == []
+
+    def test_the_admin_sees_who_is_still_at_it(self, client, db_session, admin_user, test_user):
+        t0 = _now() - timedelta(days=2)
+        self._resolved(db_session, t0)
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        card = body.split('id="client-rule-CC001"', 1)[1].split('id="client-rule-CC002"', 1)[0]
+        assert "says fixed" in card and "data-cr-still-seen" not in card
+        self._seen(db_session, t0 + timedelta(days=1))
+        body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
+        card = body.split('id="client-rule-CC001"', 1)[1].split('id="client-rule-CC002"', 1)[0]
+        assert "says fixed" in card and "data-cr-still-seen" in card and "quiet until" in card
+        assert "0 accounts" in card                                  # not counted as open
+
+    def test_the_dashboard_says_how_long(self, client, db_session, test_user):
+        _violation(db_session, AUTO, "testuser")
+        body = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
+        assert "Hides this notice for at least 14 days" in body
+        panel = client.get("/dashboard/client-notices", headers=web_auth_header(sub=test_user.username)).text
+        assert "for at least 14 days" in panel
+
+
 class TestFromSetup:
     """``NAME=@setup`` in a patch: the value is what Client setup suggests
     the account (``GET /v1/settings``'s ``default``), so it has one home."""
@@ -859,7 +986,8 @@ class TestDashboard:
 
 class TestResolved:
     """"I've applied it": the gateway cannot see a settings file, so the
-    account says so, and the next violating request says otherwise."""
+    account says so. It is then left alone for two weeks; a violation after
+    that says otherwise."""
 
     _URL = "/dashboard/client-rules/CC001/resolved"
 
@@ -878,7 +1006,7 @@ class TestResolved:
         [row] = _violations(db_session, AUTO)
         assert row.resolved_at is not None and client_rules.is_resolved(row)
 
-    def test_a_later_violation_brings_it_back(self, client, db_session, test_user):
+    def test_a_violation_after_the_quiet_days_brings_it_back(self, client, db_session, test_user):
         client_rules.refresh()
         _messages(client, safeguards={})
         client.post(self._URL, headers=self._json(test_user))
@@ -887,17 +1015,33 @@ class TestResolved:
         client_rules.refresh()
         _messages(client, safeguards={})
         [row] = _violations(db_session, AUTO)
+        assert client_rules.is_resolved(row) and client_rules.still_seen(row)     # seen again, and still left alone
+        assert 'id="clientNotice' not in self._page(client, test_user)
+        # The same request two weeks after the button was pressed.
+        row.resolved_at -= timedelta(days=client_rules.RESOLVED_QUIET_DAYS, minutes=1)
+        row.last_seen_at = row.resolved_at
+        db_session.add(row)
+        db_session.commit()
+        client_rules.reset()
+        client_rules.refresh()
+        _messages(client, safeguards={})
+        [row] = _violations(db_session, AUTO)
         assert not client_rules.is_resolved(row)
         assert 'id="clientNotice-CC001"' in self._page(client, test_user)
 
-    def test_violating_again_after_saying_fixed_is_a_new_case_for_mail(self, client, db_session, test_user, admin_user, mail_on):
+    def test_violating_again_after_the_quiet_days_is_a_new_case_for_mail(self, client, db_session, test_user, admin_user, mail_on):
         _configure(db_session, AUTO, auto_email=True)                    # no repeat: one mail per case
         row = _violation(db_session, AUTO, "testuser")
         start = row.last_seen_at
         assert "sent=1" in client_mail.run_auto_mail(db_session, start)
         client_rules.resolve(db_session, AUTO, "testuser", start + timedelta(minutes=5))
         assert "sent=0" in client_mail.run_auto_mail(db_session, start + timedelta(hours=7))
-        again = start + timedelta(days=2)
+        soon = start + timedelta(days=2)
+        client_rules._touch_violation(db_session, AUTO, "testuser", "2.1.0", soon)
+        [row] = _violations(db_session, AUTO)
+        assert client_rules.is_resolved(row) and row.mailed_at is not None        # inside the quiet days: nothing changes
+        assert "sent=0" in client_mail.run_auto_mail(db_session, soon)
+        again = start + timedelta(days=client_rules.RESOLVED_QUIET_DAYS, minutes=10)
         client_rules._touch_violation(db_session, AUTO, "testuser", "2.1.0", again)
         [row] = _violations(db_session, AUTO)
         assert not client_rules.is_resolved(row) and row.mailed_at is None and row.resolved_at is not None
@@ -1538,7 +1682,11 @@ class TestEverythingAtOnce:
         assert resp.json() == {"ok": True, "resolved": 2}
         assert 'id="clientNotice' not in self._page(client, test_user)
         row = _violations(db_session, HTTP)[0]
-        row.last_seen_at = _now() + timedelta(minutes=5)             # http again
+        row.last_seen_at = _now() + timedelta(minutes=5)             # http again, minutes later: still left alone
+        db_session.add(row)
+        db_session.commit()
+        assert 'id="clientNotice' not in self._page(client, test_user)
+        row.resolved_at -= timedelta(days=client_rules.RESOLVED_QUIET_DAYS)   # and again two weeks on
         db_session.add(row)
         db_session.commit()
         body = self._page(client, test_user)

@@ -439,6 +439,7 @@ def dashboard(
             client_combined=_client_combined(session, user),
             model_changes=_model_changes(session, user),
             client_notice_days=client_rules.WINDOW_DAYS,
+            client_quiet_days=client_rules.RESOLVED_QUIET_DAYS,
             api_key_env=client_patch.API_KEY_ENV,
             api_key_env_retired=client_patch.API_KEY_ENV_RETIRED,
             server_groups=server_groups,
@@ -562,7 +563,10 @@ def client_notices_panel(
     return templates.TemplateResponse(
         request,
         "_client_notices.html",
-        {"client_notices": _client_notices(session, user), "client_combined": _client_combined(session, user)},
+        {
+            "client_notices": _client_notices(session, user), "client_combined": _client_combined(session, user),
+            "client_quiet_days": client_rules.RESOLVED_QUIET_DAYS,
+        },
     )
 
 
@@ -663,7 +667,8 @@ def client_rules_resolved_all(
     session: Session = Depends(get_session),
 ):
     """"I've applied everything": every open notice of the account goes
-    away; each returns by itself if the gateway sees its problem again."""
+    away; each returns only if the gateway still sees its problem after
+    ``client_rules.RESOLVED_QUIET_DAYS``."""
     count = client_rules.resolve_all(session, user.username)
     logger.info("Client rules all marked as fixed by the account | user={} count={}", user.username, count)
     if "application/json" in (request.headers.get("accept") or "").lower():
@@ -679,9 +684,10 @@ def client_rule_resolved(
     session: Session = Depends(get_session),
 ):
     """The user says they applied the fix: their notice for this check goes
-    away and they are no longer mailed about it. The gateway cannot see a
-    settings file, so it takes their word; the next violating request
-    reopens the notice by itself."""
+    away and they are no longer mailed or reminded about it. The gateway
+    cannot see a settings file, so it takes their word for
+    ``client_rules.RESOLVED_QUIET_DAYS``; a violating request after that
+    reopens the notice."""
     if not client_rules.resolve(session, rule_id, user.username):
         raise HTTPException(status_code=404, detail="Nothing to mark as done for this account.")
     logger.info("Client rule marked as fixed by the account | rule={} user={}", rule_id, user.username)

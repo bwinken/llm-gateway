@@ -584,8 +584,13 @@ class TestNoticesResolved:
         self._resolve(client, {"ids": [AUTO]})
         db_session.refresh(row)
         assert client_rules.is_resolved(row)
-        # The next violation reopens it, as after the dashboard's button.
+        # As after the dashboard's button: left alone for the quiet days, and
+        # reopened by a violation after them.
         row.last_seen_at = row.resolved_at + timedelta(minutes=5)
+        db_session.add(row)
+        db_session.commit()
+        assert self._notices(client)["notices"] == []
+        row.resolved_at -= timedelta(days=client_rules.RESOLVED_QUIET_DAYS + 1)
         db_session.add(row)
         db_session.commit()
         assert len(self._notices(client)["notices"]) == 1

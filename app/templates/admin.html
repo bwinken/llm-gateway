@@ -887,12 +887,12 @@ function submitExportCsv() {
             {% if r.hits %}
             <div class="overflow-x-auto">
             <table class="gw-table">
-                <thead><tr><th>Account</th><th class="gw-tip gw-tip-wide" data-tip="Open: still counted. Says fixed: the account pressed 'I've applied it' on its dashboard and has not violated since; it is not mailed. On its next violation it goes back to Open by itself and counts as not mailed yet.">Status</th><th>Claude Code</th><th>First seen</th><th>Last seen</th><th>Mailed</th></tr></thead>
+                <thead><tr><th>Account</th><th class="gw-tip gw-tip-wide" data-tip="Open: still counted. Says fixed: the account pressed 'I've applied it' on its dashboard. For {{ cr.quiet_days }} days after that it is left alone: no notice, no mail, no reminder, even if the gateway still sees the problem ('still seen'). A violation after those days puts it back to Open, and it counts as not mailed yet.">Status</th><th>Claude Code</th><th>First seen</th><th>Last seen</th><th>Mailed</th></tr></thead>
                 <tbody>
                     {% for h in r.hits %}
                     <tr class="{{ 'opacity-60' if h.resolved }}">
                         <td class="text-sm"><a href="?q={{ h.username | urlencode }}#users" class="font-mono text-t1 hover:underline">{{ h.username }}</a></td>
-                        <td class="text-xs whitespace-nowrap">{% if h.resolved %}<span class="text-ag">says fixed</span> <span class="text-t4 font-mono">{{ h.resolved }}</span>{% else %}<span style="color:#f5a623">open</span>{% if h.reopened %} <span class="text-t4">again · said fixed <span class="font-mono">{{ h.reopened }}</span></span>{% endif %}{% endif %}</td>
+                        <td class="text-xs whitespace-nowrap">{% if h.resolved %}<span class="text-ag">says fixed</span> <span class="text-t4 font-mono">{{ h.resolved }}</span>{% if h.still_seen %} <span style="color:#f5a623" data-cr-still-seen>· still seen</span> <span class="text-t4">· quiet until <span class="font-mono">{{ h.quiet_until }}</span></span>{% endif %}{% else %}<span style="color:#f5a623">open</span>{% if h.reopened %} <span class="text-t4">again · said fixed <span class="font-mono">{{ h.reopened }}</span></span>{% endif %}{% endif %}</td>
                         <td class="font-mono text-xs text-t3">{{ h.version or '—' }}</td>
                         <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ h.first_seen }}</td>
                         <td class="font-mono text-xs text-t3 whitespace-nowrap">{{ h.last_seen }}</td>
