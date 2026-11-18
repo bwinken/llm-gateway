@@ -4,6 +4,10 @@ Converse answers 400 "This model doesn't support the <field> field" instead
 of ignoring a sampling knob the model lacks (OpenAI GPT, gpt-oss, Kimi, GLM
 and others each reject a different subset). The gateway drops exactly the
 field Bedrock names, retries, and remembers it per model ID.
+
+The same for an output limit below a model's minimum (the GPT models refuse
+``maxTokens`` under 16, which is what a ``max_tokens: 1`` probe sends): it is
+raised to the minimum Bedrock states, and the request retried.
 """
 
 from __future__ import annotations
@@ -42,7 +46,8 @@ def _gpt_entry():
     from app.services import bedrock_proxy
 
     with patch.dict(TEST_BEDROCK_MODELS, {"bedrock-gpt": dict(GPT)}), \
-            patch.dict(bedrock_proxy._unsupported_fields, {}, clear=True):
+            patch.dict(bedrock_proxy._unsupported_fields, {}, clear=True), \
+            patch.dict(bedrock_proxy._min_max_tokens, {}, clear=True):
         yield
 
 
@@ -188,6 +193,158 @@ class TestOtherErrorsStillReachTheClient:
             )
         assert resp.status_code == 400
         assert len(calls) == 1
+
+
+# What the GPT models answer, as their own API words it.
+_BELOW_MIN = ("Invalid 'max_output_tokens': integer below minimum value. "
+              "Expected a value >= {minimum}, but got {got} instead.")
+
+
+def _min_tokens_post_mock(sent: list[dict], minimum: int = 16, message: str = _BELOW_MIN,
+                          unsupported: tuple[str, ...] = ()):
+    """A Bedrock whose model refuses an output limit below ``minimum``."""
+    async def fake_post(url, **kwargs):
+        body = json.loads(kwargs["content"])
+        sent.append(body)
+        field = _first_rejected(body, unsupported)
+        if field:
+            return make_httpx_response(400, _rejection(field))
+        got = (body.get("inferenceConfig") or {}).get("maxTokens")
+        if isinstance(got, int) and got < minimum:
+            return make_httpx_response(
+                400, {"message": message.format(minimum=minimum, got=got)})
+        return make_httpx_response(200, _converse_payload("ok", 3, 1))
+    return fake_post
+
+
+PROBE = {"model": "bedrock-gpt", "max_tokens": 1,
+         "messages": [{"role": "user", "content": "hi"}]}
+
+
+class TestOutputLimitBelowTheModelsMinimum:
+    @pytest.mark.parametrize("path", ["/aws/v1/chat/completions", "/aws/v1/messages"])
+    def test_a_one_token_probe_is_answered(self, client, path):
+        # Claude Code probes a model with max_tokens: 1.
+        sent: list[dict] = []
+        with patch.object(client.__httpx_mock__, "post", side_effect=_min_tokens_post_mock(sent)):
+            resp = client.post(path, json=PROBE, headers=auth_header())
+        assert resp.status_code == 200
+        assert [b["inferenceConfig"]["maxTokens"] for b in sent] == [1, 16]
+
+    def test_the_minimum_is_the_one_bedrock_states(self, client):
+        sent: list[dict] = []
+        with patch.object(client.__httpx_mock__, "post",
+                          side_effect=_min_tokens_post_mock(sent, minimum=32)):
+            resp = client.post("/aws/v1/chat/completions", json=PROBE, headers=auth_header())
+        assert resp.status_code == 200
+        assert sent[-1]["inferenceConfig"]["maxTokens"] == 32
+
+    def test_it_is_remembered_for_the_model(self, client):
+        sent: list[dict] = []
+        with patch.object(client.__httpx_mock__, "post", side_effect=_min_tokens_post_mock(sent)):
+            client.post("/aws/v1/chat/completions", json=PROBE, headers=auth_header())
+            sent.clear()
+            resp = client.post("/aws/v1/chat/completions", json={**PROBE, "max_tokens": 5},
+                               headers=auth_header())
+        assert resp.status_code == 200
+        assert [b["inferenceConfig"]["maxTokens"] for b in sent] == [16]
+
+    def test_a_limit_above_the_minimum_is_never_touched(self, client):
+        sent: list[dict] = []
+        with patch.object(client.__httpx_mock__, "post", side_effect=_min_tokens_post_mock(sent)):
+            client.post("/aws/v1/chat/completions", json=PROBE, headers=auth_header())
+            sent.clear()
+            client.post("/aws/v1/chat/completions", json={**PROBE, "max_tokens": 4000},
+                        headers=auth_header())
+            # No limit asked for: none is invented.
+            client.post("/aws/v1/chat/completions",
+                        json={"model": "bedrock-gpt",
+                              "messages": [{"role": "user", "content": "hi"}]},
+                        headers=auth_header())
+        assert sent[0]["inferenceConfig"]["maxTokens"] == 4000
+        assert "inferenceConfig" not in sent[1]
+
+    def test_what_is_learned_stays_with_that_model(self, client):
+        sent: list[dict] = []
+        with patch.object(client.__httpx_mock__, "post", side_effect=_min_tokens_post_mock(sent)):
+            client.post("/aws/v1/chat/completions", json=PROBE, headers=auth_header())
+        sent.clear()
+        with patch.object(client.__httpx_mock__, "post",
+                          side_effect=_min_tokens_post_mock(sent, minimum=0)):
+            client.post("/aws/v1/chat/completions", json={**PROBE, "model": "bedrock-nova"},
+                        headers=auth_header())
+        assert sent[0]["inferenceConfig"]["maxTokens"] == 1
+
+    def test_together_with_rejected_fields(self, client):
+        sent: list[dict] = []
+        mock = _min_tokens_post_mock(sent, unsupported=("temperature", "topP", "stopSequences"))
+        with patch.object(client.__httpx_mock__, "post", side_effect=mock):
+            resp = client.post("/aws/v1/chat/completions", json={**CHAT, "max_tokens": 1},
+                               headers=auth_header())
+        assert resp.status_code == 200
+        assert sent[-1]["inferenceConfig"] == {"maxTokens": 16}
+
+    @pytest.mark.parametrize("path", ["/aws/v1/chat/completions", "/aws/v1/messages"])
+    def test_stream_retries_before_the_first_byte(self, client, path):
+        sent: list[dict] = []
+
+        def build_request(method, url, **kwargs):
+            return json.loads(kwargs["content"])
+
+        async def fake_send(body, **kwargs):
+            sent.append(body)
+            got = body["inferenceConfig"]["maxTokens"]
+            if got < 16:
+                return FakeBedrockStreamResponse([], status_code=400, body_bytes=json.dumps(
+                    {"message": _BELOW_MIN.format(minimum=16, got=got)}).encode())
+            return FakeBedrockStreamResponse(_stream_events(["he", "llo"]))
+
+        with patch.object(client.__httpx_mock__, "build_request", build_request), \
+                patch.object(client.__httpx_mock__, "send", side_effect=fake_send):
+            resp = client.post(path, json={**PROBE, "stream": True}, headers=auth_header())
+        assert resp.status_code == 200
+        assert "he" in resp.text and "llo" in resp.text
+        assert [b["inferenceConfig"]["maxTokens"] for b in sent] == [1, 16]
+
+    @pytest.mark.parametrize("text", [
+        # As the user of a GPT model on Bedrock reported it.
+        "invalid max output token integer below minimum value, expected >= 16 but got 1 instead",
+        "Invalid 'max_output_tokens': integer below minimum value. "
+        "Expected a value >= 16, but got 1 instead.",
+        # A JSON encoder that escapes ">".
+        '{"message": "Invalid \'max_output_tokens\': Expected a value \\u003e= 16, but got 1"}',
+        "maxTokens must be at least 16",
+    ])
+    def test_wordings_of_the_minimum(self, text):
+        from app.services.bedrock_proxy import _stated_min_max_tokens
+
+        assert _stated_min_max_tokens(400, text) == 16
+
+    @pytest.mark.parametrize("status,text", [
+        (400, "The provided model identifier is invalid."),
+        (400, "max_tokens: 200000 > 64000, which is the maximum allowed"),
+        # Not a probe-sized floor: raising to it would change the request.
+        (400, "max_tokens must be >= 20000 when thinking is enabled"),
+        (429, "Invalid 'max_output_tokens': Expected a value >= 16, but got 1 instead."),
+    ])
+    def test_what_is_not_a_minimum(self, status, text):
+        from app.services.bedrock_proxy import _stated_min_max_tokens
+
+        assert _stated_min_max_tokens(status, text) is None
+
+    def test_a_refusal_that_raising_does_not_cure_reaches_the_client(self, client):
+        calls: list[dict] = []
+
+        async def fake_post(url, **kwargs):
+            calls.append(json.loads(kwargs["content"]))
+            return make_httpx_response(
+                400, {"message": _BELOW_MIN.format(minimum=16, got=1)})
+
+        with patch.object(client.__httpx_mock__, "post", side_effect=fake_post):
+            resp = client.post("/aws/v1/chat/completions", json=PROBE, headers=auth_header())
+        assert resp.status_code == 400
+        # Raised once; the same answer again is not retried a third time.
+        assert len(calls) == 2
 
 
 class TestOpenAiReasoningShape:

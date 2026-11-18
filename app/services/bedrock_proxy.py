@@ -308,21 +308,80 @@ def _drop_inference_fields(body: dict[str, Any], fields: set[str]) -> bool:
     return bool(dropped)
 
 
+# --- An output limit below the model's minimum --------------------------------
+#
+# The OpenAI GPT models on Bedrock refuse a small `maxTokens` the way their
+# own API does: 400 "Invalid 'max_output_tokens': integer below minimum value.
+# Expected a value >= 16, but got 1 instead." Claude Code and other
+# Anthropic-SDK clients probe a model with `max_tokens: 1`, a legal request
+# every other family here answers, so to them such a model looks broken while
+# it is fine. As with the fields above there is no table of which models have
+# a minimum or what it is: Bedrock states the number, the gateway raises
+# `maxTokens` to it and retries, and remembers it for the model ID. The limit
+# is only ever raised, to the stated minimum, and only when that is a small
+# number: nobody wants a 1-token answer, they want to know the model responds.
+_MIN_MAX_TOKENS_RE = re.compile(
+    r"max[\s_]*(?:output|completion)?[\s_]*tokens?\b.*?"
+    r"(?:>=|\u2265|at least|greater than or equal to)\s*(\d+)",
+    re.IGNORECASE | re.DOTALL,
+)
+# A stated minimum above this is not a probe-sized floor; leave it an error.
+_MAX_LEARNED_MIN_TOKENS = 1024
+_min_max_tokens: dict[str, int] = {}
+
+
+def _stated_min_max_tokens(status: int, text: str) -> int | None:
+    """The minimum output limit a Bedrock 400 says the model needs, else None."""
+    if status != 400 or not text:
+        return None
+    try:
+        # The message is JSON; an encoder may have written ">" as \u003e.
+        decoded = json.loads(text)
+        if isinstance(decoded, dict) and isinstance(decoded.get("message"), str):
+            text = decoded["message"]
+    except ValueError:
+        pass
+    m = _MIN_MAX_TOKENS_RE.search(text)
+    if not m:
+        return None
+    minimum = int(m.group(1))
+    return minimum if 0 < minimum <= _MAX_LEARNED_MIN_TOKENS else None
+
+
+def _raise_max_tokens(body: dict[str, Any], minimum: int) -> bool:
+    """Raise an integer ``maxTokens`` below ``minimum`` to it, in place; True
+    if it was raised. A request without the field, or with a non-integer one,
+    is left alone, so Bedrock's own error is what the caller sees."""
+    inference = body.get("inferenceConfig")
+    if not isinstance(inference, dict):
+        return False
+    value = inference.get("maxTokens")
+    if isinstance(value, bool) or not isinstance(value, int) or value >= minimum:
+        return False
+    inference["maxTokens"] = minimum
+    return True
+
+
 async def _send_converse(client, url: str, body: dict, route: dict, *, stream: bool):
     """Send a Converse request; returns ``(response, error_text)``.
 
     ``error_text`` is None on a 200. For a stream the 200 response is still
     open (headers only) and an error response has been read and closed, so
     the caller's pre-flight check stays as it was. ``body`` is edited in
-    place when a field is dropped, so the caller logs what was really sent.
-    A retry happens only on a 400, before the client has received a byte.
+    place when a field is dropped or ``maxTokens`` is raised, so the caller
+    logs what was really sent. A retry happens only on a 400, before the
+    client has received a byte.
     """
     model_id = route.get("model_id", "")
     known = _unsupported_fields.get(model_id)
     if known:
         _drop_inference_fields(body, known)
-    # One retry per droppable field at most: Bedrock names one field per 400.
-    for _ in range(len(set(_DROPPABLE_INFERENCE_FIELDS.values())) + 1):
+    known_min = _min_max_tokens.get(model_id)
+    if known_min:
+        _raise_max_tokens(body, known_min)
+    # One retry per droppable field at most (Bedrock names one field per
+    # 400), and one for the output limit.
+    for _ in range(len(set(_DROPPABLE_INFERENCE_FIELDS.values())) + 2):
         payload = _encode_body(body)
         # Signed per attempt: the signature covers these exact bytes.
         headers = _build_headers(route, url, payload)
@@ -342,15 +401,26 @@ async def _send_converse(client, url: str, body: dict, route: dict, *, stream: b
                 return resp, None
             err_text = resp.text
         field = _rejected_inference_field(resp.status_code, err_text)
-        if not field or not _drop_inference_fields(body, {field}):
-            return resp, err_text
-        if field not in _unsupported_fields.setdefault(model_id, set()):
-            _unsupported_fields[model_id].add(field)
-            logger.warning(
-                "Bedrock model_id={} does not take {}: dropped, request retried; "
-                "omitted for this model from now on",
-                model_id, field,
-            )
+        if field and _drop_inference_fields(body, {field}):
+            if field not in _unsupported_fields.setdefault(model_id, set()):
+                _unsupported_fields[model_id].add(field)
+                logger.warning(
+                    "Bedrock model_id={} does not take {}: dropped, request retried; "
+                    "omitted for this model from now on",
+                    model_id, field,
+                )
+            continue
+        minimum = _stated_min_max_tokens(resp.status_code, err_text)
+        if minimum and _raise_max_tokens(body, minimum):
+            if _min_max_tokens.get(model_id, 0) < minimum:
+                _min_max_tokens[model_id] = minimum
+                logger.warning(
+                    "Bedrock model_id={} needs maxTokens >= {}: raised, request "
+                    "retried; smaller limits are raised for this model from now on",
+                    model_id, minimum,
+                )
+            continue
+        return resp, err_text
     return resp, err_text
 
 
