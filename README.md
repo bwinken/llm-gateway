@@ -79,7 +79,7 @@ What the dashboard shows an account, as JSON, for programs that are not a browse
 | `GET /v1/settings` | The recommended client settings for this account: per variable a default and the options to pick from |
 | `GET /v1/notices` | What is wrong with the account's client setup, and the settings that fix it |
 | `POST /v1/notices/resolved` | "I've applied the fix": clears the notices, all or by id |
-| `GET /v1/model-changes` | The models being replaced for this account's tier, and the renames to apply; empty unless an announcement is open |
+| `GET /v1/model-changes` | The models being replaced for this account's tier, and the renames to apply; empty unless an announcement is switched on |
 | `POST /v1/events` | A setup tool reports what it installed, updated or removed, in which version, on which OS and machine |
 
 ### `v1`
@@ -193,7 +193,7 @@ Open `https://your-gateway` and sign in through SSO. Accounts with the `admin` s
 |---|---|
 | **Overview** | See spend per backend, requests and active users; review usage anomalies; export monthly cost reports |
 | **Users** | Set budgets and cloud caps, grant Azure or AWS access, disable accounts, create service accounts, view or regenerate keys; click a name for that account's usage, notices, key and change history |
-| **Clients** | Choose which client problems to detect, how users are told, and the settings patch they get; see who is affected and what mail went out; announce a model that is being replaced (old name, new name and tier per model; shown between the two times you set, with a script that renames it in their Claude Code settings; preview the mail, send it to all or to named accounts); set what setup tools offer users; see what those tools installed, per account, machine and OS |
+| **Clients** | Choose which client problems to detect, how users are told, and the settings patch they get; see who is affected and what mail went out; announce a model that is being replaced (old name, new name and tier per model; shown while you have it switched on, with a script that renames it in their Claude Code settings; preview the mail, send it to all or to named accounts); set what setup tools offer users; see what those tools installed, per account, machine and OS |
 | **Security** | IP allowlist, prompt guardrail, audit log |
 | **Settings** | Default budgets, concurrency limit, what happens when the cloud cap is spent, weekly report mails, site links |
 | **Models** | Add and edit models, prices and fallbacks; test a connection |

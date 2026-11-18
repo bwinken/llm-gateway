@@ -2,9 +2,9 @@
 is being replaced.
 
 An admin announces a change: a notice, the renames (old model name, new
-model name, and the tier each is for) and when it is shown (from, until).
-Every account the renames are for sees it on its dashboard between the two,
-with a script that replaces the names in its Claude Code
+model name, and the tier each is for) and a switch: shown now, or not.
+Every account the renames are for sees it on its dashboard while it is
+switched on, with a script that replaces the names in its Claude Code
 settings, and can be mailed about it through the paced mail job.
 
 It is its own flow, apart from the client-rule notices: nothing was detected,
@@ -29,7 +29,6 @@ from unittest.mock import patch
 import pytest
 from sqlmodel import select
 
-from app.core.timeutil import LOCAL_TZ
 from app.models.schema import ClientMailLog, ClientViolation, ModelChange, ModelChangeState, User
 from app.services import client_mail, client_patch, mailer, model_changes
 from tests.conftest import auth_header, web_auth_header
@@ -39,17 +38,12 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _at(days: float = 30) -> str:
-    """A time ``days`` from now, as the form's ``datetime-local`` value (Asia/Taipei)."""
-    return (datetime.now(LOCAL_TZ) + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M")
-
-
 def _rows(*rows: tuple[str, str, str], **kw) -> dict:
     """The admin form as the page posts it: one row per model (old name, new
     name, tier)."""
     rows = rows or (("old-llm", "test-llm", "everyone"),)
     form = {
-        "title": "test-llm is being replaced", "message": "It is switched off next month.", "show_until": _at(),
+        "title": "test-llm is being replaced", "message": "It is switched off next month.",
         "old_model": [r[0] for r in rows], "new_model": [r[1] for r in rows], "tier": [r[2] for r in rows],
     }
     form.update(kw)
@@ -58,14 +52,15 @@ def _rows(*rows: tuple[str, str, str], **kw) -> dict:
 
 def _form(**kw) -> dict:
     form = {"title": "test-llm is being replaced", "message": "It is switched off next month.",
-            "renames": "old-llm -> test-llm", "show_until": _at()}
+            "renames": "old-llm -> test-llm"}
     form.update(kw)
     return form
 
 
-def _change(db_session, **kw) -> ModelChange:
-    """A change saved the way the admin form saves it."""
-    return model_changes.save(db_session, model_changes.clean_fields(_form(**kw)), by="admin")
+def _change(db_session, shown: bool = True, **kw) -> ModelChange:
+    """A change saved the way the admin form saves it: shown at once, unless
+    ``shown`` says it is created switched off."""
+    return model_changes.save(db_session, model_changes.clean_fields(_form(**kw)), by="admin", shown=shown)
 
 
 def _person(db_session, name: str, **kw) -> User:
@@ -295,36 +290,28 @@ class TestWhoIsTold:
         _change(db_session, renames="", renames_aws="bedrock-old -> bedrock-nova")
         assert model_changes.for_account(db_session, admin)[0]["renames"] == {"bedrock-old": "bedrock-nova"}
 
-    def test_it_is_shown_until_the_time_the_admin_set(self, db_session):
+    def test_it_is_shown_only_while_it_is_switched_on(self, db_session):
         user = _person(db_session, "local")
-        until = _at(3)
-        change = _change(db_session, show_until=until)
-        assert model_changes.local_input(change.show_until) == until
-        assert model_changes.for_account(db_session, user, change.show_until - timedelta(seconds=1))
-        assert model_changes.for_account(db_session, user, change.show_until) == []
-        assert model_changes.renames_for(db_session, user, change.show_until) == {}
-
-    def test_it_is_not_shown_before_it_opens(self, db_session):
-        user = _person(db_session, "local")
-        change = _change(db_session, show_from=_at(1), show_until=_at(2))
-        assert model_changes.state_of(change) == "scheduled" and not model_changes.is_showing(change)
-        assert model_changes.for_account(db_session, user) == []
-        assert model_changes.request_mail(db_session, change) == 0          # nobody is mailed about what is not open
+        change = _change(db_session, shown=False)
+        assert not model_changes.is_showing(change)
+        assert model_changes.for_account(db_session, user) == [] and model_changes.renames_for(db_session, user) == {}
+        assert model_changes.request_mail(db_session, change) == 0          # nobody is mailed about what is not shown
         found = model_changes.overview(db_session)
-        assert found["showing"] == [] and [c.id for c in found["scheduled"]] == [change.id]
-        opened = change.show_from + timedelta(seconds=1)
-        assert model_changes.state_of(change, opened) == "showing"
-        assert model_changes.for_account(db_session, user, opened)[0]["renames"] == {"old-llm": "test-llm"}
-        model_changes.end(db_session, change)                               # cancelled: it never opens
-        assert model_changes.state_of(change, opened) == "ended"
+        assert found["showing"] == [] and [c.id for c in found["off"]] == [change.id]
+        model_changes.set_shown(db_session, change, True, by="admin")
+        assert model_changes.for_account(db_session, user)[0]["renames"] == {"old-llm": "test-llm"}
+        assert [c.id for c in model_changes.overview(db_session)["showing"]] == [change.id]
 
-    def test_ending_it_takes_it_away_at_once(self, db_session):
+    def test_switching_it_off_takes_it_away_at_once_and_on_brings_it_back(self, db_session):
         user = _person(db_session, "local")
         change = _change(db_session)
-        model_changes.end(db_session, change, by="admin")
+        model_changes.set_applied(db_session, change.id, user)
+        model_changes.set_shown(db_session, change, False, by="admin")
         assert model_changes.for_account(db_session, user) == []
-        found = model_changes.overview(db_session)
-        assert found["showing"] == [] and [c.id for c in found["ended"]] == [change.id]
+        model_changes.set_shown(db_session, change, True, by="admin")
+        [item] = model_changes.for_account(db_session, user)
+        assert item["applied"] is True                                # who said they switched is kept
+        assert db_session.get(ModelChange, change.id).updated_by == "admin"
 
     def test_i_have_switched_folds_it_but_it_stays(self, db_session):
         user = _person(db_session, "local")
@@ -355,8 +342,6 @@ class TestForm:
         for bad in (
             _form(title=""), _form(title="x" * 201), _form(message="x" * 4001),
             _form(renames=""), _form(renames="not a rename"),
-            _form(show_until=""), _form(show_until="soon"), _form(show_until=_at(-1)), _form(show_until=_at(400)),
-            _form(show_from="soon"), _form(show_from=_at(3), show_until=_at(2)), _form(show_from=_at(2), show_until=_at(2)),
         ):
             with pytest.raises(ValueError):
                 model_changes.clean_fields(bad)
@@ -376,19 +361,14 @@ class TestForm:
         ))
         assert json.loads(ok["renames_azure"]) == {"gone-model": "azure-gpt-4"}
 
-    def test_times_are_taipei_and_an_empty_start_is_now(self, db_session):
-        values = model_changes.clean_fields(_form(show_from="", show_until="2099-01-02T08:30"), now=datetime(2098, 12, 1))
-        assert values["show_from"] is None
-        assert values["show_until"] == datetime(2099, 1, 2, 0, 30)       # 08:30 in Taipei, stored as naive UTC
-        change = _change(db_session)
-        assert change.show_from <= _now() and model_changes.is_showing(change)
-        started = change.show_from
+    def test_the_form_never_moves_the_switch(self, db_session):
+        assert "shown" not in model_changes.clean_fields(_form())
+        change = _change(db_session, shown=False)
         change = model_changes.save(db_session, model_changes.clean_fields(_form(title="Reworded")), by="admin", change=change)
-        assert change.show_from == started                               # an edit without a start keeps the one it had
-        change = model_changes.save(
-            db_session, model_changes.clean_fields(_form(show_from="2020-01-01T00:00")), by="admin", change=change,
-        )
-        assert change.show_from == datetime(2019, 12, 31, 16, 0) and model_changes.is_showing(change)
+        assert change.title == "Reworded" and not model_changes.is_showing(change)
+        model_changes.set_shown(db_session, change, True)
+        change = model_changes.save(db_session, model_changes.clean_fields(_form(title="Again")), by="admin", change=change)
+        assert model_changes.is_showing(change)
 
     def test_the_forms_rows_are_the_three_tiers(self):
         boxes = model_changes.rows_to_boxes([
@@ -415,7 +395,7 @@ class TestDashboard:
         body = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
         assert 'id="modelChanges"' in body and f"MC{change.id}" in body
         assert "Retiring &lt;old&gt;" in body and "<old>" not in body          # what the admin wrote is escaped
-        assert "old-llm" in body and f"until {model_changes.local_time(change.show_until)}" in body
+        assert "old-llm" in body
         assert "data-model-change-scope" in body                   # it says it is for Claude Code users
         assert "/dashboard/model-changes/patch.sh" in body
 
@@ -465,7 +445,7 @@ class TestDashboard:
         assert client.get("/dashboard/model-changes/patch.sh", headers=headers).status_code == 404
         change = _change(db_session)
         assert client.get("/dashboard/model-changes/patch.sh", headers=headers).status_code == 200
-        model_changes.end(db_session, change)
+        model_changes.set_shown(db_session, change, False)
         assert client.get("/dashboard/model-changes/patch.sh", headers=headers).status_code == 404
         late = client.get("/dashboard/model-changes/patch.sh", headers={**headers, "Accept": "text/html"}, follow_redirects=False)
         assert late.status_code == 303 and late.headers["location"] == "/dashboard"   # a mail link opened too late
@@ -489,26 +469,33 @@ class TestDashboard:
 
 
 class TestAdmin:
-    def test_announcing_a_change(self, client, db_session, admin_user):
-        until = _at(14)
-        form = _rows(("old-llm", "test-llm", "everyone"), ("azure-old", "azure-gpt-4", "azure"), ("", "", "everyone"), show_until=until)
-        resp = client.post("/admin/model-changes", data=form, headers=_admin(admin_user))
-        assert resp.status_code == 200 and resp.json()["ref"].startswith("MC")
+    def test_announcing_a_change(self, client, db_session, admin_user, test_user):
+        form = _rows(("old-llm", "test-llm", "everyone"), ("azure-old", "azure-gpt-4", "azure"), ("", "", "everyone"))
+        resp = client.post("/admin/model-changes", data={**form, "shown": "on"}, headers=_admin(admin_user))
+        assert resp.status_code == 200 and resp.json()["ref"].startswith("MC") and resp.json()["shown"] is True
         [change] = db_session.exec(select(ModelChange)).all()
-        assert change.created_by == admin_user.username
+        assert change.created_by == admin_user.username and model_changes.is_showing(change)
         assert json.loads(change.renames) == {"old-llm": "test-llm"} and json.loads(change.renames_azure) == {"azure-old": "azure-gpt-4"}
         assert change.renames_aws == ""
-        assert model_changes.local_input(change.show_until) == until and model_changes.is_showing(change)   # open from now
+        assert 'id="modelChanges"' in client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
 
-    def test_scheduling_one_for_later(self, client, db_session, admin_user, test_user):
-        form = _rows(show_from=_at(1), show_until=_at(8))
-        assert client.post("/admin/model-changes", data=form, headers=_admin(admin_user)).status_code == 200
+    def test_one_created_switched_off_is_shown_by_its_switch(self, client, db_session, admin_user, test_user):
+        resp = client.post("/admin/model-changes", data={**_rows(), "shown": "off"}, headers=_admin(admin_user))
+        assert resp.json()["shown"] is False
         [change] = db_session.exec(select(ModelChange)).all()
-        assert model_changes.state_of(change) == "scheduled"
-        assert 'id="modelChanges"' not in client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
+        user = web_auth_header(sub=test_user.username)
+        assert 'id="modelChanges"' not in client.get("/dashboard", headers=user).text
         body = client.get("/admin", headers=web_auth_header(sub=admin_user.username, scopes=["admin"])).text
         card = body[body.index('id="model-changes"'):body.index('id="client-setup"')]
-        assert "Scheduled" in card and "Cancel it" in card and "Mail can be sent once it opens" in card
+        assert "Switched off" in card and "Show it now" in card and "Show the announcement before mailing" in card
+        url = f"/admin/model-changes/{change.id}/shown"
+        assert client.post(url, data={"enabled": "on"}, headers=_admin(admin_user)).json() == {"ok": True, "id": change.id, "shown": True}
+        assert 'id="modelChanges"' in client.get("/dashboard", headers=user).text
+        assert client.post(url, data={"enabled": "off"}, headers=_admin(admin_user)).json()["shown"] is False
+        assert 'id="modelChanges"' not in client.get("/dashboard", headers=user).text
+        assert client.post(url, data={"enabled": "maybe"}, headers=_admin(admin_user)).status_code == 400
+        assert client.post(url, headers=_admin(admin_user)).status_code == 400          # the value is explicit
+        assert client.post("/admin/model-changes/999/shown", data={"enabled": "on"}, headers=_admin(admin_user)).status_code == 404
 
     @pytest.mark.parametrize("form", [
         _rows(("old", "no-such-model", "everyone")),
@@ -516,8 +503,6 @@ class TestAdmin:
         _rows(("old-llm", "", "everyone")),
         _rows(("", "", "everyone")),                        # no model at all
         _rows(("old-llm", "test-llm", "vip")),
-        _rows(show_until=""),
-        _rows(show_from=_at(9), show_until=_at(8)),
         {**_rows(), "tier": []},                            # rows that do not line up
     ])
     def test_a_refused_form_creates_nothing(self, client, db_session, admin_user, form):
@@ -528,31 +513,31 @@ class TestAdmin:
     def test_only_admins(self, client, db_session, test_user):
         change = _change(db_session)
         headers = {**web_auth_header(sub=test_user.username), "Accept": "application/json"}
-        for path in ("/admin/model-changes", f"/admin/model-changes/{change.id}", f"/admin/model-changes/{change.id}/end",
+        for path in ("/admin/model-changes", f"/admin/model-changes/{change.id}", f"/admin/model-changes/{change.id}/shown",
                      f"/admin/model-changes/{change.id}/mail"):
-            assert client.post(path, data=_rows(), headers=headers).status_code == 403, path
+            assert client.post(path, data={**_rows(), "enabled": "off"}, headers=headers).status_code == 403, path
         assert client.get(f"/admin/model-changes/{change.id}/mail-preview", headers=headers).status_code == 403
         db_session.expire_all()
         assert model_changes.is_showing(db_session.get(ModelChange, change.id))
 
-    def test_editing_and_ending(self, client, db_session, admin_user):
+    def test_editing_one_shown_or_not(self, client, db_session, admin_user):
         change = _change(db_session)
-        until = _at(60)
         resp = client.post(
             f"/admin/model-changes/{change.id}",
-            data=_rows(("old-llm", "test-vlm", "everyone"), title="New wording", show_until=until), headers=_admin(admin_user),
+            data=_rows(("old-llm", "test-vlm", "everyone"), title="New wording"), headers=_admin(admin_user),
         )
         assert resp.status_code == 200
         db_session.expire_all()
         change = db_session.get(ModelChange, change.id)
-        assert change.title == "New wording" and model_changes.local_input(change.show_until) == until
+        assert change.title == "New wording" and model_changes.is_showing(change)     # the form does not move the switch
         assert json.loads(change.renames) == {"old-llm": "test-vlm"} and change.updated_by == admin_user.username
-        assert client.post(f"/admin/model-changes/{change.id}/end", headers=_admin(admin_user)).status_code == 200
+        model_changes.set_shown(db_session, change, False)
+        resp = client.post(f"/admin/model-changes/{change.id}", data=_rows(title="While off"), headers=_admin(admin_user))
+        assert resp.status_code == 200
         db_session.expire_all()
-        assert model_changes.state_of(db_session.get(ModelChange, change.id)) == "ended"
-        resp = client.post(f"/admin/model-changes/{change.id}", data=_rows(), headers=_admin(admin_user))
-        assert resp.status_code == 400                               # an ended announcement is not brought back
-        assert client.post("/admin/model-changes/999/end", headers=_admin(admin_user)).status_code == 404
+        change = db_session.get(ModelChange, change.id)
+        assert change.title == "While off" and not model_changes.is_showing(change)
+        assert client.post("/admin/model-changes/999", data=_rows(), headers=_admin(admin_user)).status_code == 404
 
     def test_the_card_lists_it_with_how_far_it_got(self, client, db_session, admin_user, test_user):
         change = _change(db_session, title="Retire <b>old</b>", renames="gone-model -> test-llm")
@@ -566,7 +551,8 @@ class TestAdmin:
         # One row per model: old name, new name, who it is for.
         assert 'name="old_model" value="gone-model"' in card and 'name="new_model" value="test-llm"' in card
         assert '<option value="everyone" selected>Everyone</option>' in card
-        assert 'name="show_from"' in card and 'name="show_until"' in card
+        assert 'name="show_from"' not in card and 'name="show_until"' not in card      # a switch, no schedule
+        assert "Shown now" in card and "Stop showing" in card
         assert f"/admin/model-changes/{change.id}/mail-preview?audience=local" in card
 
     def test_the_admin_can_download_what_each_tier_gets(self, client, db_session, admin_user):
@@ -621,7 +607,12 @@ class TestMail:
         assert "Line one<br>line &lt;two&gt;" in body
         assert "old-llm" in body and "azure-gpt-4" in body          # this account's own renames
         assert 'href="https://gw.example.test/dashboard/model-changes/patch.bat"' in body
-        assert f"Reference: MC{change.id}" in body and model_changes.local_time(change.show_until) in body
+        assert f"Reference: MC{change.id}" in body and body.startswith("<div") and "Hi alice," in body
+        # What to do, as steps in order.
+        steps = body[body.index("What to do"):body.index("Without the script")]
+        order = ["Download the script", "Run it", "Restart Claude Code", "on every machine", "Tell us you are done"]
+        assert steps.count("<li") == 5 and [steps.index(step) for step in order] == sorted(steps.index(step) for step in order)
+        assert 'href="https://gw.example.test/dashboard"' in steps and "claude-code-model-change.sh" in steps
         assert "for Claude Code users only" in body and body.index("Claude Code users only") < body.index("Retire &lt;b&gt;")
         [log] = db_session.exec(select(ClientMailLog)).all()
         assert (log.username, log.address, log.rule_ids, log.kind, log.ok) == ("alice", "alice@example.test", f"MC{change.id}", "model_change", True)
@@ -686,10 +677,10 @@ class TestMail:
         model_changes.request_mail(db_session, change)
         model_changes.set_applied(db_session, change.id, alice)      # after being queued
         assert model_changes.due_mail(db_session) == ["bob"]
-        model_changes.end(db_session, change)
+        model_changes.set_shown(db_session, change, False)
         assert model_changes.due_mail(db_session) == []
         assert client_mail.run_auto_mail(db_session) == "sent=0 failed=0 waiting=0"
-        assert model_changes.request_mail(db_session, change) == 0   # an ended change queues nobody
+        assert model_changes.request_mail(db_session, change) == 0   # one that is switched off queues nobody
 
     def test_a_failed_mail_is_logged_and_tried_again_later(self, db_session, mail_on):
         _person(db_session, "alice")
@@ -716,9 +707,9 @@ class TestMail:
         assert model_changes.claim_mail(db_session, *seen, _now()) is False    # the second one lost the claim
 
     def test_mail_for_a_change_needs_mail_and_a_change_being_shown(self, client, db_session, admin_user, mail_on, monkeypatch):
-        change = _change(db_session)
-        model_changes.end(db_session, change)
-        assert client.post(f"/admin/model-changes/{change.id}/mail", headers=_admin(admin_user)).status_code == 400
+        change = _change(db_session, shown=False)
+        resp = client.post(f"/admin/model-changes/{change.id}/mail", headers=_admin(admin_user))
+        assert resp.status_code == 400 and "switched off" in resp.json()["detail"]
         live = _change(db_session)
         monkeypatch.delenv("EXCHANGE_SERVER")
         resp = client.post(f"/admin/model-changes/{live.id}/mail", headers=_admin(admin_user))
@@ -763,12 +754,21 @@ class TestMail:
         assert mail_on == [] and db_session.exec(select(ClientMailLog)).all() == []
         assert _states(db_session, change) == {}
 
-    def test_a_scheduled_announcement_mails_nobody_yet(self, client, db_session, admin_user, mail_on):
-        _person(db_session, "alice")
-        change = _change(db_session, show_from=_at(1), show_until=_at(2))
-        resp = client.post(f"/admin/model-changes/{change.id}/mail", headers=_admin(admin_user))
-        assert resp.status_code == 400 and "not opened yet" in resp.json()["detail"]
-        assert model_changes.request_mail_to(db_session, change, ["alice"]) == {"queued": 0, "skipped": []}
+    def test_the_preview_greets_nobody_in_particular(self, client, db_session, admin_user, mail_on):
+        """The admin looking at the preview is not the reader: the real mail
+        greets each account by its own name."""
+        change = _change(db_session, shown=False)                    # previewed before it is shown
+        headers = web_auth_header(sub=admin_user.username, scopes=["admin"])
+        text = client.get(f"/admin/model-changes/{change.id}/mail-preview", headers=headers).text
+        assert "Hi &lt;account name&gt;," in text and "Hi admin" not in text
+        assert "greeted by its own name" in text
+
+    def test_without_a_public_url_the_steps_point_to_the_dashboard(self, db_session, mail_on, monkeypatch):
+        monkeypatch.delenv("PUBLIC_BASE_URL")
+        change = _change(db_session)
+        _, body = client_mail.render_model_changes("alice", [change], {"old-llm": "test-llm"})
+        assert "<a href" not in body and body.count("<li") == 5
+        assert "open your gateway dashboard" in body and "I've switched" in body
 
 
 class TestEndpoint:
@@ -783,24 +783,14 @@ class TestEndpoint:
 
     EMPTY = {"object": "model_changes", "changes": [], "retiring": [], "patch": {"models": {}}}
 
-    def test_nothing_is_returned_outside_a_change(self, client, db_session, test_user):
+    def test_values_only_while_a_change_is_switched_on(self, client, db_session, test_user):
         assert self._get(client) == self.EMPTY                       # before any change
-        change = _change(db_session, show_until=_at(2))
+        change = _change(db_session, shown=False)
+        assert self._get(client) == self.EMPTY                       # created, not shown yet
+        model_changes.set_shown(db_session, change, True)
         assert self._get(client)["retiring"] == ["old-llm"]          # while it is shown
-        model_changes.end(db_session, change)
-        assert self._get(client) == self.EMPTY                       # after it
-
-    def test_only_between_the_opening_and_the_ending_time(self, client, db_session, test_user):
-        change = _change(db_session, show_from=_at(1), show_until=_at(2))
-        assert self._get(client) == self.EMPTY                       # scheduled: not open yet
-        with patch("app.services.model_changes.utcnow", return_value=change.show_from):
-            [entry] = self._get(client)["changes"]                   # from the opening time on
-        assert entry["from"] == model_changes.local_iso(change.show_from) and entry["from"].endswith("+08:00")
-        assert entry["until"] == model_changes.local_iso(change.show_until)
-        with patch("app.services.model_changes.utcnow", return_value=change.show_until - timedelta(seconds=1)):
-            assert self._get(client)["retiring"] == ["old-llm"]
-        with patch("app.services.model_changes.utcnow", return_value=change.show_until):
-            assert self._get(client) == self.EMPTY                   # and not from the ending time on
+        model_changes.set_shown(db_session, change, False)
+        assert self._get(client) == self.EMPTY                       # switched off again
 
     def test_what_is_retiring_and_the_patch_for_the_callers_tier(self, client, db_session, test_user):
         _person(db_session, "local")
@@ -814,8 +804,7 @@ class TestEndpoint:
             "object": "model_changes",
             "changes": [{
                 "id": f"MC{change.id}", "title": change.title, "message": change.message,
-                "models": {"old-llm": "test-llm"}, "from": model_changes.local_iso(change.show_from),
-                "until": model_changes.local_iso(change.show_until), "applied": False,
+                "models": {"old-llm": "test-llm"}, "applied": False,
             }],
             "retiring": ["old-llm"],
             "patch": {"models": {"old-llm": "test-llm"}},

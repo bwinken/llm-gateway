@@ -197,18 +197,24 @@ def render_model_changes(
 ) -> tuple[str, str]:
     """``(subject, html)`` of the mail to one account about the model
     changes in ``changes`` (each needs ``id``, ``title``, ``message``,
-    ``email_subject``, ``show_until``), with ``renames`` as what this
-    account replaces (``model_changes.account_renames``). It opens by saying
-    it is for Claude Code users only: the change is to Claude Code's
-    settings, and the audience is everyone of a tier. With
-    ``PUBLIC_BASE_URL`` set it links straight to the account's model-change
-    script. Everything an admin wrote is escaped."""
+    ``email_subject``), with ``renames`` as what this account replaces
+    (``model_changes.account_renames``).
+
+    It opens by saying it is for Claude Code users only (the change is to
+    Claude Code's settings, and the audience is everyone of a tier), then
+    says what is changing and what to do as numbered steps: download the
+    script, run it, restart Claude Code, repeat on other machines, mark it
+    as done. With ``PUBLIC_BASE_URL`` set the steps link straight to the
+    account's model-change script and its dashboard. Everything an admin
+    wrote is escaped."""
     public_url = mailer.settings()["public_url"]
     count = len(changes)
     if count == 1:
         subject = (changes[0].email_subject or f"[{APP_TITLE}] {changes[0].title}").strip()
     else:
         subject = f"[{APP_TITLE}] {count} model changes: please update your Claude Code setup"
+    heading = 'style="font-size:16px;font-weight:600;margin:18px 0 4px"'
+    code = 'style="font-family:Consolas,monospace;background:#f4f4f4;padding:1px 4px;border-radius:3px"'
     parts = [
         '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222;line-height:1.6">',
         f"<p>Hi {html.escape(username)},</p>",
@@ -219,8 +225,8 @@ def render_model_changes(
         "settings. If you do not use Claude Code with this gateway, you can ignore it.</p>",
     ]
     for number, change in enumerate(changes, 1):
-        heading = f"{number}. {change.title}" if count > 1 else change.title
-        parts.append(f'<p style="font-size:16px;font-weight:600;margin-bottom:4px">{html.escape(heading)}</p>')
+        title = f"{number}. {change.title}" if count > 1 else change.title
+        parts.append(f"<p {heading}>{html.escape(title)}</p>")
         if change.message:
             parts.append("<p>" + html.escape(change.message).replace("\n", "<br>") + "</p>")
     rows = "".join(
@@ -229,34 +235,60 @@ def render_model_changes(
         '<td style="padding:4px 0;font-family:Consolas,monospace;font-weight:600">' + html.escape(new) + "</td></tr>"
         for old, new in renames.items()
     )
+    old_ones, new_ones = ("this model", "the new one") if len(renames) == 1 else ("these models", "the new ones")
     parts.append(
-        '<p style="font-size:16px;font-weight:600;margin-bottom:4px">What to change</p>'
-        "<p>Wherever your Claude Code setup names a model on the left, name the one on the right instead:</p>"
-        f'<table style="border-collapse:collapse;font-size:13px;margin-bottom:8px">{rows}</table>'
+        f"<p {heading}>What is changing</p>"
+        f"<p>If your Claude Code uses {old_ones} (left), it has to use {new_ones} (right) instead:</p>"
+        '<table style="border-collapse:collapse;font-size:13px;margin-bottom:8px">'
+        '<tr><td style="padding:0 14px 2px 0;color:#888;font-size:12px">Old model</td><td></td>'
+        '<td style="padding:0 0 2px 0;color:#888;font-size:12px">New model</td></tr>'
+        f"{rows}</table>"
     )
+    script = f"{model_changes.PATCH_FILE}.sh"
     if public_url:
         base = html.escape(f"{public_url}/dashboard/model-changes/patch", quote=True)
-        parts.append(
-            '<p style="font-size:16px;font-weight:600;margin-bottom:4px">The quickest way: one script</p>'
-            "<p>Download it, run it on each machine you use Claude Code on and restart Claude Code: "
-            f'<a href="{base}.bat">Windows (.bat)</a> &middot; <a href="{base}.sh">Linux (.sh)</a>. '
-            "It only replaces these names where <code>~/.claude/settings.json</code> has them "
-            "(the <code>model</code> setting and the model variables in <code>env</code>), leaves a model you chose "
-            "yourself alone and keeps a backup. You may be asked to sign in first.</p>"
+        dashboard = html.escape(f"{public_url}/dashboard", quote=True)
+        download = (
+            f'<b>Download the script</b>: <a href="{base}.bat">Windows (.bat)</a> or '
+            f'<a href="{base}.sh">Linux / macOS (.sh)</a>. You may be asked to sign in first.'
         )
+        done = (
+            f'<b>Tell us you are done</b>: open <a href="{dashboard}">your dashboard</a> and press '
+            "<i>I've switched</i> under <i>Model change</i>. You then get no more mail about this."
+        )
+    else:
+        download = (
+            "<b>Download the script</b>: open your gateway dashboard and, under <i>Model change</i>, "
+            "choose <i>Windows (.bat)</i> or <i>Linux (.sh)</i>."
+        )
+        done = (
+            "<b>Tell us you are done</b>: on your dashboard, press <i>I've switched</i> under "
+            "<i>Model change</i>. You then get no more mail about this."
+        )
+    steps = [
+        download,
+        "<b>Run it</b>. Windows: double-click the file. Linux / macOS: "
+        f"<span {code}>sh {html.escape(script)}</span>. It replaces only the old model names above, only in "
+        f"<span {code}>~/.claude/settings.json</span>, and saves the previous file as settings.json.bak. "
+        "A model you chose yourself is not touched.",
+        "<b>Restart Claude Code</b> so it reads the new settings.",
+        "<b>Repeat steps 1 to 3 on every machine</b> you use Claude Code on.",
+        done,
+    ]
     parts.append(
-        "<p>By hand: open <code>~/.claude/settings.json</code> and replace the name in <code>model</code> and in "
-        "the <code>env</code> variables that hold a model (<code>ANTHROPIC_MODEL</code>, "
-        "<code>ANTHROPIC_SMALL_FAST_MODEL</code>, ...). A project's own <code>.claude/settings.json</code> "
-        "needs the same change; the script does not reach it.</p>"
+        f"<p {heading}>What to do</p>"
+        '<ol style="margin:4px 0 8px 0;padding-left:22px">'
+        + "".join(f'<li style="margin-bottom:6px">{step}</li>' for step in steps)
+        + "</ol>"
     )
-    until = max(change.show_until for change in changes)
-    if public_url:
-        link = html.escape(f"{public_url}/dashboard", quote=True)
-        parts.append(
-            f'<p><a href="{link}">Your dashboard</a> shows this notice and the script until '
-            f"{html.escape(model_changes.local_time(until))}.</p>"
-        )
+    parts.append(
+        f"<p {heading}>Without the script</p>"
+        f"<p>Open <span {code}>~/.claude/settings.json</span> and replace the old name with the new one in "
+        f"<span {code}>model</span> and in the <span {code}>env</span> variables that hold a model "
+        f"(<span {code}>ANTHROPIC_MODEL</span>, <span {code}>ANTHROPIC_SMALL_FAST_MODEL</span>, ...), then restart "
+        f"Claude Code. If a project has its own <span {code}>.claude/settings.json</span> that names the old model, "
+        "change it there too: the script does not reach project files.</p>"
+    )
     references = ", ".join(html.escape(model_changes.ref(change.id)) for change in changes)
     parts.append(_footer(public_url, "sent to the accounts this model change is for", references))
     return subject, "".join(parts)

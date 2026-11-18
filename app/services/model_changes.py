@@ -7,16 +7,16 @@ script that does the edit:
 
 - **A model change** (``model_changes``, made by an admin on the *Clients*
   tab) is a notice (title, message), the renames (old model name, new
-  model name) and when it is shown: from ``show_from`` until
-  ``show_until``. Before that it is scheduled, after it ended.
+  model name) and a switch, ``shown``: an admin turns it on to show the
+  change and off to take it away, as often as needed. There is no schedule.
 - **Tiers.** Each rename is for a tier (``TIERS``): everyone, or what
   accounts with Azure / AWS access get on top (AWS wins where both name
   the same model). ``effective_renames`` is the one
   answer to "what does this account replace", and an account for which that
   is empty is not shown the change and not mailed: a change with only the
   Azure box filled is a change for Azure accounts.
-- **On the dashboard** (``for_account``) the change stays from
-  ``show_from`` until ``show_until``, whatever the account does: *I've switched* folds it away
+- **On the dashboard** (``for_account``) the change stays for as long as
+  it is switched on, whatever the account does: *I've switched* folds it away
   and stops mail, but the notice and its script stay available (for a
   second machine).
 - **The script** (``/dashboard/model-changes/patch.{bat,sh}``) carries the
@@ -47,7 +47,6 @@ from sqlalchemy import false, or_, true
 from sqlmodel import Session, func, select, update
 
 from app.core import config
-from app.core.timeutil import LOCAL_TZ
 from app.models.schema import ModelChange, ModelChangeState, User, service_account_clause
 from app.services.client_patch import dump_renames, load_renames, parse_renames
 from app.services.client_rules import AUDIENCES, audience_flags, audience_of, stored_audience
@@ -61,14 +60,6 @@ REF_PREFIX = "MC"
 PATCH_FILE = "claude-code-model-change"
 
 
-# The furthest a change can be shown until, from now.
-MAX_DAYS = 366
-
-
-# What the form offers for a new change.
-DEFAULT_DAYS = 30
-
-
 _BOXES = ("renames", "renames_azure", "renames_aws")
 
 
@@ -79,10 +70,6 @@ TIERS = (
     ("azure", "Azure accounts", "renames_azure"),
     ("aws", "AWS accounts", "renames_aws"),
 )
-
-
-# ``<input type="datetime-local">``, read as Asia/Taipei time.
-_LOCAL_INPUT = "%Y-%m-%dT%H:%M"
 
 
 def utcnow() -> datetime:
@@ -117,24 +104,15 @@ def effective_renames(change: Any, azure: bool, aws: bool) -> dict[str, str]:
     return renames
 
 
-def state_of(change: ModelChange, now: datetime | None = None) -> str:
-    """``scheduled`` (not open yet), ``showing`` or ``ended``."""
-    now = now or utcnow()
-    if change.show_until <= now:
-        return "ended"
-    return "scheduled" if change.show_from > now else "showing"
+def is_showing(change: ModelChange) -> bool:
+    """Switched on: on dashboards, in the API, and mail can be sent."""
+    return bool(change.shown)
 
 
-def is_showing(change: ModelChange, now: datetime | None = None) -> bool:
-    return state_of(change, now) == "showing"
-
-
-def showing(session: Session, now: datetime | None = None) -> list[ModelChange]:
-    """The changes being shown now (open, not ended), oldest first."""
-    now = now or utcnow()
+def showing(session: Session) -> list[ModelChange]:
+    """The changes being shown now (switched on), oldest first."""
     return list(session.exec(
-        select(ModelChange).where(ModelChange.show_from <= now, ModelChange.show_until > now)
-        .order_by(ModelChange.id)  # type: ignore[arg-type]
+        select(ModelChange).where(ModelChange.shown.is_(True)).order_by(ModelChange.id)  # type: ignore[attr-defined,arg-type]
     ).all())
 
 
@@ -155,33 +133,34 @@ def _states(session: Session, username: str, change_ids: list[int]) -> dict[int,
     }
 
 
-def for_account(session: Session, user: User, now: datetime | None = None) -> list[dict[str, Any]]:
+def for_account(session: Session, user: User) -> list[dict[str, Any]]:
     """What ``user``'s dashboard shows: every change being shown that has
     renames for this account, oldest first, with whether the account said it
-    switched. A change stays listed after that, until ``show_until``."""
+    switched. A change stays listed after that, for as long as it is shown."""
     azure, aws = audience_of(user)
     found = [
-        (change, renames) for change in showing(session, now)
+        (change, renames) for change in showing(session)
         if (renames := effective_renames(change, azure, aws))
     ]
     states = _states(session, user.username, [change.id for change, _ in found])  # type: ignore[misc]
     return [
         {
             "id": change.id, "ref": ref(change.id), "title": change.title, "message": change.message,
-            "renames": renames, "from": change.show_from, "until": change.show_until,
+            "renames": renames,
             "applied": bool(states.get(change.id) and states[change.id].applied_at),  # type: ignore[index,arg-type]
         }
         for change, renames in found
     ]
 
 
-def renames_for(session: Session, user: User, now: datetime | None = None) -> dict[str, str]:
+def renames_for(session: Session, user: User) -> dict[str, str]:
     """The renames in the account's model-change script: those of every
-    change it is shown, merged (a later change wins where two replace the same model),
-    whether or not it said it switched: a rename already applied changes
-    nothing, and the script is also for the account's other machines."""
+    change it is shown, merged (a later change wins where two replace the
+    same model), whether or not it said it switched: a rename already
+    applied changes nothing, and the script is also for the account's other
+    machines."""
     renames: dict[str, str] = {}
-    for item in for_account(session, user, now):
+    for item in for_account(session, user):
         renames.update(item["renames"])
     return renames
 
@@ -191,7 +170,7 @@ def set_applied(session: Session, change_id: int, user: User, now: datetime | No
     shown. False when there is no such change for this account. The notice
     stays, folded; the account is no longer mailed about it."""
     now = now or utcnow()
-    if not any(item["id"] == change_id for item in for_account(session, user, now)):
+    if not any(item["id"] == change_id for item in for_account(session, user)):
         return False
     row = _states(session, user.username, [change_id]).get(change_id)
     if row is None:
@@ -203,19 +182,6 @@ def set_applied(session: Session, change_id: int, user: User, now: datetime | No
 
 
 # ── Admin: a change's form ──
-
-def _moment(field: str, text: str) -> datetime | None:
-    """A ``datetime-local`` value of the form, read as Asia/Taipei time, as
-    naive UTC. Blank: None."""
-    text = (text or "").strip()
-    if not text:
-        return None
-    try:
-        local = datetime.strptime(text[:16], _LOCAL_INPUT).replace(tzinfo=LOCAL_TZ)
-    except ValueError:
-        raise ValueError(f"{field}: pick a date and time.")
-    return local.astimezone(timezone.utc).replace(tzinfo=None)
-
 
 def rows_to_boxes(rows: list[tuple[str, str, str]]) -> dict[str, str]:
     """The form's model rows, ``(old name, new name, tier)``, as the three
@@ -265,10 +231,9 @@ def _check_models(boxes: dict[str, dict[str, str]]) -> None:
                 raise ValueError(f"{new} is an Azure model: put that line in the Azure accounts box.")
 
 
-def clean_fields(form: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
-    """Validate an admin's form for a change. Returns column values
-    (``show_from`` None: from now, or as it was); raises ValueError."""
-    now = now or utcnow()
+def clean_fields(form: dict[str, Any]) -> dict[str, Any]:
+    """Validate an admin's form for a change. Returns column values (never
+    ``shown``: that is the switch, ``set_shown``); raises ValueError."""
     title = str(form.get("title") or "").strip()
     if not title or len(title) > 200:
         raise ValueError("Give the notice a title (200 characters at most).")
@@ -279,35 +244,25 @@ def clean_fields(form: dict[str, Any], now: datetime | None = None) -> dict[str,
     if not any(boxes.values()):
         raise ValueError("Say which model is replaced by which: an old and a new model name.")
     _check_models(boxes)
-    start = _moment("Open from", str(form.get("show_from") or ""))
-    until = _moment("Until", str(form.get("show_until") or ""))
-    if until is None:
-        raise ValueError("Until: pick the date and time the announcement ends.")
-    if until <= now:
-        raise ValueError("Until is in the past. To stop showing an announcement, end it.")
-    if until > now + timedelta(days=MAX_DAYS):
-        raise ValueError(f"Until is too far away ({MAX_DAYS} days at most).")
-    if start is not None and start >= until:
-        raise ValueError("Open from must be before Until.")
     return {
         "title": title, "message": message,
         **{name: dump_renames(renames) for name, renames in boxes.items()},
         "email_subject": str(form.get("email_subject") or "").strip()[:200],
-        "show_from": start, "show_until": until,
     }
 
 
 def save(
     session: Session, values: dict[str, Any], by: str = "", change: ModelChange | None = None,
-    now: datetime | None = None,
+    shown: bool | None = None, now: datetime | None = None,
 ) -> ModelChange:
-    """Create a change, or update ``change``."""
+    """Create a change (``shown``: switched on at once, off when not given),
+    or update ``change`` (its switch stays as it is unless ``shown`` says)."""
     now = now or utcnow()
     if change is None:
-        change = ModelChange(created_by=by, created_at=now, show_from=now)
+        change = ModelChange(created_by=by, created_at=now, shown=bool(shown))
+    elif shown is not None:
+        change.shown = shown
     for key, value in values.items():
-        if key == "show_from" and value is None:
-            continue                    # from now (a new change), or as it was
         setattr(change, key, value)
     change.updated_by = by
     change.updated_at = now
@@ -317,14 +272,14 @@ def save(
     return change
 
 
-def end(session: Session, change: ModelChange, by: str = "", now: datetime | None = None) -> ModelChange:
-    """Stop showing a change now (one that is scheduled never opens). It
-    stays in the list of ended ones."""
-    now = now or utcnow()
-    if change.show_until > now:
-        change.show_until = now
+def set_shown(session: Session, change: ModelChange, shown: bool, by: str = "", now: datetime | None = None) -> ModelChange:
+    """The switch: show a change now, or take it away. Off, it leaves every
+    dashboard, its script and the API at once and nobody is mailed about it;
+    on again, it is back as it was (who said they switched, who was mailed)."""
+    if change.shown != shown:
+        change.shown = shown
         change.updated_by = by
-        change.updated_at = now
+        change.updated_at = now or utcnow()
         session.add(change)
         session.commit()
         session.refresh(change)
@@ -394,20 +349,15 @@ def counts(session: Session, change: ModelChange) -> dict[str, int]:
     }
 
 
-def overview(session: Session, now: datetime | None = None, ended_limit: int = 20) -> dict[str, list[ModelChange]]:
-    """Every change, for the admin: those being shown and those scheduled
-    (oldest first), and the newest ``ended_limit`` that ended."""
-    now = now or utcnow()
-    scheduled = session.exec(
-        select(ModelChange).where(ModelChange.show_from > now, ModelChange.show_until > now)
-        .order_by(ModelChange.show_from, ModelChange.id)  # type: ignore[arg-type]
+def overview(session: Session, off_limit: int = 30) -> dict[str, list[ModelChange]]:
+    """Every change, for the admin: those being shown (oldest first) and
+    the ``off_limit`` most recently saved that are switched off."""
+    off = session.exec(
+        select(ModelChange).where(ModelChange.shown.is_(False))  # type: ignore[attr-defined]
+        .order_by(ModelChange.updated_at.desc(), ModelChange.id.desc())  # type: ignore[attr-defined,union-attr]
+        .limit(off_limit)
     ).all()
-    ended = session.exec(
-        select(ModelChange).where(ModelChange.show_until <= now)
-        .order_by(ModelChange.show_until.desc(), ModelChange.id.desc())  # type: ignore[attr-defined,union-attr]
-        .limit(ended_limit)
-    ).all()
-    return {"showing": showing(session, now), "scheduled": list(scheduled), "ended": list(ended)}
+    return {"showing": showing(session), "off": list(off)}
 
 
 def preview_renames(change: Any, audience_name: str) -> dict[str, str]:
@@ -428,7 +378,7 @@ def request_mail(
     all of them). Nothing is sent here: the mail job sends the queue in its
     batches. Returns how many were queued."""
     now = now or utcnow()
-    if not is_showing(change, now):
+    if not is_showing(change):
         return 0
     states = {
         row.username: row
@@ -464,7 +414,7 @@ def request_mail_to(
     queued); one that said it switched is skipped and reported. Returns
     ``{"queued": n, "skipped": [names]}``. Nothing is sent here."""
     now = now or utcnow()
-    if not is_showing(change, now) or not usernames:
+    if not is_showing(change) or not usernames:
         return {"queued": 0, "skipped": []}
     allowed = set(audience(session, change))
     strangers = [name for name in usernames if name not in allowed]
@@ -513,7 +463,7 @@ def mail_items(
     exist, were disabled or are service accounts are left out: one account
     gets one mail about all of it."""
     now = now or utcnow()
-    live = {change.id: change for change in showing(session, now)}
+    live = {change.id: change for change in showing(session)}
     if not live:
         return {}
     query = select(ModelChangeState).where(
@@ -574,18 +524,3 @@ def stamp_mail(session: Session, state_ids: list[int], stamp: datetime, ok: bool
         values["mailed_at"] = stamp
     session.execute(update(ModelChangeState).where(ModelChangeState.id.in_(state_ids)).values(**values))  # type: ignore[union-attr]
     session.commit()
-
-
-def local_time(moment: datetime) -> str:
-    """A stored moment as people read it: Asia/Taipei, ``YYYY-MM-DD HH:MM``."""
-    return moment.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
-
-
-def local_input(moment: datetime) -> str:
-    """A stored moment as a ``datetime-local`` input's value."""
-    return moment.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).strftime(_LOCAL_INPUT)
-
-
-def local_iso(moment: datetime) -> str:
-    """A stored moment for the API: Asia/Taipei, ISO 8601 with its offset."""
-    return moment.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).isoformat(timespec="seconds")

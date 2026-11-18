@@ -546,8 +546,6 @@ def _model_changes(session: Session, user: User) -> list[dict]:
         session.rollback()
         logger.warning("Model changes failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
         return []
-    for change in changes:
-        change["until_local"] = model_changes.local_time(change["until"])
     return changes
 
 
@@ -593,7 +591,7 @@ def model_changes_patch(
     (Windows) or ``patch.sh`` (Linux / macOS). One script however many
     changes there are, and nothing but renames: the notices' patch is a
     different download. Mail links here too, so a browser arriving after
-    the last day is sent to the dashboard instead of a 404."""
+    the change was switched off is sent to the dashboard instead of a 404."""
     if fmt not in client_patch.PATCH_FORMATS:
         raise HTTPException(status_code=404, detail="No such patch format.")
     changes = model_changes.for_account(session, user)
@@ -618,7 +616,7 @@ def model_change_applied(
 ):
     """The user says they switched to the new model: the change folds on
     their dashboard and they are no longer mailed about it. It stays listed,
-    with its script, until the day the admin set."""
+    with its script, for as long as the admin shows it."""
     if not model_changes.set_applied(session, change_id, user):
         raise HTTPException(status_code=404, detail="No such model change for this account.")
     logger.info("Model change marked as done by the account | change={} user={}", model_changes.ref(change_id), user.username)

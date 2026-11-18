@@ -7,7 +7,7 @@ Create Date: 2026-11-18
 A model that is being replaced, as an admin announces it
 (app/services/model_changes.py): ``model_changes`` holds the notice, which
 model names to replace with which (for everyone, and what Azure / AWS
-accounts get on top) and from when until when it is shown on dashboards;
+accounts get on top) and whether it is shown on dashboards now;
 ``model_change_states`` what one account did about one change (said it
 switched) and its mail state. Neither references ``users``: ``username`` is
 not a foreign key, so deleting an account never has to touch them.
@@ -37,8 +37,7 @@ def upgrade() -> None:
         sa.Column("renames_azure", sa.Text(), server_default="", nullable=False),
         sa.Column("renames_aws", sa.Text(), server_default="", nullable=False),
         sa.Column("email_subject", sa.String(), server_default="", nullable=False),
-        sa.Column("show_from", sa.DateTime(), nullable=False),
-        sa.Column("show_until", sa.DateTime(), nullable=False),
+        sa.Column("shown", sa.Boolean(), server_default=sa.false(), nullable=False),
         sa.Column("created_by", sa.String(), server_default="", nullable=False),
         sa.Column("updated_by", sa.String(), server_default="", nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),

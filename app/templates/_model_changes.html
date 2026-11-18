@@ -2,7 +2,7 @@
    and served alone by GET /dashboard/model-changes, which the page swaps in after
    "I've switched". Renders nothing when no change is being shown to the account.
 
-   A change stays here until the day its admin set, whatever the account does: pressing
+   A change stays here for as long as its admin shows it, whatever the account does: pressing
    "I've switched" only folds it (and stops mail), so the script is still at hand for a
    second machine. This is its own flow, apart from the client-rule notices: its own
    panel and its own script (GET /dashboard/model-changes/patch.{bat,sh}), which carries
@@ -29,7 +29,6 @@
             <span class="font-semibold {{ 'text-t3' if c.applied else 'text-t1' }}">{{ c.title }}</span>
             {% if c.applied %}<span class="text-xs text-ag flex-shrink-0" data-model-change-done>done</span>{% endif %}
             <span class="ml-auto flex items-center gap-1.5 text-xs text-t3 flex-shrink-0">
-                <span class="text-t4">until {{ c.until_local }}</span>
                 <span class="group-open:hidden">Show</span><span class="hidden group-open:inline">Hide</span>
                 <svg class="w-4 h-4 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
             </span>
@@ -58,9 +57,9 @@
                 <form action="/dashboard/model-changes/{{ c.id }}/applied" method="POST" data-model-change-applied>
                     <button type="submit" class="gw-btn gw-btn-ghost text-sm px-3 py-1.5">I've switched</button>
                 </form>
-                <span class="text-t4 text-xs">Folds this notice and stops mail about it. It stays here, with the script, until {{ c.until_local }}.</span>
+                <span class="text-t4 text-xs">Folds this notice and stops mail about it. It stays here, with the script, while the change is announced.</span>
                 {% else %}
-                <span class="text-t4 text-xs">You marked this as done. It stays here, with the script, until {{ c.until_local }}.</span>
+                <span class="text-t4 text-xs">You marked this as done. It stays here, with the script, while the change is announced.</span>
                 {% endif %}
             </div>
         </div>
