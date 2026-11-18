@@ -530,7 +530,8 @@ def tick(session: Session, now: datetime | None = None) -> str:
     )
 
 
-JOB = Job(name=JOB_NAME, interval=tick_seconds, run=tick)
+# Quiet: a round every 30 s is not worth a log line; each move has its own.
+JOB = Job(name=JOB_NAME, interval=tick_seconds, run=tick, quiet=True)
 
 
 # ── The admin card ──

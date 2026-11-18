@@ -61,6 +61,7 @@ Aliases must be unique across `[models.*]`, `[azure_models.*]` and `[bedrock_mod
 - `_MODEL_REASONING_KEYS` — not surfaced: `reasoning_efforts` (levels the downstream accepts) and `reasoning_effort_map` (explicit per-level override). Consumed by `app/services/reasoning_effort.py`; omitting them forwards whatever was requested.
 - `_MODEL_PRICING_KEYS` — `input_price_per_1m`, `output_price_per_1m`, optional `cached_input_price_per_1m` (cache reads) and `cache_write_input_price_per_1m` (cache writes). They take priority over `[pricing.<type>]`, which falls back to the `[pricing]` defaults (`_default`).
 - `_CLOUD_ROUTING_KEYS` — `[azure_models.*]` / `[bedrock_models.*]` only, not surfaced: `rate_limit_fallback` (alias on the **same** backend that takes a 429)
+- `_LOCAL_ROUTING_KEYS` — `[models.*]` only, not surfaced: `overflow_to` (the Azure / AWS alias that serves this model for accounts moved by peak overflow), `overflow_waiting_high` / `overflow_waiting_low` (this server's own thresholds)
 
 **Key functions:**
 

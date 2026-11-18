@@ -467,6 +467,24 @@ class TestDispatch:
         [row] = _rows(plain_user.id)
         assert (row.backend, row.model, row.overflow) == ("vllm", "test-llm", False)
 
+    def test_every_chat_endpoint_overflows(self, client, db_session, plain_user):
+        mock, seen = _downstream(client)
+        with _settings(), _overflows_to(), mock:
+            _on_the_cloud(db_session, plain_user)
+            for path, body in (
+                ("/v1/chat/completions", _CHAT), ("/chat/completions", _CHAT),
+                ("/v1/messages", _MESSAGES), ("/v1/responses", {"model": "test-llm", "input": "Hi"}),
+            ):
+                resp = client.post(path, json=body, headers=auth_header("sk-plain"))
+                assert resp.status_code == 200 and resp.headers.get("X-Overflow"), path
+        assert [c[0] for c in seen["calls"]] == ["azure"] * 4
+        assert all(r.overflow and r.backend == "azure" for r in _rows(plain_user.id))
+        # count_tokens bills nothing and is not sent to the cloud
+        counted = client.post("/v1/messages/count_tokens", json=_MESSAGES, headers=auth_header("sk-plain"))
+        assert counted.status_code == 200 and "X-Overflow" not in counted.headers
+        assert [c[0] for c in seen["calls"]].count("azure") == 4
+        assert len(_rows(plain_user.id)) == 4
+
     def test_responses_has_no_bedrock_and_messages_does(self, client, db_session, plain_user):
         mock, seen = _downstream(client)
         with _settings(), _overflows_to("bedrock-claude"), mock:

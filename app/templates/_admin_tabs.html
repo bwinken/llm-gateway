@@ -1,4 +1,4 @@
-{# Admin section tabs, shared by /admin and /admin/models.
+{# Admin section tabs, shared by /admin, /admin/models and /admin/guide.
 
    On /admin (on_admin_page = true) Overview / Users / Clients / Security /
    Limits / Settings are in-page tabs driven by gwTabs() (data-tab buttons), and
@@ -8,8 +8,10 @@
    bar and leave-page guard stay untouched.
 
    Badges render only where their data exists (the /admin context). #}
-{% set models_active = not on_admin_page %}
-<div id="adminTabs" class="gw-tabs {{ 'gw-tabs-static' if models_active }} gw-anim gw-d2" role="tablist">
+{# admin_section: 'guide' on /admin/guide; otherwise a page that is not /admin is Models. #}
+{% set guide_active = admin_section is defined and admin_section == 'guide' %}
+{% set models_active = not on_admin_page and not guide_active %}
+<div id="adminTabs" class="gw-tabs {{ 'gw-tabs-static' if not on_admin_page }} gw-anim gw-d2" role="tablist">
     {% for name, label in [('overview', 'Overview'), ('users', 'Users'), ('clients', 'Clients'), ('security', 'Security'), ('limits', 'Limits'), ('settings', 'Settings')] %}
     {% if on_admin_page %}
     <button type="button" class="gw-tab" data-tab="{{ name }}" role="tab">
@@ -35,5 +37,10 @@
        aria-selected="{{ 'true' if models_active else 'false' }}">
         Models
         {% if on_admin_page %}<span class="gw-tab-count gw-tip" data-tip="Opens the model configuration editor (routing, pricing, fallbacks)">config</span>{% endif %}
+    </a>
+    <a class="gw-tab {{ 'gw-tab-on' if guide_active }}" href="/admin/guide" role="tab"
+       aria-selected="{{ 'true' if guide_active else 'false' }}">
+        Guide
+        {% if on_admin_page %}<span class="gw-tab-count gw-tip" data-tip="What every setting does, why it exists and what was traded for what">why</span>{% endif %}
     </a>
 </div>

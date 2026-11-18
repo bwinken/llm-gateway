@@ -215,7 +215,7 @@ Shared framework for all pages:
 
 ### `_admin_tabs.html` — Admin Tab Bar
 
-Included by `admin.html` (`on_admin_page = true`: Overview / Users / Clients / Security / Limits / Settings are `data-tab` buttons) and `admin_models.html` (`on_admin_page = false`: they are links to `/admin#<tab>`). The last tab, **Models**, is always a link to `/admin/models`.
+Included by `admin.html` (`on_admin_page = true`: Overview / Users / Clients / Security / Limits / Settings are `data-tab` buttons) and `admin_models.html` (`on_admin_page = false`: they are links to `/admin#<tab>`). After them come two links to pages of their own: **Models** (`/admin/models`) and **Guide** (`/admin/guide`, which sets `admin_section = 'guide'` so its own tab is the active one).
 
 ### Partials
 

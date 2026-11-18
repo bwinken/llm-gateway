@@ -200,7 +200,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | Budget / Today | `get_user_daily_summary()` + `effective_cloud_limit()` | 今日 requests、各後端費用、每日額度與雲端上限使用率 |
 | Stats Cards | `get_user_monthly_summary()` | 當月 requests、cost、tokens |
 | Usage Trend | `get_daily_trends()` | 近 30 天的每日 requests / cost |
-| Cost by Model | `get_model_breakdown()`（經 `_build_model_breakdown()`） | 依後端分組的各模型費用；使用者無權使用的雲端後端不顯示（`_hidden_cloud_backends`） |
+| Cost by Model | `get_model_breakdown()`（經 `_build_model_breakdown()`） | 依後端分組的各模型費用；使用者無權使用的雲端後端不顯示，但尖峰溢流的用量會列出並標示 `overflow`（`model_catalog.visible_usage_rows`） |
 | Service accounts tab | `get_owned_apps_summary()` | 所屬服務帳號的月用量 |
 | System Status | `MODEL_ROUTING` + `is_alive()` | 依類型分組的伺服器健康狀態；Azure / Bedrock 模型清單只顯示給有權限的使用者 |
 

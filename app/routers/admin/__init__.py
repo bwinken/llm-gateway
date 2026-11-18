@@ -21,6 +21,7 @@ from app.routers.admin import (  # noqa: F401  (imported to register their route
     security,
     settings,
     model_config,
+    guide,
 )
 
 __all__ = ["router"]

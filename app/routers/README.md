@@ -201,7 +201,7 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 | Budget / Today | `get_user_daily_summary()` + `effective_cloud_limit()` | Today's requests, cost per backend, daily limit and cloud cap usage |
 | Stats Cards | `get_user_monthly_summary()` | Current month requests, cost, tokens |
 | Usage Trend | `get_daily_trends()` | Daily requests/cost for last 30 days |
-| Cost by Model | `get_model_breakdown()` via `_build_model_breakdown()` | Per-model cost grouped by backend; cloud backends the user may not use are left out (`_hidden_cloud_backends`) |
+| Cost by Model | `get_model_breakdown()` via `_build_model_breakdown()` | Per-model cost grouped by backend; cloud backends the user may not use are left out, except peak-overflow rows, which are marked `overflow` (`model_catalog.visible_usage_rows`) |
 | Service accounts tab | `get_owned_apps_summary()` via `_owned_service_accounts()` | Owned service accounts: key, daily limit, this month's totals and usage per model with each model's share |
 | System Status | `MODEL_ROUTING` + `is_alive()` | Server health grouped by type; Azure / Bedrock model lists only for users with access |
 
