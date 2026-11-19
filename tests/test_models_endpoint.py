@@ -271,3 +271,88 @@ class TestHiddenModels:
         resp = client.get("/v1/models", headers=auth_header())
         for m in resp.json()["data"]:
             assert "hidden" not in m
+
+
+class TestTwoLists:
+    """A model is in two lists with a tick each: ``GET /v1/models`` (what a
+    client's model picker reads; ``list_in_api``) and the pages (the
+    dashboard's model tables, ``/v1/status``; ``hidden``). Both are ticked
+    unless an admin unticks one, and neither refuses a request."""
+
+    def _api(self, client, path="/v1/models") -> list[str]:
+        return [m["id"] for m in client.get(path, headers=auth_header()).json()["data"]]
+
+    def _status(self, client) -> list[str]:
+        return [m["id"] for m in client.get("/v1/status", headers=auth_header()).json()["models"]]
+
+    def _dashboard(self, client) -> str:
+        from tests.conftest import web_auth_header
+
+        page = client.get("/dashboard", headers=web_auth_header(sub="testuser")).text
+        return page[page.index("On-Prem Models"):page.index("API examples")]
+
+    def test_both_are_on_unless_unticked(self, client, test_user):
+        assert {"test-llm", "test-vlm", "azure-gpt-4", "bedrock-claude"} <= set(self._api(client))
+        assert {"test-llm", "test-vlm", "azure-gpt-4", "bedrock-claude"} <= set(self._status(client))
+        from app.core.config import listed_in_api
+
+        assert listed_in_api({}) is True
+
+    def test_off_the_api_list_and_still_on_the_dashboard(self, client, test_user):
+        with patch.dict(TEST_MODEL_ROUTING["test-vlm"], {"list_in_api": False}):
+            assert "test-vlm" not in self._api(client) and "test-vlm" not in self._api(client, "/models")
+            assert "test-vlm" in self._status(client)
+            assert "test-vlm" in self._dashboard(client)
+
+    def test_on_the_api_list_and_off_the_dashboard(self, client, test_user):
+        with patch.dict(TEST_MODEL_ROUTING["test-vlm"], {"hidden": True, "list_in_api": True}):
+            assert "test-vlm" in self._api(client)
+            assert "test-vlm" not in self._status(client)
+            assert "test-vlm" not in self._dashboard(client)
+
+    def test_a_model_without_its_own_setting_follows_hidden(self, client, test_user):
+        """Configs written before the two were set apart list what they did."""
+        with patch.dict(TEST_MODEL_ROUTING["test-vlm"], {"hidden": True}):
+            assert "test-vlm" not in self._api(client) and "test-vlm" not in self._status(client)
+
+    def test_the_cloud_listings_follow_the_api_tick(self, client, test_user):
+        from tests.conftest import TEST_AZURE_MODELS, TEST_BEDROCK_MODELS
+
+        with patch.dict(TEST_AZURE_MODELS["azure-gpt-4"], {"list_in_api": False}), \
+                patch.dict(TEST_BEDROCK_MODELS["bedrock-claude"], {"hidden": True, "list_in_api": True}):
+            assert "azure-gpt-4" not in self._api(client) and "azure-gpt-4" not in self._api(client, "/azure/v1/models")
+            assert "bedrock-claude" in self._api(client) and "bedrock-claude" in self._api(client, "/aws/v1/models")
+            status = self._status(client)
+            assert "azure-gpt-4" in status and "bedrock-claude" not in status
+
+    def test_unlisted_is_still_served_by_name(self, client, test_user):
+        client.__httpx_mock__.post = AsyncMock(return_value=_azure_ok())
+        from tests.conftest import TEST_AZURE_MODELS
+
+        with patch.dict(TEST_AZURE_MODELS["azure-gpt-4"], {"list_in_api": False}):
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "azure-gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+                headers=auth_header(),
+            )
+        assert resp.status_code == 200 and "X-Model-Fallback" not in resp.headers
+
+    def test_the_tick_is_never_part_of_the_response(self, client, test_user):
+        with patch.dict(TEST_MODEL_ROUTING["test-llm"], {"list_in_api": True}):
+            for m in client.get("/v1/models", headers=auth_header()).json()["data"]:
+                assert "list_in_api" not in m and "hidden" not in m
+
+    def test_the_admin_api_takes_true_or_false_only(self, client, admin_user):
+        put = TestAdminConfigMetadataValidation()._put
+        assert put(client, admin_user, {"list_in_api": False}).status_code == 200
+        assert put(client, admin_user, {"hidden": True, "list_in_api": True}).status_code == 200
+        resp = put(client, admin_user, {"list_in_api": "no"})
+        assert resp.status_code == 400 and "list_in_api" in resp.json()["detail"]
+
+    def test_the_editor_has_a_tick_for_each(self, client, admin_user):
+        from tests.conftest import web_auth_header
+
+        page = client.get("/admin/models", headers=web_auth_header(sub="admin", scopes=["admin"])).text
+        assert "Listed in <code" in page and "Shown on the dashboard" in page
+        # The dashboard tick writes the API listing down before it moves, so the two stay apart.
+        assert "info.list_in_api = !info.hidden" in page

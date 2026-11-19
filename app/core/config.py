@@ -113,8 +113,25 @@ _MODEL_REASONING_KEYS: tuple[str, ...] = (
 # Anthropic endpoint (/anthropic/v1/messages) instead of Converse.
 _MODEL_INTERNAL_KEYS: tuple[str, ...] = (
     "hidden",
+    "list_in_api",
     "native_messages",
 )
+
+
+def listed_in_api(entry: dict[str, Any]) -> bool:
+    """Whether a model is listed in ``GET /v1/models`` (and the
+    ``/azure/v1`` / ``/aws/v1`` listings): what a client's model picker gets.
+
+    Two switches, set apart on purpose: ``hidden`` takes a model off the
+    pages (the dashboard's model tables, ``/v1/status``), ``list_in_api``
+    says whether it is in the API listing. A model with no ``list_in_api``
+    follows ``hidden``, as every model did when ``hidden`` was the one
+    switch for both, so an existing config lists exactly what it did.
+    Neither refuses anything: a request that names the alias is served."""
+    explicit = entry.get("list_in_api")
+    if isinstance(explicit, bool):
+        return explicit
+    return not entry.get("hidden")
 
 # [display_order]: the order models are listed in on the welcome page, the
 # dashboard's model tables and its Cost by Model card, and in Admin → Model

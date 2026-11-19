@@ -42,6 +42,7 @@ from app.core.config import (
     get_concurrency_offpeak,
     get_concurrency_settings,
     get_model_routing_snapshot,
+    listed_in_api,
 )
 from app.core.deps import (
     _enforce_daily_limit,
@@ -396,20 +397,22 @@ async def list_models(user: User = Depends(get_current_user)):
     client pointed at this single base URL sees exactly the set of aliases
     its API key may actually use.
 
-    Entries marked ``hidden`` are left out, here as on the dashboard, so a
-    model can be staged or retired without showing up in client pickers
-    (Claude Code, Roo Code). Hiding is a listing concern only: requests that
-    name the alias are still served.
+    Which models are in it is an admin's tick per model (*Listed in
+    GET /v1/models*, Admin → Models; ``config.listed_in_api``), so a model
+    can be staged or retired without showing up in client pickers (Claude
+    Code, Roo Code). It is apart from the tick that shows a model on the
+    dashboard (``hidden``): a model can be in one list and not the other.
+    A listing concern only: requests that name the alias are still served.
 
     A service account that acts for its users (``X-On-Behalf-Of``) gets the
     list of the user it names, exactly what that user gets with their own
-    key: their cloud access decides, and ``hidden`` (one switch per model,
-    for everyone) is the only thing an admin takes out of it.
+    key: their cloud access decides, and that one tick per model, the same
+    for everyone, is the only thing an admin takes out of it.
     """
     models = []
     for name, route in get_model_routing_snapshot().items():
         model_type = route["type"]
-        if model_type not in ("llm", "vlm") or route.get("hidden"):
+        if model_type not in ("llm", "vlm") or not listed_in_api(route):
             continue
         entry: dict[str, object] = {
             "id": name,
@@ -431,7 +434,7 @@ async def list_models(user: User = Depends(get_current_user)):
     if user.can_use_azure:
         for alias, route in get_azure_models_snapshot().items():
             model_type = route.get("type", "llm")
-            if model_type not in ("llm", "vlm") or route.get("hidden"):
+            if model_type not in ("llm", "vlm") or not listed_in_api(route):
                 continue
             entry = {
                 "id": alias,
@@ -448,7 +451,7 @@ async def list_models(user: User = Depends(get_current_user)):
     if user.can_use_bedrock:
         for alias, route in get_bedrock_models_snapshot().items():
             model_type = route.get("type", "llm")
-            if model_type not in ("llm", "vlm") or route.get("hidden"):
+            if model_type not in ("llm", "vlm") or not listed_in_api(route):
                 continue
             entry = {
                 "id": alias,

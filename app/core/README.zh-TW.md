@@ -57,7 +57,7 @@ Alias 在 `[models.*]`、`[azure_models.*]`、`[bedrock_models.*]` 之間必須�
 **Per-model 可選欄位**（每組各是一個 tuple；新增的 key 必須放進正確的那組）：
 
 - `_MODEL_METADATA_KEYS` — 透過 `GET /v1/models`、`/azure/v1/models`、`/aws/v1/models` 對外揭露：`display_name`、`context_window`、`max_output_tokens`、`supports_tools`、`supports_vision`、`supports_prompt_caching`、`is_reasoning`
-- `_MODEL_INTERNAL_KEYS` — 不對外揭露：`hidden`（不出現在列表中，但指名呼叫仍會服務）、`native_messages`（原生 Anthropic `/v1/messages` 直通：vLLM ≥ 0.11.1，或 Claude `[bedrock_models.*]` 項目改走 Bedrock 的 `/anthropic/v1/messages`）
+- `_MODEL_INTERNAL_KEYS` — 不對外揭露：`hidden`（不顯示在 dashboard，但指名呼叫仍會服務）、`list_in_api`（是否列在 `GET /v1/models`；沒設定時跟隨 `hidden`：`listed_in_api`）、`native_messages`（原生 Anthropic `/v1/messages` 直通：vLLM ≥ 0.11.1，或 Claude `[bedrock_models.*]` 項目改走 Bedrock 的 `/anthropic/v1/messages`）
 - `_MODEL_REASONING_KEYS` — 不對外揭露：`reasoning_efforts`（下游實際接受的等級）與 `reasoning_effort_map`（逐級指定改寫目標）。由 `app/services/reasoning_effort.py` 使用；不設定則照原樣轉送。
 - `_MODEL_PRICING_KEYS` — `input_price_per_1m`、`output_price_per_1m`，以及可選的 `cached_input_price_per_1m`（快取讀取）與 `cache_write_input_price_per_1m`（快取寫入）。優先於 `[pricing.<type>]`，後者再 fallback 到 `[pricing]` 預設值（`_default`）。
 - `_CLOUD_ROUTING_KEYS` — 僅 `[azure_models.*]` / `[bedrock_models.*]`，不對外揭露：`rate_limit_fallback`（遇到 429 時接手的**同一後端** alias）
