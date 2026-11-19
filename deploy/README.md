@@ -418,6 +418,8 @@ docker compose -f deploy/docker-compose.yml up -d
 
 The example's `:443` block points at Let's Encrypt paths (`/etc/letsencrypt/live/<domain>/`) and `nginx -t` fails until those files exist. Every page is served from that block, so get a certificate before installing: Let's Encrypt, a company CA, or `bash deploy/gen-selfsigned-cert.sh` (airgapped hosts; writes `/etc/nginx/ssl/llm-gateway.{crt,key}` by default and prints the edits to make; browsers warn about a self-signed certificate).
 
+The example sets `server_tokens off;` in both server blocks, so responses say `Server: nginx` without the version and nginx's own error pages do not print it. A site copy made from an older example lacks the line: add it under each `server_name`, or once in the `http {}` block of `/etc/nginx/nginx.conf` to cover every site on the host.
+
 To adjust the installed site by hand:
 
 ```bash

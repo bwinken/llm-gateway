@@ -374,6 +374,8 @@ docker compose -f deploy/docker-compose.yml up -d
 
 範例的 `:443` 區塊指向 Let's Encrypt 路徑（`/etc/letsencrypt/live/<domain>/`），在這些檔案存在之前 `nginx -t` 會失敗。所有頁面都由這個區塊服務，所以安裝前要先準備憑證：Let's Encrypt、公司 CA，或執行 `bash deploy/gen-selfsigned-cert.sh`（離線環境適用；預設寫到 `/etc/nginx/ssl/llm-gateway.{crt,key}`，並列出要修改的設定；自簽憑證瀏覽器會警告）。
 
+範例在兩個 server 區塊都設了 `server_tokens off;`：回應的 header 只寫 `Server: nginx`、不帶版本，nginx 自己的錯誤頁也不印版本。從舊範例複製的站台副本沒有這一行：請加在每個 `server_name` 下面，或在 `/etc/nginx/nginx.conf` 的 `http {}` 裡寫一次，主機上所有站台都適用。
+
 手動調整已安裝的站台設定：
 
 ```bash
