@@ -374,7 +374,7 @@ SECTIONS: tuple[Section, ...] = (
             ),
             Entry(
                 id="account-acts-for-users",
-                name="For users (a service account that acts for its users)",
+                name="On behalf of users (a service account that sends requests for its users)",
                 keys=("users.acts_for_users", "usage_logs.via_user_id"),
                 default="off",
                 what=(

@@ -889,7 +889,7 @@
         <div class="mt-3 text-xs text-t3 space-y-3">
             {% if app.acts_for_users %}
             <p>
-                An administrator turned on <b class="text-t2">For users</b> for this account. Your application signs each person in
+                An administrator turned on <b class="text-t2">On behalf of users</b> for this account. Your application signs each person in
                 itself, then sends every request with this account's key and that person's gateway username in
                 <span class="font-mono text-t2">X-On-Behalf-Of</span>. The request is then that person's: their daily limit,
                 their model access and their bill.
@@ -935,7 +935,7 @@
                 <b class="text-t2">Sending requests for your users is off for this account.</b>
                 An application can name the person a request is for (<span class="font-mono text-t2">X-On-Behalf-Of: username</span>)
                 so that it is billed to that person and counted against their limit, but only once an administrator has turned on
-                <b class="text-t2">For users</b> for this account. Until then the header is ignored and everything is billed to this account.
+                <b class="text-t2">On behalf of users</b> for this account. Until then the header is ignored and everything is billed to this account.
                 Ask an administrator if your application has users of its own.
             </p>
             {% endif %}

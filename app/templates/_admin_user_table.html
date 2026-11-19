@@ -117,7 +117,7 @@
                 <input type="hidden" name="enabled" value="{{ 'off' if u.acts_for_users else 'on' }}">
                 <button type="submit" class="gw-btn gw-btn-ghost gw-grant gw-grant-onbehalf text-xs px-2.5 py-1 {{ 'is-on' if u.acts_for_users }}"
                         aria-pressed="{{ 'true' if u.acts_for_users else 'false' }}"
-                        title="{{ 'Every request names its user in X-On-Behalf-Of and is billed to that user — click to turn off' if u.acts_for_users else 'Requests are its own — click to make it act for its users (X-On-Behalf-Of)' }}">For users</button>
+                        title="{{ 'Every request names its user in X-On-Behalf-Of and is billed to that user — click to turn off' if u.acts_for_users else 'Requests are its own — click to make it act for its users (X-On-Behalf-Of)' }}">On behalf of users</button>
             </form>
             {% endif %}
             {# Service accounts are never moved to the cloud: no switch to show. #}
@@ -158,7 +158,7 @@
                 <th class="gw-tip gw-tip-wide" data-tip="Cost, tokens and requests in the current month (Asia/Taipei).">This Month</th>
                 <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
                 <th style="text-align:right" class="gw-tip gw-tip-wide"
-                    data-tip="{{ 'Switches of this account, lit when on. Azure / AWS: may ask for that provider\'s models. Waive: no concurrency limit. For users: every request names a user in X-On-Behalf-Of and is billed to that user. The ⋯ menu disables or deletes it.' if is_apps else 'Switches of this account, lit when on. Azure / AWS: may ask for that provider\'s models. Waive: no concurrency limit. Overflow: may be served by the cloud while on-prem is congested. The ⋯ menu disables or deletes it.' }}">Access and switches</th>
+                    data-tip="{{ 'Switches of this account, lit when on. Azure / AWS: may ask for that provider\'s models. Waive: no concurrency limit. On behalf of users: every request names a user in X-On-Behalf-Of and is billed to that user. The ⋯ menu disables or deletes it.' if is_apps else 'Switches of this account, lit when on. Azure / AWS: may ask for that provider\'s models. Waive: no concurrency limit. Overflow: may be served by the cloud while on-prem is congested. The ⋯ menu disables or deletes it.' }}">Access and switches</th>
             </tr></thead>
             <tbody>
                 {% for u in table.rows %}

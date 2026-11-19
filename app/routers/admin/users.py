@@ -75,7 +75,7 @@ USER_TABLE_STATUSES: dict[str, str] = {
     "waived": "Concurrency waived",
     "waiver_changed": "Waiver not the default",
     "no_overflow": "No cloud overflow",
-    "on_behalf": "Acts for its users",
+    "on_behalf": "On behalf of users",
     "disabled": "Disabled",
     # Not a permission: tracks how many keys still predate the current format
     # (schema.is_legacy_api_key). Deliberately not in SPECIAL_ACCESS_KEYS.

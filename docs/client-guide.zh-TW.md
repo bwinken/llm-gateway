@@ -260,7 +260,7 @@ curl https://your-gateway/v1/chat/completions \
   -d '{"model": "qwen3-coder", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-- **只有管理員為該服務帳號開啟 *For users* 之後才有效。** 在那之前這個 header 會被忽略，請求算服務帳號自己的。dashboard 的 *Service accounts* 分頁會寫明目前是哪一種，並附上可以直接執行的測試。
+- **只有管理員為該服務帳號開啟 *On behalf of users* 之後才有效。** 在那之前這個 header 會被忽略，請求算服務帳號自己的。dashboard 的 *Service accounts* 分頁會寫明目前是哪一種，並附上可以直接執行的測試。
 - 值是使用者在 gateway 的帳號名稱（登入名稱），一個請求一個。不是 email，也不是顯示名稱。
 - 之後這個請求就是該使用者的：用他的每日額度和雲端上限、他的雲端權限，記在他的帳上，出現在他的 dashboard。服務帳號不會被扣款。
 - 開啟後每個請求都要帶這個 header。帶著它呼叫 `GET /v1/models` （或 `/models`）會列出該使用者可用的模型，和他用自己的 key 看到的一樣；`GET /v1/me` 回傳該使用者的剩餘額度。其他帳號端點不開放給應用。

@@ -260,7 +260,7 @@ curl https://your-gateway/v1/chat/completions \
   -d '{"model": "qwen3-coder", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-- **It only works once an administrator turned on *For users* for that service account.** Until then the header is ignored and the request is the service account's own. The dashboard's *Service accounts* tab says which it is, with a test to run.
+- **It only works once an administrator turned on *On behalf of users* for that service account.** Until then the header is ignored and the request is the service account's own. The dashboard's *Service accounts* tab says which it is, with a test to run.
 - The value is the user's gateway username (their sign-in name), one per request. Not an email address or a display name.
 - The request is then that user's: their daily limit and cloud cap, their cloud access, their bill and their dashboard. Nothing is charged to the service account.
 - With it on, every request needs the header. `GET /v1/models` (or `/models`) with it lists the models that user may use, the same list they get with their own key; `GET /v1/me` gives that user's remaining budget. The other account endpoints are refused to an application.
