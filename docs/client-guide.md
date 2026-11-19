@@ -263,7 +263,7 @@ curl https://your-gateway/v1/chat/completions \
 - **It only works once an administrator turned on *For users* for that service account.** Until then the header is ignored and the request is the service account's own. The dashboard's *Service accounts* tab says which it is, with a test to run.
 - The value is the user's gateway username (their sign-in name), one per request. Not an email address or a display name.
 - The request is then that user's: their daily limit and cloud cap, their cloud access, their bill and their dashboard. Nothing is charged to the service account.
-- With it on, every request needs the header. `GET /v1/models` with it lists the models that user may use (out of those the administrator listed for the application, if a list was set); `GET /v1/me` gives that user's remaining budget. The other account endpoints are refused to an application.
+- With it on, every request needs the header. `GET /v1/models` (or `/models`) with it lists the models that user may use, the same list they get with their own key; `GET /v1/me` gives that user's remaining budget. The other account endpoints are refused to an application.
 - Refused: no header or more than one name (400); a username that has no account on the gateway, a disabled account or a service account (403; a person gets an account by opening the dashboard once); the user over their limit (429).
 - Your application is what vouches for the user: sign them in before you send their name, send it from your server, and keep the key there. Whoever holds the key can spend any user's budget.
 

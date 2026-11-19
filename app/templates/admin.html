@@ -15,96 +15,6 @@
     .gw-grant-waive.is-on   { background: rgba(52,211,153,0.15);  border-color: rgba(52,211,153,0.4);  color: #86efac; }
     .gw-grant-overflow.is-on { background: rgba(99,152,255,0.14); border-color: rgba(99,152,255,0.4);  color: #a9c5ff; }
     .gw-grant-onbehalf.is-on { background: rgba(245,166,35,0.14); border-color: rgba(245,166,35,0.4);  color: #f8c873; }
-    /* Model list picker (a service account's /v1/models list). */
-    .ml-group { font-size: 10px; font-weight: 700; color: #7b8296; text-transform: uppercase; letter-spacing: .06em; margin: 10px 0 4px; }
-    .ml-item { display: flex; align-items: baseline; gap: 8px; padding: 3px 6px; border-radius: 6px; font-size: .8125rem; color: #c4c9d4; cursor: pointer; }
-    .ml-item:hover { background: rgba(255,255,255,0.04); }
-    .ml-item .ml-type { font-size: 10px; color: #7b8296; }
-    .sa-chip { display: inline-flex; align-items: baseline; gap: .375rem; padding: .3rem .65rem; border-radius: .5rem;
-               border: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.02); font-size: .75rem; color: #c4c9d4; }
-    .sa-chip:hover { border-color: rgba(99,152,255,0.35); }
-    .sa-chip.is-zero { color: #7b8296; }
-    .sa-chip.is-active { border-color: rgba(99,152,255,0.6); background: rgba(99,152,255,0.1); }
-    .gw-badge-admin { background: rgba(167,139,250,0.1); color: #a78bfa; border-color: rgba(167,139,250,0.15); }
-    .gw-badge-muted { background: rgba(255,255,255,0.04); color: #9aa1b3; border-color: rgba(255,255,255,0.06); }
-    .gw-badge-off   { background: rgba(245,166,35,0.1); color: #f5a623; border-color: rgba(245,166,35,0.2); }
-    /* .gw-badge sets display, so it would win over a plain .hidden. */
-    .gw-badge.hidden { display: none; }
-    /* A disabled account's row reads as inactive; its controls stay usable. */
-    .um-row.is-disabled .um-dim { opacity: 0.45; }
-    /* Segmented switch (Client setup: Form / JSON), as on the dashboard. */
-    .gw-chtab { padding: 4px 12px; font-size: 12px; font-weight: 500; border-radius: 7px; color: #9aa1b3; cursor: pointer; border: none; background: none; }
-    .gw-chtab-on { background: #1f2029; color: #eef0f4; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
-    /* Guardrail category rules: the colour says what the rule does now. */
-    .gr-rule[data-gr-rule="block"] { color: #ff8a8a; border-color: rgba(255,92,92,0.3); }
-    .gr-rule[data-gr-rule="block"].is-monitor { color: #f5a623; border-color: rgba(245,166,35,0.3); }
-    .gr-rule[data-gr-rule="flag"] { color: #f5a623; }
-    .gr-rule[data-gr-rule="ignore"] { color: #9aa1b3; }
-    /* Account drawer (GET /admin/users/{id}/detail). */
-    #udBackdrop { position: fixed; inset: 0; z-index: 70; background: rgba(5,6,10,0.55); }
-    #udDrawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 71; width: min(34rem, 100vw); overflow-y: auto;
-                background: #16171e; border-left: 1px solid rgba(255,255,255,0.07); box-shadow: -16px 0 40px rgba(0,0,0,0.45);
-                transform: translateX(100%); transition: transform .18s ease-out; }
-    #udDrawer.is-open { transform: none; }
-    .ud-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px 14px;
-               background: #16171e; border-bottom: 1px solid rgba(255,255,255,0.05); }
-    .ud-sec { padding: 14px 20px; border-bottom: 1px solid rgba(255,255,255,0.04); }
-    .ud-h { font-size: 11px; font-weight: 700; color: #9aa1b3; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
-    .ud-bar { height: 6px; border-radius: 999px; background: #262731; overflow: hidden; }
-    .ud-bar > div { height: 100%; border-radius: 999px; }
-    .ud-bar-thin { height: 4px; }
-    .ud-spark { width: 100%; height: 64px; margin-top: 8px; display: block; }
-    .ud-table { width: 100%; font-size: 12px; border-collapse: collapse; table-layout: fixed; }
-    .ud-table th { font-size: 10px; font-weight: 600; color: #7b8296; text-transform: uppercase; text-align: left; padding: 4px 6px; }
-    .ud-table th.text-right { text-align: right; }
-    .ud-table td { padding: 5px 6px; border-top: 1px solid rgba(255,255,255,0.03); }
-    .ud-dl { display: grid; grid-template-columns: 6rem 1fr; gap: 3px 10px; font-size: 12px; margin-top: 4px; }
-    .ud-dl dt { color: #7b8296; }
-    .ud-dl dd { color: #c4c9d4; font-family: "JetBrains Mono", monospace; font-size: 11px; }
-    .ud-audit { display: grid; grid-template-columns: 6.5rem 1fr 6rem 2.2rem; gap: 8px; font-size: 11px; padding: 4px 0;
-                border-top: 1px solid rgba(255,255,255,0.03); align-items: baseline; }
-    .um-name { color: inherit; font: inherit; text-align: left; cursor: pointer; border-bottom: 1px dashed transparent; }
-    .um-name:hover, .um-name:focus-visible { color: #6398ff; border-bottom-color: rgba(99,152,255,0.5); outline: none; }
-    /* Row ⋯ menu: opens to the left of the button, over the row's own
-       toggles, so the table card (overflow hidden, sideways scroll) never
-       clips it, whichever row it is. */
-    .um-more { position: relative; }
-    .um-more > summary { list-style: none; }
-    .um-more > summary::-webkit-details-marker { display: none; }
-    .um-menu { position: absolute; right: calc(100% + 6px); top: 50%; transform: translateY(-50%); z-index: 5; display: flex; gap: 4px;
-               padding: 4px; border-radius: 10px; white-space: nowrap;
-               background: #1f2029; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
-    .um-menu-item { display: block; padding: 4px 10px; border-radius: 6px; font-size: .75rem; color: #c4c9d4; }
-    .um-menu-item:hover, .um-menu-item:focus-visible { background: rgba(255,255,255,0.06); outline: none; }
-    .um-menu-danger { color: #ff8a8a; }
-    .um-menu-danger:hover, .um-menu-danger:focus-visible { background: rgba(255,92,92,0.12); }
-    [data-um-panel].is-loading { opacity: 0.55; pointer-events: none; transition: opacity 0.15s; }
-    .um-flash-ok  { box-shadow: 0 0 0 2px rgba(52,211,153,0.85) !important; }
-    .um-flash-err { box-shadow: 0 0 0 2px rgba(248,113,113,0.9) !important; }
-    /* Owner picker: chips of the people chosen, a box to search for more, one shared menu. */
-    .op { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; width: 15rem; min-height: 30px; padding: 3px 6px;
-          background: #13141a; border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; cursor: text; white-space: normal; }
-    .op-lg { width: 20rem; min-height: 34px; }
-    .op:focus-within { border-color: rgba(99,152,255,0.4); box-shadow: 0 0 0 3px rgba(99,152,255,0.08); }
-    .op-chips { display: contents; }
-    .op-chip { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 7px; border-radius: 6px; font-size: .75rem;
-               font-family: "JetBrains Mono", monospace; color: #c4c9d4; background: rgba(99,152,255,0.12); border: 1px solid rgba(99,152,255,0.2); }
-    .op-x { width: 16px; height: 16px; line-height: 14px; border-radius: 4px; color: #9aa1b3; font-size: .875rem; }
-    .op-x:hover { color: #ff8a8a; background: rgba(255,92,92,0.12); }
-    .op-input { flex: 1 1 5rem; min-width: 5rem; background: transparent; border: 0; outline: 0; color: #eef0f4; font-size: .8125rem; padding: 2px; }
-    .op-input::placeholder { color: #5f6679; }
-    #opMenu { position: fixed; z-index: 60; max-height: 17rem; overflow-y: auto; padding: 4px; border-radius: 10px;
-              background: #1f2029; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 12px 32px rgba(0,0,0,0.5); }
-    #opMenu li { display: flex; align-items: baseline; gap: 8px; padding: 6px 9px; border-radius: 7px; cursor: pointer; font-size: .8125rem; color: #c4c9d4; }
-    #opMenu li[aria-selected="true"] { background: rgba(99,152,255,0.16); color: #eef0f4; }
-    #opMenu li.op-none { cursor: default; color: #9aa1b3; }
-    #opMenu .op-user { font-family: "JetBrains Mono", monospace; color: #eef0f4; }
-    #opMenu .op-meta { color: #9aa1b3; font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #opMenu mark { background: transparent; color: #6398ff; font-weight: 700; }
-    /* Attention strip: compact count chips in its header line. */
-    .gw-att-chip { font-size: .6875rem; font-weight: 600; padding: .125rem .5rem; border-radius: 999px; white-space: nowrap; }
-    .gw-att-crit { background: rgba(255,92,92,0.14); color: #ff8a8a; }
-    .gw-att-warn { background: rgba(245,166,35,0.12); color: #f5a623; }
 </style>
 {% endblock %}
 
@@ -2136,109 +2046,7 @@ function submitExportCsv() {
     </div>
 </div>
 
-{# Model list picker: which models a service account lists (POST /admin/users/{id}/model-list). #}
-<div id="mlModal" class="fixed inset-0 hidden" style="z-index:80" role="dialog" aria-modal="true" aria-labelledby="mlTitle">
-    <div class="gw-overlay fixed inset-0" onclick="gwModelList.close()"></div>
-    <div class="fixed inset-0 flex items-center justify-center p-4">
-        <div class="gw-modal w-full max-w-lg relative" onclick="event.stopPropagation()">
-            <div class="flex items-center justify-between px-6 py-4" style="border-bottom:1px solid rgba(255,255,255,0.05)">
-                <h3 id="mlTitle" class="text-lg font-bold text-t1">Model list &mdash; <span id="mlUsername" class="text-ab"></span></h3>
-                <button type="button" onclick="gwModelList.close()" aria-label="Close" class="text-t4 hover:text-t2 transition-colors">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                </button>
-            </div>
-            <div class="px-6 py-4">
-                <p class="text-xs text-t4">
-                    The models this service account shows in <span class="font-mono">GET /v1/models</span>. With none ticked it shows every
-                    model its caller can see. A cloud model is still shown only to a caller with that cloud access.
-                    It is a list, not a lock: a request that names another model is served.
-                    <a href="/admin/guide#account-model-list" class="text-ab hover:underline whitespace-nowrap">Why?</a>
-                </p>
-                <div id="mlItems" class="mt-2 overflow-y-auto" style="max-height:50vh"></div>
-            </div>
-            <div class="flex items-center justify-between px-6 py-4 bg-n1 rounded-b-2xl" style="border-top:1px solid rgba(255,255,255,0.04)">
-                <button type="button" onclick="gwModelList.clear()" class="gw-btn gw-btn-ghost text-sm px-4 py-2">Untick all</button>
-                <button type="button" onclick="gwModelList.save()" id="mlSave" class="gw-btn gw-btn-primary text-sm px-4 py-2">Save</button>
-            </div>
-        </div>
-    </div>
-</div>
-
 <script>
-    /* ── Model list picker ──
-       One window for every service account row. The models come with the
-       page (MODEL_CHOICES: every chat model that is not hidden, in display
-       order); a row carries its saved list in data-model-list. A name on
-       the list that is no longer configured is shown, ticked, so it can be
-       taken off. */
-    var gwModelList = (function() {
-        var MODEL_CHOICES = {{ model_choices | tojson }};
-        var GROUPS = { onprem: 'On-prem', azure: 'Azure', aws: 'AWS' };
-        var button = null;
-        function el(id) { return document.getElementById(id); }
-        function item(id, type, checked) {
-            var label = document.createElement('label'), box = document.createElement('input'), name = document.createElement('span');
-            label.className = 'ml-item';
-            box.type = 'checkbox'; box.value = id; box.checked = checked;
-            name.className = 'font-mono'; name.textContent = id;
-            label.appendChild(box); label.appendChild(name);
-            if (type) { var t = document.createElement('span'); t.className = 'ml-type'; t.textContent = type; label.appendChild(t); }
-            return label;
-        }
-        function open(btn) {
-            button = btn;
-            var row = btn.closest('tr');
-            var saved = (btn.dataset.modelList || '').split(',').filter(Boolean);
-            el('mlUsername').textContent = row.dataset.username;
-            var box = el('mlItems'), last = null, known = {};
-            box.textContent = '';
-            MODEL_CHOICES.forEach(function(m) {
-                known[m.id] = true;
-                if (m.backend !== last) {
-                    var h = document.createElement('div');
-                    h.className = 'ml-group'; h.textContent = GROUPS[m.backend] || m.backend;
-                    box.appendChild(h); last = m.backend;
-                }
-                box.appendChild(item(m.id, m.type, saved.indexOf(m.id) !== -1));
-            });
-            var gone = saved.filter(function(id) { return !known[id]; });
-            if (gone.length) {
-                var h = document.createElement('div');
-                h.className = 'ml-group'; h.textContent = 'No longer configured';
-                box.appendChild(h);
-                gone.forEach(function(id) { box.appendChild(item(id, '', true)); });
-            }
-            el('mlModal').classList.remove('hidden');
-            el('mlSave').focus();
-        }
-        function close() { el('mlModal').classList.add('hidden'); button = null; }
-        function clear() {
-            el('mlItems').querySelectorAll('input[type=checkbox]').forEach(function(b) { b.checked = false; });
-        }
-        function save() {
-            if (!button) return;
-            var btn = button, row = btn.closest('tr');
-            var picked = [].slice.call(el('mlItems').querySelectorAll('input[type=checkbox]:checked')).map(function(b) { return b.value; });
-            var body = new URLSearchParams();
-            body.set('models', picked.join(','));
-            el('mlSave').disabled = true;
-            gwPost('/admin/users/' + row.dataset.uid + '/model-list', body)
-                .then(function(data) {
-                    var list = data.model_list || [];
-                    btn.dataset.modelList = list.join(',');
-                    btn.querySelector('[data-model-count]').textContent = list.length ? list.length : 'all';
-                    gwToast(row.dataset.username + ': ' + (list.length ? 'lists ' + list.length + (list.length === 1 ? ' model.' : ' models.') : 'lists every model its caller can see.'), 'ok');
-                    close();
-                })
-                .catch(function(err) { gwToast(row.dataset.username + ': ' + err.message, 'error'); })
-                .then(function() { el('mlSave').disabled = false; });
-        }
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape' && !el('mlModal').classList.contains('hidden')) close();
-        });
-        return { open: open, close: close, clear: clear, save: save };
-    })();
-
     /* ── API key modal ──
        The listings carry no keys, so the real one is fetched per account
        when the modal opens (GET /admin/users/{id}/api-key, which is logged). */
@@ -2658,7 +2466,7 @@ function submitExportCsv() {
         // <body> its own stacking context, which would put the page's
         // content (drawer included) under the fixed navbar. The key window
         // goes too, so it opens above the drawer.
-        [backdrop, drawer, document.getElementById('keyModal'), document.getElementById('mlModal')].forEach(function(el) { document.body.appendChild(el); });
+        [backdrop, drawer, document.getElementById('keyModal')].forEach(function(el) { document.body.appendChild(el); });
         function close() {
             if (!drawer.classList.contains('is-open')) return;
             drawer.classList.remove('is-open');

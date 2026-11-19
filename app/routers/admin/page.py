@@ -43,7 +43,7 @@ from app.routers.admin.users import (
     _table_state,
     _user_table,
 )
-from app.services import client_rules, client_settings, concurrency, guardrail, model_catalog, overflow
+from app.services import client_rules, client_settings, concurrency, guardrail, overflow
 from app.services.stats import (
     get_budget_pressure,
     get_today_totals,
@@ -198,12 +198,6 @@ def admin_page(
             "table_state": state,
             "user_table_sorts": USER_TABLE_SORTS,
             "user_table_statuses": USER_TABLE_STATUSES,
-            # The model list picker of a service account row: every chat model
-            # an admin sees (not hidden), in the pages' one display order.
-            "model_choices": [
-                {"id": m["id"], "backend": m["backend"], "type": m["type"]}
-                for m in model_catalog.visible_models(admin_user) if m["type"] in ("llm", "vlm")
-            ],
             "export_from_default": export_from.strftime("%Y-%m"),
             "export_to_default": month_start.strftime("%Y-%m"),
             "app_leaderboard": app_leaderboard,

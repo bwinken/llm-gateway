@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Request
 
 from app.core.config import _MODEL_METADATA_KEYS, get_bedrock_models_snapshot
 from app.core.deps import limited_bedrock_access, require_bedrock_access
-from app.models.schema import User, listed_models
+from app.models.schema import User
 from app.services import client_rules
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
@@ -47,11 +47,10 @@ async def list_bedrock_models(user: User = Depends(require_bedrock_access)):
     Both ``/aws/v1/models`` and ``/aws/models`` are accepted so clients work
     regardless of whether their base URL already includes the ``/v1`` prefix.
     """
-    listed = listed_models(user)  # a service account's own list, if it has one
     models = []
     for alias, entry in get_bedrock_models_snapshot().items():
-        if entry.get("hidden") or (listed is not None and alias not in listed):
-            continue  # staged/retired or not on the list: not listed, still served by alias
+        if entry.get("hidden"):
+            continue  # staged/retired: not listed, still served by alias
         model_type = entry.get("type", "llm")
         out: dict[str, object] = {
             "id": alias,

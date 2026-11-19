@@ -4,8 +4,8 @@ An application people sign in to holds one service account key. With
 ``users.acts_for_users`` on, every request it sends names the person it is
 for, and is then that person's request: their limit, their access, their
 bill, with the service account recorded as the way it came in
-(``usage_logs.via_user_id``). The service account's own model list narrows
-what ``GET /v1/models`` shows."""
+(``usage_logs.via_user_id``). ``GET /v1/models`` then lists the models that
+person sees with their own key."""
 
 from __future__ import annotations
 
@@ -280,6 +280,49 @@ class TestOnlyFromSuchAServiceAccount:
         assert [(r.user_id, r.via_user_id) for r in _rows()] == [(alice.id, 0)]
 
 
+# ── Every route ──
+
+class TestEveryRoute:
+    """The header is read where the key is, so it works the same on every
+    API route, with and without the ``/v1`` prefix."""
+
+    ROUTES = [
+        ("get", "/v1/models"), ("get", "/models"), ("get", "/azure/v1/models"), ("get", "/aws/v1/models"),
+        ("post", "/v1/chat/completions"), ("post", "/chat/completions"),
+        ("post", "/v1/messages"), ("post", "/messages"),
+        ("post", "/v1/responses"), ("post", "/responses"),
+        ("post", "/v1/messages/count_tokens"), ("post", "/v1/embeddings"), ("post", "/v1/rerank"),
+        ("post", "/v1/tokenize"), ("post", "/v1/systemone"),
+        ("post", "/azure/v1/chat/completions"), ("post", "/azure/v1/messages"), ("post", "/azure/v1/responses"),
+        ("post", "/aws/v1/chat/completions"), ("post", "/aws/v1/messages"),
+    ]
+
+    def _call(self, client, method: str, path: str, headers: dict):
+        kwargs = {"json": _CHAT} if method == "post" else {}
+        return getattr(client, method)(path, headers=headers, **kwargs)
+
+    @pytest.mark.parametrize("method,path", ROUTES)
+    def test_it_needs_the_header_and_a_real_user(self, client, chat_app, alice, method, path):
+        mock, calls = _downstream(client)
+        with mock:
+            assert self._call(client, method, path, _for(None)).status_code == 400
+            assert self._call(client, method, path, _for("nobody")).status_code == 403
+        assert calls == [] and _rows() == []
+
+    @pytest.mark.parametrize("path", ["/chat/completions", "/v1/chat/completions", "/messages", "/v1/messages"])
+    def test_billed_to_the_user_with_or_without_the_prefix(self, client, chat_app, alice, path):
+        mock, _ = _downstream(client)
+        body = _MESSAGES if path.endswith("messages") else _CHAT
+        with mock:
+            assert client.post(path, json=body, headers=_for("alice")).status_code == 200
+        assert [(r.user_id, r.via_user_id) for r in _rows()] == [(alice.id, chat_app.id)]
+
+    def test_a_cloud_surface_asks_for_the_users_access(self, client, chat_app, alice, test_user):
+        # alice has no Azure access: /azure/v1 refuses her, whatever the application has.
+        assert client.get("/azure/v1/models", headers=_for("alice")).status_code == 403
+        assert client.get("/azure/v1/models", headers=_for("testuser")).status_code == 200
+
+
 # ── The account endpoints ──
 
 class TestAccountEndpoints:
@@ -319,44 +362,31 @@ class TestModels:
         for_testuser = _listed(client, _for("testuser"))
         assert "test-llm" in for_alice and "azure-gpt-4" not in for_alice
         assert {"test-llm", "azure-gpt-4"} <= set(for_testuser)
-        # What each would get with their own key.
+        # Exactly what each gets with their own key: nothing is per application.
         assert for_alice == _listed(client, auth_header("sk-alice"))
         assert for_testuser == _listed(client, auth_header())
+        for path in ("/models", "/v1/status"):
+            assert _listed(client, _for("alice"), path) == _listed(client, auth_header("sk-alice"), path), path
 
-    def test_the_service_accounts_list_narrows_it(self, client, db_session, chat_app, alice, test_user):
-        chat_app.model_list = json.dumps(["test-llm", "azure-gpt-4"])
-        db_session.add(chat_app)
-        db_session.commit()
-        assert _listed(client, _for("alice")) == ["test-llm"]  # the list never adds access
-        assert _listed(client, _for("testuser")) == ["test-llm", "azure-gpt-4"]
-        assert [m for m in _listed(client, _for("testuser"), "/v1/status")] == ["test-llm", "azure-gpt-4"]
-        # A person's own key is never narrowed.
-        assert len(_listed(client, auth_header())) > 2
+    def test_what_an_admin_hides_is_hidden_for_everyone(self, client, chat_app, alice):
+        """Which models are listed at all is one switch per model (Hidden,
+        Admin → Models), the same whoever asks and through whatever key."""
+        from tests.conftest import TEST_MODEL_ROUTING
 
-    def test_a_service_account_that_is_itself_has_a_list_too(self, client, db_session):
-        _add(db_session, username="batch", api_key="sk-batch", is_service_account=True,
-             model_list=json.dumps(["test-vlm"]))
-        assert _listed(client, auth_header("sk-batch")) == ["test-vlm"]
-
-    def test_the_list_is_a_listing_not_a_lock(self, client, db_session, chat_app, alice):
-        chat_app.model_list = json.dumps(["test-vlm"])
-        db_session.add(chat_app)
-        db_session.commit()
-        resp, calls = _chat(client, _for("alice"))  # asks for test-llm
+        assert "test-vlm" in _listed(client, _for("alice"))
+        with patch.dict(TEST_MODEL_ROUTING["test-vlm"], {"hidden": True}):
+            assert "test-vlm" not in _listed(client, _for("alice"))
+            assert "test-vlm" not in _listed(client, auth_header("sk-alice"))
+            # Hidden is a listing concern: named, it is still served.
+            resp, calls = _chat(client, _for("alice"), {**_CHAT, "model": "test-vlm"})
         assert resp.status_code == 200 and calls == ["vllm"]
-        assert [r.model for r in _rows(alice.id)] == ["test-llm"]
 
-    def test_a_list_on_a_persons_account_is_not_read(self, client, db_session, alice):
-        alice.model_list = json.dumps(["test-vlm"])
-        db_session.add(alice)
-        db_session.commit()
-        assert "test-llm" in _listed(client, auth_header("sk-alice"))
+    def test_a_service_account_has_no_model_list_of_its_own(self):
+        from app.models import schema
 
-    def test_a_broken_list_reads_as_no_list(self):
-        from app.models.schema import parse_model_list
+        assert "model_list" not in schema.User.model_fields
+        assert not hasattr(schema, "listed_models")
 
-        assert parse_model_list("") == [] and parse_model_list("not json") == []
-        assert parse_model_list('{"a": 1}') == [] and parse_model_list('["a", 1, ""]') == ["a"]
 
 
 # ── Reports ──
@@ -519,46 +549,13 @@ class TestAdmin:
         resp = client.post(f"/admin/users/{chat_app.id}/acts-for-users", data={"enabled": "off"},
                            headers=web_auth_header(sub="testuser"))
         assert resp.status_code == 403
-        resp = client.post(f"/admin/users/{chat_app.id}/model-list", data={"models": "test-llm"},
-                           headers=web_auth_header(sub="testuser"))
-        assert resp.status_code == 403
-
-    def _models(self, client, user: User, models: str):
-        return client.post(f"/admin/users/{user.id}/model-list", data={"models": models}, headers={**_admin(), **_JSON})
-
-    def test_the_model_list_is_saved_checked(self, client, db_session, admin_user, chat_app):
-        resp = self._models(client, chat_app, "test-llm, azure-gpt-4,test-llm")
-        assert resp.json() == {"ok": True, "model_list": ["test-llm", "azure-gpt-4"]}
-        # A model the gateway does not have, or one that is not a chat model, is refused whole.
-        for bad in ("test-llm,no-such-model", "test-embedding"):
-            resp = self._models(client, chat_app, bad)
-            assert resp.status_code == 400 and "Not a chat model" in resp.json()["detail"], bad
-        db_session.expire_all()
-        assert json.loads(db_session.get(User, chat_app.id).model_list) == ["test-llm", "azure-gpt-4"]
-        # Empty: no list again.
-        assert self._models(client, chat_app, "").json()["model_list"] == []
-        db_session.expire_all()
-        assert db_session.get(User, chat_app.id).model_list == ""
-
-    def test_a_model_removed_since_can_stay_until_it_is_unticked(self, client, db_session, admin_user, chat_app):
-        chat_app.model_list = json.dumps(["retired-model", "test-llm"])
-        db_session.add(chat_app)
-        db_session.commit()
-        assert self._models(client, chat_app, "retired-model,test-vlm").json()["model_list"] == ["retired-model", "test-vlm"]
-        assert self._models(client, chat_app, "test-vlm").json()["model_list"] == ["test-vlm"]
-        assert self._models(client, chat_app, "retired-model").status_code == 400  # gone once taken off
-
-    def test_only_a_service_account_has_a_model_list(self, client, admin_user, alice):
-        assert self._models(client, alice, "test-llm").status_code == 400
 
     def test_the_json_api(self, client, db_session, admin_user, chat_app):
-        resp = client.patch(f"/admin/users/{chat_app.id}", json={"acts_for_users": False, "model_list": ["test-vlm"]},
-                            headers=_admin())
+        resp = client.patch(f"/admin/users/{chat_app.id}", json={"acts_for_users": False}, headers=_admin())
         assert resp.status_code == 200, resp.text
         assert client.patch(f"/admin/users/{chat_app.id}", json={"acts_for_users": "yes"}, headers=_admin()).status_code == 400
-        assert client.patch(f"/admin/users/{chat_app.id}", json={"model_list": "test-vlm,nope"}, headers=_admin()).status_code == 400
         [row] = [u for u in client.get("/admin/users", headers=_admin()).json() if u["username"] == "chat-app"]
-        assert (row["acts_for_users"], row["model_list"]) == (False, ["test-vlm"])
+        assert row["acts_for_users"] is False and "model_list" not in row
 
     def test_it_is_special_access(self, client, db_session, admin_user, chat_app, alice):
         from app.routers.admin.users import _special_access_summary
@@ -576,19 +573,17 @@ class TestAdmin:
         assert names("apps", "special") == ["chat-app"]
         assert names("users", "on_behalf") == []
 
-    def test_the_row_has_the_switch_the_list_and_what_went_through(self, client, db_session, admin_user, chat_app, alice):
-        chat_app.model_list = json.dumps(["test-llm", "test-vlm"])
-        db_session.add(chat_app)
-        db_session.commit()
+    def test_the_row_has_the_switch_and_what_went_through(self, client, db_session, admin_user, chat_app, alice):
         _sent_for(db_session, alice, chat_app, "1.5")
         apps = client.get("/admin/user-table", params={"kind": "apps"}, headers=_admin()).text
         assert f'action="/admin/users/{chat_app.id}/acts-for-users"' in apps
         assert 'name="enabled" value="off"' in apps  # it is on: the next click asks for off
-        assert 'data-model-list="test-llm,test-vlm"' in apps
         assert "for 1 user" in apps
         # People have neither.
         users = client.get("/admin/user-table", params={"kind": "users"}, headers=_admin()).text
-        assert "acts-for-users" not in users and "data-model-list" not in users
+        assert "acts-for-users" not in users
+        # No list of models per account: which models are listed is Admin → Models (Hidden).
+        assert "data-model-list" not in apps and "model-list" not in apps
 
     def test_sorting_by_spend_counts_what_went_through(self, client, db_session, admin_user, chat_app, alice):
         batch = _add(db_session, username="batch", api_key="sk-batch", is_service_account=True)
@@ -596,15 +591,6 @@ class TestAdmin:
         _sent_for(db_session, alice, chat_app, "5")
         body = client.get("/admin/user-table", params={"kind": "apps", "sort": "spend"}, headers=_admin()).text
         assert body.index('data-username="chat-app"') < body.index('data-username="batch"')
-
-    def test_the_page_carries_the_picker(self, client, admin_user, chat_app):
-        body = client.get("/admin", headers=_admin()).text
-        assert 'id="mlModal"' in body and '"id": "test-llm"' in body
-        # Only chat models can be listed: /v1/models lists no others.
-        choices = body[body.index("MODEL_CHOICES = "):]
-        choices = choices[:choices.index(";\n")]
-        assert "test-embedding" not in choices
-        assert 'href="/admin/guide#account-model-list"' in body
 
     def test_the_change_is_in_the_audit_log(self, client, db_session, admin_user, chat_app):
         from app.models.schema import AuditLog

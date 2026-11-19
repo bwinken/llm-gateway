@@ -6,7 +6,6 @@ and their owners, and the JSON user API (``/admin/users``).
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -29,7 +28,6 @@ from app.models.schema import (
     is_legacy_api_key,
     legacy_api_key_clause,
     mask_api_key,
-    parse_model_list,
 )
 from app.routers.admin.common import (
     _limit_usd,
@@ -303,7 +301,6 @@ def _user_table(
             "concurrency_waived": u.concurrency_waived,
             "can_overflow_cloud": u.can_overflow_cloud,
             "acts_for_users": u.acts_for_users,
-            "model_list": parse_model_list(u.model_list),
             "for_users_cost": for_users.get("cost", 0.0),
             "for_users_reqs": for_users.get("requests", 0),
             "for_users_count": for_users.get("users", 0),
@@ -799,54 +796,18 @@ def toggle_overflow(
     return RedirectResponse(url="/admin", status_code=303)
 
 
-# ── A service account that acts for its users, and its model list ──
+# ── A service account that acts for its users ──
 #
 # ``acts_for_users``: every request of the account must name a person in
 # X-On-Behalf-Of and is then that person's (``deps._on_behalf_of``): it lets
 # whoever holds the account's key spend any person's budget, so it is an
-# explicit switch, counted in the Special access strip. ``model_list``: the
-# models the account lists, an admin's pick.
+# explicit switch, counted in the Special access strip.
 
 def _acts_for_users_or_400(target: User, enabled: bool) -> None:
     """Only a service account acts for users: on a person's account the
     switch would let that person put requests on a colleague's bill."""
     if enabled and not target.is_service_account:
         raise HTTPException(status_code=400, detail="Only a service account can act for its users.")
-
-
-def _chat_model_aliases() -> set[str]:
-    """Every configured chat model (LLM / VLM), all three backends: what a
-    model list may name. ``/v1/models`` lists no other type."""
-    from app.services import model_catalog
-
-    return {
-        alias
-        for snapshot in model_catalog._snapshots().values()
-        for alias, entry in snapshot.items()
-        if entry.get("type", "llm") in ("llm", "vlm")
-    }
-
-
-def _model_list(target: User, raw: object) -> list[str]:
-    """A service account's model list as submitted (a list, or
-    comma-separated text), checked: without repeats, each a configured chat
-    model. A name already on the account's list may stay though it is no
-    longer configured, so editing the list never needs a removed model taken
-    off first. 400 naming what is wrong; empty = no list (every model)."""
-    if isinstance(raw, str):
-        names = [part.strip() for part in raw.split(",")]
-    elif isinstance(raw, list) and all(isinstance(item, str) for item in raw):
-        names = [item.strip() for item in raw]
-    else:
-        raise HTTPException(status_code=400, detail="model_list must be a list of model names.")
-    names = list(dict.fromkeys(name for name in names if name))
-    if names and not target.is_service_account:
-        raise HTTPException(status_code=400, detail="Only a service account has a model list.")
-    known = _chat_model_aliases() | set(parse_model_list(target.model_list))
-    unknown = [name for name in names if name not in known]
-    if unknown:
-        raise HTTPException(status_code=400, detail=f"Not a chat model on this gateway: {', '.join(unknown)}")
-    return names
 
 
 @router.post("/users/{user_id}/acts-for-users")
@@ -878,28 +839,6 @@ async def set_acts_for_users(
     )
     if _wants_json(request):
         return JSONResponse({"ok": True, "acts_for_users": target.acts_for_users})
-    return RedirectResponse(url="/admin", status_code=303)
-
-
-@router.post("/users/{user_id}/model-list")
-async def set_model_list(
-    user_id: int,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    """Replace a service account's model list (``models``: comma-separated
-    aliases; empty = no list, every model its caller can see). With any name
-    refused, nothing changes."""
-    target = session.exec(select(User).where(User.id == user_id)).first()
-    if not target:
-        raise HTTPException(status_code=404, detail="User not found.")
-    form = await request.form()
-    models = _model_list(target, str(form.get("models") or ""))
-    target.model_list = json.dumps(models) if models else ""
-    session.add(target)
-    session.commit()
-    if _wants_json(request):
-        return JSONResponse({"ok": True, "model_list": models})
     return RedirectResponse(url="/admin", status_code=303)
 
 
@@ -1030,7 +969,6 @@ def list_users_api(
             "can_overflow_cloud": u.can_overflow_cloud,
             "is_service_account": u.is_service_account,
             "acts_for_users": u.acts_for_users,
-            "model_list": parse_model_list(u.model_list),
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
@@ -1130,9 +1068,6 @@ def update_user_api(
         enabled = _strict_bool(body["acts_for_users"], "acts_for_users")
         _acts_for_users_or_400(target, enabled)
         target.acts_for_users = enabled
-    if "model_list" in body:
-        models = _model_list(target, body["model_list"])
-        target.model_list = json.dumps(models) if models else ""
     if "owner_ids" in body:
         current = _current_owner_ids(session, user_id)
         owners = _owners_by_id(session, body["owner_ids"], current)

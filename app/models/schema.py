@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 import secrets
 from datetime import date, datetime, timezone
@@ -149,11 +148,6 @@ class User(SQLModel, table=True):
     # everyone until an admin turns it on; means nothing on a person's
     # account. See ``deps._on_behalf_of``.
     acts_for_users: bool = Field(default=False)
-    # The models a service account lists (``GET /v1/models``, ``/v1/status``):
-    # a JSON array of aliases an admin picked, '' = every model its caller
-    # can see. Read it through ``listed_models``. A listing concern only,
-    # like a model's ``hidden``: a request that names another model is served.
-    model_list: str = Field(default="")
     owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     display_name: str = Field(default="")
     org_code: str = Field(default="")
@@ -192,32 +186,6 @@ def via_user_id(user: User) -> int:
     account's id, or 0 when the account used its own key."""
     via = via_service_account(user)
     return int(via.id) if via is not None and via.id is not None else 0
-
-
-def parse_model_list(raw: str | None) -> list[str]:
-    """``users.model_list`` as a list of aliases, in the stored order. A
-    value that is not a JSON array of strings reads as no list."""
-    if not raw:
-        return []
-    try:
-        value = json.loads(raw)
-    except ValueError:
-        return []
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str) and item]
-
-
-def listed_models(user: User) -> frozenset[str] | None:
-    """The aliases a model listing is narrowed to for this request, or None
-    for no narrowing. The list is the service account's: the one the request
-    came in through, else ``user`` itself when it is one. A person's own key
-    is never narrowed."""
-    account = via_service_account(user) or user
-    if not getattr(account, "is_service_account", False):
-        return None
-    models = parse_model_list(getattr(account, "model_list", ""))
-    return frozenset(models) if models else None
 
 
 def issue_api_key(user: User) -> str:

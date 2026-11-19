@@ -67,7 +67,7 @@ from app.core.timeutil import (
     next_local_midnight,
     seconds_until_local_midnight,
 )
-from app.models.schema import User, is_legacy_api_key, listed_models
+from app.models.schema import User, is_legacy_api_key
 from app.services.azure_proxy import (
     azure_forward_chat_completions,
     azure_forward_count_tokens,
@@ -402,21 +402,14 @@ async def list_models(user: User = Depends(get_current_user)):
     name the alias are still served.
 
     A service account that acts for its users (``X-On-Behalf-Of``) gets the
-    list of the user it names: that user's cloud access decides. A service
-    account with a model list of its own (admin *Users* tab) shows only
-    those of them; like ``hidden``, that narrows the list and refuses nothing.
+    list of the user it names, exactly what that user gets with their own
+    key: their cloud access decides, and ``hidden`` (one switch per model,
+    for everyone) is the only thing an admin takes out of it.
     """
-    # A service account's own list (an admin's pick, admin *Users* tab): the
-    # models it shows, out of those its caller can see. None = all of them.
-    listed = listed_models(user)
-
-    def shown(alias: str) -> bool:
-        return listed is None or alias in listed
-
     models = []
     for name, route in get_model_routing_snapshot().items():
         model_type = route["type"]
-        if model_type not in ("llm", "vlm") or route.get("hidden") or not shown(name):
+        if model_type not in ("llm", "vlm") or route.get("hidden"):
             continue
         entry: dict[str, object] = {
             "id": name,
@@ -438,7 +431,7 @@ async def list_models(user: User = Depends(get_current_user)):
     if user.can_use_azure:
         for alias, route in get_azure_models_snapshot().items():
             model_type = route.get("type", "llm")
-            if model_type not in ("llm", "vlm") or route.get("hidden") or not shown(alias):
+            if model_type not in ("llm", "vlm") or route.get("hidden"):
                 continue
             entry = {
                 "id": alias,
@@ -455,7 +448,7 @@ async def list_models(user: User = Depends(get_current_user)):
     if user.can_use_bedrock:
         for alias, route in get_bedrock_models_snapshot().items():
             model_type = route.get("type", "llm")
-            if model_type not in ("llm", "vlm") or route.get("hidden") or not shown(alias):
+            if model_type not in ("llm", "vlm") or route.get("hidden"):
                 continue
             entry = {
                 "id": alias,

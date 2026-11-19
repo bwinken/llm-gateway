@@ -395,27 +395,12 @@ SECTIONS: tuple[Section, ...] = (
                     "The header is honoured from a service account with this switch on, and from nobody else. A person's key that sends it is served as that person.",
                     "The key, its last use and the IP allowlist stay the application's; the concurrency limit counts on the person, together with what they send themselves.",
                     "On behalf of a user the application reads the model list (/v1/models), /v1/me and /v1/status. The user's usage history, notices and settings are refused to it.",
+                    "The model list it gets is the named user's own: the models that user would see with their own key. Which models are listed at all is one switch per model for everyone, Hidden on the Models page; there is no list per application.",
                     "Client rules ignore these requests: what they show is the application's setup, not the person's client.",
                 ),
                 decided=(
                     "Usage through such an application is charged to the user, not to the service account. A user "
                     "who has no account on the gateway is refused, never created on the application's word."
-                ),
-            ),
-            Entry(
-                id="account-model-list",
-                name="Models (a service account's model list)",
-                keys=("users.model_list",),
-                default="empty (every model)",
-                what=(
-                    "The models the service account shows in GET /v1/models and /v1/status. Empty: every model its "
-                    "caller can see. When it acts for its users, each user gets the models on the list that they may use."
-                ),
-                why="An application's model picker should offer the models chosen for it, not everything the gateway has.",
-                tradeoffs=(
-                    "It is a list, not a lock, like a model's Hidden switch: a request that names a model outside it is still served.",
-                    "It never adds access: a cloud model on the list is shown only to a caller with that cloud access.",
-                    "Only chat models (LLM / VLM) can be listed, because /v1/models lists no others. A name that is later removed from the configuration stays on the list until it is unticked.",
                 ),
             ),
         ),

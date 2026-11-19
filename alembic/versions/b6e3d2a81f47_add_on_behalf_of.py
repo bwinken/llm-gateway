@@ -1,4 +1,4 @@
-"""Add acting for a user: the service account's switch and model list, and the usage mark
+"""Add acting for a user: the service account's switch and the usage mark
 
 Revision ID: b6e3d2a81f47
 Revises: a4d8e1f62b90
@@ -11,8 +11,6 @@ came in.
 
 - ``users.acts_for_users``: this service account must name its user on every
   request (false for everyone until an admin turns it on).
-- ``users.model_list``: the models a service account lists (a JSON array of
-  aliases; '' = every model its caller can see).
 - ``usage_logs.via_user_id``: the service account that sent the request for
   ``user_id``, 0 when the account used its own key.
 - ``usage_daily.via_user_id``: the same, as part of the rollup's key, so
@@ -46,10 +44,6 @@ def upgrade() -> None:
     op.add_column(
         "users",
         sa.Column("acts_for_users", sa.Boolean(), server_default=sa.false(), nullable=False),
-    )
-    op.add_column(
-        "users",
-        sa.Column("model_list", sa.String(), server_default="", nullable=False),
     )
     op.add_column(
         "usage_logs",
@@ -87,5 +81,4 @@ def downgrade() -> None:
     op.drop_column("usage_daily", "via_user_id")
     op.create_primary_key("usage_daily_pkey", "usage_daily", list(_DAILY_KEY))
     op.drop_column("usage_logs", "via_user_id")
-    op.drop_column("users", "model_list")
     op.drop_column("users", "acts_for_users")
