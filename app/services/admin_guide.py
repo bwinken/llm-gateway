@@ -372,6 +372,52 @@ SECTIONS: tuple[Section, ...] = (
                 why="A program has no dashboard of its own; someone must be able to rotate its key.",
                 tradeoffs=("Only a service account has owners, and an owner is an existing person: assigning a person's account would hand that person's key to someone else.",),
             ),
+            Entry(
+                id="account-acts-for-users",
+                name="For users (a service account that acts for its users)",
+                keys=("users.acts_for_users", "usage_logs.via_user_id"),
+                default="off",
+                what=(
+                    "An application people sign in to sends each request with the header X-On-Behalf-Of: <username>. "
+                    "The request is then that person's: their daily limit and cloud cap, their cloud access, their "
+                    "bill and their dashboard. The service account is recorded as the way it came in. A request "
+                    "without the header, or naming someone who has no account here, a disabled account or a "
+                    "service account, is refused."
+                ),
+                why=(
+                    "So that an application shared by many people does not hide who is using it: usage is known and "
+                    "charged per person, and one heavy user cannot spend the budget of everyone else on it."
+                ),
+                tradeoffs=(
+                    "The name is the application's word, not proof. The gateway authenticates the application (its key); the application authenticated the person. It is enough to know and charge who used it, not to prove it against someone who denies it.",
+                    "Whoever holds this account's key can spend any person's daily budget. Keep the key on the application's server only, and give the account an IP allowlist rule for that server.",
+                    "The application cannot give a person more than they have: a cloud model is served only to a user with that cloud access, and a user over their limit gets the usual 429.",
+                    "The header is honoured from a service account with this switch on, and from nobody else. A person's key that sends it is served as that person.",
+                    "The key, its last use and the IP allowlist stay the application's; the concurrency limit counts on the person, together with what they send themselves.",
+                    "On behalf of a user the application reads the model list (/v1/models), /v1/me and /v1/status. The user's usage history, notices and settings are refused to it.",
+                    "Client rules ignore these requests: what they show is the application's setup, not the person's client.",
+                ),
+                decided=(
+                    "Usage through such an application is charged to the user, not to the service account. A user "
+                    "who has no account on the gateway is refused, never created on the application's word."
+                ),
+            ),
+            Entry(
+                id="account-model-list",
+                name="Models (a service account's model list)",
+                keys=("users.model_list",),
+                default="empty (every model)",
+                what=(
+                    "The models the service account shows in GET /v1/models and /v1/status. Empty: every model its "
+                    "caller can see. When it acts for its users, each user gets the models on the list that they may use."
+                ),
+                why="An application's model picker should offer the models chosen for it, not everything the gateway has.",
+                tradeoffs=(
+                    "It is a list, not a lock, like a model's Hidden switch: a request that names a model outside it is still served.",
+                    "It never adds access: a cloud model on the list is shown only to a caller with that cloud access.",
+                    "Only chat models (LLM / VLM) can be listed, because /v1/models lists no others. A name that is later removed from the configuration stays on the list until it is unticked.",
+                ),
+            ),
         ),
     ),
     Section(

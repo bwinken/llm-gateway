@@ -11,7 +11,7 @@ from typing import Any
 
 from app.core import config
 from app.core.server_state import get_metrics, is_alive
-from app.models.schema import User
+from app.models.schema import User, listed_models
 from app.services import model_fallback
 from app.services.model_order import catalog_key, positions, type_rank, unknown_key
 
@@ -160,7 +160,8 @@ def fallback_target(alias: str) -> str | None:
 
 def visible_models(user: User) -> list[dict[str, Any]]:
     """Every model ``user`` can see, in display order: on-prem first, then
-    the cloud backends the account may use; hidden entries left out.
+    the cloud backends the account may use; hidden entries left out, and for
+    a service account with a model list of its own, only those on it.
 
     Each row has ``id``, ``backend`` (``onprem`` / ``azure`` / ``aws``),
     ``type``, ``state`` and the billed prices, plus the metadata the config
@@ -176,13 +177,15 @@ def visible_models(user: User) -> list[dict[str, Any]]:
     pricing_map = config.get_pricing_snapshot()
     order = _positions()
     hidden = hidden_cloud_backends(user)
+    # A service account's own list narrows what it shows (schema.listed_models).
+    listed = listed_models(user)
     rows: list[dict[str, Any]] = []
     for backend, snapshot in _snapshots().items():
         if backend in hidden:
             continue
         found: list[tuple[tuple, dict[str, Any]]] = []
         for alias, entry in snapshot.items():
-            if entry.get("hidden"):
+            if entry.get("hidden") or (listed is not None and alias not in listed):
                 continue
             model_type = entry.get("type", "llm")
             in_price, out_price = resolve_prices(entry, model_type, pricing_map)

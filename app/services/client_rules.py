@@ -68,7 +68,7 @@ from app.core.config import APP_TITLE
 from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_today
-from app.models.schema import ClientRuleSetting, ClientVersion, ClientViolation, User
+from app.models.schema import ClientRuleSetting, ClientVersion, ClientViolation, User, via_service_account
 from app.services import client_checks, client_settings, mailer
 from app.services.client_checks import Check, Facts, version_key
 from app.services.client_patch import FROM_SETUP, dump_env, env_snippet, load_env, parse_env
@@ -423,6 +423,11 @@ def _violated(rule: Rule, facts: dict[str, Any]) -> bool:
 
 
 async def _observe(request: Any, user: User) -> JSONResponse | None:
+    if via_service_account(user) is not None:
+        # Sent by an application for this person (X-On-Behalf-Of): what the
+        # request shows is the application's setup, not the person's client.
+        # Nothing is recorded under their name and nobody is reminded.
+        return None
     try:
         body = await request.json()
     except Exception:

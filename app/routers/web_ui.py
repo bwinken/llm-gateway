@@ -50,6 +50,7 @@ from app.services.stats import (
     get_model_breakdown,
     get_owned_apps_summary,
     get_user_daily_summary,
+    get_user_on_behalf_today,
     get_user_monthly_summary,
     summarize_server_status,
 )
@@ -423,6 +424,7 @@ def dashboard(
             bedrock_today_cost=round(bedrock_today_cost, 4),
             vllm_today_cost=round(today["vllm_cost_usd"], 4),
             overflow_today_cost=round(today["overflow_cost_usd"], 4),
+            on_behalf_today=get_user_on_behalf_today(session, user.id),
             cloud_limit=cloud_limit,
             cloud_today_cost=round(cloud_today_cost, 4),
             cloud_usage_percent=round(cloud_usage_percent, 1),

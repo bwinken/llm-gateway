@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, Request
 
 from app.core.config import _MODEL_METADATA_KEYS, get_azure_models_snapshot
 from app.core.deps import limited_azure_access, require_azure_access
-from app.models.schema import User
+from app.models.schema import User, listed_models
 from app.services import client_rules
 from app.services.azure_proxy import (
     azure_forward_chat_completions,
@@ -47,10 +47,11 @@ async def list_azure_models(user: User = Depends(require_azure_access)):
     work regardless of whether their base URL already includes the ``/v1``
     prefix.
     """
+    listed = listed_models(user)  # a service account's own list, if it has one
     models = []
     for alias, entry in get_azure_models_snapshot().items():
-        if entry.get("hidden"):
-            continue  # staged/retired: not listed, still served by alias
+        if entry.get("hidden") or (listed is not None and alias not in listed):
+            continue  # staged/retired or not on the list: not listed, still served by alias
         model_type = entry.get("type", "llm")
         out: dict[str, object] = {
             "id": alias,

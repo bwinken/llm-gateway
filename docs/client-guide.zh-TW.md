@@ -246,6 +246,26 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
 - `service_accounts` 列出你名下的服務帳號（沒有的話是空陣列），各自有自己的每日上限和本月用量：就是 dashboard 的 *Service accounts* 分頁。
 - `month.models` 是當月依模型拆開的用量：每個模型和後端一列，順序和 dashboard 相同，加總等於當月合計。服務帳號用過的後端都會列出，和你自己的權限無關。
 - 不包含服務帳號的 API key，任何端點都不會回傳 key。要查看或重新產生，請到 dashboard 的 *Service accounts* 分頁。
+- `acts_for_users` 和 `on_behalf` 是給「替自己的使用者送請求」的應用用的（見下一節）：管理員是否為這個帳號開啟此功能，以及它本月替使用者送了多少（`users` 是幾位使用者）。這些用量記在使用者頭上，所以不在 `month` 裡。
+
+### 有自己使用者的應用（`X-On-Behalf-Of`）
+
+讓人登入使用的應用（聊天頁面、內部工具）只持有一把服務帳號的 key。為了讓 gateway 知道每個請求是替誰送的，並把費用記在那個人而不是應用頭上，應用要在 header 裡寫出使用者：
+
+```bash
+curl https://your-gateway/v1/chat/completions \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_KEY" \
+  -H "X-On-Behalf-Of: alice" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "qwen3-coder", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+- **只有管理員為該服務帳號開啟 *For users* 之後才有效。** 在那之前這個 header 會被忽略，請求算服務帳號自己的。dashboard 的 *Service accounts* 分頁會寫明目前是哪一種，並附上可以直接執行的測試。
+- 值是使用者在 gateway 的帳號名稱（登入名稱），一個請求一個。不是 email，也不是顯示名稱。
+- 之後這個請求就是該使用者的：用他的每日額度和雲端上限、他的雲端權限，記在他的帳上，出現在他的 dashboard。服務帳號不會被扣款。
+- 開啟後每個請求都要帶這個 header。帶著它呼叫 `GET /v1/models` 會列出該使用者可用的模型（若管理員替應用設了模型清單，則是清單內他可用的）；`GET /v1/me` 回傳該使用者的剩餘額度。其他帳號端點不開放給應用。
+- 會被拒絕的情況：沒帶 header 或寫了多個名稱（400）；該名稱在 gateway 沒有帳號、帳號已停用、或是服務帳號（403；使用者打開一次 dashboard 就會有帳號）；使用者額度用完（429）。
+- 使用者的身分由你的應用擔保：先讓使用者登入再送出名稱，從你的伺服器送，key 也只放在伺服器上。拿到 key 的人可以花任何使用者的額度。
 
 ## 通知
 

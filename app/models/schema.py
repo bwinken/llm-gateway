@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import secrets
 from datetime import date, datetime, timezone
@@ -141,6 +142,18 @@ class User(SQLModel, table=True):
     # never mailed. Formerly "app accounts", recognised by an ``app_`` name;
     # the name is free now and this column is the only test.
     is_service_account: bool = Field(default=False)
+    # A service account that sends requests for the people using it: every
+    # request must name one in ``X-On-Behalf-Of`` and is then that person's
+    # (their budget, limits and access; billed to them), with this account
+    # recorded as the way it came in (``usage_logs.via_user_id``). Off for
+    # everyone until an admin turns it on; means nothing on a person's
+    # account. See ``deps._on_behalf_of``.
+    acts_for_users: bool = Field(default=False)
+    # The models a service account lists (``GET /v1/models``, ``/v1/status``):
+    # a JSON array of aliases an admin picked, '' = every model its caller
+    # can see. Read it through ``listed_models``. A listing concern only,
+    # like a model's ``hidden``: a request that names another model is served.
+    model_list: str = Field(default="")
     owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     display_name: str = Field(default="")
     org_code: str = Field(default="")
@@ -152,6 +165,59 @@ class User(SQLModel, table=True):
     # Naive UTC, like concurrency_leases (compared in SQL against naive values).
     api_key_created_at: NaiveDatetime | None = Field(default_factory=lambda: _naive_utcnow())
     api_key_last_used_at: NaiveDatetime | None = Field(default=None)
+
+
+# ── Acting for a user ──
+# A request a service account sends for a person (``users.acts_for_users``)
+# is authenticated into that person's account. The service account rides
+# along on the object for the one request: it is not a column, so it is kept
+# outside the model's fields (SQLModel refuses unknown attributes).
+_VIA_ATTR = "_via_service_account"
+
+
+def set_via_service_account(user: User, service_account: User) -> None:
+    """Mark ``user`` (a detached, per-request object) as reached through
+    ``service_account``."""
+    object.__setattr__(user, _VIA_ATTR, service_account)
+
+
+def via_service_account(user: User) -> User | None:
+    """The service account this request came in through when it acts for
+    ``user`` (``X-On-Behalf-Of``), else None: the account used its own key."""
+    return getattr(user, _VIA_ATTR, None)
+
+
+def via_user_id(user: User) -> int:
+    """``usage_logs.via_user_id`` for a request of ``user``: the service
+    account's id, or 0 when the account used its own key."""
+    via = via_service_account(user)
+    return int(via.id) if via is not None and via.id is not None else 0
+
+
+def parse_model_list(raw: str | None) -> list[str]:
+    """``users.model_list`` as a list of aliases, in the stored order. A
+    value that is not a JSON array of strings reads as no list."""
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def listed_models(user: User) -> frozenset[str] | None:
+    """The aliases a model listing is narrowed to for this request, or None
+    for no narrowing. The list is the service account's: the one the request
+    came in through, else ``user`` itself when it is one. A person's own key
+    is never narrowed."""
+    account = via_service_account(user) or user
+    if not getattr(account, "is_service_account", False):
+        return None
+    models = parse_model_list(getattr(account, "model_list", ""))
+    return frozenset(models) if models else None
 
 
 def issue_api_key(user: User) -> str:
@@ -235,6 +301,12 @@ class UsageLog(SQLModel, table=True):
     # (app/services/overflow.py). ``backend`` / ``model`` / ``cost_usd`` are
     # the cloud model's, as billed; this only says why it went there.
     overflow: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.false()))
+    # The service account that sent this request for ``user_id``
+    # (``X-On-Behalf-Of``; ``users.acts_for_users``), 0 when the account used
+    # its own key. The row is the person's in every way (bill, limits,
+    # reports); this only says which application it came through. No foreign
+    # key, like ``user_id``: usage outlives a deleted account.
+    via_user_id: int = Field(default=0, sa_column=sa.Column(sa.Integer, nullable=False, server_default="0"))
     created_at: NaiveDatetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -242,7 +314,7 @@ class UsageDaily(SQLModel, table=True):
     """Per-local-day rollup of ``usage_logs`` (app/services/usage_rollup.py).
 
     One row per (Asia/Taipei day, user, backend, model, model_type,
-    endpoint, overflow): a user produces a handful of rows a day however many requests
+    endpoint, overflow, via_user_id): a user produces a handful of rows a day however many requests
     they make. Written only by ``scripts/rollup_usage_daily.py``, and only
     for closed days; gateway workers never touch it. Reports read closed
     days here and the rest from ``usage_logs``
@@ -268,6 +340,10 @@ class UsageDaily(SQLModel, table=True):
     # kept apart from cloud usage the account chose.
     overflow: bool = Field(default=False, sa_column=sa.Column(
         sa.Boolean, primary_key=True, nullable=False, server_default=sa.false()))
+    # usage_logs.via_user_id: usage a service account sent for this user is
+    # kept apart from what the user sent with their own key (0).
+    via_user_id: int = Field(default=0, sa_column=sa.Column(
+        sa.Integer, primary_key=True, nullable=False, server_default="0"))
     requests: int = Field(default=0, sa_column=sa.Column(sa.BigInteger, nullable=False))
     input_tokens: int = Field(default=0, sa_column=sa.Column(sa.BigInteger, nullable=False))
     output_tokens: int = Field(default=0, sa_column=sa.Column(sa.BigInteger, nullable=False))

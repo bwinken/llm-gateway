@@ -73,6 +73,13 @@
     <td class="whitespace-nowrap um-dim">
         <div class="text-sm text-t1 font-mono font-medium">{{ money(u.monthly_cost) }}</div>
         <div class="text-xs text-t4 font-mono">{{ format_token(u.monthly_tokens) }} tokens · {{ u.monthly_reqs }} reqs</div>
+        {# What a service account sent for its users (X-On-Behalf-Of): on their bills, not in the figure above. #}
+        {% if is_apps and u.for_users_reqs %}
+        <div class="text-xs text-t3 font-mono gw-tip gw-tip-wide"
+             data-tip="Sent for its users this month (X-On-Behalf-Of). Billed to those users and counted against their limits, so it is not part of this account's own figure above.">
+            + {{ money(u.for_users_cost) }} for {{ u.for_users_count }} user{{ '' if u.for_users_count == 1 else 's' }} · {{ u.for_users_reqs }} reqs
+        </div>
+        {% endif %}
     </td>
     <td class="whitespace-nowrap">
         <form action="/admin/users/{{ u.id }}/limit" method="POST" data-action="limit" class="flex items-center gap-2">
@@ -103,6 +110,20 @@
             {{ toggle_form(u, 'bedrock', 'toggle-bedrock', u.can_use_bedrock, 'AWS', 'AWS Bedrock granted', 'No AWS Bedrock access') }}
             {{ toggle_form(u, 'waive', 'toggle-concurrency-waive', u.concurrency_waived, 'Waive',
                            'Concurrency limit waived — click to apply it', 'Concurrency limit applies — click to waive') }}
+            {% if is_apps %}
+            {# Acting for its users (X-On-Behalf-Of). The value is sent, not flipped: it decides whose budget is spent. #}
+            <form action="/admin/users/{{ u.id }}/acts-for-users" method="POST" data-action="onbehalf"
+                  data-granted="{{ 'true' if u.acts_for_users else 'false' }}">
+                <input type="hidden" name="enabled" value="{{ 'off' if u.acts_for_users else 'on' }}">
+                <button type="submit" class="gw-btn gw-btn-ghost gw-grant gw-grant-onbehalf text-xs px-2.5 py-1 {{ 'is-on' if u.acts_for_users }}"
+                        aria-pressed="{{ 'true' if u.acts_for_users else 'false' }}"
+                        title="{{ 'Every request names its user in X-On-Behalf-Of and is billed to that user — click to turn off' if u.acts_for_users else 'Requests are its own — click to make it act for its users (X-On-Behalf-Of)' }}">For users</button>
+            </form>
+            {# The models it lists (GET /v1/models). Opens the picker (admin.html: gwModelList). #}
+            <button type="button" class="gw-btn gw-btn-ghost text-xs px-2.5 py-1" data-model-list="{{ u.model_list|join(',') }}"
+                    onclick="gwModelList.open(this)"
+                    title="The models this account lists in GET /v1/models. A listing only: a request naming another model is still served.">Models: <span data-model-count>{{ u.model_list|length if u.model_list else 'all' }}</span></button>
+            {% endif %}
             {# Service accounts are never moved to the cloud: no switch to show. #}
             {% if not is_apps %}
             {{ toggle_form(u, 'overflow', 'toggle-overflow', u.can_overflow_cloud, 'Overflow',

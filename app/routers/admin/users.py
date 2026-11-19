@@ -6,6 +6,7 @@ and their owners, and the JSON user API (``/admin/users``).
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -28,6 +29,7 @@ from app.models.schema import (
     is_legacy_api_key,
     legacy_api_key_clause,
     mask_api_key,
+    parse_model_list,
 )
 from app.routers.admin.common import (
     _limit_usd,
@@ -40,7 +42,7 @@ from app.routers.admin.common import (
     templates,
 )
 from app.services import concurrency, overflow
-from app.services.stats import get_monthly_all_users_usage
+from app.services.stats import get_monthly_all_users_usage, get_on_behalf_month
 
 
 _PAGE_SIZE = 15
@@ -75,6 +77,7 @@ USER_TABLE_STATUSES: dict[str, str] = {
     "waived": "Concurrency waived",
     "waiver_changed": "Waiver not the default",
     "no_overflow": "No cloud overflow",
+    "on_behalf": "Acts for its users",
     "disabled": "Disabled",
     # Not a permission: tracks how many keys still predate the current format
     # (schema.is_legacy_api_key). Deliberately not in SPECIAL_ACCESS_KEYS.
@@ -91,7 +94,7 @@ STALE_KEY_DAYS = 90
 # each linking to its filter. The waiver counts only what differs from an
 # account kind's default (users are created limited, service accounts waived).
 SPECIAL_ACCESS_KEYS: tuple[str, ...] = (
-    "azure", "bedrock", "cloud_cap", "waiver_changed", "no_overflow", "disabled",
+    "azure", "bedrock", "cloud_cap", "waiver_changed", "no_overflow", "on_behalf", "disabled",
 )
 
 
@@ -126,13 +129,16 @@ def _status_clause(status: str, is_apps: bool):
     """The WHERE clause of a Users / Apps table filter (None for "all").
     ``special`` is every account with something other than the defaults of
     its kind: a flag granted, its own cloud cap, the concurrency waiver
-    flipped from what new accounts of that kind get, or (a person) peak
-    overflow turned off."""
+    flipped from what new accounts of that kind get, (a person) peak
+    overflow turned off, or (a service account) acting for its users."""
     waived_differs = (User.concurrency_waived == False) if is_apps else (User.concurrency_waived == True)  # noqa: E712
     # Peak overflow is allowed unless an admin turned it off, and a service
     # account is never moved whatever its flag says: only a person with it
     # off differs from the default.
     no_overflow = sa_false() if is_apps else (User.can_overflow_cloud == False)  # noqa: E712
+    # Only a service account acts for users (X-On-Behalf-Of): the switch
+    # means nothing on a person's account.
+    on_behalf = (User.acts_for_users == True) if is_apps else sa_false()  # noqa: E712
     clauses = {
         "azure": User.can_use_azure == True,  # noqa: E712
         "bedrock": User.can_use_bedrock == True,  # noqa: E712
@@ -141,12 +147,13 @@ def _status_clause(status: str, is_apps: bool):
         "waived": User.concurrency_waived == True,  # noqa: E712
         "waiver_changed": waived_differs,
         "no_overflow": no_overflow,
+        "on_behalf": on_behalf,
         "disabled": User.is_disabled == True,  # noqa: E712
         "legacy_key": legacy_api_key_clause(),
         "stale_key": _stale_key_clause(),
     }
     if status == "special":
-        return clauses["cloud"] | clauses["cloud_cap"] | waived_differs | no_overflow
+        return clauses["cloud"] | clauses["cloud_cap"] | waived_differs | no_overflow | on_behalf
     return clauses.get(status)
 
 
@@ -236,11 +243,19 @@ def _user_table(
     total = session.exec(select(func.count()).select_from(User).where(*clauses)).one()
     offset = max(0, min(state[offset_key], max(total - 1, 0)))
 
+    # What each service account sent for its users this month (billed to
+    # them, so not in ``monthly_map``): shown beside its own, and counted
+    # when sorting by spend.
+    sent_for_users: dict[int, dict] = {}
     if state["sort"] == "spend":
         if monthly_map is None:
             monthly_map = get_monthly_all_users_usage(session)
+        if is_apps:
+            sent_for_users = get_on_behalf_month(session)
         ids = list(session.exec(select(User.id).where(*clauses)).all())
-        ids.sort(key=lambda i: (-monthly_map.get(i, {}).get("cost", 0.0), i))
+        ids.sort(key=lambda i: (
+            -(monthly_map.get(i, {}).get("cost", 0.0) + sent_for_users.get(i, {}).get("cost", 0.0)), i,
+        ))
         page_ids = ids[offset:offset + limit]
         by_id = {
             u.id: u for u in session.exec(select(User).where(User.id.in_(page_ids))).all()  # type: ignore[union-attr]
@@ -253,6 +268,8 @@ def _user_table(
         ).all())
         if monthly_map is None:
             monthly_map = get_monthly_all_users_usage(session, user_ids=[u.id for u in page])
+        if is_apps and page:
+            sent_for_users = get_on_behalf_month(session, [u.id for u in page])
 
     # Owners of the apps on this page only.
     owners: dict[int, list[str]] = {}
@@ -271,6 +288,7 @@ def _user_table(
     rows = []
     for u in page:
         monthly = monthly_map.get(u.id, empty)
+        for_users = sent_for_users.get(u.id, {})
         rows.append({
             "id": u.id,
             "username": u.username,
@@ -284,6 +302,11 @@ def _user_table(
             "can_use_bedrock": u.can_use_bedrock,
             "concurrency_waived": u.concurrency_waived,
             "can_overflow_cloud": u.can_overflow_cloud,
+            "acts_for_users": u.acts_for_users,
+            "model_list": parse_model_list(u.model_list),
+            "for_users_cost": for_users.get("cost", 0.0),
+            "for_users_reqs": for_users.get("requests", 0),
+            "for_users_count": for_users.get("users", 0),
             "key_legacy": is_legacy_api_key(u.api_key),
             "key_use": _key_use_label(u.api_key_last_used_at, now_naive),
             "key_stale": _is_stale(u, now_naive),
@@ -776,6 +799,110 @@ def toggle_overflow(
     return RedirectResponse(url="/admin", status_code=303)
 
 
+# ── A service account that acts for its users, and its model list ──
+#
+# ``acts_for_users``: every request of the account must name a person in
+# X-On-Behalf-Of and is then that person's (``deps._on_behalf_of``): it lets
+# whoever holds the account's key spend any person's budget, so it is an
+# explicit switch, counted in the Special access strip. ``model_list``: the
+# models the account lists, an admin's pick.
+
+def _acts_for_users_or_400(target: User, enabled: bool) -> None:
+    """Only a service account acts for users: on a person's account the
+    switch would let that person put requests on a colleague's bill."""
+    if enabled and not target.is_service_account:
+        raise HTTPException(status_code=400, detail="Only a service account can act for its users.")
+
+
+def _chat_model_aliases() -> set[str]:
+    """Every configured chat model (LLM / VLM), all three backends: what a
+    model list may name. ``/v1/models`` lists no other type."""
+    from app.services import model_catalog
+
+    return {
+        alias
+        for snapshot in model_catalog._snapshots().values()
+        for alias, entry in snapshot.items()
+        if entry.get("type", "llm") in ("llm", "vlm")
+    }
+
+
+def _model_list(target: User, raw: object) -> list[str]:
+    """A service account's model list as submitted (a list, or
+    comma-separated text), checked: without repeats, each a configured chat
+    model. A name already on the account's list may stay though it is no
+    longer configured, so editing the list never needs a removed model taken
+    off first. 400 naming what is wrong; empty = no list (every model)."""
+    if isinstance(raw, str):
+        names = [part.strip() for part in raw.split(",")]
+    elif isinstance(raw, list) and all(isinstance(item, str) for item in raw):
+        names = [item.strip() for item in raw]
+    else:
+        raise HTTPException(status_code=400, detail="model_list must be a list of model names.")
+    names = list(dict.fromkeys(name for name in names if name))
+    if names and not target.is_service_account:
+        raise HTTPException(status_code=400, detail="Only a service account has a model list.")
+    known = _chat_model_aliases() | set(parse_model_list(target.model_list))
+    unknown = [name for name in names if name not in known]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Not a chat model on this gateway: {', '.join(unknown)}")
+    return names
+
+
+@router.post("/users/{user_id}/acts-for-users")
+async def set_acts_for_users(
+    user_id: int,
+    request: Request,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """Turn a service account's ``acts_for_users`` on or off (explicit
+    ``enabled=on|off``, never a flip: this decides whose budget its requests
+    spend). On: every request must name a person in ``X-On-Behalf-Of`` and
+    is billed to that person; off: its requests are its own again and the
+    header is ignored."""
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    form = await request.form()
+    value = str(form.get("enabled") or "")
+    if value not in ("on", "off"):
+        raise HTTPException(status_code=400, detail="enabled must be on or off.")
+    _acts_for_users_or_400(target, value == "on")
+    target.acts_for_users = value == "on"
+    session.add(target)
+    session.commit()
+    logger.info(
+        "Acts for users {} | service_account={} admin={}",
+        "on" if target.acts_for_users else "off", target.username, admin_user.username,
+    )
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "acts_for_users": target.acts_for_users})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/users/{user_id}/model-list")
+async def set_model_list(
+    user_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Replace a service account's model list (``models``: comma-separated
+    aliases; empty = no list, every model its caller can see). With any name
+    refused, nothing changes."""
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    form = await request.form()
+    models = _model_list(target, str(form.get("models") or ""))
+    target.model_list = json.dumps(models) if models else ""
+    session.add(target)
+    session.commit()
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "model_list": models})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 def _overflow_changed(session: Session, target: User, admin_user: User | None = None) -> None:
     """After an account's can_overflow_cloud was written: log it, and when
     it is now off, end the account's stays on the cloud and reload this
@@ -902,6 +1029,8 @@ def list_users_api(
             "concurrency_waived": u.concurrency_waived,
             "can_overflow_cloud": u.can_overflow_cloud,
             "is_service_account": u.is_service_account,
+            "acts_for_users": u.acts_for_users,
+            "model_list": parse_model_list(u.model_list),
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
@@ -997,6 +1126,13 @@ def update_user_api(
     overflow_written = "can_overflow_cloud" in body
     if overflow_written:
         target.can_overflow_cloud = _strict_bool(body["can_overflow_cloud"], "can_overflow_cloud")
+    if "acts_for_users" in body:
+        enabled = _strict_bool(body["acts_for_users"], "acts_for_users")
+        _acts_for_users_or_400(target, enabled)
+        target.acts_for_users = enabled
+    if "model_list" in body:
+        models = _model_list(target, body["model_list"])
+        target.model_list = json.dumps(models) if models else ""
     if "owner_ids" in body:
         current = _current_owner_ids(session, user_id)
         owners = _owners_by_id(session, body["owner_ids"], current)

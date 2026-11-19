@@ -51,6 +51,7 @@ from app.core.deps import (
     get_model_changes,
     record_client_event,
     resolve_client_notices,
+    get_account_holder,
     get_current_user,
     get_current_user_unmetered,
     get_owned_apps,
@@ -66,7 +67,7 @@ from app.core.timeutil import (
     next_local_midnight,
     seconds_until_local_midnight,
 )
-from app.models.schema import User, is_legacy_api_key
+from app.models.schema import User, is_legacy_api_key, listed_models
 from app.services.azure_proxy import (
     azure_forward_chat_completions,
     azure_forward_count_tokens,
@@ -399,11 +400,23 @@ async def list_models(user: User = Depends(get_current_user)):
     model can be staged or retired without showing up in client pickers
     (Claude Code, Roo Code). Hiding is a listing concern only: requests that
     name the alias are still served.
+
+    A service account that acts for its users (``X-On-Behalf-Of``) gets the
+    list of the user it names: that user's cloud access decides. A service
+    account with a model list of its own (admin *Users* tab) shows only
+    those of them; like ``hidden``, that narrows the list and refuses nothing.
     """
+    # A service account's own list (an admin's pick, admin *Users* tab): the
+    # models it shows, out of those its caller can see. None = all of them.
+    listed = listed_models(user)
+
+    def shown(alias: str) -> bool:
+        return listed is None or alias in listed
+
     models = []
     for name, route in get_model_routing_snapshot().items():
         model_type = route["type"]
-        if model_type not in ("llm", "vlm") or route.get("hidden"):
+        if model_type not in ("llm", "vlm") or route.get("hidden") or not shown(name):
             continue
         entry: dict[str, object] = {
             "id": name,
@@ -425,7 +438,7 @@ async def list_models(user: User = Depends(get_current_user)):
     if user.can_use_azure:
         for alias, route in get_azure_models_snapshot().items():
             model_type = route.get("type", "llm")
-            if model_type not in ("llm", "vlm") or route.get("hidden"):
+            if model_type not in ("llm", "vlm") or route.get("hidden") or not shown(alias):
                 continue
             entry = {
                 "id": alias,
@@ -442,7 +455,7 @@ async def list_models(user: User = Depends(get_current_user)):
     if user.can_use_bedrock:
         for alias, route in get_bedrock_models_snapshot().items():
             model_type = route.get("type", "llm")
-            if model_type not in ("llm", "vlm") or route.get("hidden"):
+            if model_type not in ("llm", "vlm") or route.get("hidden") or not shown(alias):
                 continue
             entry = {
                 "id": alias,
@@ -637,7 +650,7 @@ def _model_usage_row(row: dict) -> dict:
 @router.get("/v1/usage", tags=["account"])
 def usage_history(
     days: int = Query(7, ge=1, le=USAGE_MAX_DAYS, description="How many days back, today included."),
-    user: User = Depends(get_current_user_unmetered),
+    user: User = Depends(get_account_holder),
 ):
     """The caller's own usage: one row per day and this month by model,
     the figures behind the dashboard's trend chart and Cost by Model card.
@@ -703,13 +716,24 @@ def _owned_service_account_rows(user: User) -> list[dict]:
                 "cost_usd": _usd(account["monthly_cost"]),
                 "models": [_model_usage_row(r) for r in account["models"]],
             },
+            # A service account that sends requests for its users
+            # (X-On-Behalf-Of): what it sent for them this month. Billed to
+            # those users, so no part of "month" above.
+            "acts_for_users": account["acts_for_users"],
+            "on_behalf": {
+                "users": account["on_behalf"]["users"],
+                "requests": account["on_behalf"]["requests"],
+                "input_tokens": account["on_behalf"]["input_tokens"],
+                "output_tokens": account["on_behalf"]["output_tokens"],
+                "cost_usd": _usd(account["on_behalf"]["cost"]),
+            },
         }
         for account in accounts
     ]
 
 
 @router.get("/v1/service-accounts", tags=["account"])
-def owned_service_accounts(user: User = Depends(get_current_user_unmetered)):
+def owned_service_accounts(user: User = Depends(get_account_holder)):
     """The service accounts the caller owns (accounts for programs, assigned
     by an admin), with each one's daily limit and this month's usage, in
     total and per model: the dashboard's *Service accounts* tab.
@@ -718,6 +742,11 @@ def owned_service_accounts(user: User = Depends(get_current_user_unmetered)):
     order (as ``month.models`` of ``/v1/usage``), and adds up to the
     month's totals. Nothing is left out of it: it is that account's bill,
     whatever cloud access the caller has.
+
+    ``acts_for_users`` says the account sends requests for the people using
+    it (``X-On-Behalf-Of``); ``on_behalf`` is what it sent for them this
+    month and for how many ``users``. That usage is billed to those users,
+    so it is no part of ``month``.
 
     A service account's API key is **not** part of it, and no API-key
     endpoint returns one: a leaked personal key must not open every service
@@ -744,7 +773,7 @@ def _patch(env: dict[str, str | None]) -> dict:
 
 
 @router.get("/v1/notices", tags=["account"])
-def client_notices(user: User = Depends(get_current_user_unmetered)):
+def client_notices(user: User = Depends(get_account_holder)):
     """What the dashboard's notices panel tells the caller: the client
     checks (``CC001``...) this account tripped in the last ``window_days``
     days and has not reported as fixed.
@@ -787,7 +816,7 @@ def client_notices(user: User = Depends(get_current_user_unmetered)):
 
 
 @router.get("/v1/model-changes", tags=["account"])
-def model_changes_for_account(user: User = Depends(get_current_user_unmetered)):
+def model_changes_for_account(user: User = Depends(get_account_holder)):
     """The models that are being replaced, for this account: what an admin
     announced (admin panel, *Model changes*) and is showing now. Its own
     flow, apart from the notices of ``GET /v1/notices``: nothing was
@@ -835,7 +864,7 @@ def model_changes_for_account(user: User = Depends(get_current_user_unmetered)):
 @router.post("/v1/notices/resolved", tags=["account"])
 def client_notices_resolved(
     body: dict | None = Body(default=None),
-    user: User = Depends(get_current_user_unmetered),
+    user: User = Depends(get_account_holder),
 ):
     """*I've applied it*, for a client that is not a browser: the caller's
     open notices are marked as fixed, as the dashboard's button does.
@@ -873,7 +902,7 @@ def client_notices_resolved(
 @router.post("/v1/events", tags=["account"])
 def client_event(
     body: dict = Body(...),
-    user: User = Depends(get_current_user_unmetered),
+    user: User = Depends(get_account_holder),
 ):
     """What a setup tool did on its user's machine, for the admin's *Client
     installs* list: which account installed, updated, removed or configured
@@ -915,7 +944,7 @@ def client_event(
 
 
 @router.get("/v1/settings", tags=["account"])
-async def client_settings_fields(user: User = Depends(get_current_user_unmetered)):
+async def client_settings_fields(user: User = Depends(get_account_holder)):
     """The client settings this account can be offered, for a tool that
     sets a client up: apply every ``default``, or let the user pick.
 
