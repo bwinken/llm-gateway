@@ -6,24 +6,24 @@
     .mc-item:hover { background: rgba(255,255,255,0.03); }
     .mc-item.active { background: rgba(99,152,255,0.10); border-color: rgba(99,152,255,0.22); }
     .mc-section { border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; background: rgba(255,255,255,0.012); }
-    .mc-section > h3 { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #868da0; }
-    .mc-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: #868da0; }
-    .mc-hint { font-size: 11px; color: #4e5569; }
+    .mc-section > h3 { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #9aa1b3; }
+    .mc-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: #9aa1b3; }
+    .mc-hint { font-size: 11px; color: #7b8296; }
     .mc-secret { -webkit-text-security: disc; }
     .mc-req::after { content: " *"; color: #ff5c5c; }
     .mc-bad { border-color: rgba(255,92,92,0.45) !important; }
     .mc-pill { display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; border-radius: 5px; font-size: 10px; font-weight: 600; line-height: 16px; }
-    .mc-kbd { font-family: "JetBrains Mono", monospace; font-size: 10px; padding: 1px 5px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1); color: #868da0; }
+    .mc-kbd { font-family: "JetBrains Mono", monospace; font-size: 10px; padding: 1px 5px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1); color: #9aa1b3; }
     /* Left list: compact one-line rows under sticky, foldable group headers. */
     .mc-row { padding: 5px 8px; }
     .mc-group-h { position: sticky; top: 0; z-index: 2; background: #15161d; display: flex; align-items: center; justify-content: space-between; padding: 4px 2px; }
-    .mc-fold { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #868da0; }
+    .mc-fold { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #9aa1b3; }
     .mc-fold:hover, .mc-type:hover { color: #c4c9d4; }
-    .mc-type { display: flex; align-items: center; gap: 4px; width: 100%; padding: 4px 6px 2px; font-size: 10px; font-family: "JetBrains Mono", monospace; color: #4e5569; }
+    .mc-type { display: flex; align-items: center; gap: 4px; width: 100%; padding: 4px 6px 2px; font-size: 10px; font-family: "JetBrains Mono", monospace; color: #7b8296; }
     .mc-chev { width: 10px; height: 10px; transition: transform 0.15s; flex-shrink: 0; }
     .mc-chev.open { transform: rotate(90deg); }
-    .mc-chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.07); color: #868da0; }
-    .mc-chip span { color: #4e5569; margin-left: 2px; }
+    .mc-chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.07); color: #9aa1b3; }
+    .mc-chip span { color: #7b8296; margin-left: 2px; }
     .mc-chip:hover { color: #c4c9d4; }
     .mc-chip.on { background: rgba(99,152,255,0.12); border-color: rgba(99,152,255,0.3); color: #dfe7ff; }
     .mc-chip.bad span { color: #ff8a8a; }
@@ -33,7 +33,7 @@
     .mc-order-row.mc-dragging { opacity: 0.35; }
     .mc-order-row.mc-drop-before { box-shadow: 0 -2px 0 #6398ff; }
     .mc-order-row.mc-drop-after { box-shadow: 0 2px 0 #6398ff; }
-    .mc-arrow { width: 24px; height: 24px; border-radius: 6px; color: #868da0; display: inline-flex; align-items: center; justify-content: center; }
+    .mc-arrow { width: 24px; height: 24px; border-radius: 6px; color: #9aa1b3; display: inline-flex; align-items: center; justify-content: center; }
     .mc-arrow:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: #eef0f4; }
     .mc-arrow:disabled { opacity: 0.25; cursor: default; }
 </style>
@@ -564,7 +564,7 @@ function listItem(kind, alias, info) {
     if (info.is_reasoning) badges.push(pill('think', 'rgba(77,217,232,0.10)', '#4dd9e8', 'is_reasoning'));
     if (info.rate_limit_fallback) badges.push(pill('429', 'rgba(245,166,35,0.10)', '#f5a623', 'On 429, retries on ' + info.rate_limit_fallback));
     if (info.overflow_to) badges.push(pill('overflow', 'rgba(255,153,51,0.10)', '#ff9933', 'While congested, overflows to ' + info.overflow_to));
-    if (info.hidden) badges.push(pill('hidden', 'rgba(255,255,255,0.05)', '#868da0', 'Hidden from GET /v1/models and the dashboard (still served by alias)'));
+    if (info.hidden) badges.push(pill('hidden', 'rgba(255,255,255,0.05)', '#9aa1b3', 'Hidden from GET /v1/models and the dashboard (still served by alias)'));
     const marker = bad
         ? '<span class="w-1.5 h-1.5 rounded-full bg-ar shrink-0" title="Missing required fields"></span>'
         : isChanged(kind, alias)
@@ -661,7 +661,7 @@ function renderOrderEditor() {
                         <span class="font-mono text-[13px] text-t1 truncate">${escHtml(a)}</span>
                         ${sub ? `<span class="text-[11px] text-t4 truncate hidden sm:inline">${escHtml(sub)}</span>` : ''}
                         <span class="ml-auto flex items-center gap-1 shrink-0">
-                            ${info.hidden ? pill('hidden', 'rgba(255,255,255,0.05)', '#868da0', 'Hidden from the dashboard; still ordered for Cost by Model') : ''}
+                            ${info.hidden ? pill('hidden', 'rgba(255,255,255,0.05)', '#9aa1b3', 'Hidden from the dashboard; still ordered for Cost by Model') : ''}
                             ${arranged && !listed.has(a) ? pill('new', 'rgba(245,166,35,0.10)', '#f5a623', 'Not placed yet: listed after the arranged models') : ''}
                             <button type="button" class="mc-arrow" data-move="-1" ${i === 0 ? 'disabled' : ''} title="Move up" aria-label="Move ${escAttr(a)} up"
                                     onclick="moveModel(${js(kind)}, ${js(type)}, ${js(a)}, -1)">↑</button>

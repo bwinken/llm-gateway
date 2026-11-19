@@ -161,7 +161,8 @@
                 {% if is_apps %}<th>Owner</th>{% endif %}
                 <th class="gw-tip gw-tip-wide" data-tip="Cost, tokens and requests in the current month (Asia/Taipei).">This Month</th>
                 <th class="gw-tip gw-tip-wide" data-tip="Max daily spend (USD). API returns 429 when exceeded.">Daily Limit</th>
-                <th style="text-align:right">Actions</th>
+                <th style="text-align:right" class="gw-tip gw-tip-wide"
+                    data-tip="{{ 'Switches of this account, lit when on. Azure / AWS: may ask for that provider\'s models. Waive: no concurrency limit. For users: every request names a user in X-On-Behalf-Of and is billed to that user. Models: which models it lists. The ⋯ menu disables or deletes it.' if is_apps else 'Switches of this account, lit when on. Azure / AWS: may ask for that provider\'s models. Waive: no concurrency limit. Overflow: may be served by the cloud while on-prem is congested. The ⋯ menu disables or deletes it.' }}">Access and switches</th>
             </tr></thead>
             <tbody>
                 {% for u in table.rows %}

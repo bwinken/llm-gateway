@@ -116,7 +116,8 @@ class TestPages:
         body = resp.text
         assert "Spent today" in body
         assert "Remaining" in body
-        assert "$0.5000" in body  # 10 - 9.5
+        remaining = body[body.index("Remaining"):]
+        assert "$0.50" in remaining[:remaining.index("resets in")]  # 10 - 9.5
         assert "Almost used up" in body
         # The budget comes before the model tables.
         assert body.index("Spent today") < body.index("On-Prem Models")
@@ -304,3 +305,62 @@ class TestModelsTab:
         assert "gw-tabs-static" in body[bar_start - 60:bar_start + 60]
         # No in-page tab controller on this page (its hash is the model selection).
         assert "gwTabs('adminTabs'" not in body
+
+
+class TestOneWayToWriteMoney:
+    """Every page writes an amount the same way: two decimals, four only
+    under a cent. The templates' ``money`` macro and ``gwMoney`` (what a
+    script draws) are the same rule."""
+
+    def _money(self, value: float) -> str:
+        from jinja2 import Environment, FileSystemLoader
+
+        env = Environment(loader=FileSystemLoader("app/templates"), autoescape=True)
+        return str(env.get_template("_admin_macros.html").module.money(value))
+
+    def test_two_decimals_and_four_under_a_cent(self):
+        assert [self._money(v) for v in (0, 0.0042, 0.01, 0.8997, 1, 28.6283)] == [
+            "$0.00", "$0.0042", "$0.01", "$0.90", "$1.00", "$28.63",
+        ]
+
+    def test_the_dashboard_and_the_scripts_use_the_same_rule(self):
+        from pathlib import Path
+
+        templates = Path("app/templates")
+        macro = [line for line in (templates / "_admin_macros.html").read_text().splitlines() if "macro money" in line]
+        assert macro and macro[0] in (templates / "dashboard.html").read_text()
+        assert "n > 0 && n < 0.01 ? 4 : 2" in (templates / "base.html").read_text()
+        # No page formats a cost by hand any more.
+        for name in ("dashboard.html", "admin.html", "_admin_user_table.html", "_admin_user_detail.html"):
+            text = (templates / name).read_text().replace(macro[0], "")  # the macro is the one place
+            assert '"%.4f"|format' not in text and "toFixed(4)" not in text, name
+
+
+class TestReadableHints:
+    def test_the_dim_text_colours_keep_a_readable_contrast(self):
+        """Explanations and labels are set in t3 / t4: they must stay
+        readable on a card (n2). t4 was 2.3:1 and hard to read."""
+        import re
+        from pathlib import Path
+
+        config = Path("frontend/tailwind.config.js").read_text()
+        colour = {name: value for name, value in re.findall(r"\b([nt]\d): '(#[0-9a-f]{6})'", config)}
+
+        def luminance(value: str) -> float:
+            channels = [int(value[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+            r, g, b = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+        def contrast(a: str, b: str) -> float:
+            hi, lo = sorted((luminance(a), luminance(b)), reverse=True)
+            return (hi + 0.05) / (lo + 0.05)
+
+        assert contrast(colour["t4"], colour["n2"]) >= 4.5
+        assert contrast(colour["t3"], colour["n2"]) > contrast(colour["t4"], colour["n2"])
+
+    def test_an_example_in_an_empty_field_does_not_look_like_a_value(self):
+        from pathlib import Path
+
+        base = Path("app/templates/base.html").read_text()
+        rule = base[base.index("input::placeholder"):]
+        assert "font-style: italic" in rule[:rule.index("}")]

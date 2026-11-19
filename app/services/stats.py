@@ -263,11 +263,16 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
 
       ``totals``            cost / input_tokens / output_tokens / requests
       ``per_user``          the per-user map (``get_monthly_all_users_usage``)
-      ``app_leaderboard`` / ``user_leaderboard``  top-N by monthly cost
+      ``app_leaderboard`` / ``user_leaderboard``  top-N by monthly cost; a
+                            service account's rank counts what it sent for its
+                            users too (``for_users_*``, billed to them)
       ``departments``       people (app accounts excluded) grouped by
                             ``org_code`` ("Unknown" when blank), by cost desc
     """
     per_user = get_monthly_all_users_usage(session)
+    # What each service account sent for its users (billed to them, so in
+    # ``per_user`` under the users): shown beside its own, and ranked with it.
+    for_users = get_on_behalf_month(session)
     # Every user, unfiltered: ``users`` is small next to ``usage_logs``, and an
     # IN list of every active id would hit bind-parameter limits.
     users = {
@@ -275,7 +280,7 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
         for uid, username, display_name, org_code, is_service in session.exec(
             select(User.id, User.username, User.display_name, User.org_code, User.is_service_account)
         ).all()
-    } if per_user else {}
+    } if per_user or for_users else {}
 
     totals = {"cost": 0.0, "input_tokens": 0, "output_tokens": 0, "requests": 0}
     apps: list[dict] = []
@@ -300,6 +305,9 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
             "monthly_reqs": u["requests"],
         }
         if is_service:
+            sent = for_users.get(uid, {})
+            row.update(for_users_cost=sent.get("cost", 0.0), for_users_reqs=sent.get("requests", 0),
+                       for_users_count=sent.get("users", 0))
             apps.append(row)
             continue
         people.append(row)
@@ -313,8 +321,23 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
         dept["output_tokens"] += u["output_tokens"]
         dept["requests"] += u["requests"]
 
+    # A service account whose month is only what it sent for its users has
+    # no usage of its own: it still belongs on the leaderboard.
+    listed = {row["id"] for row in apps}
+    for uid, sent in for_users.items():
+        if uid in listed or uid not in users or not users[uid][3]:
+            continue
+        username, display_name, org_code, _ = users[uid]
+        apps.append({
+            "id": uid, "username": username, "display_name": display_name, "org_code": org_code,
+            "monthly_cost": 0.0, "monthly_input": 0, "monthly_output": 0, "monthly_reqs": 0,
+            "for_users_cost": sent["cost"], "for_users_reqs": sent["requests"], "for_users_count": sent["users"],
+        })
+
     def _top(rows: list[dict]) -> list[dict]:
-        return sorted(rows, key=lambda r: r["monthly_cost"], reverse=True)[:leaderboard_size]
+        return sorted(
+            rows, key=lambda r: r["monthly_cost"] + r.get("for_users_cost", 0.0), reverse=True,
+        )[:leaderboard_size]
 
     totals["cost"] = round(totals["cost"], 4)
     for dept in departments.values():

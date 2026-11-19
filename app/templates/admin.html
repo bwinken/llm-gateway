@@ -7,7 +7,7 @@
     /* Granted / waived state of the per-account toggles (Azure, AWS, Waive):
        a check mark and a solid border when on, a dashed border when off, so
        the state reads without telling the colours apart. */
-    .gw-grant { border-style: dashed; color: #868da0; }
+    .gw-grant { border-style: dashed; color: #9aa1b3; }
     .gw-grant.is-on { font-weight: 700; border-style: solid; }
     .gw-grant.is-on::before { content: "\2713"; margin-right: 4px; }
     .gw-grant-azure.is-on   { background: rgba(167,139,250,0.18); border-color: rgba(167,139,250,0.4); color: #cab9ff; }
@@ -16,30 +16,30 @@
     .gw-grant-overflow.is-on { background: rgba(99,152,255,0.14); border-color: rgba(99,152,255,0.4);  color: #a9c5ff; }
     .gw-grant-onbehalf.is-on { background: rgba(245,166,35,0.14); border-color: rgba(245,166,35,0.4);  color: #f8c873; }
     /* Model list picker (a service account's /v1/models list). */
-    .ml-group { font-size: 10px; font-weight: 700; color: #4e5569; text-transform: uppercase; letter-spacing: .06em; margin: 10px 0 4px; }
+    .ml-group { font-size: 10px; font-weight: 700; color: #7b8296; text-transform: uppercase; letter-spacing: .06em; margin: 10px 0 4px; }
     .ml-item { display: flex; align-items: baseline; gap: 8px; padding: 3px 6px; border-radius: 6px; font-size: .8125rem; color: #c4c9d4; cursor: pointer; }
     .ml-item:hover { background: rgba(255,255,255,0.04); }
-    .ml-item .ml-type { font-size: 10px; color: #4e5569; }
+    .ml-item .ml-type { font-size: 10px; color: #7b8296; }
     .sa-chip { display: inline-flex; align-items: baseline; gap: .375rem; padding: .3rem .65rem; border-radius: .5rem;
                border: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.02); font-size: .75rem; color: #c4c9d4; }
     .sa-chip:hover { border-color: rgba(99,152,255,0.35); }
-    .sa-chip.is-zero { color: #4e5569; }
+    .sa-chip.is-zero { color: #7b8296; }
     .sa-chip.is-active { border-color: rgba(99,152,255,0.6); background: rgba(99,152,255,0.1); }
     .gw-badge-admin { background: rgba(167,139,250,0.1); color: #a78bfa; border-color: rgba(167,139,250,0.15); }
-    .gw-badge-muted { background: rgba(255,255,255,0.04); color: #868da0; border-color: rgba(255,255,255,0.06); }
+    .gw-badge-muted { background: rgba(255,255,255,0.04); color: #9aa1b3; border-color: rgba(255,255,255,0.06); }
     .gw-badge-off   { background: rgba(245,166,35,0.1); color: #f5a623; border-color: rgba(245,166,35,0.2); }
     /* .gw-badge sets display, so it would win over a plain .hidden. */
     .gw-badge.hidden { display: none; }
     /* A disabled account's row reads as inactive; its controls stay usable. */
     .um-row.is-disabled .um-dim { opacity: 0.45; }
     /* Segmented switch (Client setup: Form / JSON), as on the dashboard. */
-    .gw-chtab { padding: 4px 12px; font-size: 12px; font-weight: 500; border-radius: 7px; color: #868da0; cursor: pointer; border: none; background: none; }
+    .gw-chtab { padding: 4px 12px; font-size: 12px; font-weight: 500; border-radius: 7px; color: #9aa1b3; cursor: pointer; border: none; background: none; }
     .gw-chtab-on { background: #1f2029; color: #eef0f4; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
     /* Guardrail category rules: the colour says what the rule does now. */
     .gr-rule[data-gr-rule="block"] { color: #ff8a8a; border-color: rgba(255,92,92,0.3); }
     .gr-rule[data-gr-rule="block"].is-monitor { color: #f5a623; border-color: rgba(245,166,35,0.3); }
     .gr-rule[data-gr-rule="flag"] { color: #f5a623; }
-    .gr-rule[data-gr-rule="ignore"] { color: #868da0; }
+    .gr-rule[data-gr-rule="ignore"] { color: #9aa1b3; }
     /* Account drawer (GET /admin/users/{id}/detail). */
     #udBackdrop { position: fixed; inset: 0; z-index: 70; background: rgba(5,6,10,0.55); }
     #udDrawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 71; width: min(34rem, 100vw); overflow-y: auto;
@@ -49,17 +49,17 @@
     .ud-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px 14px;
                background: #16171e; border-bottom: 1px solid rgba(255,255,255,0.05); }
     .ud-sec { padding: 14px 20px; border-bottom: 1px solid rgba(255,255,255,0.04); }
-    .ud-h { font-size: 11px; font-weight: 700; color: #868da0; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+    .ud-h { font-size: 11px; font-weight: 700; color: #9aa1b3; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
     .ud-bar { height: 6px; border-radius: 999px; background: #262731; overflow: hidden; }
     .ud-bar > div { height: 100%; border-radius: 999px; }
     .ud-bar-thin { height: 4px; }
     .ud-spark { width: 100%; height: 64px; margin-top: 8px; display: block; }
     .ud-table { width: 100%; font-size: 12px; border-collapse: collapse; table-layout: fixed; }
-    .ud-table th { font-size: 10px; font-weight: 600; color: #4e5569; text-transform: uppercase; text-align: left; padding: 4px 6px; }
+    .ud-table th { font-size: 10px; font-weight: 600; color: #7b8296; text-transform: uppercase; text-align: left; padding: 4px 6px; }
     .ud-table th.text-right { text-align: right; }
     .ud-table td { padding: 5px 6px; border-top: 1px solid rgba(255,255,255,0.03); }
     .ud-dl { display: grid; grid-template-columns: 6rem 1fr; gap: 3px 10px; font-size: 12px; margin-top: 4px; }
-    .ud-dl dt { color: #4e5569; }
+    .ud-dl dt { color: #7b8296; }
     .ud-dl dd { color: #c4c9d4; font-family: "JetBrains Mono", monospace; font-size: 11px; }
     .ud-audit { display: grid; grid-template-columns: 6.5rem 1fr 6rem 2.2rem; gap: 8px; font-size: 11px; padding: 4px 0;
                 border-top: 1px solid rgba(255,255,255,0.03); align-items: baseline; }
@@ -89,17 +89,17 @@
     .op-chips { display: contents; }
     .op-chip { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 7px; border-radius: 6px; font-size: .75rem;
                font-family: "JetBrains Mono", monospace; color: #c4c9d4; background: rgba(99,152,255,0.12); border: 1px solid rgba(99,152,255,0.2); }
-    .op-x { width: 16px; height: 16px; line-height: 14px; border-radius: 4px; color: #868da0; font-size: .875rem; }
+    .op-x { width: 16px; height: 16px; line-height: 14px; border-radius: 4px; color: #9aa1b3; font-size: .875rem; }
     .op-x:hover { color: #ff8a8a; background: rgba(255,92,92,0.12); }
     .op-input { flex: 1 1 5rem; min-width: 5rem; background: transparent; border: 0; outline: 0; color: #eef0f4; font-size: .8125rem; padding: 2px; }
-    .op-input::placeholder { color: #4e5569; }
+    .op-input::placeholder { color: #5f6679; }
     #opMenu { position: fixed; z-index: 60; max-height: 17rem; overflow-y: auto; padding: 4px; border-radius: 10px;
               background: #1f2029; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 12px 32px rgba(0,0,0,0.5); }
     #opMenu li { display: flex; align-items: baseline; gap: 8px; padding: 6px 9px; border-radius: 7px; cursor: pointer; font-size: .8125rem; color: #c4c9d4; }
     #opMenu li[aria-selected="true"] { background: rgba(99,152,255,0.16); color: #eef0f4; }
-    #opMenu li.op-none { cursor: default; color: #868da0; }
+    #opMenu li.op-none { cursor: default; color: #9aa1b3; }
     #opMenu .op-user { font-family: "JetBrains Mono", monospace; color: #eef0f4; }
-    #opMenu .op-meta { color: #868da0; font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #opMenu .op-meta { color: #9aa1b3; font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #opMenu mark { background: transparent; color: #6398ff; font-weight: 700; }
     /* Attention strip: compact count chips in its header line. */
     .gw-att-chip { font-size: .6875rem; font-weight: 600; padding: .125rem .5rem; border-radius: 999px; white-space: nowrap; }
@@ -368,12 +368,18 @@ function anomalyAction(id, action) {
                         <td class="whitespace-nowrap">
                             <div class="flex items-center gap-2">
                                 <div class="h-7 w-7 rounded-lg bg-[rgba(99,152,255,0.1)] flex items-center justify-center text-ab font-bold text-xs">
-                                    {{ u.username[4:][:2]|upper if u.username|length > 4 else u.username[0]|upper }}
+                                    {# Older accounts are named app_...: skip that prefix, and only that. #}
+                                    {{ (u.username[4:] if u.username.startswith('app_') and u.username|length > 4 else u.username)[:2]|upper }}
                                 </div>
                                 <button type="button" class="um-name text-sm font-medium text-t1" data-um-detail="{{ u.id }}">{{ u.username }}</button>
                             </div>
                         </td>
-                        <td class="text-right text-sm font-mono font-medium text-t1">{{ money(u.monthly_cost) }}</td>
+                        <td class="text-right text-sm font-mono font-medium text-t1">{{ money(u.monthly_cost) }}
+                            {# What it sent for its users (X-On-Behalf-Of): on their bills, so apart from its own cost. #}
+                            {% if u.for_users_reqs %}
+                            <div class="text-[11px] font-normal text-t3 gw-tip gw-tip-wide" data-tip="Sent for its users this month ({{ u.for_users_reqs }} requests, {{ u.for_users_count }} user{{ '' if u.for_users_count == 1 else 's' }}). Billed to those users, so it is in the user leaderboard and not in this account's own cost. The ranking counts both.">+ {{ money(u.for_users_cost) }} for users</div>
+                            {% endif %}
+                        </td>
                         <td class="text-right text-sm font-mono text-t3">{{ format_token(u.monthly_input) }}</td>
                         <td class="text-right text-sm font-mono text-t3">{{ format_token(u.monthly_output) }}</td>
                         <td class="text-right text-sm font-mono text-t3">{{ u.monthly_reqs }}</td>
@@ -1868,7 +1874,7 @@ function submitExportCsv() {
                     <td class="text-xs font-mono text-t3">{{ st.models|join(', ') }}</td>
                     <td class="text-sm font-mono text-t3 whitespace-nowrap">{{ overflow_local(st.entered_at) }}</td>
                     <td class="text-right text-sm font-mono text-t3">{{ st.minutes }}</td>
-                    <td class="text-right text-sm font-mono text-t2">${{ "%.4f"|format(st.cost_today) }}</td>
+                    <td class="text-right text-sm font-mono text-t2">{{ money(st.cost_today) }}</td>
                     <td class="text-xs text-t4">{{ st.reason_in }}</td>
                 </tr>
                 {% endfor %}
@@ -2892,12 +2898,12 @@ function submitExportCsv() {
             },
             scales: {
                 x: { stacked: true, grid: { display: false }, border: { display: false },
-                     ticks: { color: '#4e5569', font: { size: 10, family: 'JetBrains Mono' }, maxRotation: 0, autoSkip: true, maxTicksLimit: 10 } },
+                     ticks: { color: '#7b8296', font: { size: 10, family: 'JetBrains Mono' }, maxRotation: 0, autoSkip: true, maxTicksLimit: 10 } },
                 // A floor under the axis width: Chart.js measures (and caches) the
                 // labels before the mono font is in, and cut off the "$".
                 y: { stacked: true, beginAtZero: true, grid: { color: 'rgba(255,255,255,0.03)' }, border: { display: false },
                      afterFit: function(scale){ scale.width = Math.max(scale.width, 52); },
-                     ticks: { color: '#4e5569', font: { size: 10, family: 'JetBrains Mono' }, callback: function(v){ return '$' + v; } } }
+                     ticks: { color: '#7b8296', font: { size: 10, family: 'JetBrains Mono' }, callback: function(v){ return '$' + v; } } }
             }
         }
     });
@@ -2942,13 +2948,13 @@ function submitExportCsv() {
             scales: {
                 x: {
                     grid: { display: false },
-                    ticks: { color: '#4e5569', font: { size: 10, family: 'JetBrains Mono' }, maxRotation: 0, autoSkip: true, maxTicksLimit: 5 },
+                    ticks: { color: '#7b8296', font: { size: 10, family: 'JetBrains Mono' }, maxRotation: 0, autoSkip: true, maxTicksLimit: 5 },
                     border: { display: false }
                 },
                 y: {
                     beginAtZero: true,
                     grid: { color: 'rgba(255,255,255,0.03)' },
-                    ticks: { color: '#4e5569', font: { size: 10, family: 'JetBrains Mono' }, precision: 0 },
+                    ticks: { color: '#7b8296', font: { size: 10, family: 'JetBrains Mono' }, precision: 0 },
                     border: { display: false }
                 }
             }

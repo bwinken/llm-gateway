@@ -12,7 +12,13 @@
 
 {% block content %}
 
-{% macro money(v) -%}${{ "%.2f"|format(v) if v >= 1 else "%.4f"|format(v) }}{%- endmacro %}
+{# One way to write an amount of money on every page: two decimals, and four
+   only for an amount under a cent (which two would show as $0.00). gwMoney in
+   base.html is the same rule for what a script draws. #}
+{% macro money(v) -%}${{ "%.4f"|format(v) if 0 < v < 0.01 else "%.2f"|format(v) }}{%- endmacro %}
+{# A price per 1M tokens: two decimals ($0.50, $15.00), more only when the
+   price has more ($0.025). #}
+{% macro price(v) -%}${{ "%.2f"|format(v) if (v * 100)|round(6) == (v * 100)|round(0) else "%g"|format(v) }}{%- endmacro %}
 {% set band = {
     'ok':        {'color': '#3dd68c', 'soft': 'rgba(61,214,140,0.10)',  'edge': 'rgba(61,214,140,0.22)'},
     'warn':      {'color': '#f5a623', 'soft': 'rgba(245,166,35,0.10)',  'edge': 'rgba(245,166,35,0.30)'},
@@ -268,8 +274,8 @@
                 <td class="whitespace-nowrap text-right text-[11px] font-mono text-t3">
                     {{ "{:,}".format(m.context_window) if m.context_window else '—' }}
                 </td>
-                <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">${{ '%g'|format(m.input_price) }}</td>
-                <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">${{ '%g'|format(m.output_price) }}</td>
+                <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">{{ price(m.input_price) }}</td>
+                <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">{{ price(m.output_price) }}</td>
                 <td><div class="flex flex-wrap items-center gap-1">{{ capability_badges(m) }}</div></td>
             </tr>
             {% endfor %}
@@ -294,7 +300,8 @@
             {% endif %}
             {% endif %}
         </div>
-        <code class="text-[11px] font-mono text-t4 bg-n1 px-1.5 py-0.5 rounded">{{ gateway_base }}</code>
+        <span class="text-[11px] text-t4 gw-tip gw-tip-wide" data-tip="The address to give a client as its base URL. Every model you can use answers on this one; the Azure and AWS addresses below reach only those models.">Base URL
+            <code class="ml-1 font-mono text-t3 bg-n1 px-1.5 py-0.5 rounded">{{ gateway_base }}</code></span>
     </div>
     {% set has_any = server_groups.values() | sum(start=[]) | length > 0 %}
     {% if has_any %}
@@ -352,8 +359,8 @@
                     <td class="whitespace-nowrap text-right text-[11px] font-mono text-t3">
                         {{ "{:,}".format(s.max_output_tokens) if s.max_output_tokens else '—' }}
                     </td>
-                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">${{ '%g'|format(s.input_price) }}</td>
-                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">${{ '%g'|format(s.output_price) }}</td>
+                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">{{ price(s.input_price) }}</td>
+                    <td class="whitespace-nowrap text-right text-[11px] font-mono text-t2">{{ price(s.output_price) }}</td>
                     <td><div class="flex flex-wrap items-center gap-1">{{ capability_badges(s) }}</div></td>
                 </tr>
                 {% endfor %}
@@ -374,8 +381,9 @@
             <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:#a78bfa"></span>
             <span class="text-sm font-bold text-t2 gw-tip gw-tip-wide" data-tip="Azure OpenAI deployments you have access to. Managed service — no health probe; also reachable through the unified base URL with the same aliases.">Azure OpenAI Models</span>
         </div>
-        <code class="text-[11px] font-mono px-1.5 py-0.5 rounded"
-              style="background:rgba(167,139,250,0.12);color:#a78bfa">{{ gateway_base | replace('/v1', '/azure/v1') }}</code>
+        <span class="text-[11px] text-t4">Base URL
+            <code class="ml-1 font-mono px-1.5 py-0.5 rounded"
+              style="background:rgba(167,139,250,0.12);color:#a78bfa">{{ gateway_base | replace('/v1', '/azure/v1') }}</code></span>
     </div>
     {% if azure_groups %}
     {{ cloud_model_table(azure_groups) }}
@@ -393,8 +401,9 @@
             <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:#ff9933"></span>
             <span class="text-sm font-bold text-t2 gw-tip gw-tip-wide" data-tip="AWS Bedrock models you have access to. Managed service — no health probe; also reachable through the unified base URL with the same aliases.">AWS Bedrock Models</span>
         </div>
-        <code class="text-[11px] font-mono px-1.5 py-0.5 rounded"
-              style="background:rgba(255,153,51,0.12);color:#ff9933">{{ gateway_base | replace('/v1', '/aws/v1') }}</code>
+        <span class="text-[11px] text-t4">Base URL
+            <code class="ml-1 font-mono px-1.5 py-0.5 rounded"
+              style="background:rgba(255,153,51,0.12);color:#ff9933">{{ gateway_base | replace('/v1', '/aws/v1') }}</code></span>
     </div>
     {% if bedrock_groups %}
     {{ cloud_model_table(bedrock_groups) }}
@@ -420,7 +429,7 @@
 </div>
 
 <style>
-    .gw-chtab { padding: 5px 14px; font-size: 13px; font-weight: 500; border-radius: 7px; transition: all 0.2s; color: #868da0; cursor: pointer; border: none; background: none; }
+    .gw-chtab { padding: 5px 14px; font-size: 13px; font-weight: 500; border-radius: 7px; transition: all 0.2s; color: #9aa1b3; cursor: pointer; border: none; background: none; }
     .gw-chtab-on { background: #1f2029; color: #eef0f4; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
 </style>
 
@@ -462,16 +471,16 @@
                 legend: { display: false },
                 tooltip: { callbacks: {
                     title: items => dayTitle(items[0].label),
-                    label: c => c.dataset.yAxisID === 'yCost' ? ' $' + Number(c.raw).toFixed(4) : ' ' + c.raw + ' requests',
+                    label: c => c.dataset.yAxisID === 'yCost' ? ' ' + gwMoney(Number(c.raw)) : ' ' + c.raw + ' requests',
                 }, backgroundColor: '#1f2029', borderColor: 'rgba(255,255,255,0.06)', borderWidth: 1, titleColor: '#eef0f4', bodyColor: '#c4c9d4', padding: 12, cornerRadius: 8, bodyFont: { family: 'JetBrains Mono', size: 12 }, titleFont: { family: 'Plus Jakarta Sans', size: 13, weight: '600' } }
             },
             scales: {
                 // MM/DD, unrotated, about one label per 4 days.
-                x: { grid: { display: false }, ticks: { color: '#4e5569', font: { family: 'JetBrains Mono', size: 11 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8, callback: function(v) { return this.getLabelForValue(v).slice(5).replace('-', '/'); } }, border: { display: false } },
+                x: { grid: { display: false }, ticks: { color: '#7b8296', font: { family: 'JetBrains Mono', size: 11 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8, callback: function(v) { return this.getLabelForValue(v).slice(5).replace('-', '/'); } }, border: { display: false } },
                 // A floor under the axis width: Chart.js measures (and caches) the
                 // labels before the mono font is in, and cut off the "$".
-                yCost: { afterFit: function(scale) { scale.width = Math.max(scale.width, 52); }, type: 'linear', display: true, position: 'left', beginAtZero: true, grid: { color: 'rgba(255,255,255,0.025)' }, ticks: { color: '#4e5569', font: { family: 'JetBrains Mono', size: 11 }, callback: function(v) { return '$' + v; } }, border: { display: false } },
-                yReqs: { type: 'linear', display: false, position: 'left', beginAtZero: true, grid: { color: 'rgba(255,255,255,0.025)' }, ticks: { color: '#4e5569', precision: 0, font: { family: 'JetBrains Mono', size: 11 } }, border: { display: false } }
+                yCost: { afterFit: function(scale) { scale.width = Math.max(scale.width, 52); }, type: 'linear', display: true, position: 'left', beginAtZero: true, grid: { color: 'rgba(255,255,255,0.025)' }, ticks: { color: '#7b8296', font: { family: 'JetBrains Mono', size: 11 }, callback: function(v) { return '$' + v; } }, border: { display: false } },
+                yReqs: { type: 'linear', display: false, position: 'left', beginAtZero: true, grid: { color: 'rgba(255,255,255,0.025)' }, ticks: { color: '#7b8296', precision: 0, font: { family: 'JetBrains Mono', size: 11 } }, border: { display: false } }
             }
         }
     });
@@ -524,7 +533,7 @@
             </tr></thead>
             <tbody id="mbBody">
                 {% for g in model_breakdown_groups %}
-                {% set bcolor = backend_colors.get(g.backend, '#868da0') %}
+                {% set bcolor = backend_colors.get(g.backend, '#9aa1b3') %}
                 <tr style="background:rgba(255,255,255,0.015)">
                     <td colspan="4" class="py-1.5">
                         <span class="inline-flex items-center gap-1.5">
@@ -532,7 +541,7 @@
                             <span class="text-[11px] font-bold text-t4 uppercase tracking-wider">{{ g.label }}</span>
                         </span>
                     </td>
-                    <td class="py-1.5 text-right text-[11px] font-mono font-medium text-t2">${{ "%.4f"|format(g.cost_usd) }}</td>
+                    <td class="py-1.5 text-right text-[11px] font-mono font-medium text-t2">{{ money(g.cost_usd) }}</td>
                     <td class="py-1.5"></td>
                 </tr>
                 {% for m in g.rows %}
@@ -546,7 +555,7 @@
                     <td class="text-right text-sm font-mono text-t3">{{ m.requests }}</td>
                     <td class="text-right text-sm font-mono text-t3">{{ format_token(m.input_tokens) }}</td>
                     <td class="text-right text-sm font-mono text-t3">{{ format_token(m.output_tokens) }}</td>
-                    <td class="text-right text-sm font-mono text-t2">${{ "%.4f"|format(m.cost_usd) }}</td>
+                    <td class="text-right text-sm font-mono text-t2">{{ money(m.cost_usd) }}</td>
                     <td>
                         <div class="flex items-center gap-2">
                             <div class="flex-1 rounded-full h-1.5 overflow-hidden bg-n3" style="min-width:60px">
@@ -577,7 +586,7 @@
         vllm:    ['#0f7a49', '#2f9d68', '#3cc987', '#7fd9ae'],
         azure:   ['#6d4fd0', '#8465e0', '#a488f2', '#c3aef8'],
         bedrock: ['#9c520c', '#c1741c', '#f5a04a', '#f7c07e'],
-        _other:  ['#565d70', '#6e7488', '#868da0', '#a0a6b8']
+        _other:  ['#565d70', '#6e7488', '#9aa1b3', '#a0a6b8']
     };
     var MB_DOT = { vllm: '#3dd68c', azure: '#a78bfa', bedrock: '#ff9933' };
     var MB_SURFACE = '#16171e';
@@ -648,8 +657,8 @@
             c.save();
             c.textAlign = 'center'; c.textBaseline = 'middle';
             c.fillStyle = '#eef0f4'; c.font = '600 16px JetBrains Mono, monospace';
-            c.fillText('$' + total.toFixed(4), x, y - 8);
-            c.fillStyle = '#4e5569'; c.font = '11px Plus Jakarta Sans, sans-serif';
+            c.fillText(gwMoney(total), x, y - 8);
+            c.fillStyle = '#7b8296'; c.font = '11px Plus Jakarta Sans, sans-serif';
             c.fillText(mbPeriod === 'day' ? 'today' : 'this month', x, y + 12);
             c.restore();
         }
@@ -686,7 +695,7 @@
                             title: function (items) { return items[0].label; },
                             label: function (item) {
                                 var s = mbSlices()[item.dataIndex];
-                                return ' $' + s.cost.toFixed(4) + ' (' + s.share.toFixed(1) + '%)';
+                                return ' ' + gwMoney(s.cost) + ' (' + s.share.toFixed(1) + '%)';
                             }
                         }
                     }
@@ -703,13 +712,13 @@
         var html = '';
         var colors = mbSliceColors();
         mbGroups.forEach(function (g) {
-            var dot = MB_DOT[g.backend] || '#868da0';
+            var dot = MB_DOT[g.backend] || '#9aa1b3';
             html += '<tr style="background:rgba(255,255,255,0.015)">'
                 + '<td colspan="4" class="py-1.5"><span class="inline-flex items-center gap-1.5">'
                 + '<span class="w-2 h-2 rounded-full flex-shrink-0" style="background:' + dot + '"></span>'
                 + '<span class="text-[11px] font-bold text-t4 uppercase tracking-wider">' + mbEsc(g.label) + '</span>'
                 + '</span></td>'
-                + '<td class="py-1.5 text-right text-[11px] font-mono font-medium text-t2">$' + g.cost_usd.toFixed(4) + '</td>'
+                + '<td class="py-1.5 text-right text-[11px] font-mono font-medium text-t2">' + gwMoney(g.cost_usd) + '</td>'
                 + '<td class="py-1.5"></td></tr>';
             g.rows.forEach(function (m) {
                 var color = colors[mbKey(g, m)] || dot;
@@ -722,7 +731,7 @@
                     + '<td class="text-right text-sm font-mono text-t3">' + m.requests + '</td>'
                     + '<td class="text-right text-sm font-mono text-t3">' + mbFmtTok(m.input_tokens) + '</td>'
                     + '<td class="text-right text-sm font-mono text-t3">' + mbFmtTok(m.output_tokens) + '</td>'
-                    + '<td class="text-right text-sm font-mono text-t2">$' + m.cost_usd.toFixed(4) + '</td>'
+                    + '<td class="text-right text-sm font-mono text-t2">' + gwMoney(m.cost_usd) + '</td>'
                     + '<td><div class="flex items-center gap-2">'
                     + '<div class="flex-1 rounded-full h-1.5 overflow-hidden bg-n3" style="min-width:60px">'
                     + '<div class="h-1.5 rounded-full" style="width: ' + m.share + '%; background:' + color + '"></div></div>'
@@ -794,7 +803,7 @@
                         {{ d.date }}{% if d.date == today_str %} <span class="text-[10px] text-ab ml-1">Today</span>{% endif %}
                     </td>
                     <td class="text-right text-sm font-mono text-t2">{{ d.reqs }}</td>
-                    <td class="text-right text-sm font-mono text-t2">${{ "%.4f"|format(d.cost) }}</td>
+                    <td class="text-right text-sm font-mono text-t2">{{ money(d.cost) }}</td>
                     <td class="text-right text-sm font-mono text-t3">{{ format_token(d.input_tokens) }}</td>
                     <td class="text-right text-sm font-mono text-t3">{{ format_token(d.output_tokens) }}</td>
                 </tr>
@@ -828,7 +837,7 @@
             </div>
         </div>
         <div class="flex items-center gap-2 ml-auto">
-            <code id="appKey-{{ app.id }}" class="text-xs font-mono text-t3 bg-n1 px-2 py-1 rounded border border-[rgba(255,255,255,0.04)]">{{ app.api_key[:12] }}...</code>
+            <code id="appKey-{{ app.id }}" class="text-xs font-mono text-t3 bg-n1 px-2 py-1 rounded border border-[rgba(255,255,255,0.04)]">{{ app.api_key[:11] }}&hellip;{{ app.api_key[-4:] }}</code>
             <button onclick="copyAppKey({{ app.id }}, this)" class="text-xs text-ab hover:text-ac font-medium transition-colors">Copy</button>
             <button onclick="refreshAppKey({{ app.id }}, this.dataset.name)" data-name="{{ app.username }}" id="refreshAppBtn-{{ app.id }}" class="gw-btn gw-btn-warn text-xs px-2.5 py-1.5">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
@@ -836,20 +845,39 @@
             </button>
         </div>
     </div>
-    <dl class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
-        <div><dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Cost this month</dt><dd class="mt-1 font-mono text-t1 text-base">${{ "%.4f"|format(app.monthly_cost) }}</dd></div>
+    {% if app.acts_for_users %}
+    {# Acts for its users: what it sends is on their bills, so that is the figure to lead with. Its own
+       month would read $0.00 here and look as if nothing had happened. #}
+    <dl class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-2" data-service-figures="for-users">
+        <div><dt class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide" data-tip="What this account sent for its users this month. It is billed to those users and counted against their daily limits, not this account's.">Sent for its users</dt><dd class="mt-1 font-mono text-t1 text-base">{{ money(app.on_behalf.cost) }}</dd></div>
+        <div><dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Requests</dt><dd class="mt-1 font-mono text-t1 text-base">{{ app.on_behalf.requests }}</dd></div>
+        <div><dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Users</dt><dd class="mt-1 font-mono text-t1 text-base">{{ app.on_behalf.users }}</dd></div>
+        <div><dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Tokens in / out</dt><dd class="mt-1 font-mono text-t1 text-base">{{ format_token(app.on_behalf.input_tokens) }} / {{ format_token(app.on_behalf.output_tokens) }}</dd></div>
+    </dl>
+    <p class="text-xs text-t3 mb-4">
+        Acts for its users: each request names a user (<span class="font-mono">X-On-Behalf-Of</span>) and is billed to that user, not to this account.
+        {% if app.monthly_reqs %}
+        On its own account this month: <span class="font-mono text-t2">{{ money(app.monthly_cost) }}</span> in
+        <span class="font-mono text-t2">{{ app.monthly_reqs }}</span> request{{ '' if app.monthly_reqs == 1 else 's' }}, by model below.
+        {% else %}
+        Nothing was billed to this account itself this month.
+        {% endif %}
+    </p>
+    {% else %}
+    <dl class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4" data-service-figures="own">
+        <div><dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Cost this month</dt><dd class="mt-1 font-mono text-t1 text-base">{{ money(app.monthly_cost) }}</dd></div>
         <div><dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Requests</dt><dd class="mt-1 font-mono text-t1 text-base">{{ app.monthly_reqs }}</dd></div>
         <div><dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Input</dt><dd class="mt-1 font-mono text-t1 text-base">{{ format_token(app.monthly_input) }}</dd></div>
         <div><dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Output</dt><dd class="mt-1 font-mono text-t1 text-base">{{ format_token(app.monthly_output) }}</dd></div>
     </dl>
-    {# A service account that acts for its users: what went through it is on their bills, not above. #}
-    {% if app.acts_for_users or app.on_behalf.requests %}
+    {# It acted for its users earlier this month, before the switch was turned off. #}
+    {% if app.on_behalf.requests %}
     <p class="text-xs text-t3 mb-4">
-        {% if app.acts_for_users %}Acts for its users: each request names a user (<span class="font-mono">X-On-Behalf-Of</span>) and is billed to that user, not to this account.{% endif %}
-        This month it sent <span class="font-mono text-t2">{{ app.on_behalf.requests }}</span> request{{ '' if app.on_behalf.requests == 1 else 's' }}
-        (<span class="font-mono text-t2">${{ "%.4f"|format(app.on_behalf.cost) }}</span>) for
-        <span class="font-mono text-t2">{{ app.on_behalf.users }}</span> user{{ '' if app.on_behalf.users == 1 else 's' }}.
+        Earlier this month it also sent <span class="font-mono text-t2">{{ app.on_behalf.requests }}</span> request{{ '' if app.on_behalf.requests == 1 else 's' }}
+        (<span class="font-mono text-t2">{{ money(app.on_behalf.cost) }}</span>) for
+        <span class="font-mono text-t2">{{ app.on_behalf.users }}</span> user{{ '' if app.on_behalf.users == 1 else 's' }}, billed to them.
     </p>
+    {% endif %}
     {% endif %}
     {# How to call the gateway with this account, and how to check it worked. The key is never written
        here: SERVICE_ACCOUNT_KEY stands for it (Copy, above). #}
@@ -913,6 +941,8 @@
             {% endif %}
         </div>
     </details>
+    {# The account's own usage by model. A for-users account with none has nothing to list here. #}
+    {% if app.models or not app.acts_for_users %}
     <div class="overflow-x-auto">
         <table class="gw-table">
             <thead><tr>
@@ -926,7 +956,7 @@
             </tr></thead>
             <tbody>
                 {% for m in app.models %}
-                {% set bcolor = backend_colors.get(m.backend, '#868da0') %}
+                {% set bcolor = backend_colors.get(m.backend, '#9aa1b3') %}
                 <tr>
                     <td class="whitespace-nowrap">
                         <code class="text-sm font-mono font-medium text-t1">{{ m.model }}</code>
@@ -941,7 +971,7 @@
                     <td class="text-right text-sm font-mono text-t3">{{ m.requests }}</td>
                     <td class="text-right text-sm font-mono text-t3">{{ format_token(m.input_tokens) }}</td>
                     <td class="text-right text-sm font-mono text-t3">{{ format_token(m.output_tokens) }}</td>
-                    <td class="text-right text-sm font-mono text-t2">${{ "%.4f"|format(m.cost_usd) }}</td>
+                    <td class="text-right text-sm font-mono text-t2">{{ money(m.cost_usd) }}</td>
                     <td>
                         <div class="flex items-center gap-2">
                             <div class="flex-1 rounded-full h-1.5 overflow-hidden bg-n3" style="min-width:60px">
@@ -958,6 +988,7 @@
             </tbody>
         </table>
     </div>
+    {% endif %}
 </div>
 {% endfor %}
 </div>
@@ -1276,7 +1307,7 @@ document.addEventListener('submit', function(e) {
                 .then(function(r){return r.json().then(function(d){if(!r.ok||!d.ok)throw new Error(d.detail||('HTTP '+r.status));return d;});})
                 .then(function(d){
                     appKeyMap[id]=d.api_key;
-                    document.getElementById('appKey-'+id).textContent=d.api_key.substring(0,12)+'...';
+                    document.getElementById('appKey-'+id).textContent=d.api_key.substring(0,11)+'\u2026'+d.api_key.slice(-4);
                     gwToast('New key for '+name+'. Press Copy to take it.', 'ok');
                 })
                 .catch(function(err){gwToast('Regenerate failed — '+err.message, 'error');})

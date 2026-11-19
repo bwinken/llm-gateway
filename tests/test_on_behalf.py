@@ -403,7 +403,33 @@ class TestReports:
         }
         assert account["month"]["cost_usd"] == 0.0 and account["month"]["requests"] == 0
         page = client.get("/dashboard", headers=web_auth_header(sub="testuser")).text
-        assert "Acts for its users" in page and "$1.5000" in page
+        card = page[page.index('data-service-account="chat-app"'):]
+        card = card[:card.index("data-service-howto=")]
+        # It leads with what it sent for its users, not with an own month of $0.00.
+        assert 'data-service-figures="for-users"' in card and "Sent for its users" in card
+        assert "$1.50" in card and "Nothing was billed to this account itself" in card
+        assert "No usage this month." not in page
+
+    def test_a_service_account_that_is_itself_keeps_its_own_figures(self, client, db_session, test_user):
+        batch = _add(db_session, username="batch", api_key="sk-batch", is_service_account=True)
+        db_session.add(AppOwner(app_id=batch.id, owner_id=test_user.id))
+        db_session.commit()
+        _sent_for(db_session, batch, None, "2.25")
+        page = client.get("/dashboard", headers=web_auth_header(sub="testuser")).text
+        assert 'data-service-figures="own"' in page and "Cost this month" in page and "$2.25" in page
+
+    def test_the_admin_leaderboard_ranks_what_went_through_it(self, client, db_session, admin_user, chat_app, alice):
+        batch = _add(db_session, username="batch", api_key="sk-batch", is_service_account=True)
+        _sent_for(db_session, batch, None, "1")
+        _sent_for(db_session, alice, chat_app, "5")
+        board = stats.get_monthly_overview(db_session)["app_leaderboard"]
+        assert [(r["username"], r["monthly_cost"], r["for_users_cost"]) for r in board] == [
+            ("chat-app", 0.0, 5.0), ("batch", 1.0, 0.0),
+        ]
+        # Billed to alice: counted once in the gateway's total.
+        assert stats.get_monthly_overview(db_session)["totals"]["cost"] == 6.0
+        page = client.get("/admin", headers=web_auth_header(sub="admin", scopes=["admin"])).text
+        assert "+ $5.00 for users" in page
 
     def test_the_user_sees_what_came_through_an_application_today(self, client, db_session, chat_app, alice):
         _sent_for(db_session, alice, chat_app, "1.25")
