@@ -342,6 +342,7 @@ async def save_config_api(
     }
     _INTERNAL_TYPES: dict[str, type | tuple[type, ...]] = {
         "hidden": bool,
+        "list_in_api": bool,
         "native_messages": bool,
     }
 

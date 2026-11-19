@@ -613,6 +613,9 @@ class GenerationRecord:
     x_title: str | None = None          # the name the client gives itself (X-Title)
     session_id: str | None = None
     display_name: str | None = None
+    # The service account that sent the request for this user
+    # (X-On-Behalf-Of) -> metadata + tag; None for the account's own key.
+    service_account: str | None = None
     error: str | None = None
     is_error: bool = False              # failed request → level=ERROR + request_error score
     input_payload: Any = None           # Phase 2 (LANGFUSE_CAPTURE_IO)
@@ -793,6 +796,11 @@ def record_generation(rec: GenerationRecord) -> None:
         }
         if rec.display_name:
             metadata["display_name"] = rec.display_name
+        if rec.service_account:
+            # An admin-given account name (validated when it was created),
+            # not client text: safe as a tag.
+            metadata["service_account"] = rec.service_account
+            tags.append(f"service_account:{rec.service_account}")
         if rec.user_agent:
             metadata["user_agent"] = rec.user_agent
         if rec.fallback_reason:

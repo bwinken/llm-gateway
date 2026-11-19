@@ -26,7 +26,7 @@ from app.core.config import (
 from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
-from app.models.schema import UsageLog, User
+from app.models.schema import UsageLog, User, set_via_service_account, via_service_account
 from app.services import auth_throttle, ip_allowlist, metrics
 
 _bearer = HTTPBearer(auto_error=False)
@@ -275,6 +275,76 @@ def reset_key_use_cache() -> None:
         _key_use_last.clear()
 
 
+# ── Acting for a user (X-On-Behalf-Of) ──
+# A service account an admin switched to ``acts_for_users`` is an application
+# its users sign in to: every request it sends names the person it is for,
+# and is then that person's request. The name is the application's word, not
+# a credential (the application authenticated the person; the gateway only
+# authenticated the application), which is why it is honoured from such a
+# service account only, and why the switch is an admin's.
+ON_BEHALF_HEADER = "X-On-Behalf-Of"
+_ON_BEHALF_MAX = 128
+
+
+def _on_behalf_name(request: Request | None) -> str | None:
+    """The one username in ``X-On-Behalf-Of``, or None when the header is
+    absent. 400 for a value that cannot be one account name: sent twice, a
+    list, blank, too long, or with whitespace or control characters."""
+    if request is None:
+        return None
+    values = request.headers.getlist(ON_BEHALF_HEADER)
+    if not values:
+        return None
+    name = values[0].strip()
+    if (
+        len(values) > 1 or not name or len(name) > _ON_BEHALF_MAX or "," in name
+        or any(ch.isspace() or not ch.isprintable() for ch in name)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{ON_BEHALF_HEADER} must hold exactly one username.",
+        )
+    return name
+
+
+def _on_behalf_of(session: Session, service_account: User, request: Request | None) -> User:
+    """The person ``service_account`` (``acts_for_users``) sends this request
+    for: the account named in ``X-On-Behalf-Of``, marked as reached through
+    the service account (``schema.via_service_account``).
+
+    Refused, never guessed: no header (400), a name the gateway has no
+    account for (403: nobody is provisioned on an application's word, the
+    person signs in to the dashboard once), another service account (403: it
+    would move spending between applications) and a disabled person (403).
+    """
+    name = _on_behalf_name(request)
+    if name is None:
+        logger.warning("On-behalf rejected: no {} | service_account={}", ON_BEHALF_HEADER, service_account.username)
+        metrics.observe_rejection("on_behalf")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"This service account sends requests for its users: name the user in the "
+                f"{ON_BEHALF_HEADER} header (their gateway username)."
+            ),
+        )
+    person = session.exec(select(User).where(User.username == name)).first()
+    if person is None:
+        reason = f"'{name}' has no account on the gateway. They sign in to the dashboard once to get one."
+    elif person.is_service_account:
+        reason = f"'{name}' is a service account. {ON_BEHALF_HEADER} names a person."
+    elif person.is_disabled:
+        reason = f"The account '{name}' is disabled. Contact your administrator."
+    else:
+        set_via_service_account(person, service_account)
+        return person
+    logger.warning(
+        "On-behalf rejected: {} | service_account={}", reason, service_account.username,
+    )
+    metrics.observe_rejection("on_behalf")
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=reason)
+
+
 def _authenticate(
     credentials: HTTPAuthorizationCredentials | None,
     x_api_key: str | None,
@@ -370,6 +440,13 @@ def _authenticate(
                 ip_allowlist.check(request, user)
             if _key_use_due(user.id):
                 touch_id = user.id
+            # A service account that acts for its users: from here on the
+            # request is the named person's (budget, limits, access, bill).
+            # The key, its last use and the address check above stay the
+            # service account's. A person's key never gets here: nobody can
+            # put a request on someone else's account with their own key.
+            if user.is_service_account and user.acts_for_users:
+                user = _on_behalf_of(session, user, request)
             if check_daily_limit:
                 _check_daily_limit(session, user)
     finally:
@@ -508,6 +585,26 @@ def get_current_user_unmetered(
     for read-only account endpoints (``GET /v1/me``) that must still answer
     once the budget is spent — that is exactly when a client asks."""
     return _authenticate(credentials, x_api_key, check_daily_limit=False, request=request)
+
+
+def get_account_holder(user: User = Depends(get_current_user_unmetered)) -> User:
+    """``get_current_user_unmetered`` for the account endpoints that are the
+    account holder's own business (usage history, notices, owned service
+    accounts, client settings, and the two that write): refused for a request
+    a service account sends for a user. An application gets what it needs to
+    serve that user (``/v1/models``, ``/v1/me``, ``/v1/status``) and no more:
+    a leaked application key must not read every account's history or speak
+    for its holder."""
+    via = via_service_account(user)
+    if via is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Not available to a service account acting for a user ({ON_BEHALF_HEADER}). "
+                "The user reads this with their own API key or on the dashboard."
+            ),
+        )
+    return user
 
 
 def require_azure_access(

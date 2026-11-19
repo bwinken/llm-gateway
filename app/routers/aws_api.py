@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from app.core.config import _MODEL_METADATA_KEYS, get_bedrock_models_snapshot
+from app.core.config import _MODEL_METADATA_KEYS, get_bedrock_models_snapshot, listed_in_api
 from app.core.deps import limited_bedrock_access, require_bedrock_access
 from app.models.schema import User
 from app.services import client_rules
@@ -49,8 +49,8 @@ async def list_bedrock_models(user: User = Depends(require_bedrock_access)):
     """
     models = []
     for alias, entry in get_bedrock_models_snapshot().items():
-        if entry.get("hidden"):
-            continue  # staged/retired: not listed, still served by alias
+        if not listed_in_api(entry):
+            continue  # an admin left it out of the API listing: still served by alias
         model_type = entry.get("type", "llm")
         out: dict[str, object] = {
             "id": alias,

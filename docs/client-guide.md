@@ -246,6 +246,26 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
 - `service_accounts` lists the ones you own (empty when you own none), each with its own daily limit and its usage this month: the dashboard's *Service accounts* tab.
 - `month.models` is that month by model: one row per model and backend, in the dashboard's order, adding up to the month's totals. Every backend the service account used is listed, whatever your own access.
 - A service account's API key is not included, and no endpoint returns a key. See or regenerate it on the dashboard's *Service accounts* tab.
+- `acts_for_users` and `on_behalf` are about an application that sends requests for its users, below: whether an administrator turned that on for the account, and what it sent for them this month (for how many `users`). That usage is billed to those users, so it is no part of `month`.
+
+### An application with users of its own (`X-On-Behalf-Of`)
+
+An application people sign in to (a chat page, an internal tool) holds one service account key. So that the gateway knows who each request is for, and charges that person instead of the application, it names the user in a header:
+
+```bash
+curl https://your-gateway/v1/chat/completions \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_KEY" \
+  -H "X-On-Behalf-Of: alice" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "qwen3-coder", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+- **It only works once an administrator turned on *On behalf of users* for that service account.** Until then the header is ignored and the request is the service account's own. The dashboard's *Service accounts* tab says which it is, with a test to run.
+- The value is the user's gateway username (their sign-in name), one per request. Not an email address or a display name.
+- The request is then that user's: their daily limit and cloud cap, their cloud access, their bill and their dashboard. Nothing is charged to the service account.
+- With it on, every request needs the header. `GET /v1/models` (or `/models`) with it lists the models that user may use, the same list they get with their own key; `GET /v1/me` gives that user's remaining budget. The other account endpoints are refused to an application.
+- Refused: no header or more than one name (400); a username that has no account on the gateway, a disabled account or a service account (403; a person gets an account by opening the dashboard once); the user over their limit (429).
+- Your application is what vouches for the user: sign them in before you send their name, send it from your server, and keep the key there. Whoever holds the key can spend any user's budget.
 
 ## Notices
 

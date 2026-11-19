@@ -195,7 +195,7 @@ resp = client.chat.completions.create(
         } %}
         {% for type_key, models in models_by_type.items() %}
         <div class="gw-card p-5">
-            {% set tc = type_colors.get(type_key, ('#868da0', 'rgba(255,255,255,0.04)', 'rgba(255,255,255,0.06)')) %}
+            {% set tc = type_colors.get(type_key, ('#9aa1b3', 'rgba(255,255,255,0.04)', 'rgba(255,255,255,0.06)')) %}
             <div class="flex items-center gap-2 mb-3">
                 <span class="text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded"
                       style="color:{{ tc[0] }};background:{{ tc[1] }};border:1px solid {{ tc[2] }}">{{ type_key }}</span>

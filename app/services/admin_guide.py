@@ -372,6 +372,37 @@ SECTIONS: tuple[Section, ...] = (
                 why="A program has no dashboard of its own; someone must be able to rotate its key.",
                 tradeoffs=("Only a service account has owners, and an owner is an existing person: assigning a person's account would hand that person's key to someone else.",),
             ),
+            Entry(
+                id="account-acts-for-users",
+                name="On behalf of users (a service account that sends requests for its users)",
+                keys=("users.acts_for_users", "usage_logs.via_user_id"),
+                default="off",
+                what=(
+                    "An application people sign in to sends each request with the header X-On-Behalf-Of: <username>. "
+                    "The request is then that person's: their daily limit and cloud cap, their cloud access, their "
+                    "bill and their dashboard. The service account is recorded as the way it came in. A request "
+                    "without the header, or naming someone who has no account here, a disabled account or a "
+                    "service account, is refused."
+                ),
+                why=(
+                    "So that an application shared by many people does not hide who is using it: usage is known and "
+                    "charged per person, and one heavy user cannot spend the budget of everyone else on it."
+                ),
+                tradeoffs=(
+                    "The name is the application's word, not proof. The gateway authenticates the application (its key); the application authenticated the person. It is enough to know and charge who used it, not to prove it against someone who denies it.",
+                    "Whoever holds this account's key can spend any person's daily budget. Keep the key on the application's server only, and give the account an IP allowlist rule for that server.",
+                    "The application cannot give a person more than they have: a cloud model is served only to a user with that cloud access, and a user over their limit gets the usual 429.",
+                    "The header is honoured from a service account with this switch on, and from nobody else. A person's key that sends it is served as that person.",
+                    "The key, its last use and the IP allowlist stay the application's; the concurrency limit counts on the person, together with what they send themselves.",
+                    "On behalf of a user the application reads the model list (/v1/models), /v1/me and /v1/status. The user's usage history, notices and settings are refused to it.",
+                    "The model list it gets is the named user's own: the models that user would see with their own key. Which models are listed at all is one tick per model for everyone, Listed in GET /v1/models on the Models page; there is no list per application.",
+                    "Client rules ignore these requests: what they show is the application's setup, not the person's client.",
+                ),
+                decided=(
+                    "Usage through such an application is charged to the user, not to the service account. A user "
+                    "who has no account on the gateway is refused, never created on the application's word."
+                ),
+            ),
         ),
     ),
     Section(
@@ -419,13 +450,38 @@ SECTIONS: tuple[Section, ...] = (
                 ),
             ),
             Entry(
-                id="model-hidden",
-                name="Listed in /v1/models and on the dashboard",
-                keys=("hidden",),
+                id="model-list-in-api",
+                name="Listed in GET /v1/models",
+                keys=("list_in_api",),
                 default="listed",
-                what="Unticked, the model is left out of the lists; a request that names it is still served.",
+                what=(
+                    "Ticked, the model is in the list a client asks the gateway for: GET /v1/models and /models, and "
+                    "the Azure and AWS listings. That is what fills the model picker of Claude Code and of an "
+                    "application. Unticked, it is left out for everyone and every key; a request that names it is still served."
+                ),
                 why="For models kept for a few programs, or being phased out, without advertising them to every model picker.",
-                tradeoffs=("Hidden is not private: anyone who knows the name can use it.",),
+                tradeoffs=(
+                    "It is one list for everyone. An application that sends requests for its users gets each user's own list; there is no list per application or per account.",
+                    "Unlisted is not private: anyone who knows the name can use it.",
+                    "It is apart from the dashboard tick: a model can be offered to clients and kept off the dashboard, or the other way round.",
+                    "A model that has no setting of its own follows the dashboard tick, as every model did when one tick did both.",
+                ),
+                decided="What clients are offered and what the pages show are two separate settings, each with its own tick.",
+            ),
+            Entry(
+                id="model-hidden",
+                name="Shown on the dashboard",
+                keys=("hidden",),
+                default="shown",
+                what=(
+                    "Ticked, the model is in the model tables people see on the dashboard, and in GET /v1/status, "
+                    "the same tables by API key. Unticked, it is left out there; a request that names it is still served."
+                ),
+                why="The dashboard is what people read to choose a model; a staged or retiring one need not be there.",
+                tradeoffs=(
+                    "It does not change what GET /v1/models lists: that is the tick above.",
+                    "A model taken off the dashboard is also never named there as the stand-in for a model that is down.",
+                ),
             ),
         ),
     ),

@@ -60,9 +60,11 @@ _DAY_STATEMENT_TIMEOUT_MS = 600_000
 _LOCK_KEY = 0x75736167_64617931  # "usagday1"
 
 # ``overflow`` (usage_logs.overflow): cloud usage the gateway chose during a
-# peak, apart from cloud usage the account chose.
-DIMENSIONS = ("day", "user_id", "backend", "model", "model_type", "endpoint", "overflow")
-_GROUP_COLUMNS = ("user_id", "backend", "model", "model_type", "endpoint", "overflow")
+# peak, apart from cloud usage the account chose. ``via_user_id``
+# (usage_logs.via_user_id): the service account that sent the request for
+# the user (X-On-Behalf-Of), 0 for the account's own key.
+DIMENSIONS = ("day", "user_id", "backend", "model", "model_type", "endpoint", "overflow", "via_user_id")
+_GROUP_COLUMNS = ("user_id", "backend", "model", "model_type", "endpoint", "overflow", "via_user_id")
 
 
 class RollupBusy(RuntimeError):
@@ -157,8 +159,13 @@ def aggregate(
     dims: Sequence[str] = (),
     *,
     user_ids: Iterable[int] | None = None,
+    via_user_ids: Iterable[int] | None = None,
 ) -> dict[tuple, dict]:
     """Usage totals over local days ``[start, end)``, grouped by ``dims``.
+
+    ``user_ids`` narrows it to those accounts' usage; ``via_user_ids`` to
+    what those service accounts sent for their users (``via_user_id``, which
+    is 0 on a request an account sent with its own key).
 
     Returns ``{key: {"requests", "input_tokens", "output_tokens",
     "cost_usd" (Decimal), "empty_turns"}}`` where ``key`` is the tuple of
@@ -173,7 +180,8 @@ def aggregate(
         if d not in DIMENSIONS:
             raise ValueError(f"unknown dimension {d!r}")
     ids = None if user_ids is None else sorted({int(u) for u in user_ids})
-    if start >= end or ids == []:
+    via_ids = None if via_user_ids is None else sorted({int(u) for u in via_user_ids})
+    if start >= end or ids == [] or via_ids == []:
         return {}
 
     day_index = dims.index("day") if "day" in dims else None
@@ -199,6 +207,8 @@ def aggregate(
         )
         if ids is not None:
             stmt = stmt.where(UsageDaily.user_id.in_(ids))  # type: ignore[attr-defined]
+        if via_ids is not None:
+            stmt = stmt.where(UsageDaily.via_user_id.in_(via_ids))  # type: ignore[attr-defined]
         if cols:
             stmt = stmt.group_by(*cols)
         _merge(out, session.exec(stmt).all(), len(dims), day_index, bool_indexes)
@@ -222,6 +232,8 @@ def aggregate(
         )
         if ids is not None:
             stmt = stmt.where(UsageLog.user_id.in_(ids))  # type: ignore[attr-defined]
+        if via_ids is not None:
+            stmt = stmt.where(UsageLog.via_user_id.in_(via_ids))  # type: ignore[attr-defined]
         if cols:
             stmt = stmt.group_by(*cols)
         _merge(out, session.exec(stmt).all(), len(dims), day_index, bool_indexes)

@@ -63,7 +63,7 @@
             {% set h = (day.cost / peak * 60) if peak else 0 %}
             <rect x="{{ loop.index0 * 10 + 1 }}" y="{{ 64 - ([h, 1.5 if day.reqs else 0]|max) }}" width="8"
                   height="{{ [h, 1.5 if day.reqs else 0]|max }}" rx="1.5"
-                  fill="{{ '#3dd68c' if loop.last else 'rgba(61,214,140,0.45)' }}"><title>{{ day.date }}: ${{ '%.4f'|format(day.cost) }} · {{ day.reqs }} requests</title></rect>
+                  fill="{{ '#3dd68c' if loop.last else 'rgba(61,214,140,0.45)' }}"><title>{{ day.date }}: {{ money(day.cost) }} · {{ day.reqs }} requests</title></rect>
             {% endfor %}
         </svg>
         <div class="flex justify-between text-[10px] font-mono text-t4"><span>{{ d.trend[0].date[5:] }}</span><span>today</span></div>
@@ -73,7 +73,7 @@
             <thead><tr><th>Model</th><th class="text-right">Reqs</th><th class="text-right">Cost</th><th style="width:30%">Share</th></tr></thead>
             <tbody>
             {% for m in d.models %}
-            {% set b = BACKEND.get(m.backend, (m.backend, '#868da0')) %}
+            {% set b = BACKEND.get(m.backend, (m.backend, '#9aa1b3')) %}
             <tr>
                 <td class="truncate" style="max-width:11rem"><span class="inline-block w-2 h-2 rounded-full mr-1.5" style="background:{{ b[1] }}" title="{{ b[0] }}"></span><code class="text-t1">{{ m.model }}</code></td>
                 <td class="text-right font-mono text-t3">{{ m.requests }}</td>

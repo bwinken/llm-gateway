@@ -362,14 +362,21 @@ class TestApps:
         _spend(db_session, batch, "2")
         body = self._apps(client).json()
         assert body["month"] == datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m")
+        # Neither acts for its users (X-On-Behalf-Of), so nothing went through them.
+        nothing_for_users = {
+            "acts_for_users": False,
+            "on_behalf": {"users": 0, "requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
+        }
         assert body["service_accounts"] == [
             {"username": "app_batch2", "daily_limit_usd": 0.0, "legacy_key": True,
-             "month": {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "models": []}},
+             "month": {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "models": []},
+             **nothing_for_users},
             {"username": "app_batch10", "daily_limit_usd": 50.0, "legacy_key": True,
              "month": {"requests": 2, "input_tokens": 2000, "output_tokens": 1000, "cost_usd": 3.5, "models": [
                  {"model": "test-llm", "backend": "onprem", "type": "llm",
                   "requests": 2, "input_tokens": 2000, "output_tokens": 1000, "cost_usd": 3.5},
-             ]}},
+             ]},
+             **nothing_for_users},
         ]
 
     def test_this_months_usage_per_model(self, client, db_session, test_user):

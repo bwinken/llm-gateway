@@ -27,7 +27,7 @@ from sqlmodel import Session
 from app.core.config import MODEL_ROUTING, PRICING_MAP
 from app.core.database import engine
 from app.core.logger import logger
-from app.models.schema import UsageLog, User
+from app.models.schema import UsageLog, User, via_service_account, via_user_id
 from app.services import metrics
 from app.services.observability import (
     GenerationRecord,
@@ -137,6 +137,7 @@ def _log_usage_sync(
     endpoint: str,
     backend: str = "vllm",
     overflow: bool = False,
+    via_user_id: int = 0,
 ) -> None:
     """Synchronous DB write — meant to run in a thread via run_in_executor."""
     try:
@@ -151,6 +152,7 @@ def _log_usage_sync(
                 endpoint=endpoint,
                 backend=backend,
                 overflow=overflow,
+                via_user_id=via_user_id,
             )
             session.add(log)
             session.commit()
@@ -225,6 +227,7 @@ def _emit_observation(
         x_title=meta.get("x_title"),
         session_id=meta.get("session_id"),
         display_name=getattr(user, "display_name", None),
+        service_account=getattr(via_service_account(user), "username", None),
         input_payload=input_payload,
         output_payload=out_payload,
         guardrail=meta.get("guardrail"),
@@ -292,6 +295,7 @@ def _log_error(
             x_title=meta.get("x_title"),
             session_id=meta.get("session_id"),
             display_name=getattr(user, "display_name", None),
+            service_account=getattr(via_service_account(user), "username", None),
             guardrail=meta.get("guardrail"),
         ))
     except Exception as exc:  # never let the error-hook break error handling
@@ -511,4 +515,7 @@ def _log_usage(
         # Only a cloud row is ever an overflow row: a request that fell back
         # on-prem after a failed attempt is ordinary local usage.
         backend != "vllm" and _overflow_from.get() is not None,
+        # The service account that sent this for ``user`` (X-On-Behalf-Of),
+        # 0 for a request with the account's own key. The row is ``user``'s.
+        via_user_id(user),
     )

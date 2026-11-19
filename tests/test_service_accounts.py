@@ -224,7 +224,7 @@ class TestDashboardTab:
         last_month = (datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)).replace(tzinfo=None)
         _spend(db_session, etl, "40", model="old-model", created_at=last_month)
         card = self._card(self._page(client, test_user), "billing-etl")
-        assert "$4.0000" in card                                   # the month's total
+        assert "$4.00" in card                                     # the month's total
         assert card.index("test-llm") < card.index("azure-gpt-4")  # the one model order
         assert "On-Prem" in card and "Azure" in card
         assert "25.0%" in card and "75.0%" in card                 # each model's share of this account
@@ -240,8 +240,8 @@ class TestDashboardTab:
         _spend(db_session, a, "1", model="test-llm")
         _spend(db_session, b, "2", model="test-vlm", model_type="vlm")
         page = self._page(client, test_user)
-        assert "test-vlm" not in self._card(page, "etl-a") and "$1.0000" in self._card(page, "etl-a")
-        assert "test-llm" not in self._card(page, "etl-b") and "$2.0000" in self._card(page, "etl-b")
+        assert "test-vlm" not in self._card(page, "etl-a") and "$1.00" in self._card(page, "etl-a")
+        assert "test-llm" not in self._card(page, "etl-b") and "$2.00" in self._card(page, "etl-b")
 
     def test_same_figures_as_the_api(self, client, db_session, test_user):
         etl = _service(db_session, "billing-etl", test_user)
@@ -249,7 +249,7 @@ class TestDashboardTab:
         (app,) = client.get("/v1/service-accounts", headers=auth_header()).json()["service_accounts"]
         card = self._card(self._page(client, test_user), "billing-etl")
         for row in app["month"]["models"]:
-            assert row["model"] in card and f"${row['cost_usd']:.4f}" in card
+            assert row["model"] in card and f"${row['cost_usd']:.2f}" in card
 
     def test_the_owner_regenerates_its_key(self, client, db_session, test_user, admin_user):
         etl = _service(db_session, "billing-etl", test_user)
@@ -438,7 +438,7 @@ class TestAssignmentsLast:
         assert _get(db_session, "billing-etl").api_key == "sk-billing-etl-key"
         assert _get(db_session, "nightly-report") is not None
         page = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
-        assert 'data-service-account="billing-etl"' in page and "$2.0000" in page
+        assert 'data-service-account="billing-etl"' in page and "$2.00" in page
 
     def test_someone_who_returns_under_the_same_name_owns_nothing(self, client, db_session, admin_user, test_user):
         bob = User(username="bob", api_key="sk-bob")

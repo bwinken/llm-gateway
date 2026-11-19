@@ -198,6 +198,60 @@ def get_monthly_all_users_usage(
     return out
 
 
+def get_on_behalf_month(
+    session: Session, service_account_ids: Iterable[int] | None = None,
+) -> dict[int, dict]:
+    """Per service account, what it sent for its users this local month
+    (``usage_logs.via_user_id``; ``X-On-Behalf-Of``): cost, tokens, requests
+    and ``users``, how many accounts it was sent for. That usage is the
+    users' own (their bill, their limits), so it is in none of the service
+    account's figures: this is how much went through it.
+
+    ``service_account_ids`` narrows the read to those accounts; ``None``
+    means all of them. Accounts with nothing are absent."""
+    out: dict[int, dict] = {}
+    for (via, _uid), entry in aggregate(
+        session, local_month_start(), _tomorrow(), ("via_user_id", "user_id"),
+        via_user_ids=service_account_ids,
+    ).items():
+        if not via:
+            continue  # sent with the account's own key
+        t = _totals(entry)
+        row = out.setdefault(int(via), {"cost": 0.0, "input_tokens": 0, "output_tokens": 0, "requests": 0, "users": 0})
+        for key in ("cost", "input_tokens", "output_tokens", "requests"):
+            row[key] += t[key]
+        row["users"] += 1
+    for row in out.values():
+        row["cost"] = round(row["cost"], 6)
+    return out
+
+
+def get_user_on_behalf_today(session: Session, user_id: int) -> list[dict]:
+    """What service accounts sent for this user today (local day), by
+    service account, highest cost first: ``service_account`` (its name, or
+    ``#<id>`` once it was deleted), ``cost_usd``, ``requests``. Part of the
+    user's own figures for the day (``get_user_daily_summary``), never added
+    to them. Today only, so read from ``usage_logs``."""
+    rows = session.exec(
+        select(UsageLog.via_user_id, func.coalesce(func.sum(UsageLog.cost_usd), 0), func.count(UsageLog.id))
+        .where(UsageLog.user_id == user_id)
+        .where(UsageLog.created_at >= local_day_start_utc())
+        .where(UsageLog.via_user_id != 0)
+        .group_by(UsageLog.via_user_id)
+    ).all()
+    if not rows:
+        return []
+    names = dict(session.exec(
+        select(User.id, User.username).where(User.id.in_([int(via) for via, _, _ in rows]))  # type: ignore[attr-defined]
+    ).all())
+    out = [
+        {"service_account": names.get(int(via)) or f"#{int(via)}", "cost_usd": round(float(cost), 6), "requests": int(n)}
+        for via, cost, n in rows
+    ]
+    out.sort(key=lambda r: (-r["cost_usd"], r["service_account"]))
+    return out
+
+
 def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
     """Everything the admin page shows about the current month, from ONE
     per-user aggregate over ``usage_logs`` (``get_monthly_all_users_usage``)
@@ -209,11 +263,16 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
 
       ``totals``            cost / input_tokens / output_tokens / requests
       ``per_user``          the per-user map (``get_monthly_all_users_usage``)
-      ``app_leaderboard`` / ``user_leaderboard``  top-N by monthly cost
+      ``app_leaderboard`` / ``user_leaderboard``  top-N by monthly cost; a
+                            service account's rank counts what it sent for its
+                            users too (``for_users_*``, billed to them)
       ``departments``       people (app accounts excluded) grouped by
                             ``org_code`` ("Unknown" when blank), by cost desc
     """
     per_user = get_monthly_all_users_usage(session)
+    # What each service account sent for its users (billed to them, so in
+    # ``per_user`` under the users): shown beside its own, and ranked with it.
+    for_users = get_on_behalf_month(session)
     # Every user, unfiltered: ``users`` is small next to ``usage_logs``, and an
     # IN list of every active id would hit bind-parameter limits.
     users = {
@@ -221,7 +280,7 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
         for uid, username, display_name, org_code, is_service in session.exec(
             select(User.id, User.username, User.display_name, User.org_code, User.is_service_account)
         ).all()
-    } if per_user else {}
+    } if per_user or for_users else {}
 
     totals = {"cost": 0.0, "input_tokens": 0, "output_tokens": 0, "requests": 0}
     apps: list[dict] = []
@@ -246,6 +305,9 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
             "monthly_reqs": u["requests"],
         }
         if is_service:
+            sent = for_users.get(uid, {})
+            row.update(for_users_cost=sent.get("cost", 0.0), for_users_reqs=sent.get("requests", 0),
+                       for_users_count=sent.get("users", 0))
             apps.append(row)
             continue
         people.append(row)
@@ -259,8 +321,23 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
         dept["output_tokens"] += u["output_tokens"]
         dept["requests"] += u["requests"]
 
+    # A service account whose month is only what it sent for its users has
+    # no usage of its own: it still belongs on the leaderboard.
+    listed = {row["id"] for row in apps}
+    for uid, sent in for_users.items():
+        if uid in listed or uid not in users or not users[uid][3]:
+            continue
+        username, display_name, org_code, _ = users[uid]
+        apps.append({
+            "id": uid, "username": username, "display_name": display_name, "org_code": org_code,
+            "monthly_cost": 0.0, "monthly_input": 0, "monthly_output": 0, "monthly_reqs": 0,
+            "for_users_cost": sent["cost"], "for_users_reqs": sent["requests"], "for_users_count": sent["users"],
+        })
+
     def _top(rows: list[dict]) -> list[dict]:
-        return sorted(rows, key=lambda r: r["monthly_cost"], reverse=True)[:leaderboard_size]
+        return sorted(
+            rows, key=lambda r: r["monthly_cost"] + r.get("for_users_cost", 0.0), reverse=True,
+        )[:leaderboard_size]
 
     totals["cost"] = round(totals["cost"], 4)
     for dept in departments.values():
@@ -278,7 +355,9 @@ def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
     """The service accounts this user owns (``app_owners``), each with this
     local month's usage: the totals and one ``models`` row per model and
     backend, in the order every page lists models. One usage read for all
-    of them. ("apps" in the names here is the older word for service
+    of them, and one for ``on_behalf``: what the account sent for its users
+    (``get_on_behalf_month``), which is on their bills and in none of the
+    account's own figures. ("apps" in the names here is the older word for service
     accounts.)"""
     app_ids_stmt = select(AppOwner.app_id).where(AppOwner.owner_id == owner_id)
     apps = session.exec(select(User).where(User.id.in_(app_ids_stmt))).all()  # type: ignore[attr-defined]
@@ -302,6 +381,10 @@ def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
             "cost_usd": round(float(entry["cost_usd"]), 6),
         })
     catalog = model_catalog.current_catalog_keys() if rows_by_id else {}
+    # What each sent for its users (X-On-Behalf-Of): on those users' bills,
+    # so apart from the account's own month below.
+    on_behalf = get_on_behalf_month(session, [a.id for a in apps])
+    nothing = {"cost": 0.0, "input_tokens": 0, "output_tokens": 0, "requests": 0, "users": 0}
 
     def _one(app: User) -> dict:
         models = model_catalog.sort_usage_rows(rows_by_id.get(app.id, []), catalog)
@@ -311,6 +394,8 @@ def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
             "api_key": app.api_key,
             "legacy_key": is_legacy_api_key(app.api_key),
             "daily_limit_usd": app.daily_limit_usd,
+            "acts_for_users": bool(app.acts_for_users),
+            "on_behalf": dict(on_behalf.get(app.id, nothing)),
             "monthly_cost": round(sum(r["cost_usd"] for r in models), 6),
             "monthly_input": sum(r["input_tokens"] for r in models),
             "monthly_output": sum(r["output_tokens"] for r in models),

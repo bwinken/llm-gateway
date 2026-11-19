@@ -3,4 +3,7 @@
     {% if n >= 1000000 %}{{ "%.2f"|format(n / 1000000) }}M{% elif n >= 1000 %}{{ "%.1f"|format(n / 1000) }}K{% else %}{{ n }}{% endif %}
 {%- endmacro %}
 
-{% macro money(v) -%}${{ "%.2f"|format(v) if v >= 1 else "%.4f"|format(v) }}{%- endmacro %}
+{# One way to write an amount of money on every page: two decimals, and four
+   only for an amount under a cent (which two would show as $0.00). gwMoney in
+   base.html is the same rule for what a script draws. #}
+{% macro money(v) -%}${{ "%.4f"|format(v) if 0 < v < 0.01 else "%.2f"|format(v) }}{%- endmacro %}
