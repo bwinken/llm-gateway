@@ -49,6 +49,13 @@ def _no_nulls(value) -> bool:
     return value is not None
 
 
+# GET /v1/notices with nothing to tell: no violation open, and (a second
+# category beside them, a block of its own) no model being replaced.
+NOTHING_OPEN = {
+    "object": "notices", "window_days": 15, "notices": [],
+    "model_changes": {"changes": [], "retiring": [], "patch": {"models": {}}},
+}
+
 PATHS = ["/v1/status", "/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/settings", "/v1/model-changes"]
 
 
@@ -474,7 +481,7 @@ class TestNotices:
         return body
 
     def test_nothing_open(self, client, test_user):
-        assert self._notices(client) == {"object": "notices", "window_days": 15, "notices": []}
+        assert self._notices(client) == NOTHING_OPEN
 
     def test_what_the_dashboard_panel_shows(self, client, db_session, test_user):
         self._violation(db_session, AUTO, client_version="2.1.280")
@@ -537,7 +544,7 @@ class TestNotices:
         self._violation(db_session, AUTO)
         assert len(self._notices(client)["notices"]) == 1
         assert client_rules.resolve(db_session, AUTO, "testuser")
-        assert self._notices(client) == {"object": "notices", "window_days": 15, "notices": []}
+        assert self._notices(client) == NOTHING_OPEN
 
     def test_a_key_is_never_in_a_patch(self, client, db_session, test_user):
         self._violation(db_session, AUTO)
