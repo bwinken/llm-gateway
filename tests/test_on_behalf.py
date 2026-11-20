@@ -671,12 +671,15 @@ class TestAdmin:
     def test_the_row_has_the_switch_and_what_went_through(self, client, db_session, admin_user, chat_app, alice):
         _sent_for(db_session, alice, chat_app, "1.5")
         apps = client.get("/admin/user-table", params={"kind": "apps"}, headers=_admin()).text
-        assert f'action="/admin/users/{chat_app.id}/acts-for-users"' in apps
-        assert 'name="enabled" value="off"' in apps  # it is on: the next click asks for off
-        assert "for 1 user" in apps
+        assert "um-chip-onbehalf" in apps and "for 1 user" in apps
+        # The switch is in the account's drawer.
+        drawer = client.get(f"/admin/users/{chat_app.id}/detail", headers=_admin()).text
+        assert f'action="/admin/users/{chat_app.id}/acts-for-users"' in drawer
+        assert 'name="enabled" value="off"' in drawer  # it is on: the next click asks for off
         # People have neither.
         users = client.get("/admin/user-table", params={"kind": "users"}, headers=_admin()).text
-        assert "acts-for-users" not in users
+        assert "um-chip-onbehalf" not in users
+        assert "acts-for-users" not in client.get(f"/admin/users/{alice.id}/detail", headers=_admin()).text
         # No list of models per account: which models are listed is Admin → Models (Hidden).
         assert "data-model-list" not in apps and "model-list" not in apps
 

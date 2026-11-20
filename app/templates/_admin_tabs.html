@@ -7,7 +7,16 @@
    Model Config keeps its own page: its URL-hash routing, unsaved-changes
    bar and leave-page guard stay untouched.
 
-   Badges render only where their data exists (the /admin context). #}
+   Badges render only where their data exists (the /admin context).
+
+   Two ways to find a setting are built here, from one list
+   (app/services/admin_nav.py, the admin_nav_index global):
+   - the quick search (the button at the end of the bar, Ctrl+K), on all
+     three pages: sections, accounts, models, Guide entries;
+   - on /admin, the section bar under the tabs: the open tab's sections,
+     each a jump, and the fold buttons on its cards (kept in localStorage).
+   gwAdminReveal(id) is the one way to jump to an element of /admin: it
+   switches tab, unfolds the card, opens a <details> and scrolls. #}
 {# admin_section: 'guide' on /admin/guide; otherwise a page that is not /admin is Models. #}
 {% set guide_active = admin_section is defined and admin_section == 'guide' %}
 {% set models_active = not on_admin_page and not guide_active %}
@@ -43,4 +52,430 @@
         Guide
         {% if on_admin_page %}<span class="gw-tab-count gw-tip" data-tip="What every setting does, why it exists and what was traded for what">why</span>{% endif %}
     </a>
+    <button type="button" id="adminSearchBtn" class="gw-pal-open" aria-haspopup="dialog"
+            title="Find a setting, an account or a model (Ctrl+K)">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+        Search <kbd class="gw-pal-kbd">Ctrl K</kbd>
+    </button>
 </div>
+{% if on_admin_page %}
+{# The open tab's sections; filled by the script below on every tab switch. #}
+<nav id="adminSections" class="gw-sec" aria-label="Sections of this tab"></nav>
+{% endif %}
+
+<style>
+    /* ── Quick search (Ctrl+K) ── */
+    .gw-pal-open {
+        margin-left: auto; flex-shrink: 0; align-self: center;
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 5px 10px; margin-right: 2px; font-size: 12px; font-weight: 600;
+        color: #9aa1b3; background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; cursor: pointer;
+    }
+    .gw-pal-open:hover { color: #eef0f4; border-color: rgba(99,152,255,0.5); }
+    .gw-pal-kbd {
+        font-family: ui-monospace, monospace; font-size: 10px; line-height: 1; padding: 2px 5px;
+        color: #9aa1b3; background: rgba(255,255,255,0.06); border-radius: 4px;
+    }
+    .gw-pal { position: fixed; inset: 0; z-index: 9000; display: flex; justify-content: center; align-items: flex-start; padding: 12vh 16px 16px; }
+    .gw-pal-box {
+        position: relative; width: 100%; max-width: 620px; max-height: 70vh; display: flex; flex-direction: column;
+        background: #16171f; border: 1px solid rgba(255,255,255,0.1); border-radius: 14px;
+        box-shadow: 0 24px 64px rgba(0,0,0,0.6); overflow: hidden;
+    }
+    .gw-pal-input {
+        width: 100%; padding: 14px 16px; font-size: 15px; color: #eef0f4; background: transparent;
+        border: 0; border-bottom: 1px solid rgba(255,255,255,0.07); outline: none;
+    }
+    .gw-pal-list { overflow-y: auto; padding: 6px; margin: 0; list-style: none; }
+    .gw-pal-group { padding: 8px 10px 4px; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #9aa1b3; }
+    .gw-pal-item {
+        display: flex; align-items: baseline; gap: 8px; padding: 7px 10px; border-radius: 8px;
+        font-size: 13px; color: #c4c9d4; cursor: pointer;
+    }
+    .gw-pal-item.is-on { background: rgba(99,152,255,0.14); color: #eef0f4; }
+    .gw-pal-where { font-size: 11px; color: #9aa1b3; white-space: nowrap; }
+    .gw-pal-hint { margin-left: auto; font-size: 11px; color: #9aa1b3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .gw-pal-empty { padding: 18px 12px; font-size: 13px; color: #9aa1b3; text-align: center; }
+    .gw-pal-foot { padding: 8px 14px; font-size: 11px; color: #9aa1b3; border-top: 1px solid rgba(255,255,255,0.06); }
+
+    /* ── Section bar and foldable cards (/admin) ── */
+    .gw-tabs-sec { margin-bottom: 0; }
+    .gw-sec {
+        position: sticky; top: 101px; z-index: 29;
+        display: flex; align-items: center; gap: 6px; overflow-x: auto;
+        margin: 0 0 24px; padding: 8px 2px; background: #0c0d12;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .gw-sec-chip {
+        flex-shrink: 0; padding: 4px 10px; font-size: 12px; font-weight: 500; line-height: 1.3;
+        color: #9aa1b3; background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06); border-radius: 999px; cursor: pointer;
+    }
+    .gw-sec-chip:hover { color: #eef0f4; border-color: rgba(255,255,255,0.18); }
+    .gw-sec-chip.is-on { color: #eef0f4; background: rgba(99,152,255,0.14); border-color: rgba(99,152,255,0.45); }
+    .gw-sec-chip.is-folded { font-style: italic; opacity: 0.75; }
+    .gw-sec-all { margin-left: auto; flex-shrink: 0; padding: 4px 8px; font-size: 11px; color: #9aa1b3; background: none; border: 0; cursor: pointer; }
+    .gw-sec-all:hover { color: #eef0f4; }
+    [data-section] { scroll-margin-top: 160px; }
+    .gw-fold-btn {
+        margin-left: 8px; padding: 0 5px; font-size: 11px; font-weight: 500; line-height: 1.6; vertical-align: middle;
+        color: #9aa1b3; background: rgba(255,255,255,0.04); border: 0; border-radius: 5px; cursor: pointer;
+        text-transform: none; letter-spacing: 0;
+    }
+    .gw-fold-btn:hover { color: #eef0f4; background: rgba(255,255,255,0.09); }
+    .gw-fold-bar { display: none; }
+    .gw-folded > * { display: none !important; }
+    .gw-folded > .gw-fold-bar {
+        display: flex !important; width: 100%; align-items: center; gap: 10px; text-align: left;
+        font-size: 14px; font-weight: 700; color: #c4c9d4; background: none; border: 0; cursor: pointer;
+    }
+    .gw-fold-bar:hover { color: #eef0f4; }
+    .gw-fold-more { margin-left: auto; font-size: 11px; font-weight: 500; color: #9aa1b3; }
+    .gw-sec-flash { animation: gwSecFlash 1.2s ease-out; }
+    @keyframes gwSecFlash { 0% { box-shadow: 0 0 0 2px rgba(99,152,255,0.7); } 100% { box-shadow: 0 0 0 2px rgba(99,152,255,0); } }
+</style>
+
+<script type="application/json" id="adminNavIndex">{{ admin_nav_index() | tojson }}</script>
+<script>
+(function () {
+    var INDEX = JSON.parse(document.getElementById('adminNavIndex').textContent);
+    var ON_ADMIN = {{ 'true' if on_admin_page else 'false' }};
+    var ON_MODELS = {{ 'true' if models_active else 'false' }};
+    var bar = document.getElementById('adminTabs');
+
+    function store(kind, key, value) {
+        try {
+            var s = kind === 'local' ? localStorage : sessionStorage;
+            if (value === undefined) return s.getItem(key);
+            if (value === null) s.removeItem(key); else s.setItem(key, value);
+        } catch (e) {}
+        return null;
+    }
+
+    /* ── Folding (/admin) ── */
+    var FOLD_KEY = 'adminFolded';
+    function foldedIds() { try { return JSON.parse(store('local', FOLD_KEY) || '[]'); } catch (e) { return []; } }
+    function setFolded(card, on, keep) {
+        if (!card || !card.querySelector(':scope > .gw-fold-bar')) return;
+        if (card.classList.contains('gw-folded') === on) return;
+        card.classList.toggle('gw-folded', on);
+        var btn = card.querySelector('.gw-fold-btn');
+        if (btn) btn.setAttribute('aria-expanded', on ? 'false' : 'true');
+        if (keep !== false) {
+            var ids = foldedIds().filter(function (id) { return id !== card.id; });
+            if (on) ids.push(card.id);
+            store('local', FOLD_KEY, JSON.stringify(ids));
+        }
+        if (!on) window.dispatchEvent(new Event('resize'));  // charts drawn while hidden have no size
+        paintChips();
+    }
+
+    /* The one way to jump to an element of /admin: its tab, its card
+       unfolded, a <details> on the way opened, then scrolled to. */
+    window.gwAdminReveal = function (id, opts) {
+        var el = document.getElementById(id);
+        if (!el) return false;
+        var panel = el.closest('[data-panel]');
+        if (panel && panel.style.display === 'none') {
+            var tab = bar.querySelector('[data-tab="' + panel.dataset.panel + '"]');
+            if (tab) tab.click();
+        }
+        setFolded(el.closest('[data-section]'), false);
+        for (var d = el; d; d = d.parentElement) if (d.tagName === 'DETAILS') d.open = true;
+        el.style.scrollMarginTop = '160px';
+        requestAnimationFrame(function () {
+            el.scrollIntoView({ block: (opts && opts.block) || 'start', behavior: 'smooth' });
+            el.classList.add('gw-sec-flash');
+            setTimeout(function () { el.classList.remove('gw-sec-flash'); }, 1300);
+        });
+        return true;
+    };
+
+    var secBar = document.getElementById('adminSections'), currentTab = null;
+    function tabSections(tab) { return INDEX.sections.filter(function (s) { return s.tab === tab; }); }
+    function paintChips() {
+        if (!secBar) return;
+        Array.prototype.forEach.call(secBar.querySelectorAll('[data-goto]'), function (chip) {
+            var card = document.getElementById(chip.dataset.goto);
+            chip.classList.toggle('is-folded', !!card && card.classList.contains('gw-folded'));
+        });
+        var all = secBar.querySelector('.gw-sec-all');
+        if (all) {
+            var open = tabSections(currentTab).some(function (s) {
+                var card = document.getElementById(s.id);
+                return s.fold && card && !card.classList.contains('gw-folded');
+            });
+            all.textContent = open ? 'Fold all' : 'Unfold all';
+            all.dataset.fold = open ? '1' : '';
+        }
+    }
+    function renderSections(tab) {
+        if (!secBar) return;
+        currentTab = tab;
+        secBar.textContent = '';
+        var list = tabSections(tab).filter(function (s) { return document.getElementById(s.id); });
+        list.forEach(function (s) {
+            var chip = document.createElement('button');
+            chip.type = 'button'; chip.className = 'gw-sec-chip'; chip.dataset.goto = s.id; chip.textContent = s.title;
+            secBar.appendChild(chip);
+        });
+        if (list.some(function (s) { return s.fold; })) {
+            var all = document.createElement('button');
+            all.type = 'button'; all.className = 'gw-sec-all';
+            secBar.appendChild(all);
+        }
+        paintChips();
+        spy();
+    }
+    // Which section is on screen: the last one whose top has passed the bars.
+    var spyQueued = false;
+    function spy() {
+        spyQueued = false;
+        if (!secBar) return;
+        var line = secBar.getBoundingClientRect().bottom + 24, on = null;
+        tabSections(currentTab).forEach(function (s) {
+            var el = document.getElementById(s.id);
+            if (el && el.getBoundingClientRect().top <= line) on = s.id;
+        });
+        Array.prototype.forEach.call(secBar.querySelectorAll('[data-goto]'), function (chip, i) {
+            chip.classList.toggle('is-on', on ? chip.dataset.goto === on : i === 0);
+        });
+    }
+
+    if (ON_ADMIN) {
+        bar.classList.add('gw-tabs-sec');
+        window.addEventListener('gw:tab', function (e) {
+            if (e.detail.bar === 'adminTabs') renderSections(e.detail.tab);
+        });
+        window.addEventListener('scroll', function () {
+            if (!spyQueued) { spyQueued = true; requestAnimationFrame(spy); }
+        }, { passive: true });
+        secBar.addEventListener('click', function (e) {
+            var chip = e.target.closest('[data-goto]');
+            if (chip) return void window.gwAdminReveal(chip.dataset.goto);
+            var all = e.target.closest('.gw-sec-all');
+            if (!all) return;
+            var fold = all.dataset.fold === '1';
+            tabSections(currentTab).forEach(function (s) { if (s.fold) setFolded(document.getElementById(s.id), fold); });
+        });
+        document.addEventListener('DOMContentLoaded', function () {
+            secBar.style.top = (56 + bar.offsetHeight) + 'px';
+            var stored = foldedIds();
+            INDEX.sections.forEach(function (s) {
+                var card = document.getElementById(s.id), h = card && card.querySelector('h2');
+                if (!s.fold || !h) return;
+                var btn = document.createElement('button');
+                btn.type = 'button'; btn.className = 'gw-fold-btn'; btn.textContent = 'Fold';
+                btn.title = 'Fold this card to one line'; btn.setAttribute('aria-expanded', 'true');
+                btn.addEventListener('click', function () { setFolded(card, true); });
+                h.appendChild(btn);
+                var line = document.createElement('button');
+                line.type = 'button'; line.className = 'gw-fold-bar';
+                var name = document.createElement('span'); name.textContent = s.title;
+                var more = document.createElement('span'); more.className = 'gw-fold-more'; more.textContent = 'Show';
+                line.appendChild(name); line.appendChild(more);
+                line.addEventListener('click', function () { setFolded(card, false); });
+                card.insertBefore(line, card.firstChild);
+                if (stored.indexOf(s.id) !== -1) setFolded(card, true, false);
+            });
+            // A jump asked for on another page (the quick search on Models or Guide).
+            var goto = store('session', 'adminGoto'), account = store('session', 'adminOpenAccount');
+            store('session', 'adminGoto', null); store('session', 'adminOpenAccount', null);
+            if (goto) setTimeout(function () { window.gwAdminReveal(goto); }, 80);
+            if (account && window.gwOpenAccount) window.gwOpenAccount(account, null);
+            paintChips();
+        });
+    }
+
+    /* ── Quick search ── */
+    var pal = null, input = null, list = null, items = [], cursor = 0, accounts = [], accountsFor = '', seq = 0, timer = null;
+    function build() {
+        pal = document.createElement('div');
+        pal.className = 'gw-pal hidden';
+        pal.setAttribute('role', 'dialog'); pal.setAttribute('aria-modal', 'true');
+        pal.setAttribute('aria-label', 'Search the admin panel');
+        pal.innerHTML =
+            '<div class="gw-overlay fixed inset-0"></div>' +
+            '<div class="gw-pal-box">' +
+              '<input type="text" class="gw-pal-input" placeholder="Find a setting, an account or a model…" autocomplete="off" spellcheck="false"' +
+              ' role="combobox" aria-expanded="true" aria-controls="gwPalList" aria-label="Search the admin panel">' +
+              '<ul id="gwPalList" class="gw-pal-list" role="listbox"></ul>' +
+              '<div class="gw-pal-foot">↑ ↓ to move · Enter to open · Esc to close</div>' +
+            '</div>';
+        document.body.appendChild(pal);   // under <body>: above the navbar and the drawer
+        input = pal.querySelector('input'); list = pal.querySelector('ul');
+        input.addEventListener('input', function () { cursor = 0; lookUpAccounts(); render(); });
+        pal.addEventListener('click', function (e) {
+            var li = e.target.closest('.gw-pal-item');
+            if (li) return go(items[+li.dataset.i]);
+            if (e.target.classList.contains('gw-overlay')) close();
+        });
+        pal.addEventListener('mousemove', function (e) {
+            var li = e.target.closest('.gw-pal-item');
+            if (li && +li.dataset.i !== cursor) { cursor = +li.dataset.i; paintCursor(); }
+        });
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (items.length) cursor = (cursor + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+                paintCursor();
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (items[cursor]) go(items[cursor]);
+            } else if (e.key === 'Escape') {
+                e.preventDefault(); e.stopPropagation(); close();
+            }
+        });
+    }
+    function isOpen() { return pal && !pal.classList.contains('hidden'); }
+    var before = null;
+    function open() {
+        if (!pal) build();
+        before = document.activeElement;
+        pal.classList.remove('hidden');
+        input.value = ''; accounts = []; accountsFor = ''; cursor = 0;
+        render();
+        input.focus();
+    }
+    function close() {
+        if (!isOpen()) return;
+        pal.classList.add('hidden');
+        if (before && before.focus) before.focus();
+    }
+
+    function matches(q, text) {
+        var hay = text.toLowerCase();
+        return q.split(/\s+/).every(function (word) { return hay.indexOf(word) !== -1; });
+    }
+    function rank(q, title) {
+        var t = title.toLowerCase();
+        return t.indexOf(q) === 0 ? 0 : t.indexOf(q) !== -1 ? 1 : 2;
+    }
+    function pick(q, rows, text, title, max) {
+        var found = rows.filter(function (r) { return !q || matches(q, text(r)); });
+        if (q) found.sort(function (a, b) { return rank(q, title(a)) - rank(q, title(b)); });
+        return found.slice(0, max);
+    }
+    function collect() {
+        var q = input.value.trim().toLowerCase(), raw = input.value.trim(), out = [];
+        pick(q, INDEX.sections, function (s) { return s.title + ' ' + s.tabLabel + ' ' + s.keywords; },
+             function (s) { return s.title; }, q ? 8 : 100)
+            .forEach(function (s) { out.push({ group: 'Sections', title: s.title, where: s.tabLabel, kind: 'section', data: s }); });
+        if (q.length >= 2) {
+            // The last answer, narrowed to what is typed now, until the next one arrives.
+            accounts.filter(function (a) { return matches(q, a.username + ' ' + a.display_name + ' ' + a.org_code); }).forEach(function (a) {
+                out.push({
+                    group: 'Accounts', kind: 'account', data: a,
+                    title: a.display_name && a.display_name !== a.username ? a.display_name + ' (' + a.username + ')' : a.username,
+                    where: a.service_account ? 'service account' : (a.org_code || 'user'),
+                    hint: a.disabled ? 'disabled' : 'open the account'
+                });
+            });
+            out.push({ group: 'Accounts', kind: 'table', title: 'Find “' + raw + '” in the Users table', where: 'Users', data: raw });
+        }
+        if (q) {
+            pick(q, INDEX.models, function (m) { return m.alias + ' ' + m.backend + ' model'; }, function (m) { return m.alias; }, 8)
+                .forEach(function (m) { out.push({ group: 'Models', title: m.alias, where: m.backend, hint: 'model config', kind: 'model', data: m }); });
+            pick(q, INDEX.guide, function (g) { return g.title + ' ' + g.section + ' ' + g.keywords + ' why'; }, function (g) { return g.title; }, 6)
+                .forEach(function (g) { out.push({ group: 'Guide', title: g.title, where: g.section, hint: 'what it does and why', kind: 'guide', data: g }); });
+        }
+        pick(q, INDEX.pages, function (p) { return p.title + ' ' + p.hint + ' ' + p.keywords; }, function (p) { return p.title; }, 5)
+            .forEach(function (p) { out.push({ group: 'Pages', title: p.title, hint: p.hint, kind: 'page', data: p }); });
+        return out;
+    }
+    function render() {
+        items = collect();
+        if (cursor >= items.length) cursor = 0;
+        list.textContent = '';
+        var group = null;
+        items.forEach(function (item, i) {
+            if (item.group !== group) {
+                group = item.group;
+                var head = document.createElement('li');
+                head.className = 'gw-pal-group'; head.setAttribute('role', 'presentation'); head.textContent = group;
+                list.appendChild(head);
+            }
+            var li = document.createElement('li');
+            li.className = 'gw-pal-item'; li.dataset.i = i; li.setAttribute('role', 'option');
+            var title = document.createElement('span'); title.textContent = item.title; li.appendChild(title);
+            if (item.where) { var w = document.createElement('span'); w.className = 'gw-pal-where'; w.textContent = item.where; li.appendChild(w); }
+            if (item.hint) { var h = document.createElement('span'); h.className = 'gw-pal-hint'; h.textContent = item.hint; li.appendChild(h); }
+            list.appendChild(li);
+        });
+        if (!items.length) {
+            var none = document.createElement('li');
+            none.className = 'gw-pal-empty'; none.textContent = 'Nothing matches.';
+            list.appendChild(none);
+        }
+        paintCursor();
+    }
+    function paintCursor() {
+        Array.prototype.forEach.call(list.querySelectorAll('.gw-pal-item'), function (li) {
+            var on = +li.dataset.i === cursor;
+            li.classList.toggle('is-on', on);
+            li.setAttribute('aria-selected', on ? 'true' : 'false');
+            if (on) li.scrollIntoView({ block: 'nearest' });
+        });
+    }
+    function lookUpAccounts() {
+        var q = input.value.trim();
+        clearTimeout(timer);
+        if (q.length < 2) { accounts = []; accountsFor = ''; return; }
+        if (q === accountsFor) return;
+        timer = setTimeout(function () {
+            var mine = ++seq;
+            fetch('/admin/api/account-search?q=' + encodeURIComponent(q), { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+                .then(function (r) { return r.ok ? r.json() : { accounts: [] }; })
+                .then(function (d) {
+                    if (mine !== seq || !isOpen()) return;   // a newer answer is on its way
+                    accounts = d.accounts || []; accountsFor = q;
+                    render();
+                })
+                .catch(function () {});
+        }, 160);
+    }
+
+    function go(item) {
+        close();
+        if (item.kind === 'section') {
+            if (ON_ADMIN) return void window.gwAdminReveal(item.data.id);
+            store('session', 'adminGoto', item.data.id);
+            location.href = '/admin#' + item.data.tab;
+        } else if (item.kind === 'account') {
+            if (ON_ADMIN && window.gwOpenAccount) return void window.gwOpenAccount(item.data.id, null);
+            store('session', 'adminOpenAccount', String(item.data.id));
+            location.href = '/admin#users';
+        } else if (item.kind === 'table') {
+            var form = ON_ADMIN && document.getElementById('umSearch');
+            if (form) {
+                var tab = bar.querySelector('[data-tab="users"]');
+                if (tab) tab.click();
+                form.elements.q.value = item.data;
+                form.requestSubmit();
+                return void window.gwAdminReveal('user-management');
+            }
+            location.href = '/admin?q=' + encodeURIComponent(item.data) + '#users';
+        } else if (item.kind === 'model') {
+            location.href = '/admin/models#' + item.data.kind + '/' + encodeURIComponent(item.data.alias);
+        } else if (item.kind === 'guide') {
+            location.href = '/admin/guide#' + encodeURIComponent(item.data.id);
+        } else if (item.kind === 'page') {
+            location.href = item.data.href;
+        }
+    }
+
+    document.getElementById('adminSearchBtn').addEventListener('click', open);
+    document.addEventListener('keydown', function (e) {
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+            e.preventDefault();
+            return isOpen() ? close() : open();
+        }
+        // "/" opens it too, except on Models, whose own list search has that key.
+        var t = e.target, typing = t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+        if (e.key === '/' && !ON_MODELS && !typing && !e.ctrlKey && !e.metaKey && !e.altKey && !isOpen()) {
+            e.preventDefault(); open();
+        }
+    });
+})();
+</script>

@@ -36,6 +36,7 @@ from app.routers.admin.common import _local_label, router, templates
 from app.routers.admin.security import _audit_rows, _guardrail_view, _ip_allowlist_view
 from app.routers.admin.settings import _weekly_reports_view
 from app.routers.admin.users import (
+    USER_TABLE_PAGE_SIZES,
     USER_TABLE_SORTS,
     USER_TABLE_STATUSES,
     _PAGE_SIZE,
@@ -198,6 +199,7 @@ def admin_page(
             "table_state": state,
             "user_table_sorts": USER_TABLE_SORTS,
             "user_table_statuses": USER_TABLE_STATUSES,
+            "user_table_page_sizes": USER_TABLE_PAGE_SIZES,
             "export_from_default": export_from.strftime("%Y-%m"),
             "export_to_default": month_start.strftime("%Y-%m"),
             "app_leaderboard": app_leaderboard,

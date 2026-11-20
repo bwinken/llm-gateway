@@ -857,9 +857,40 @@ class TestEndpoint:
         db_session.commit()
         assert self._get(client)["retiring"] == ["old-llm"]
 
-    def test_the_notices_endpoint_knows_nothing_of_it(self, client, db_session, test_user):
+    def test_the_notices_endpoint_carries_it_as_a_block_of_its_own(self, client, db_session, test_user):
+        """``GET /v1/notices`` gives the model changes under ``model_changes``,
+        the same answer as ``GET /v1/model-changes``, and nothing of them
+        anywhere else: a client that reads ``notices`` and ``patch`` only
+        sees what it saw before a change was announced."""
+        before = client.get("/v1/notices", headers=auth_header()).json()
+        assert before["model_changes"] == {"changes": [], "retiring": [], "patch": {"models": {}}}
         _change(db_session)
-        assert client.get("/v1/notices", headers=auth_header()).json() == {"object": "notices", "window_days": 15, "notices": []}
+        body = client.get("/v1/notices", headers=auth_header()).json()
+        own = self._get(client)
+        assert body["model_changes"] == {key: own[key] for key in ("changes", "retiring", "patch")}
+        assert body["model_changes"]["retiring"] == ["old-llm"]
+        # The violations' part is untouched: no entry, no patch, the same keys as before.
+        assert body["notices"] == [] and "patch" not in body
+        assert {k: v for k, v in body.items() if k != "model_changes"} == {
+            k: v for k, v in before.items() if k != "model_changes"
+        }
+        assert "null" not in json.dumps(body)
+
+    def test_a_violation_and_a_change_stay_apart_in_the_notices_answer(self, client, db_session, test_user):
+        change = _change(db_session)
+        db_session.add(ClientViolation(rule_id="CC001", username=test_user.username, first_seen_at=_now(), last_seen_at=_now()))
+        db_session.commit()
+        body = client.get("/v1/notices", headers=auth_header()).json()
+        assert [n["id"] for n in body["notices"]] == ["CC001"]
+        assert body["patch"]["covers"] == ["CC001"] and "models" not in body["patch"]
+        assert body["model_changes"]["patch"] == {"models": {"old-llm": "test-llm"}}
+        # "I've applied it" is for the violations: the change is not marked as switched.
+        resolved = client.post("/v1/notices/resolved", headers=auth_header()).json()
+        assert resolved["resolved"] == ["CC001"]
+        after = client.get("/v1/notices", headers=auth_header()).json()
+        assert after["notices"] == []
+        assert after["model_changes"]["changes"][0]["applied"] is False
+        assert _states(db_session, change) == {}
 
     def test_a_broken_store_reads_as_no_change(self, client, db_session, test_user):
         _change(db_session)

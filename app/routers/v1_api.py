@@ -783,6 +783,15 @@ def client_notices(user: User = Depends(get_account_holder)):
     open. A patch only ever sets or removes variables in the ``env`` block
     of settings.json, and never holds a key.
 
+    ``model_changes`` is a block of its own beside them: the models an admin
+    is replacing, for this account, exactly as ``GET /v1/model-changes``
+    gives them (``changes``, ``retiring``, ``patch.models``; all three empty
+    when no change is shown to the caller). It is a second category of
+    notice, not a violation: nothing of it is in ``notices`` or in the
+    top-level ``patch``, its patch is renames and never ``set`` / ``unset``,
+    and ``POST /v1/notices/resolved`` does not touch it. A client that
+    reads only ``notices`` and ``patch`` sees what it always saw.
+
     Read-only: reporting a notice as fixed is ``POST /v1/notices/resolved``.
     Answers once the daily limit is spent. Plain ``def``.
     """
@@ -808,15 +817,35 @@ def client_notices(user: User = Depends(get_account_holder)):
     combined = found["combined"]
     if combined:
         body["patch"] = {**_patch(combined["env"]), "covers": combined["covered"], "manual": combined["manual"]}
+    body["model_changes"] = _model_changes_block(user)
     return body
+
+
+def _model_changes_block(user: User) -> dict:
+    """The models being replaced for ``user``, as data: what
+    ``GET /v1/model-changes`` answers and what ``GET /v1/notices`` carries
+    under ``model_changes``. One function, so the two cannot disagree."""
+    renames: dict[str, str] = {}
+    changes = []
+    for change in get_model_changes(user):
+        entry: dict[str, object] = {"id": change["ref"], "title": change["title"]}
+        if change["message"]:
+            entry["message"] = change["message"]
+        entry["models"] = change["renames"]
+        entry["applied"] = change["applied"]
+        changes.append(entry)
+        renames.update(change["renames"])
+    return {"changes": changes, "retiring": list(renames), "patch": {"models": renames}}
 
 
 @router.get("/v1/model-changes", tags=["account"])
 def model_changes_for_account(user: User = Depends(get_account_holder)):
     """The models that are being replaced, for this account: what an admin
     announced (admin panel, *Model changes*) and is showing now. Its own
-    flow, apart from the notices of ``GET /v1/notices``: nothing was
-    detected, the account is simply one the change is for.
+    flow, apart from the violations in ``notices`` of ``GET /v1/notices``
+    (which carries this same answer under ``model_changes``, for a client
+    that asks once): nothing was detected, the account is simply one the
+    change is for.
 
     ``changes`` lists each change being shown that concerns the account's
     tier (its cloud access: none, Azure, AWS or both): its ``id``
@@ -839,22 +868,7 @@ def model_changes_for_account(user: User = Depends(get_account_holder)):
     Read-only and never a key. Answers once the daily limit is spent.
     Plain ``def``.
     """
-    renames: dict[str, str] = {}
-    changes = []
-    for change in get_model_changes(user):
-        entry: dict[str, object] = {"id": change["ref"], "title": change["title"]}
-        if change["message"]:
-            entry["message"] = change["message"]
-        entry["models"] = change["renames"]
-        entry["applied"] = change["applied"]
-        changes.append(entry)
-        renames.update(change["renames"])
-    return {
-        "object": "model_changes",
-        "changes": changes,
-        "retiring": list(renames),
-        "patch": {"models": renames},
-    }
+    return {"object": "model_changes", **_model_changes_block(user)}
 
 
 @router.post("/v1/notices/resolved", tags=["account"])

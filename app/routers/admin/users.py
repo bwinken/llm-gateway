@@ -1,7 +1,9 @@
 """
 Admin *Users* tab: the Users / Service accounts tables (``_user_table``, also
-served alone by ``GET /admin/user-table``), the row actions, service accounts
-and their owners, and the JSON user API (``/admin/users``).
+served alone by ``GET /admin/user-table``), the account drawer and its
+actions, the change to several accounts at once (``POST
+/admin/users/bulk-update``), service accounts and their owners, the account
+search of the quick search, and the JSON user API (``/admin/users``).
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
-from fastapi import Depends, HTTPException, Query, Request, Security
+from fastapi import Depends, Form, HTTPException, Query, Request, Security
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy import case, delete, false as sa_false, update
 from sqlmodel import Session, func, select
@@ -39,11 +41,14 @@ from app.routers.admin.common import (
     router,
     templates,
 )
-from app.services import concurrency, overflow
+from app.services import audit, concurrency, overflow
 from app.services.stats import get_monthly_all_users_usage, get_on_behalf_month
 
 
 _PAGE_SIZE = 15
+# What the table's "per page" select offers. Any size up to _MAX_PAGE_SIZE
+# still works in the URL.
+USER_TABLE_PAGE_SIZES: tuple[int, ...] = (15, 30, 50, 100)
 
 
 # ── Users / Apps tables ──
@@ -453,15 +458,24 @@ def _account_detail(session: Session, target: User) -> dict:
 def user_detail_panel(
     request: Request,
     user_id: int,
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
     session: Session = Depends(get_session),
 ):
-    """The account drawer as an HTML fragment. Plain ``def``: it reads
-    usage (``aggregate``) and must not block the event loop."""
+    """The account drawer as an HTML fragment: what the account used, and
+    the forms that change it (the same routes a table row used to post to).
+    The GET itself only reads and never contains a key. Plain ``def``: it
+    reads usage (``aggregate``) and must not block the event loop."""
     target = session.get(User, user_id)
     if target is None:
         raise HTTPException(status_code=404, detail="No such account.")
     return templates.TemplateResponse(
-        request, "_admin_user_detail.html", {"request": request, "d": _account_detail(session, target)},
+        request, "_admin_user_detail.html",
+        {
+            "request": request,
+            "d": _account_detail(session, target),
+            "is_self": target.id == admin_user.id,
+            "cloud_daily_limit": get_cloud_daily_limit(),
+        },
     )
 
 
@@ -569,6 +583,137 @@ def search_owners(
         {"username": username, "display_name": display_name or "", "org_code": org_code or "", "disabled": bool(disabled)}
         for username, display_name, org_code, disabled in rows
     ]}
+
+
+ACCOUNT_SEARCH_LIMIT = 8
+
+
+@router.get("/api/account-search")
+def search_accounts(
+    q: str = Query("", max_length=100),
+    session: Session = Depends(get_session),
+):
+    """The accounts the quick search (Ctrl+K) offers as an admin types:
+    people and service accounts whose username, display name or org code
+    contains ``q``, names starting with it first, ``ACCOUNT_SEARCH_LIMIT``
+    at most. Nothing for fewer than two characters. Never a key. Plain
+    ``def`` (database read)."""
+    q = q.strip()
+    if len(q) < 2:
+        return {"accounts": []}
+    like = f"%{q}%"
+    rows = session.exec(
+        select(User.id, User.username, User.display_name, User.org_code, User.is_disabled, User.is_service_account)
+        .where(
+            User.username.ilike(like)  # type: ignore[attr-defined]
+            | User.display_name.ilike(like)  # type: ignore[union-attr]
+            | User.org_code.ilike(like)  # type: ignore[union-attr]
+        )
+        .order_by(case((User.username.ilike(f"{q}%"), 0), else_=1), User.username)  # type: ignore[attr-defined]
+        .limit(ACCOUNT_SEARCH_LIMIT)
+    ).all()
+    return {"accounts": [
+        {
+            "id": account_id, "username": username, "display_name": display_name or "", "org_code": org_code or "",
+            "disabled": bool(disabled), "service_account": bool(service),
+        }
+        for account_id, username, display_name, org_code, disabled, service in rows
+    ]}
+
+
+# ── Several accounts at once ──
+#
+# The table's check boxes and the bar under it: one change for every account
+# ticked. Each action takes an explicit value (never a flip: the accounts
+# ticked may differ), everything is validated before anything is written,
+# and an account the change cannot apply to is skipped and named in the
+# reply, not silently left out. Deleting is not offered here.
+
+BULK_MAX_ACCOUNTS = _MAX_PAGE_SIZE
+_BULK_SWITCHES: dict[str, str] = {
+    "azure": "can_use_azure",
+    "bedrock": "can_use_bedrock",
+    "waive": "concurrency_waived",
+    "overflow": "can_overflow_cloud",
+    "disable": "is_disabled",
+}
+BULK_ACTIONS: tuple[str, ...] = ("limit", "cloud-limit", *_BULK_SWITCHES)
+
+
+def _bulk_ids(raw: str) -> list[int]:
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    if not parts or len(parts) > BULK_MAX_ACCOUNTS or not all(part.isdigit() for part in parts):
+        raise HTTPException(status_code=400, detail=f"ids must be 1 to {BULK_MAX_ACCOUNTS} account ids.")
+    return sorted({int(part) for part in parts})
+
+
+@router.post("/users/bulk-update")
+def bulk_update_users(
+    ids: str = Form(""),
+    action: str = Form(""),
+    enabled: str = Form(""),
+    value: str = Form(""),
+    admin_user: User = Security(get_web_user, scopes=["admin"]),
+    session: Session = Depends(get_session),
+):
+    """One change to every account in ``ids`` (comma-separated).
+
+    ``action`` is ``limit`` (``value``: the daily limit in USD),
+    ``cloud-limit`` (``value``: the account's own cloud cap; empty = follow
+    the default) or a switch with ``enabled=on|off``: ``azure``,
+    ``bedrock``, ``waive``, ``overflow`` (people only: a service account is
+    never moved), ``disable`` (never the admin's own account). Answers
+    ``{changed, unchanged, skipped: [{username, reason}]}``. A bad request
+    changes nothing. Plain ``def``.
+    """
+    if action not in BULK_ACTIONS:
+        raise HTTPException(status_code=400, detail="action must be one of: " + ", ".join(BULK_ACTIONS) + ".")
+    wanted = _bulk_ids(ids)
+    amount: float | None = None
+    on = False
+    if action == "limit":
+        amount = _limit_usd(value, "value")
+    elif action == "cloud-limit":
+        amount = None if value.strip() == "" else _limit_usd(value, "value")
+    else:
+        if enabled not in ("on", "off"):
+            raise HTTPException(status_code=400, detail="enabled must be on or off.")
+        on = enabled == "on"
+
+    targets = list(session.exec(select(User).where(User.id.in_(wanted)).order_by(User.id)).all())  # type: ignore[union-attr]
+    if len(targets) != len(wanted):
+        raise HTTPException(status_code=400, detail="An account in ids no longer exists. Reload the table and try again.")
+
+    field = {"limit": "daily_limit_usd", "cloud-limit": "cloud_daily_limit_usd"}.get(action) or _BULK_SWITCHES[action]
+    new = amount if action in ("limit", "cloud-limit") else on
+    changed: list[User] = []
+    unchanged = 0
+    skipped: list[dict[str, str]] = []
+    for target in targets:
+        if action == "disable" and on and target.id == admin_user.id:
+            skipped.append({"username": target.username, "reason": "you cannot disable yourself"})
+        elif action == "overflow" and target.is_service_account:
+            skipped.append({"username": target.username, "reason": "a service account is never moved to the cloud"})
+        elif getattr(target, field) == new:
+            unchanged += 1
+        else:
+            setattr(target, field, new)
+            session.add(target)
+            changed.append(target)
+    session.commit()
+
+    names = [target.username for target in changed]
+    if action == "overflow" and not on and changed:
+        # As _overflow_changed does for one account: back on-prem at once.
+        for name in names:
+            overflow.release_account(session, name, "overflow turned off for this account")
+        overflow.refresh()
+    audit.note(accounts=names, changed=len(names), skipped=[item["username"] for item in skipped])
+    logger.info(
+        "Accounts changed together | admin={} action={} value={} changed={} unchanged={} skipped={} accounts={}",
+        admin_user.username, action, new, len(names), unchanged, len(skipped), ",".join(names) or "-",
+    )
+    return {"ok": True, "action": action, "changed": len(names), "unchanged": unchanged, "skipped": skipped}
 
 
 @router.post("/users/create")

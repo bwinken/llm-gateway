@@ -113,10 +113,13 @@ class TestAdminApiRefusesTheField:
         db_session.add(other)
         db_session.commit()
         db_session.refresh(other)
-        table = client.get("/admin/user-table", params={"kind": "users"}, headers=_admin_headers(admin_user)).text
-        assert f'action="/admin/users/{other.id}/toggle-disable"' in table
-        assert f'action="/admin/users/{other.id}/toggle-concurrency-waive"' in table
-        assert f'action="/admin/users/{admin_user.id}/toggle-disable"' not in table  # yourself
+        # The controls are in the account drawer (the table rows only show).
+        def drawer(account: User) -> str:
+            return client.get(f"/admin/users/{account.id}/detail", headers=_admin_headers(admin_user)).text
+
+        assert f'action="/admin/users/{other.id}/toggle-disable"' in drawer(other)
+        assert f'action="/admin/users/{other.id}/toggle-concurrency-waive"' in drawer(other)
+        assert f'action="/admin/users/{admin_user.id}/toggle-disable"' not in drawer(admin_user)  # yourself
 
 
 class TestAuthCenterDecides:

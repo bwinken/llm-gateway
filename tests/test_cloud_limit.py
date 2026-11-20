@@ -290,9 +290,13 @@ class TestAdmin:
             body = client.get("/admin", headers=self._hdr(admin_user)).text
         assert 'action="/admin/cloud-limit"' in body
 
+        # An account's own cap is set in its drawer.
         def cloud_form(uid: int) -> str:
-            start = body.index(f'action="/admin/users/{uid}/cloud-limit"')
-            return body[start:body.index(">", start)]
+            with _cap(30):
+                drawer = client.get(f"/admin/users/{uid}/detail", headers=self._hdr(admin_user)).text
+            assert "30 (default)" in drawer
+            start = drawer.index(f'action="/admin/users/{uid}/cloud-limit"')
+            return drawer[start:drawer.index(">", start)]
 
         assert "hidden" not in cloud_form(test_user.id)
         # Rendered but hidden without cloud access: granting Azure / AWS in
