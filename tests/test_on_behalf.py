@@ -252,6 +252,101 @@ class TestRefused:
         assert resp.status_code == 403 and calls == []
 
 
+
+# ── The application's own labels (X-Gateway-Tags) ──
+
+TAGS = "X-Gateway-Tags"
+
+
+class TestItsOwnLabels:
+    """A service account that acts for its users may label a request in
+    ``X-Gateway-Tags``: recorded in Langfuse with it, and nowhere else."""
+
+    def _records(self, client, headers, body=None):
+        captured = []
+        with patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.record_generation", captured.append):
+            resp, _ = _chat(client, headers, body)
+        return resp, captured
+
+    def test_they_go_to_langfuse(self, client, chat_app, alice):
+        from app.services.observability import trace_metadata
+
+        resp, [rec] = self._records(
+            client, {**_for("alice"), TAGS: "module=invoice-ocr, ticket=4821,team=%E8%B2%A1%E5%8B%99"},
+        )
+        assert resp.status_code == 200
+        assert (rec.username, rec.service_account) == ("alice", "chat-app")
+        assert rec.request_tags == {"module": "invoice-ocr", "ticket": "4821", "team": "財務"}
+        assert trace_metadata(rec)["tag_module"] == "invoice-ocr"
+
+    def test_the_header_may_be_sent_more_than_once(self, client, chat_app, alice):
+        captured = []
+        mock, _ = _downstream(client)
+        with mock, patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.record_generation", captured.append):
+            resp = client.post(
+                "/v1/chat/completions", json=_CHAT,
+                headers=[*_for("alice").items(), (TAGS, "module=a"), (TAGS, "ticket=1")],
+            )
+        assert resp.status_code == 200 and captured[0].request_tags == {"module": "a", "ticket": "1"}
+
+    def test_they_need_a_named_user_like_every_request(self, client, chat_app, alice):
+        resp, calls = _chat(client, {**_for(None), TAGS: "module=a"})
+        assert resp.status_code == 400 and HEADER in resp.json()["detail"] and calls == []
+
+    def test_a_request_without_them_carries_none(self, client, chat_app, alice):
+        resp, [rec] = self._records(client, _for("alice"))
+        assert resp.status_code == 200 and rec.request_tags == {}
+
+    @pytest.mark.parametrize("key", ["sk-alice", "sk-batch"])
+    def test_from_any_other_key_the_header_is_not_read(self, client, db_session, chat_app, alice, key):
+        """Not even a malformed one is refused: it is not this account's to send."""
+        _add(db_session, username="batch-job", api_key="sk-batch", is_service_account=True)
+        resp, [rec] = self._records(client, {**auth_header(key), TAGS: "not a tag"})
+        assert resp.status_code == 200 and rec.request_tags == {}
+
+    @pytest.mark.parametrize("value", [
+        "module",                       # no value
+        "module=",
+        "bad key=x",
+        "a.b=x",
+        "module=a,module=b",
+        "module=" + "x" * 201,
+        "module=%FF",                   # not UTF-8
+        "module=a%0Ab",                 # a line break
+        ",".join(f"k{i}=v" for i in range(17)),
+    ])
+    def test_what_is_refused(self, client, chat_app, alice, value):
+        resp, calls = _chat(client, {**_for("alice"), TAGS: value})
+        assert resp.status_code == 400 and TAGS in resp.json()["detail"]
+        assert calls == [] and _rows() == []
+
+    def test_on_a_route_without_a_body_too(self, client, chat_app, alice):
+        assert client.get("/v1/models", headers={**_for("alice"), TAGS: "module=a"}).status_code == 200
+        assert client.get("/v1/models", headers={**_for("alice"), TAGS: "module"}).status_code == 400
+
+    def test_nothing_of_it_is_sent_downstream(self, client, chat_app, alice):
+        seen: list[dict] = []
+
+        async def fake_post(url, **kwargs):
+            seen.append(kwargs)
+            return make_httpx_response(200, _OK_CHAT)
+
+        with patch.object(client.__httpx_mock__, "post", side_effect=fake_post):
+            resp = client.post(
+                "/v1/chat/completions", json=_CHAT, headers={**_for("alice"), TAGS: "module=invoice-ocr"},
+            )
+        assert resp.status_code == 200 and seen
+        assert all("invoice-ocr" not in repr(k) and "alice" not in repr(k.get("headers")) for k in seen)
+
+    def test_the_body_names_nobody(self, client, chat_app, alice):
+        """``metadata.user_id`` is not a second way to name the user (it was
+        built and taken out by the owner's decision): the header is."""
+        resp, calls = _chat(client, _for(None), {**_CHAT, "metadata": {"user_id": "alice"}})
+        assert resp.status_code == 400 and calls == []
+
+
 # ── Who may speak for someone ──
 
 class TestOnlyFromSuchAServiceAccount:

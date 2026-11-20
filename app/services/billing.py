@@ -27,7 +27,7 @@ from sqlmodel import Session
 from app.core.config import MODEL_ROUTING, PRICING_MAP
 from app.core.database import engine
 from app.core.logger import logger
-from app.models.schema import UsageLog, User, via_service_account, via_user_id
+from app.models.schema import UsageLog, User, request_tags, via_service_account, via_user_id
 from app.services import metrics
 from app.services.observability import (
     GenerationRecord,
@@ -228,6 +228,7 @@ def _emit_observation(
         session_id=meta.get("session_id"),
         display_name=getattr(user, "display_name", None),
         service_account=getattr(via_service_account(user), "username", None),
+        request_tags=request_tags(user),
         input_payload=input_payload,
         output_payload=out_payload,
         guardrail=meta.get("guardrail"),
@@ -296,6 +297,7 @@ def _log_error(
             session_id=meta.get("session_id"),
             display_name=getattr(user, "display_name", None),
             service_account=getattr(via_service_account(user), "username", None),
+            request_tags=request_tags(user),
             guardrail=meta.get("guardrail"),
         ))
     except Exception as exc:  # never let the error-hook break error handling

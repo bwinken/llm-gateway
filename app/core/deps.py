@@ -5,6 +5,7 @@ Dependency: extract and validate API key from Authorization header.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,7 @@ import anyio
 from fastapi import Depends, Header, HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session, func, select, update
+from urllib.parse import unquote
 from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import AccountDisabledError
@@ -26,7 +28,13 @@ from app.core.config import (
 from app.core.database import engine
 from app.core.logger import logger
 from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
-from app.models.schema import UsageLog, User, set_via_service_account, via_service_account
+from app.models.schema import (
+    UsageLog,
+    User,
+    set_request_tags,
+    set_via_service_account,
+    via_service_account,
+)
 from app.services import auth_throttle, ip_allowlist, metrics
 
 _bearer = HTTPBearer(auto_error=False)
@@ -307,6 +315,64 @@ def _on_behalf_name(request: Request | None) -> str | None:
     return name
 
 
+# ── The application's own labels (X-Gateway-Tags) ──
+# A service account that acts for its users may label a request with entries
+# of its own (a module, a ticket), written like W3C baggage:
+#     X-Gateway-Tags: module=invoice-ocr,ticket=4821
+# They end at the gateway: recorded in Langfuse with the request, never sent
+# downstream, and nothing is decided by them. A header of the gateway's own
+# and not the standard ``baggage``, which instrumented applications forward
+# unasked, whatever it holds and whoever upstream of them wrote it.
+TAGS_HEADER = "X-Gateway-Tags"
+GATEWAY_TAG_MAX = 16
+GATEWAY_TAG_VALUE_MAX = 200
+_TAG_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]{0,39}$")
+
+
+def _gateway_tags(request: Request | None) -> dict[str, str]:
+    """The ``key=value`` entries of ``X-Gateway-Tags`` (comma-separated,
+    values percent-encoded where they are not plain ASCII; the header may be
+    sent more than once). 400 for anything that is not that, so an
+    application finds out at once instead of missing its labels later."""
+    if request is None:
+        return {}
+    tags: dict[str, str] = {}
+    for line in request.headers.getlist(TAGS_HEADER):
+        if not line.isascii():
+            raise _bad_tags("values that are not plain ASCII must be percent-encoded")
+        for entry in line.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            key, sep, raw = entry.partition("=")
+            key = key.strip()
+            if not sep or not _TAG_KEY_RE.match(key):
+                raise _bad_tags(
+                    "each entry is key=value, the key 1 to 40 letters, digits or '_' "
+                    f"starting with a letter or digit: {entry[:60]!r}"
+                )
+            if key in tags:
+                raise _bad_tags(f"'{key}' is there twice")
+            try:
+                value = unquote(raw.strip(), errors="strict")
+            except UnicodeDecodeError:
+                raise _bad_tags(f"the value of '{key}' is not percent-encoded UTF-8")
+            if not value or len(value) > GATEWAY_TAG_VALUE_MAX or not value.isprintable():
+                raise _bad_tags(
+                    f"the value of '{key}' must be 1 to {GATEWAY_TAG_VALUE_MAX} printable characters"
+                )
+            tags[key] = value
+    if len(tags) > GATEWAY_TAG_MAX:
+        raise _bad_tags(f"at most {GATEWAY_TAG_MAX} entries")
+    return tags
+
+
+def _bad_tags(why: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST, detail=f"{TAGS_HEADER}: {why}.",
+    )
+
+
 def _on_behalf_of(session: Session, service_account: User, request: Request | None) -> User:
     """The person ``service_account`` (``acts_for_users``) sends this request
     for: the account named in ``X-On-Behalf-Of``, marked as reached through
@@ -316,8 +382,19 @@ def _on_behalf_of(session: Session, service_account: User, request: Request | No
     account for (403: nobody is provisioned on an application's word, the
     person signs in to the dashboard once), another service account (403: it
     would move spending between applications) and a disabled person (403).
+
+    The request's ``X-Gateway-Tags`` ride along on the returned account
+    (``schema.request_tags``); a malformed one is a 400.
     """
-    name = _on_behalf_name(request)
+    try:
+        name = _on_behalf_name(request)
+        tags = _gateway_tags(request)
+    except HTTPException as exc:
+        logger.warning(
+            "On-behalf rejected: {} | service_account={}", exc.detail, service_account.username,
+        )
+        metrics.observe_rejection("on_behalf")
+        raise
     if name is None:
         logger.warning("On-behalf rejected: no {} | service_account={}", ON_BEHALF_HEADER, service_account.username)
         metrics.observe_rejection("on_behalf")
@@ -337,6 +414,7 @@ def _on_behalf_of(session: Session, service_account: User, request: Request | No
         reason = f"The account '{name}' is disabled. Contact your administrator."
     else:
         set_via_service_account(person, service_account)
+        set_request_tags(person, tags)
         return person
     logger.warning(
         "On-behalf rejected: {} | service_account={}", reason, service_account.username,

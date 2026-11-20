@@ -380,7 +380,9 @@ SECTIONS: tuple[Section, ...] = (
                 what=(
                     "An application people sign in to sends each request with the header X-On-Behalf-Of: <username>. "
                     "The request is then that person's: their daily limit and cloud cap, their cloud access, their "
-                    "bill and their dashboard. The service account is recorded as the way it came in. A request "
+                    "bill and their dashboard. The service account is recorded as the way it came in. The application "
+                    "may also label a request with entries of its own (X-Gateway-Tags: module=invoice-ocr,ticket=4821); "
+                    "those are recorded in Langfuse with the request, so it can be looked up later, and go no further. A request "
                     "without the header, or naming someone who has no account here, a disabled account or a "
                     "service account, is refused."
                 ),

@@ -188,6 +188,25 @@ def via_user_id(user: User) -> int:
     return int(via.id) if via is not None and via.id is not None else 0
 
 
+# What the service account wrote in the request's ``X-Gateway-Tags`` header
+# (``deps._gateway_tags``): its own labels for the request,
+# kept for the one request like the service account above and sent to
+# Langfuse. The application's text: recorded, never acted on.
+_TAGS_ATTR = "_request_tags"
+
+
+def set_request_tags(user: User, tags: dict[str, str]) -> None:
+    """Keep the request's ``X-Gateway-Tags`` entries on ``user`` (a
+    detached, per-request object)."""
+    object.__setattr__(user, _TAGS_ATTR, dict(tags))
+
+
+def request_tags(user: User) -> dict[str, str]:
+    """The ``X-Gateway-Tags`` entries of the request a service account sent
+    for ``user``; empty for any other request."""
+    return getattr(user, _TAGS_ATTR, None) or {}
+
+
 def issue_api_key(user: User) -> str:
     """Give ``user`` a new key: the old one stops working at once."""
     user.api_key = _generate_api_key()

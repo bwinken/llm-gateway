@@ -904,6 +904,12 @@
   -H "X-On-Behalf-Of: {{ user.username }}" \
   -H "Content-Type: application/json" \
   -d '{"model": "MODEL_FROM_STEP_1", "messages": [{"role": "user", "content": "Hello"}]}'</pre>
+            <p>
+                To look requests up later by what sent them, add labels of your own to any request:
+                <span class="font-mono text-t2">-H "X-Gateway-Tags: module=invoice-ocr,ticket=4821"</span>.
+                Up to 16 <span class="font-mono">key=value</span> entries, comma-separated; a value that is not plain ASCII is percent-encoded.
+                They are recorded with the request and go no further.
+            </p>
             <p class="font-semibold text-t2">3. Check where it was billed</p>
             <p>
                 The example names you (<span class="font-mono text-t2">{{ user.username }}</span>), so the test is on your own budget:
@@ -913,7 +919,7 @@
             </p>
             <p class="font-semibold text-t2">What is refused</p>
             <ul class="list-disc pl-5 space-y-1">
-                <li><span class="font-mono text-t2">400</span>: no <span class="font-mono">X-On-Behalf-Of</span> header, or more than one username in it. Every request needs it, <span class="font-mono">/models</span> included.</li>
+                <li><span class="font-mono text-t2">400</span>: no <span class="font-mono">X-On-Behalf-Of</span> header, or more than one username in it. Every request needs it, <span class="font-mono">/models</span> included. Also a malformed <span class="font-mono">X-Gateway-Tags</span>.</li>
                 <li><span class="font-mono text-t2">403</span>: the username has no account on this gateway (the person opens this dashboard once to get one), is disabled, or is a service account.</li>
                 <li><span class="font-mono text-t2">429</span>: that user has spent their daily limit. <span class="font-mono">GET {{ gateway_base }}/me</span> with the same two headers says how much they have left.</li>
             </ul>
