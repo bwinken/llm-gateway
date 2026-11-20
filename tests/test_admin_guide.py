@@ -107,7 +107,9 @@ class TestLinksFromTheCards:
         for label in ("Concurrency", "Off-peak hours", "Daily limit", "Cloud limit", "Budget fallback", "Cloud overflow"):
             assert label in strip, label
         # each figure jumps to a card that exists
-        for card in set(re.findall(r"getElementById\('([a-z-]+)'\)", strip)):
+        cards = set(re.findall(r"gwAdminReveal\('([a-z-]+)'\)", strip))
+        assert {"concurrency-limit", "default-daily-limit", "cloud-daily-limit", "cloud-budget-fallback", "cloud-overflow"} <= cards
+        for card in cards:
             assert f'id="{card}"' in limits, card
 
     def test_the_overflow_settings_are_grouped_by_question(self, client, admin_user):

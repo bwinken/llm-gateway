@@ -162,8 +162,8 @@ class TestEveryClassHasARule:
 
     def test_the_check_sees_what_was_lost(self):
         # The rules that went missing, by name: the check must really read them.
-        assert _OWN_CLASS.match("op") and _OWN_CLASS.match("um-menu") and not _OWN_CLASS.match("text-t3")
+        assert _OWN_CLASS.match("op") and _OWN_CLASS.match("um-chip") and not _OWN_CLASS.match("text-t3")
         admin = "".join(_STYLE_BLOCK.findall((_TEMPLATES / "admin.html").read_text(encoding="utf-8")))
-        for cls in ("sa-chip", "op-input", "um-menu", "ud-head", "gr-rule", "gw-att-chip"):
+        for cls in ("sa-chip", "op-input", "um-chip", "um-bulk", "ud-head", "ud-label", "gr-rule", "gw-att-chip"):
             assert cls in _rules(admin), cls
         assert "#udDrawer" in admin and "#opMenu" in admin

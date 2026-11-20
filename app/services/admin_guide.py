@@ -144,7 +144,7 @@ SECTIONS: tuple[Section, ...] = (
                 name="Cloud daily limit",
                 keys=("[app].cloud_daily_limit_usd", "users.cloud_daily_limit_usd"),
                 default="none",
-                what="A cap on Azure + AWS spend per day for accounts with cloud access. An account's own Cloud $ (Users tab) overrides it.",
+                what="A cap on Azure + AWS spend per day for accounts with cloud access. An account's own cloud cap (Users tab → Manage) overrides it.",
                 why="Cloud spend is real money, so it gets a tighter bound inside the overall daily limit.",
                 tradeoffs=(
                     "One cap for Azure and AWS together: the account splits it however it likes. Separate amounts per provider existed and were retired; they only added ways to be refused.",
@@ -307,7 +307,7 @@ SECTIONS: tuple[Section, ...] = (
                 name="Who may be moved",
                 keys=("users.can_overflow_cloud",),
                 default="allowed",
-                what="Every person unless an admin turns Overflow off on the Users tab. Service accounts are never moved.",
+                what="Every person unless an admin turns Overflow off for the account (Users tab → Manage). Service accounts are never moved.",
                 why="\"May this account's prompts leave the premises\" is a different question from \"may it pick a cloud model\" (Azure / AWS access), so it is a switch of its own.",
                 tradeoffs=(
                     "Allowed by default means a new account in a restricted group can be moved until someone turns it off. The Special access strip lists every account that is off.",
@@ -339,7 +339,7 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         id="accounts",
         title="Per-account switches",
-        where="Users → the table's toggles and fields",
+        where="Users → Manage (an account's panel), or tick several rows",
         href="/admin#users",
         intro="What one account may do. Every switch that is not at its default is counted in the Special access strip above the tables.",
         entries=(

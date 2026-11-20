@@ -59,23 +59,31 @@
                 border-top: 1px solid rgba(255,255,255,0.03); align-items: baseline; }
     .um-name { color: inherit; font: inherit; text-align: left; cursor: pointer; border-bottom: 1px dashed transparent; }
     .um-name:hover, .um-name:focus-visible { color: #6398ff; border-bottom-color: rgba(99,152,255,0.5); outline: none; }
-    /* Row ⋯ menu: opens to the left of the button, over the row's own
-       toggles, so the table card (overflow hidden, sideways scroll) never
-       clips it, whichever row it is. */
-    .um-more { position: relative; }
-    .um-more > summary { list-style: none; }
-    .um-more > summary::-webkit-details-marker { display: none; }
-    .um-menu { position: absolute; right: calc(100% + 6px); top: 50%; transform: translateY(-50%); z-index: 5; display: flex; gap: 4px;
-               padding: 4px; border-radius: 10px; white-space: nowrap;
-               background: #1f2029; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
-    .um-menu-item { display: block; padding: 4px 10px; border-radius: 6px; font-size: .75rem; color: #c4c9d4; }
-    .um-menu-item:hover, .um-menu-item:focus-visible { background: rgba(255,255,255,0.06); outline: none; }
-    .um-menu-danger { color: #ff8a8a; }
-    .um-menu-danger:hover, .um-menu-danger:focus-visible { background: rgba(255,92,92,0.12); }
+    /* Accounts table: a row says what an account is and has, in one line;
+       its controls are in the drawer. */
+    .um-table thead th { padding-left: 12px; padding-right: 12px; }
+    .um-table tbody td { padding: 8px 12px; }
+    .um-check-cell { width: 34px; padding-right: 0 !important; }
+    .um-check { width: 15px; height: 15px; accent-color: #6398ff; cursor: pointer; vertical-align: middle; }
+    .um-row.is-selected { background: rgba(99,152,255,0.08); }
+    .um-chip { display: inline-block; padding: 1px 7px; border-radius: 6px; font-size: .6875rem; font-weight: 600; white-space: nowrap; border: 1px solid transparent; }
+    .um-chip-azure    { background: rgba(167,139,250,0.18); border-color: rgba(167,139,250,0.4); color: #cab9ff; }
+    .um-chip-bedrock  { background: rgba(255,153,51,0.15);  border-color: rgba(255,153,51,0.4);  color: #ffcb8a; }
+    .um-chip-waive    { background: rgba(52,211,153,0.15);  border-color: rgba(52,211,153,0.4);  color: #86efac; }
+    .um-chip-overflow { background: rgba(99,152,255,0.14);  border-color: rgba(99,152,255,0.4);  color: #a9c5ff; }
+    .um-chip-onbehalf { background: rgba(245,166,35,0.14);  border-color: rgba(245,166,35,0.4);  color: #f8c873; }
+    /* The bar that changes the ticked accounts: floats at the foot of the
+       table while any row is ticked. */
+    .um-bulk { position: sticky; bottom: 14px; z-index: 20; margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+               padding: 10px 14px; border-radius: 12px; background: #1f2029; border: 1px solid rgba(99,152,255,0.45);
+               box-shadow: 0 12px 32px rgba(0,0,0,0.55); }
+    .um-bulk.hidden { display: none; }
+    .ud-label { display: block; font-size: 10px; font-weight: 600; color: #9aa1b3; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
     [data-um-panel].is-loading { opacity: 0.55; pointer-events: none; transition: opacity 0.15s; }
     .um-flash-ok  { box-shadow: 0 0 0 2px rgba(52,211,153,0.85) !important; }
     .um-flash-err { box-shadow: 0 0 0 2px rgba(248,113,113,0.9) !important; }
-    /* Owner picker: chips of the people chosen, a box to search for more, one shared menu. */
+    /* Owner picker: chips of the people chosen, a box to search for more, one shared menu
+       (above the account drawer, where a service account's owners are set). */
     .op { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; width: 15rem; min-height: 30px; padding: 3px 6px;
           background: #13141a; border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; cursor: text; white-space: normal; }
     .op-lg { width: 20rem; min-height: 34px; }
@@ -87,7 +95,7 @@
     .op-x:hover { color: #ff8a8a; background: rgba(255,92,92,0.12); }
     .op-input { flex: 1 1 5rem; min-width: 5rem; background: transparent; border: 0; outline: 0; color: #eef0f4; font-size: .8125rem; padding: 2px; }
     .op-input::placeholder { color: #5f6679; }
-    #opMenu { position: fixed; z-index: 60; max-height: 17rem; overflow-y: auto; padding: 4px; border-radius: 10px;
+    #opMenu { position: fixed; z-index: 75; max-height: 17rem; overflow-y: auto; padding: 4px; border-radius: 10px;
               background: #1f2029; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 12px 32px rgba(0,0,0,0.5); }
     #opMenu li { display: flex; align-items: baseline; gap: 8px; padding: 6px 9px; border-radius: 7px; cursor: pointer; font-size: .8125rem; color: #c4c9d4; }
     #opMenu li[aria-selected="true"] { background: rgba(99,152,255,0.16); color: #eef0f4; }
@@ -221,7 +229,7 @@
              data-tip="Accounts with a client-rule violation in the last {{ client_rule_days }} days. Each of them sees the rule's notice on their dashboard. Rules, patches and mail are on the Clients tab.">Client rule violations</div>
         <div class="flex flex-wrap gap-1.5">
             {% for r in client_rule_attention %}
-            <a href="#clients" onclick="setTimeout(function(){var c=document.getElementById('client-rule-{{ r.id }}');if(c){c.open=true;c.scrollIntoView({block:'center'});}},50)"
+            <a href="#clients" onclick="setTimeout(function(){gwAdminReveal('client-rule-{{ r.id }}',{block:'center'});},50)"
                class="text-xs px-2 py-1 rounded hover:bg-[rgba(255,255,255,0.06)]" style="background:rgba(245,166,35,0.08);color:#f5a623"><span class="font-mono">{{ r.id }}</span> {{ r.name }} · {{ r.count }} account{{ '' if r.count == 1 else 's' }}</a>
             {% endfor %}
         </div>
@@ -265,7 +273,7 @@ function anomalyAction(id, action) {
 
 <div data-panel="overview">
 {# ── Key numbers: today first, then the month ── #}
-<div class="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8 gw-anim gw-d2">
+<div id="ov-numbers" data-section class="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8 gw-anim gw-d2">
     <div class="gw-card gw-stat relative p-5" style="--accent:linear-gradient(90deg,#3dd68c,#4dd9e8)">
         <dt class="text-[11px] font-bold text-t3 uppercase tracking-wider">Spend today</dt>
         <dd class="mt-2 text-3xl font-bold text-t1 font-mono tabular-nums tracking-tight">{{ money(today_totals.cost) }}</dd>
@@ -306,7 +314,7 @@ function anomalyAction(id, action) {
 </div>
 
 {# ── Spend by backend and daily active users, last 30 days ── #}
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8 gw-anim gw-d2">
+<div id="ov-trends" data-section class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8 gw-anim gw-d2">
     <div class="gw-card overflow-hidden lg:col-span-2">
         <div class="px-5 py-3 flex items-center justify-between gap-3" style="border-bottom:1px solid rgba(255,255,255,0.04)">
             <div class="flex items-center gap-3">
@@ -342,7 +350,7 @@ function anomalyAction(id, action) {
 </div>
 
 {# ── Leaderboards ── #}
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8 gw-anim gw-d3">
+<div id="ov-leaderboards" data-section class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8 gw-anim gw-d3">
     {# Service account leaderboard #}
     <div class="gw-card overflow-hidden">
         <div class="px-5 py-3 flex items-center gap-2" style="border-bottom:1px solid rgba(255,255,255,0.04)">
@@ -432,7 +440,7 @@ function anomalyAction(id, action) {
 </div>
 
 {# ── Department Usage ── #}
-<div class="mb-8 gw-anim gw-d4">
+<div id="ov-departments" data-section class="mb-8 gw-anim gw-d4">
     <div class="gw-card overflow-hidden">
         <div class="px-5 py-3 flex items-center gap-2" style="border-bottom:1px solid rgba(255,255,255,0.04)">
             <h3 class="text-xs font-bold text-t3 uppercase tracking-wider">Department Usage</h3>
@@ -500,7 +508,7 @@ function anomalyAction(id, action) {
 </div>
 
 {# ── Usage Export ── #}
-<div class="mb-8 gw-anim gw-d4">
+<div id="ov-export" data-section class="mb-8 gw-anim gw-d4">
     <div class="gw-card p-5">
         <div class="flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -584,10 +592,10 @@ function submitExportCsv() {
 
 <div data-panel="users">
 {# ── Special access: who has something other than the defaults ── #}
-<div class="gw-card p-4 mb-4 gw-anim gw-d6">
+<div id="special-access" data-section class="gw-card p-4 mb-4 gw-anim gw-d6">
     <div class="flex flex-wrap items-center gap-2">
         <span class="text-[11px] font-bold text-t3 uppercase tracking-wider mr-1 gw-tip gw-tip-wide"
-              data-tip="Accounts with a permission or setting other than the defaults. Click one to list those accounts below; each row's toggles show what it has. Users and service accounts are counted separately (Waiver not the default: users waived, or service accounts un-waived). Counts are as of this page load.">Special access</span>
+              data-tip="Accounts with a permission or setting other than the defaults. Click one to list those accounts below; each row's Access column shows what it has, and Manage changes it. Users and service accounts are counted separately (Waiver not the default: users waived, or service accounts un-waived). Counts are as of this page load.">Special access</span>
         {% for s in special_access %}
         {% set n = s.users + s.apps %}
         <a href="{{ s.url }}" class="sa-chip {{ 'is-zero' if n == 0 }} {{ 'is-active' if table_state.status == s.key }}">
@@ -601,7 +609,7 @@ function submitExportCsv() {
 </div>
 
 {# ── User Management ── #}
-<div class="gw-anim gw-d6">
+<div id="user-management" data-section class="gw-anim gw-d6">
     <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div class="flex items-center gap-4">
             <h2 class="text-sm font-bold text-t2">User Management</h2>
@@ -612,7 +620,7 @@ function submitExportCsv() {
                     Service accounts <span class="text-t4 font-mono" data-um-count="apps">{{ apps_table.total }}</span></button>
             </div>
             <button type="button" class="text-xs text-ab hover:underline"
-                    onclick="var c=document.getElementById('create-app');c.scrollIntoView({behavior:'smooth',block:'center'});c.querySelector('input[name=username]').focus({preventScroll:true})">+ New service account</button>
+                    onclick="gwAdminReveal('create-app',{block:'center'});document.querySelector('#create-app input[name=username]').focus({preventScroll:true})">+ New service account</button>
         </div>
         <div class="flex flex-wrap items-center gap-2">
             <a href="/admin/api/export/users.csv" download
@@ -632,6 +640,12 @@ function submitExportCsv() {
                     <option value="{{ value }}" {{ 'selected' if value == table_state.sort }}>{{ label }}</option>
                     {% endfor %}
                 </select>
+                <select name="limit" aria-label="Accounts per page" class="gw-input text-xs py-1.5 px-2">
+                    {% for size in user_table_page_sizes %}
+                    <option value="{{ size }}" {{ 'selected' if size == table_state.limit }}>{{ size }} per page</option>
+                    {% endfor %}
+                    {% if table_state.limit not in user_table_page_sizes %}<option value="{{ table_state.limit }}" selected>{{ table_state.limit }} per page</option>{% endif %}
+                </select>
                 <div class="relative">
                     <svg class="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-t4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                     <input type="search" name="q" value="{{ table_state.q }}" placeholder="Name, username or org…"
@@ -646,10 +660,43 @@ function submitExportCsv() {
 
     {% with table = users_table %}{% include "_admin_user_table.html" %}{% endwith %}
     {% with table = apps_table %}{% include "_admin_user_table.html" %}{% endwith %}
+
+    {# Several accounts at once (POST /admin/users/bulk-update): shown while a
+       row is ticked. Every choice names its value; nothing here flips. #}
+    <div id="umBulk" class="um-bulk hidden" role="region" aria-label="Change the selected accounts">
+        <span class="text-sm text-t1"><b class="font-mono" data-um-bulk-count>0</b> selected</span>
+        <select id="umBulkAction" aria-label="What to change" class="gw-input text-xs py-1.5 px-2">
+            <option value="">Change&hellip;</option>
+            <optgroup label="Limits">
+                <option value="limit">Set the daily limit</option>
+                <option value="cloud-limit">Set the cloud cap</option>
+            </optgroup>
+            <optgroup label="Access">
+                <option value="azure:on">Grant Azure</option>
+                <option value="azure:off">Revoke Azure</option>
+                <option value="bedrock:on">Grant AWS</option>
+                <option value="bedrock:off">Revoke AWS</option>
+                <option value="waive:on">Waive the concurrency limit</option>
+                <option value="waive:off">Apply the concurrency limit</option>
+                <option value="overflow:on">Allow cloud overflow</option>
+                <option value="overflow:off">Keep on-prem (no overflow)</option>
+            </optgroup>
+            <optgroup label="Account">
+                <option value="disable:on">Disable</option>
+                <option value="disable:off">Enable</option>
+            </optgroup>
+        </select>
+        <label id="umBulkAmount" class="hidden flex items-center gap-1.5 text-sm text-t4">$
+            <input type="number" step="0.1" min="0" aria-label="Amount (USD)" class="gw-input w-28 text-sm font-mono py-1 px-2">
+            <span class="text-[11px]" data-um-bulk-hint></span>
+        </label>
+        <button type="button" id="umBulkApply" class="gw-btn gw-btn-primary text-xs px-3 py-1.5" disabled>Apply</button>
+        <button type="button" id="umBulkClear" class="gw-btn gw-btn-ghost text-xs px-2 py-1.5 ml-auto">Clear selection</button>
+    </div>
 </div>
 
 {# ── Create a service account (formerly "app account"; the id and the route keep the old name) ── #}
-<div id="create-app" class="gw-card p-5 mt-6 mb-6 gw-anim gw-d5">
+<div id="create-app" data-section class="gw-card p-5 mt-6 mb-6 gw-anim gw-d5">
     <h2 class="text-sm font-bold text-t2 mb-1">Create Service Account</h2>
     <p class="text-xs text-t4 mb-4 max-w-3xl">An account for a program rather than a person: its own key and daily limit, no concurrency limit by default, no sign-in. Name it as you like (the <span class="font-mono">app_</span> prefix older accounts carry is no longer needed), but not after a person's sign-in name: nobody can sign in under a service account's name.</p>
     <form action="/admin/users/create" method="POST" id="create-service-form" class="flex items-start gap-4 flex-wrap">
@@ -688,7 +735,7 @@ function submitExportCsv() {
 
 <div data-panel="clients">
 {# ── Client rules: the checks are code (app/services/client_checks.py); this card sets how each is used ── #}
-<div id="client-rules" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #f5a623">
+<div id="client-rules" data-section class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #f5a623">
     <div class="mb-4 max-w-3xl">
         <h2 class="text-sm font-bold text-t2 mb-1">Client rules</h2>
         <p class="text-xs text-t4">
@@ -1046,7 +1093,7 @@ function submitExportCsv() {
             <span class="text-xs text-t4">for {{ c.audience }}</span>
             {% if c.gone %}<span class="gw-badge gw-tip gw-tip-wide" style="background:rgba(245,166,35,0.14);color:#f5a623" data-tip="Not a model the gateway has any more: already removed, or a typo. The script still replaces the name.">{{ c.gone | join(', ') }} not configured</span>{% endif %}
 {% endmacro %}
-<div id="model-changes" class="gw-card p-5 mb-6" style="border-left:3px solid #a78bfa">
+<div id="model-changes" data-section class="gw-card p-5 mb-6" style="border-left:3px solid #a78bfa">
     <div class="mb-4 max-w-3xl">
         <h2 class="text-sm font-bold text-t2 mb-1">Model changes</h2>
         <p class="text-xs text-t4">
@@ -1149,7 +1196,7 @@ function submitExportCsv() {
 
 {# ── Client setup: the fields GET /v1/settings offers a terminal tool (app/services/client_settings.py) ── #}
 {% set cs = client_setup %}
-<div id="client-setup" class="gw-card p-5 mb-6" style="border-left:3px solid #4da3ff">
+<div id="client-setup" data-section class="gw-card p-5 mb-6" style="border-left:3px solid #4da3ff">
     <div class="mb-4 max-w-3xl">
         <h2 class="text-sm font-bold text-t2 mb-1">Client setup</h2>
         <p class="text-xs text-t4 gw-tip gw-tip-wide"
@@ -1185,7 +1232,7 @@ function submitExportCsv() {
 </div>
 
 {# ── Client installs: what setup tools reported with POST /v1/events (app/services/client_events.py) ── #}
-<div id="client-installs" class="gw-card p-5 mb-6" style="border-left:3px solid #3dd68c">
+<div id="client-installs" data-section class="gw-card p-5 mb-6" style="border-left:3px solid #3dd68c">
     <div class="mb-4 max-w-3xl">
         <h2 class="text-sm font-bold text-t2 mb-1">Client installs</h2>
         <p class="text-xs text-t4 gw-tip gw-tip-wide"
@@ -1273,7 +1320,7 @@ function submitExportCsv() {
 
 <div data-panel="security">
 {# ── IP Allowlist (API surfaces only; rules in ip_allow_rules) ── #}
-<div id="ip-allowlist" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #ff7a45">
+<div id="ip-allowlist" data-section class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #ff7a45">
     <div class="mb-4 max-w-3xl">
         <h2 class="text-sm font-bold text-t2 mb-1">IP Allowlist</h2>
         <p class="text-xs text-t4 gw-tip gw-tip-wide"
@@ -1410,7 +1457,7 @@ function submitExportCsv() {
 
 {# ── Guardrail (Qwen3Guard-Gen prompt screening, local vLLM traffic only) ── #}
 {% set g = guardrail %}
-<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #f5a623">
+<div id="guardrail" data-section class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #f5a623">
     <div class="flex flex-wrap items-start justify-between gap-4 mb-4">
         <div class="max-w-3xl">
             <h2 class="text-sm font-bold text-t2 mb-1">Guardrail</h2>
@@ -1559,7 +1606,7 @@ function submitExportCsv() {
 </div>
 
 {# ── Audit log (app/services/audit.py): newest entries, full trail as CSV ── #}
-<div id="auditLogCard" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #94a3b8">
+<div id="auditLogCard" data-section class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #94a3b8">
     <div class="flex flex-wrap items-start justify-between gap-4 mb-3">
         <div class="max-w-2xl">
             <h2 class="text-sm font-bold text-t2 mb-1">Audit Log</h2>
@@ -1597,14 +1644,14 @@ function submitExportCsv() {
 <div data-panel="limits">
 {# ── Limits: concurrency and spending limits, gateway-wide ── #}
 {# ── In force now: every limit on this tab in one line each ── #}
-<div id="limits-summary" class="gw-card p-4 mb-6 gw-anim gw-d5">
+<div id="limits-summary" data-section class="gw-card p-4 mb-6 gw-anim gw-d5">
     <div class="flex flex-wrap items-baseline justify-between gap-3 mb-3">
         <h2 class="text-xs font-bold text-t3 uppercase tracking-wider">In force now</h2>
         <a href="/admin/guide" class="text-xs text-ab hover:underline">Why each setting is the way it is &rarr;</a>
     </div>
     {% macro limit_now(card, label, value, note='', tone='') %}
     <button type="button" class="text-left rounded-lg p-3 bg-n1 hover:bg-n3" title="Jump to {{ label }}"
-            onclick="document.getElementById('{{ card }}').scrollIntoView({behavior: 'smooth', block: 'start'})">
+            onclick="gwAdminReveal('{{ card }}')">
         <div class="text-[10px] font-bold uppercase tracking-wider text-t4">{{ label }}</div>
         <div class="mt-1 text-sm font-mono {{ tone or 'text-t1' }}">{{ value }}</div>
         <div class="mt-0.5 text-[11px] text-t4">{{ note }}</div>
@@ -1638,7 +1685,7 @@ function submitExportCsv() {
 
 <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-6 gw-anim gw-d5">
 {# ── Concurrency Limit ── #}
-<div id="concurrency-limit" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #34d399">
+<div id="concurrency-limit" data-section class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #34d399">
     <div class="flex flex-wrap items-center justify-between gap-4">
         <div class="max-w-xl">
             <div class="flex items-baseline gap-2"><h2 class="text-sm font-bold text-t2 mb-1">Concurrency Limit</h2><a href="/admin/guide#concurrency" class="text-[11px] text-ab hover:underline whitespace-nowrap gw-tip" data-tip="Why this setting exists and what was traded for what">Why?</a></div>
@@ -1717,7 +1764,7 @@ function submitExportCsv() {
 </div>
 
 {# ── Default Daily Limit ── #}
-<div id="default-daily-limit" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #6398ff">
+<div id="default-daily-limit" data-section class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #6398ff">
     <div class="flex flex-wrap items-center justify-between gap-4">
         <div>
             <div class="flex items-baseline gap-2"><h2 class="text-sm font-bold text-t2 mb-1">Default Daily Limit</h2><a href="/admin/guide#default-daily-limit" class="text-[11px] text-ab hover:underline whitespace-nowrap gw-tip" data-tip="Why this setting exists and what was traded for what">Why?</a></div>
@@ -1740,12 +1787,12 @@ function submitExportCsv() {
 </div>
 
 {# ── Cloud Daily Limit (Azure + Bedrock combined) ── #}
-<div id="cloud-daily-limit" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #a78bfa">
+<div id="cloud-daily-limit" data-section class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #a78bfa">
     <div class="flex flex-wrap items-center justify-between gap-4">
         <div>
             <div class="flex items-baseline gap-2"><h2 class="text-sm font-bold text-t2 mb-1">Cloud Daily Limit</h2><a href="/admin/guide#cloud-daily-limit" class="text-[11px] text-ab hover:underline whitespace-nowrap gw-tip" data-tip="Why this setting exists and what was traded for what">Why?</a></div>
             <p class="text-xs text-t4 gw-tip gw-tip-wide" data-tip="Each user's Azure + AWS spend per day, combined: users split it between the two however they like. Applies to every user with Azure or AWS access who has no Cloud $ of their own in the users table; a user's own value wins. It sits inside each user's overall daily limit (cloud spend counts toward both). Blank = no default cap; 0 = $0, cloud refused.">
-                Default cap on Azure + AWS spend per day (USD) for users with cloud access. A user's own Cloud $ overrides it. Blank = no default cap.
+                Default cap on Azure + AWS spend per day (USD) for users with cloud access. A user's own cloud cap (Users → Manage) overrides it. Blank = no default cap.
             </p>
         </div>
         <form action="/admin/cloud-limit" method="POST" class="flex items-end gap-3">
@@ -1764,7 +1811,7 @@ function submitExportCsv() {
 </div>
 
 {# ── Cloud Budget Fallback ── #}
-<div id="cloud-budget-fallback" class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #a78bfa">
+<div id="cloud-budget-fallback" data-section class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #a78bfa">
     <div class="flex flex-wrap items-center justify-between gap-4">
         <div>
             <div class="flex items-baseline gap-2"><h2 class="text-sm font-bold text-t2 mb-1">Cloud Budget Fallback</h2><a href="/admin/guide#cloud-budget-fallback" class="text-[11px] text-ab hover:underline whitespace-nowrap gw-tip" data-tip="Why this setting exists and what was traded for what">Why?</a></div>
@@ -1790,7 +1837,7 @@ function submitExportCsv() {
 </div>
 
 {# ── Cloud Overflow (peak overflow, app/services/overflow.py) ── #}
-<div id="cloud-overflow" class="gw-card p-5 mb-6 gw-anim gw-d5 xl:col-span-2" style="border-left:3px solid #ff9933">
+<div id="cloud-overflow" data-section class="gw-card p-5 mb-6 gw-anim gw-d5 xl:col-span-2" style="border-left:3px solid #ff9933">
     {% if overflow is none %}
     <h2 class="text-sm font-bold text-t2 mb-1">Cloud Overflow</h2>
     <p class="text-xs text-ar">Unavailable: its tables are missing. Run <code class="font-mono">alembic upgrade head</code>.</p>
@@ -1970,7 +2017,7 @@ function submitExportCsv() {
         <div class="flex flex-wrap items-center justify-between gap-3 mt-3">
             <p class="text-[11px] text-t4">
                 Which cloud model stands in for which on-prem model is set per model, in <a href="/admin/models" class="text-ab hover:underline">Models</a>.
-                Who may be moved is the <b>Overflow</b> switch on the Users tab.
+                Who may be moved is the <b>Overflow</b> switch in an account's panel (Users tab &rarr; Manage).
             </p>
             <button type="submit" class="gw-btn gw-btn-primary text-sm px-4 py-2">Apply</button>
         </div>
@@ -1987,7 +2034,7 @@ function submitExportCsv() {
 <div data-panel="settings">
 {# ── Settings: weekly report mails and site links ── #}
 {# ── Weekly reports (mail) ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d5" id="weekly-reports" style="border-left:3px solid #f5a623">
+<div class="gw-card p-5 mb-6 gw-anim gw-d5" id="weekly-reports" data-section style="border-left:3px solid #f5a623">
     <div class="mb-4">
         <h2 class="text-sm font-bold text-t2 mb-1">Weekly reports</h2>
         <p class="text-xs text-t4 gw-tip gw-tip-wide"
@@ -2057,7 +2104,7 @@ function submitExportCsv() {
 </div>
 
 {# ── Site Links (support bot + install guide) ── #}
-<div class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #4dd9e8">
+<div id="site-links" data-section class="gw-card p-5 mb-6 gw-anim gw-d5" style="border-left:3px solid #4dd9e8">
     <div class="mb-4">
         <h2 class="text-sm font-bold text-t2 mb-1">Site Links</h2>
         <p class="text-xs text-t4">
@@ -2270,6 +2317,7 @@ function submitExportCsv() {
                     panel(kind).replaceWith(fresh);
                     document.querySelector('[data-um-count="' + kind + '"]').textContent = fresh.dataset.total;
                     show(current());
+                    paintBulk();
                 })
                 .catch(function(err) {
                     if (mine !== seq[kind]) return;
@@ -2288,7 +2336,7 @@ function submitExportCsv() {
 
         document.addEventListener('click', function(e) {
             var tab = e.target.closest && e.target.closest('[data-um-tab]');
-            if (tab) { show(tab.dataset.umTab); return; }
+            if (tab) { clearTicks(); show(tab.dataset.umTab); paintBulk(); return; }
             var a = e.target.closest && e.target.closest('a[data-um-nav]');
             if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
             e.preventDefault();
@@ -2307,6 +2355,9 @@ function submitExportCsv() {
                 var dflt = { q: '', sort: 'id', status: 'all' }[k];
                 if (v && v !== dflt) next.set(k, v); else next.delete(k);
             });
+            // One "per page" for both tables.
+            var size = form.elements.limit.value;
+            ['limit', 'app_limit'].forEach(function(k) { if (size && size !== '15') next.set(k, size); else next.delete(k); });
             setState(next);
             Promise.all([load('users'), load('apps')]).then(followResults);
         });
@@ -2319,9 +2370,102 @@ function submitExportCsv() {
             form.requestSubmit();
         });
 
+        /* ── Several accounts at once ──
+           The check boxes of the table on screen and the bar under it
+           (#umBulk): one change, with its value named, for every row ticked
+           (POST /admin/users/bulk-update). A table that is reloaded or
+           switched away from starts with nothing ticked. */
+        var bulk = document.getElementById('umBulk'), bulkAction = document.getElementById('umBulkAction'),
+            bulkAmount = document.getElementById('umBulkAmount'), bulkApply = document.getElementById('umBulkApply');
+        var BULK = {
+            'limit':        { label: 'set the daily limit to $', amount: true },
+            'cloud-limit':  { label: 'set the cloud cap to $', amount: true, hint: 'empty = follow the default' },
+            'azure:on':     { label: 'grant Azure access to' },      'azure:off':    { label: 'revoke Azure access from' },
+            'bedrock:on':   { label: 'grant AWS access to' },        'bedrock:off':  { label: 'revoke AWS access from' },
+            'waive:on':     { label: 'waive the concurrency limit for' }, 'waive:off': { label: 'apply the concurrency limit to' },
+            'overflow:on':  { label: 'allow cloud overflow for' },   'overflow:off': { label: 'keep on-prem (no cloud overflow)' },
+            'disable:on':   { label: 'disable', danger: true },      'disable:off':  { label: 'enable' }
+        };
+        function ticked() {
+            var p = panel(current());
+            return p ? Array.prototype.slice.call(p.querySelectorAll('[data-um-select]:checked')) : [];
+        }
+        function paintBulk() {
+            var p = panel(current()), rows = ticked();
+            if (p) {
+                Array.prototype.forEach.call(p.querySelectorAll('[data-um-select]'), function(box) {
+                    box.closest('tr').classList.toggle('is-selected', box.checked);
+                });
+                var all = p.querySelector('[data-um-select-all]'), boxes = p.querySelectorAll('[data-um-select]');
+                if (all) {
+                    all.checked = boxes.length > 0 && rows.length === boxes.length;
+                    all.indeterminate = rows.length > 0 && rows.length < boxes.length;
+                }
+            }
+            bulk.classList.toggle('hidden', rows.length === 0);
+            bulk.querySelector('[data-um-bulk-count]').textContent = rows.length;
+            var spec = BULK[bulkAction.value];
+            bulkAmount.classList.toggle('hidden', !(spec && spec.amount));
+            bulkAmount.querySelector('[data-um-bulk-hint]').textContent = (spec && spec.hint) || '';
+            bulkApply.disabled = !spec || rows.length === 0;
+        }
+        function clearTicks() {
+            Array.prototype.forEach.call(document.querySelectorAll('[data-um-select]:checked'), function(box) { box.checked = false; });
+            paintBulk();
+        }
+        document.addEventListener('change', function(e) {
+            var t = e.target;
+            if (!t.matches) return;
+            if (t.matches('[data-um-select-all]')) {
+                Array.prototype.forEach.call(t.closest('[data-um-panel]').querySelectorAll('[data-um-select]'), function(box) { box.checked = t.checked; });
+                paintBulk();
+            } else if (t.matches('[data-um-select]')) paintBulk();
+        });
+        bulkAction.addEventListener('change', function() {
+            paintBulk();
+            if (BULK[bulkAction.value] && BULK[bulkAction.value].amount) bulkAmount.querySelector('input').focus();
+        });
+        document.getElementById('umBulkClear').addEventListener('click', clearTicks);
+        bulkApply.addEventListener('click', function() {
+            var rows = ticked(), choice = bulkAction.value, spec = BULK[choice];
+            if (!spec || !rows.length) return;
+            var parts = choice.split(':'), amount = bulkAmount.querySelector('input').value.trim();
+            if (choice === 'limit' && amount === '') { gwToast('Type the daily limit first.', 'error'); return; }
+            var names = rows.map(function(box) { return box.closest('tr').dataset.username; });
+            var who = rows.length === 1 ? names[0]
+                : rows.length + ' accounts (' + names.slice(0, 3).join(', ') + (names.length > 3 ? ' and ' + (names.length - 3) + ' more' : '') + ')';
+            var what = spec.amount
+                ? (choice === 'cloud-limit' && amount === '' ? 'Make the cloud cap follow the default for ' + who : spec.label.charAt(0).toUpperCase() + spec.label.slice(1) + amount + ' for ' + who)
+                : spec.label.charAt(0).toUpperCase() + spec.label.slice(1) + ' ' + who;
+            gwConfirm(what + '?', { okLabel: 'Apply', danger: !!spec.danger }).then(function(ok) {
+                if (!ok) return;
+                var body = new URLSearchParams();
+                body.set('ids', rows.map(function(box) { return box.value; }).join(','));
+                body.set('action', parts[0]);
+                if (spec.amount) body.set('value', amount); else body.set('enabled', parts[1]);
+                bulkApply.disabled = true;
+                var kind = current();
+                gwPost('/admin/users/bulk-update', body)
+                    .then(function(data) {
+                        var said = data.changed + ' changed';
+                        if (data.unchanged) said += ', ' + data.unchanged + ' already so';
+                        if (data.skipped && data.skipped.length) {
+                            said += ', ' + data.skipped.length + ' skipped (' +
+                                data.skipped.map(function(x) { return x.username + ': ' + x.reason; }).join('; ') + ')';
+                        }
+                        gwToast(said + '.', data.skipped && data.skipped.length ? 'info' : 'ok');
+                        bulkAction.value = ''; bulkAmount.querySelector('input').value = '';
+                        return load(kind);
+                    })
+                    .catch(function(err) { gwToast('Nothing was changed — ' + err.message, 'error'); })
+                    .then(paintBulk);
+            });
+        });
+
         show(current());
         followResults();
-        return { load: load };
+        paintBulk();
+        return { load: load, kind: current };
     })();
 
     /* ── Owner picker (data-owner-picker) ──
@@ -2558,10 +2702,11 @@ function submitExportCsv() {
             drawer.setAttribute('aria-hidden', 'true');
             if (opener) opener.focus();
         }
-        function open(id, from) {
-            opener = from;
+        function open(id, from, quiet) {
+            if (!quiet) opener = from;
             var mine = ++seq;
-            drawer.innerHTML = '<div class="p-6 text-sm text-t4">Loading…</div>';
+            // quiet: the account already shown, read again after a change.
+            if (!quiet) drawer.innerHTML = '<div class="p-6 text-sm text-t4">Loading…</div>';
             drawer.classList.add('is-open');
             drawer.setAttribute('aria-hidden', 'false');
             backdrop.classList.remove('hidden');
@@ -2569,7 +2714,14 @@ function submitExportCsv() {
                 .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
                 .then(function(html) {
                     if (mine !== seq) return;  // a slower answer for an account closed since
+                    // Read again in place: the same scroll position, and the field the admin is in.
+                    var at = drawer.scrollTop, held = drawer.contains(document.activeElement) ? document.activeElement.id : '';
                     drawer.innerHTML = html;
+                    if (quiet) {
+                        drawer.scrollTop = at;
+                        if (held && document.getElementById(held)) document.getElementById(held).focus({ preventScroll: true });
+                        return;
+                    }
                     var btn = drawer.querySelector('[data-ud-close]');
                     if (btn) btn.focus();
                 })
@@ -2588,14 +2740,18 @@ function submitExportCsv() {
             // The key window opens above the drawer; let it take Esc first.
             if (e.key === 'Escape' && document.getElementById('keyModal').classList.contains('hidden')) close();
         });
+        // For the quick search and the actions below.
+        window.gwOpenAccount = open;
+        window.gwCloseAccount = close;
     })();
 
     /* ── Per-account actions, in place ──
-       Every row form carries data-action. One delegated handler confirms
-       when the action needs it, POSTs with Accept: application/json and
-       repaints only what changed: the toggle button, the row's disabled
-       look, the input that was saved. A delete reloads that one panel so the
-       paging stays right. Without JS the forms post and redirect as before. */
+       The account drawer's forms carry data-action. One delegated handler
+       confirms when the action needs it, POSTs with Accept: application/json
+       and repaints what changed in the drawer: the toggle button, the
+       disabled badge, the input that was saved. The table behind is read
+       again, so its row says the same (and a deleted account is gone from
+       it). Without JS the forms post and redirect. */
     (function() {
         var TOGGLE = {
             azure:   { key: 'can_use_azure',      flag: 'azure',
@@ -2624,6 +2780,9 @@ function submitExportCsv() {
             setTimeout(function() { el.classList.remove(cls); }, 1200);
         }
 
+        // What a form belongs to: the drawer of its account.
+        function host(form) { return form.closest('[data-ud-user]') || form.closest('tr'); }
+
         function paintToggle(form, action, on) {
             var t = TOGGLE[action], btn = form.querySelector('button');
             form.dataset.granted = on ? 'true' : 'false';
@@ -2633,7 +2792,7 @@ function submitExportCsv() {
             // A switch that sends its value (never a flip): the next click asks for the other one.
             var value = form.querySelector('input[name="enabled"]');
             if (value) value.value = on ? 'off' : 'on';
-            var row = form.closest('tr');
+            var row = host(form);
             if (t.flag) {
                 row.dataset[t.flag] = on ? 'true' : 'false';
                 // The Cloud $ field applies only to accounts that can reach the cloud.
@@ -2643,7 +2802,7 @@ function submitExportCsv() {
         }
 
         function paintDisabled(form, off) {
-            var btn = form.querySelector('button'), row = form.closest('tr');
+            var btn = form.querySelector('button'), row = host(form);
             form.dataset.granted = off ? 'true' : 'false';
             btn.textContent = off ? 'Enable account' : 'Disable account';
             row.classList.toggle('is-disabled', off);
@@ -2651,7 +2810,7 @@ function submitExportCsv() {
         }
 
         function confirmFor(form, action) {
-            var name = form.closest('tr').dataset.username, on = form.dataset.granted === 'true';
+            var name = host(form).dataset.username, on = form.dataset.granted === 'true';
             if (TOGGLE[action]) return gwConfirm(TOGGLE[action].ask(name, on), { okLabel: 'Yes' });
             if (action === 'disable') {
                 return gwConfirm(on ? 'Enable ' + name + '?' : 'Disable ' + name + '? Their API key is refused until re-enabled.',
@@ -2665,12 +2824,13 @@ function submitExportCsv() {
         }
 
         function apply(form, action, data) {
-            var name = form.closest('tr').dataset.username;
+            var box = host(form), name = box.dataset.username, kind = box.dataset.umKind || um.kind();
+            um.load(kind);   // the row behind the drawer
             if (TOGGLE[action]) return paintToggle(form, action, !!data[TOGGLE[action].key]);
             if (action === 'disable') return paintDisabled(form, !!data.is_disabled);
             if (action === 'delete') {
                 gwToast(name + ' deleted.', 'ok');
-                return um.load(form.closest('[data-um-panel]').dataset.umPanel);
+                return window.gwCloseAccount();
             }
             if (action === 'owner') {
                 gwOwnerPicker.saved(form, data.owners || []);
@@ -2688,6 +2848,14 @@ function submitExportCsv() {
             }
             input.dataset.saved = input.value;
             flash(input, true);
+            // "Today … of $X" above is the limit just changed: read the drawer again.
+            // Not while the admin is in another of its fields: that would take the typing away.
+            setTimeout(function() {
+                var at = document.activeElement;
+                var busy = at !== input && box.contains(at) && /^(INPUT|TEXTAREA)$/.test(at.tagName);
+                var dirty = Array.prototype.some.call(box.querySelectorAll('[data-autosave]'), function(i) { return i.value !== (i.dataset.saved || ''); });
+                if (document.body.contains(box) && !busy && !dirty) window.gwOpenAccount(box.dataset.udUser, null, true);
+            }, 700);
         }
 
         /* Amounts save themselves: Enter (the form's own implicit submit) or
@@ -2705,30 +2873,12 @@ function submitExportCsv() {
             input.blur();
         });
 
-        function closeMenus(except) {
-            document.querySelectorAll('details[data-um-more][open]').forEach(function(d) { if (d !== except) d.open = false; });
-        }
-        // One menu open at a time; a click elsewhere or Esc closes it.
-        document.addEventListener('toggle', function(e) {
-            var d = e.target;
-            if (!d.matches || !d.matches('details[data-um-more]') || !d.open) return;
-            closeMenus(d);
-            var first = d.querySelector('.um-menu button');
-            if (first) first.focus({ preventScroll: true });
-        }, true);
-        document.addEventListener('click', function(e) {
-            if (!e.target.closest || !e.target.closest('details[data-um-more]')) closeMenus(null);
-        });
-        document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeMenus(null); });
-
         document.addEventListener('submit', function(e) {
             var form = e.target, action = form.dataset && form.dataset.action;
             if (!action) return;
             e.preventDefault();
             var amount = form.querySelector('input[data-autosave]');
             if (amount && (form.dataset.busy || amount.value === amount.dataset.saved)) return;
-            var menu = form.closest('details[data-um-more]');
-            if (menu) menu.open = false;
             confirmFor(form, action).then(function(ok) {
                 if (!ok) return;
                 // Serialize before disabling anything: disabled controls are
@@ -2743,7 +2893,7 @@ function submitExportCsv() {
                         if (action === 'owner') gwOwnerPicker.revert(form);  // show what is really saved
                         if (amount) amount.value = amount.dataset.saved || '';  // show what is really saved
                         flash(form.querySelector(action === 'owner' ? '.op' : 'input:not([type=hidden])'), false);
-                        gwToast(form.closest('tr').dataset.username + ': ' + err.message, 'error');
+                        gwToast(host(form).dataset.username + ': ' + err.message, 'error');
                     })
                     .then(function() { if (btn) btn.disabled = false; delete form.dataset.busy; });
             });

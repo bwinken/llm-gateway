@@ -20,6 +20,7 @@ from app.core.auth import get_web_user
 from app.core.config import get_site_links, setup_page_enabled
 from app.core.static_assets import static_url
 from app.core.timeutil import LOCAL_TZ
+from app.services import admin_nav
 
 
 router = APIRouter(
@@ -34,6 +35,9 @@ templates = Jinja2Templates(directory=str(_templates_dir))
 templates.env.globals["get_site_links"] = get_site_links
 templates.env.globals["setup_page_enabled"] = setup_page_enabled
 templates.env.globals["static_url"] = static_url
+# _admin_tabs.html (on /admin, /admin/models and /admin/guide) builds the
+# quick search and the section bar from this one list.
+templates.env.globals["admin_nav_index"] = admin_nav.index
 
 
 # The per-backend (Azure / Bedrock) amounts are gone: cloud spend has one

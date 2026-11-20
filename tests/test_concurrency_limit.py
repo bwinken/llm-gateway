@@ -763,7 +763,9 @@ class TestAdmin:
         assert 'value="monitor" selected' in resp.text
         assert 'name="limit" value="6"' in resp.text
         assert 'name="cloud_limit" value="10"' in resp.text
-        assert f"/admin/users/{test_user.id}/toggle-concurrency-waive" in resp.text
+        # The per-account waiver is a switch in the account's drawer.
+        drawer = client.get(f"/admin/users/{test_user.id}/detail", headers=self._hdr(admin_user)).text
+        assert f"/admin/users/{test_user.id}/toggle-concurrency-waive" in drawer
 
     def test_admin_page_survives_store_failure(self, client, admin_user):
         with patch.object(concurrency, "in_flight_summary", side_effect=RuntimeError("db")):

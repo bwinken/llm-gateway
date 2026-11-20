@@ -717,9 +717,13 @@ class TestAdmin:
         assert (summary["no_overflow"]["users"], summary["no_overflow"]["apps"]) == (1, 0)
         panel = client.get("/admin/user-table?kind=users&status=no_overflow", headers=_admin()).text
         assert 'data-username="plain"' in panel and 'data-username="admin"' not in panel
-        assert 'data-action="overflow"' in panel
+        assert "um-chip-overflow" in panel
+        assert 'data-action="overflow"' in client.get(f"/admin/users/{plain_user.id}/detail", headers=_admin()).text
+        robot = db_session.exec(select(User).where(User.username == "robot")).one()
         apps = client.get("/admin/user-table?kind=apps", headers=_admin()).text
-        assert 'data-action="overflow"' not in apps  # a service account has no such switch
+        assert "um-chip-overflow" not in apps
+        # a service account has no such switch
+        assert 'data-action="overflow"' not in client.get(f"/admin/users/{robot.id}/detail", headers=_admin()).text
 
     def test_deleting_an_account_leaves_its_stays(self, client, db_session, admin_user, plain_user):
         _stay(db_session, "plain")

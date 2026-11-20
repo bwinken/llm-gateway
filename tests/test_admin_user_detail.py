@@ -107,9 +107,11 @@ class TestContent:
                                 path=f"/admin/users/{test_user.id}0/delete", status=200))
         db_session.commit()
         body = _detail(client, admin_user, test_user)
-        assert f"POST /admin/users/{test_user.id}/limit" in body and "/dashboard/refresh-key" in body
-        assert "toggle-azure" not in body
-        assert "delete" not in body
+        # The history section alone: the drawer's own forms name these routes too.
+        history = body.split("Recent changes and activity", 1)[1].split("<section", 1)[0]
+        assert f"POST /admin/users/{test_user.id}/limit" in history and "/dashboard/refresh-key" in history
+        assert "toggle-azure" not in history
+        assert "delete" not in history
 
     def test_service_account_lists_its_owners(self, client, db_session, admin_user, test_user):
         app = User(username="billing-etl", is_service_account=True)
@@ -118,8 +120,12 @@ class TestContent:
         db_session.refresh(app)
         db_session.add(AppOwner(app_id=app.id, owner_id=test_user.id))
         db_session.commit()
-        assert "Owners:" in _detail(client, admin_user, app) and test_user.username in _detail(client, admin_user, app)
-        assert "Owns:" in _detail(client, admin_user, test_user)
+        # Its owners are the picker's chips: where they are changed.
+        drawer = _detail(client, admin_user, app)
+        assert f'data-owner-picker data-saved="{test_user.username}"' in drawer
+        assert f'action="/admin/users/{app.id}/owner"' in drawer and f'data-name="{test_user.username}"' in drawer
+        person = _detail(client, admin_user, test_user)
+        assert "Owns:" in person and "data-owner-picker" not in person   # only a service account has owners
 
     def test_usage_of_nothing(self, client, admin_user, test_user):
         assert "No requests in the last 30 days." in _detail(client, admin_user, test_user)
@@ -132,3 +138,46 @@ class TestWiring:
         assert f'data-um-detail="{test_user.id}"' in page  # table row and leaderboard
         assert page.count(f'data-um-detail="{test_user.id}"') >= 2
         assert 'id="udDrawer"' in page
+
+
+class TestControls:
+    """The drawer is where one account is changed: the forms a table row
+    used to carry, posting to the same routes."""
+
+    def test_a_persons_controls(self, client, db_session, admin_user, test_user):
+        body = _detail(client, admin_user, test_user)
+        for action in ("limit", "cloud-limit", "azure", "bedrock", "waive", "overflow", "disable", "delete"):
+            assert f'data-action="{action}"' in body, action
+        assert 'data-action="onbehalf"' not in body and "acts-for-users" not in body
+        for path in ("limit", "cloud-limit", "toggle-azure", "toggle-bedrock", "toggle-concurrency-waive",
+                     "toggle-overflow", "toggle-disable", "delete"):
+            assert f'action="/admin/users/{test_user.id}/{path}"' in body, path
+        # What the page's script reads to repaint and to reload the right table.
+        assert f'data-ud-user="{test_user.id}"' in body and 'data-username="testuser"' in body
+        assert 'data-um-kind="users"' in body
+        assert "onsubmit" not in body and "confirm(" not in body
+
+    def test_a_service_accounts_controls(self, client, db_session, admin_user):
+        app = User(username="billing-etl", is_service_account=True, acts_for_users=True)
+        db_session.add(app)
+        db_session.commit()
+        db_session.refresh(app)
+        body = _detail(client, admin_user, app)
+        assert 'data-um-kind="apps"' in body
+        assert 'data-action="onbehalf"' in body and 'name="enabled" value="off"' in body   # on: the next click asks for off
+        assert 'data-action="owner"' in body
+        assert 'data-action="overflow"' not in body   # a service account is never moved to the cloud
+
+    def test_nobody_disables_or_deletes_themselves(self, client, admin_user, test_user):
+        own = _detail(client, admin_user, admin_user)
+        assert "toggle-disable" not in own and f"/admin/users/{admin_user.id}/delete" not in own
+        assert 'data-action="limit"' in own and 'data-action="azure"' in own   # the rest is theirs to change
+
+    def test_the_cloud_cap_is_hidden_without_cloud_access(self, client, db_session, admin_user, test_user):
+        def cloud_form(account: User) -> str:
+            body = _detail(client, admin_user, account)
+            start = body.index(f'action="/admin/users/{account.id}/cloud-limit"')
+            return body[start:body.index(">", start)]
+
+        assert "hidden" not in cloud_form(test_user)       # the fixture's account has Azure and AWS
+        assert "hidden" in cloud_form(admin_user)          # rendered all the same: granting access reveals it

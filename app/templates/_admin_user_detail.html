@@ -1,11 +1,29 @@
-{# The account drawer: GET /admin/users/{id}/detail, opened from a name in the
-   Users / Service accounts tables or a leaderboard (admin.html:
-   data-um-detail). Read-only; the key itself only through the logged
-   key window. #}
+{# The account drawer: GET /admin/users/{id}/detail, opened from a name or
+   *Manage* in the Users / Service accounts tables, a leaderboard or the
+   quick search (admin.html: data-um-detail, gwOpenAccount).
+
+   It is where one account is looked at and changed: its limits, its
+   switches, (a service account) its owners, and disabling or deleting it.
+   Every control is a form carrying data-action, posting to the route it
+   names; admin.html's one delegated handler confirms, posts with
+   Accept: application/json and repaints. The key itself is never here: only
+   through the logged key window. #}
 {% from "_admin_macros.html" import format_token, money %}
 {% set u = d.user %}
+{% set is_apps = u.is_service_account %}
+
+{% macro toggle_form(action, path, granted, label, title_on, title_off) %}
+<form action="/admin/users/{{ u.id }}/{{ path }}" method="POST" data-action="{{ action }}"
+      data-granted="{{ 'true' if granted else 'false' }}">
+    <button type="submit" class="gw-btn gw-btn-ghost gw-grant gw-grant-{{ action }} text-xs px-2.5 py-1 {{ 'is-on' if granted }}"
+            aria-pressed="{{ 'true' if granted else 'false' }}"
+            title="{{ title_on if granted else title_off }}">{{ label }}</button>
+</form>
+{% endmacro %}
 {% set BACKEND = {'vllm': ('On-prem', '#3dd68c'), 'azure': ('Azure', '#a78bfa'), 'bedrock': ('AWS', '#ff9933')} %}
-<div class="ud" data-ud-user="{{ u.id }}">
+<div class="ud" data-ud-user="{{ u.id }}" data-uid="{{ u.id }}" data-username="{{ u.username }}"
+     data-um-kind="{{ 'apps' if is_apps else 'users' }}"
+     data-azure="{{ 'true' if u.can_use_azure else 'false' }}" data-bedrock="{{ 'true' if u.can_use_bedrock else 'false' }}">
     <header class="ud-head">
         <div class="flex items-start gap-3 min-w-0">
             <div class="h-10 w-10 rounded-lg flex-shrink-0 flex items-center justify-center font-bold {{ 'bg-[rgba(99,152,255,0.1)] text-ab' if u.is_service_account else 'bg-[rgba(167,139,250,0.1)] text-av' }}">
@@ -18,16 +36,85 @@
                 </div>
                 <div class="flex flex-wrap gap-1 mt-1.5">
                     {% if u.is_service_account %}<span class="gw-badge">Service</span>{% else %}<span class="gw-badge gw-badge-muted">User</span>{% endif %}
-                    {% if u.is_disabled %}<span class="gw-badge gw-badge-off">Disabled</span>{% endif %}
-                    {% if u.can_use_azure %}<span class="gw-badge" style="color:#cab9ff;background:rgba(167,139,250,0.12);border-color:rgba(167,139,250,0.3)">Azure</span>{% endif %}
-                    {% if u.can_use_bedrock %}<span class="gw-badge" style="color:#ffcb8a;background:rgba(255,153,51,0.1);border-color:rgba(255,153,51,0.3)">AWS</span>{% endif %}
-                    {% if u.concurrency_waived %}<span class="gw-badge gw-badge-muted">Concurrency waived</span>{% endif %}
-                    {% if not u.is_service_account and not u.can_overflow_cloud %}<span class="gw-badge gw-badge-muted">No cloud overflow</span>{% endif %}
+                    {% if is_self %}<span class="gw-badge gw-badge-muted">You</span>{% endif %}
+                    <span class="gw-badge gw-badge-off um-disabled-badge {{ '' if u.is_disabled else 'hidden' }}">Disabled</span>
                 </div>
             </div>
         </div>
         <button type="button" class="gw-btn gw-btn-ghost text-sm px-2 py-1" data-ud-close aria-label="Close">&times;</button>
     </header>
+
+    {# ── Limits and access: what a table row used to carry ── #}
+    <section class="ud-sec" data-ud-controls>
+        <h3 class="ud-h">Limits and access</h3>
+        <div class="flex flex-wrap items-start gap-x-6 gap-y-2">
+            <form action="/admin/users/{{ u.id }}/limit" method="POST" data-action="limit">
+                <label class="ud-label" for="udLimit">Daily limit</label>
+                <div class="flex items-center gap-1.5">
+                    <span class="text-t4 text-sm">$</span>
+                    <input id="udLimit" type="number" step="0.1" min="0" name="new_limit" value="{{ u.daily_limit_usd }}"
+                           data-autosave data-saved="{{ u.daily_limit_usd }}"
+                           title="Enter or leave the field to save; Esc to undo"
+                           class="gw-input w-28 text-sm font-mono py-1 px-2">
+                </div>
+            </form>
+            {# Always rendered, hidden without cloud access: granting Azure / AWS
+               in place has to be able to reveal it without a reload. #}
+            <form action="/admin/users/{{ u.id }}/cloud-limit" method="POST" data-action="cloud-limit" data-cloud-form
+                  class="{{ '' if d.cloud else 'hidden' }}">
+                <label class="ud-label gw-tip gw-tip-wide" for="udCloudLimit"
+                       data-tip="This account's Azure + AWS daily cap. Empty = the default from Limits → Cloud Daily Limit; 0 = no cloud spend.">Cloud cap</label>
+                <div class="flex items-center gap-1.5">
+                    <span class="text-t4 text-sm">$</span>
+                    <input id="udCloudLimit" type="number" step="0.1" min="0" name="new_cloud_limit"
+                           value="{{ u.cloud_daily_limit_usd if u.cloud_daily_limit_usd is not none else '' }}"
+                           data-autosave data-saved="{{ u.cloud_daily_limit_usd if u.cloud_daily_limit_usd is not none else '' }}"
+                           placeholder="{{ ('%g'|format(cloud_daily_limit)) ~ ' (default)' if cloud_daily_limit is not none else 'no cap' }}"
+                           title="Enter or leave the field to save; Esc to undo"
+                           class="gw-input w-36 text-sm font-mono py-1 px-2">
+                </div>
+            </form>
+        </div>
+        <div class="text-[11px] text-t4 mt-1">An amount saves when you press Enter or leave the field.</div>
+
+        <div class="ud-label mt-3">Switches <span class="normal-case font-normal tracking-normal">· lit when on, each asks before it changes</span></div>
+        <div class="flex flex-wrap items-center gap-1.5">
+            {{ toggle_form('azure', 'toggle-azure', u.can_use_azure, 'Azure', 'Azure granted', 'No Azure access') }}
+            {{ toggle_form('bedrock', 'toggle-bedrock', u.can_use_bedrock, 'AWS', 'AWS Bedrock granted', 'No AWS Bedrock access') }}
+            {{ toggle_form('waive', 'toggle-concurrency-waive', u.concurrency_waived, 'Waive',
+                           'Concurrency limit waived — click to apply it', 'Concurrency limit applies — click to waive') }}
+            {% if is_apps %}
+            {# Acting for its users (X-On-Behalf-Of). The value is sent, not flipped: it decides whose budget is spent. #}
+            <form action="/admin/users/{{ u.id }}/acts-for-users" method="POST" data-action="onbehalf"
+                  data-granted="{{ 'true' if u.acts_for_users else 'false' }}">
+                <input type="hidden" name="enabled" value="{{ 'off' if u.acts_for_users else 'on' }}">
+                <button type="submit" class="gw-btn gw-btn-ghost gw-grant gw-grant-onbehalf text-xs px-2.5 py-1 {{ 'is-on' if u.acts_for_users }}"
+                        aria-pressed="{{ 'true' if u.acts_for_users else 'false' }}"
+                        title="{{ 'Every request names its user in X-On-Behalf-Of and is billed to that user — click to turn off' if u.acts_for_users else 'Requests are its own — click to make it act for its users (X-On-Behalf-Of)' }}">On behalf of users</button>
+            </form>
+            {% else %}
+            {# Service accounts are never moved to the cloud: no switch to show. #}
+            {{ toggle_form('overflow', 'toggle-overflow', u.can_overflow_cloud, 'Overflow',
+                           'May be served by the cloud while on-prem is congested — click to keep this account on-prem',
+                           'Always on-prem — click to allow cloud overflow') }}
+            {% endif %}
+            <a href="/admin/guide#accounts" class="ml-1 text-[11px] text-ab hover:underline">What each does</a>
+        </div>
+
+        {% if is_apps %}
+        {# Owner picker (admin.html: data-owner-picker). A change is saved at once. #}
+        <div class="ud-label mt-3 gw-tip gw-tip-wide"
+             data-tip="The people this account is assigned to. Each sees it on the Service accounts tab of their dashboard: its key (and can regenerate it) and this month's usage. Only existing users can be picked.">Owners</div>
+        <form action="/admin/users/{{ u.id }}/owner" method="POST" data-action="owner">
+            <div class="op op-lg" data-owner-picker data-saved="{{ d.related|join(',') }}">
+                <span class="op-chips">{% for o in d.related %}<span class="op-chip" data-name="{{ o }}">{{ o }}<button type="button" class="op-x" aria-label="Remove {{ o }}">&times;</button></span>{% endfor %}</span>
+                <input type="text" class="op-input" placeholder="{{ 'Add a person…' if d.related else 'Assign a person…' }}" autocomplete="off" spellcheck="false"
+                       role="combobox" aria-expanded="false" aria-autocomplete="list" aria-label="Add an owner of {{ u.username }}">
+                <input type="hidden" name="owner_usernames" value="{{ d.related|join(',') }}">
+            </div>
+        </form>
+        {% endif %}
+    </section>
 
     <section class="ud-sec">
         <h3 class="ud-h">Today</h3>
@@ -125,9 +212,7 @@
         </dl>
         {% if d.key_stale %}<div class="text-[11px] text-aa mt-1">Unused for 90 days or more: a candidate for the access review.</div>{% endif %}
         {% if d.key_legacy %}<div class="text-[11px] text-aa mt-1">Older-format key: regenerating gives a 256-bit one.</div>{% endif %}
-        {% if u.is_service_account %}
-        <div class="text-xs text-t3 mt-2">Owners: {% if d.related %}<span class="font-mono text-t2">{{ d.related | join(', ') }}</span>{% else %}<span class="text-aa">nobody</span>{% endif %}</div>
-        {% elif d.related %}
+        {% if not is_apps and d.related %}
         <div class="text-xs text-t3 mt-2">Owns: <span class="font-mono text-t2">{{ d.related | join(', ') }}</span></div>
         {% endif %}
     </section>
@@ -148,4 +233,21 @@
         <div class="text-xs text-t4">Nothing recorded.</div>
         {% endfor %}
     </section>
+
+    {% if not is_self %}
+    {# The rare, heavy actions, at the end and away from the switches. #}
+    <section class="ud-sec">
+        <h3 class="ud-h">Account</h3>
+        <div class="flex flex-wrap items-center gap-2">
+            <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-action="disable"
+                  data-granted="{{ 'true' if u.is_disabled else 'false' }}">
+                <button type="submit" class="gw-btn gw-btn-ghost text-xs px-3 py-1.5">{{ 'Enable account' if u.is_disabled else 'Disable account' }}</button>
+            </form>
+            <form action="/admin/users/{{ u.id }}/delete" method="POST" data-action="delete">
+                <button type="submit" class="gw-btn gw-btn-ghost text-xs px-3 py-1.5 text-ar">Delete account&hellip;</button>
+            </form>
+        </div>
+        <div class="text-[11px] text-t4 mt-1.5">Disabling refuses the account's key until it is enabled again. Deleting cannot be undone; its usage history is kept.</div>
+    </section>
+    {% endif %}
 </div>

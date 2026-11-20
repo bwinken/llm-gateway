@@ -377,9 +377,13 @@ class TestOwners:
         self._people(db_session)
         _service(db_session, "billing-etl", _get(db_session, "alice"), _get(db_session, "bob"))
         body = client.get("/admin/user-table", params={"kind": "apps"}, headers=_admin(admin_user)).text
-        assert 'data-owner-picker data-saved="alice,bob"' in body
-        assert 'data-name="alice"' in body and 'data-name="bob"' in body
-        assert 'name="owner_usernames" value="alice,bob"' in body
+        assert "alice, bob" in body
+        # They are changed in the account's drawer, with the picker.
+        etl = _get(db_session, "billing-etl")
+        drawer = client.get(f"/admin/users/{etl.id}/detail", headers=_admin(admin_user)).text
+        assert 'data-owner-picker data-saved="alice,bob"' in drawer
+        assert 'data-name="alice"' in drawer and 'data-name="bob"' in drawer
+        assert 'name="owner_usernames" value="alice,bob"' in drawer
 
 
 class TestAssignmentsLast:
