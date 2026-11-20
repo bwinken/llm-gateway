@@ -616,8 +616,8 @@ class GenerationRecord:
     # The service account that sent the request for this user
     # (X-On-Behalf-Of) -> metadata + tag; None for the account's own key.
     service_account: str | None = None
-    # What that service account wrote in the request's ``metadata`` beside
-    # ``user_id`` (deps._metadata_claim) -> metadata ``tag_<key>``.
+    # What that service account wrote in ``X-Gateway-Tags``
+    # (deps._gateway_tags) -> metadata ``tag_<key>``.
     request_tags: dict | None = None
     error: str | None = None
     is_error: bool = False              # failed request → level=ERROR + request_error score

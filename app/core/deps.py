@@ -10,13 +10,13 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any
 from contextlib import asynccontextmanager
 
 import anyio
 from fastapi import Depends, Header, HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session, func, select, update
+from urllib.parse import unquote
 from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import AccountDisabledError
@@ -283,42 +283,15 @@ def reset_key_use_cache() -> None:
         _key_use_last.clear()
 
 
-# ── Acting for a user (X-On-Behalf-Of, metadata.user_id) ──
+# ── Acting for a user (X-On-Behalf-Of) ──
 # A service account an admin switched to ``acts_for_users`` is an application
 # its users sign in to: every request it sends names the person it is for,
 # and is then that person's request. The name is the application's word, not
 # a credential (the application authenticated the person; the gateway only
 # authenticated the application), which is why it is honoured from such a
 # service account only, and why the switch is an admin's.
-#
-# The name comes in the ``X-On-Behalf-Of`` header, or, on a request with a
-# JSON body, in the body's ``metadata.user_id`` (the field Anthropic's
-# Messages API has for the end user; the gateway reads it on every endpoint
-# shape). A route without a body (``GET /v1/models``) has the header only.
-# Beside ``user_id`` the application may write labels of its own in
-# ``metadata`` (a feature, a module, a ticket): they need ``user_id`` and go
-# to Langfuse with the request, nothing else.
 ON_BEHALF_HEADER = "X-On-Behalf-Of"
-ON_BEHALF_FIELD = "metadata.user_id"
 _ON_BEHALF_MAX = 128
-# Custom ``metadata`` entries: few, short and flat, because they are text an
-# application sent and are stored with every request it sends.
-METADATA_TAG_MAX = 16
-METADATA_TAG_VALUE_MAX = 200
-_TAG_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]{0,39}$")
-
-
-def _is_one_username(name: str) -> bool:
-    """Whether ``name`` can be one account name: not blank, not a list, not
-    too long, no whitespace or control characters."""
-    return bool(
-        name and len(name) <= _ON_BEHALF_MAX and "," not in name
-        and not any(ch.isspace() or not ch.isprintable() for ch in name)
-    )
-
-
-def _bad_request(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
 
 def _on_behalf_name(request: Request | None) -> str | None:
@@ -331,132 +304,112 @@ def _on_behalf_name(request: Request | None) -> str | None:
     if not values:
         return None
     name = values[0].strip()
-    if len(values) > 1 or not _is_one_username(name):
-        raise _bad_request(f"{ON_BEHALF_HEADER} must hold exactly one username.")
+    if (
+        len(values) > 1 or not name or len(name) > _ON_BEHALF_MAX or "," in name
+        or any(ch.isspace() or not ch.isprintable() for ch in name)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{ON_BEHALF_HEADER} must hold exactly one username.",
+        )
     return name
 
 
-async def _take_metadata(request: Request) -> Any:
-    """Take ``metadata`` out of the request's JSON body and return it (None
-    when there is none, or no JSON object body).
-
-    Runs on the event loop. ``request.json()`` hands every reader the one
-    cached object, so the forwarders that read the body after this see it
-    without ``metadata``: the gateway consumed it, and a username or an
-    application's own labels are not sent on to a model server or a cloud
-    provider (which may also refuse fields it does not know)."""
-    try:
-        body = await request.json()
-    except Exception:  # not JSON, or the client went away: the handler says so
-        return None
-    if not isinstance(body, dict):
-        return None
-    return body.pop("metadata", None)
+# ── The application's own labels (X-Gateway-Tags) ──
+# A service account that acts for its users may label a request with entries
+# of its own (a module, a ticket), written like W3C baggage:
+#     X-Gateway-Tags: module=invoice-ocr,ticket=4821
+# They end at the gateway: recorded in Langfuse with the request, never sent
+# downstream, and nothing is decided by them. A header of the gateway's own
+# and not the standard ``baggage``, which instrumented applications forward
+# unasked, whatever it holds and whoever upstream of them wrote it.
+TAGS_HEADER = "X-Gateway-Tags"
+GATEWAY_TAG_MAX = 16
+GATEWAY_TAG_VALUE_MAX = 200
+_TAG_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]{0,39}$")
 
 
-def _request_metadata(request: Request | None) -> Any:
-    """The body's ``metadata`` of a request that can have one, else None.
-    Called from the auth dependency's worker thread, with no database
-    session open: reading a body can take as long as the client takes to
-    send it."""
-    if request is None or request.method != "POST":
-        return None
-    content_type = (request.headers.get("content-type") or "").lower()
-    if content_type.startswith(("multipart/", "application/x-www-form-urlencoded")):
-        return None
-    try:
-        return anyio.from_thread.run(_take_metadata, request)
-    except Exception:  # no event loop behind this thread (a direct call)
-        return None
-
-
-def _metadata_claim(metadata: Any) -> tuple[str | None, dict[str, str]]:
-    """``(user_id, tags)`` from a request's ``metadata``: the person it
-    names (None when it names nobody) and the application's own entries as
-    short strings. 400 for anything that is not that, so an application
-    finds out at once instead of missing its labels later."""
-    if metadata is None:
-        return None, {}
-    if not isinstance(metadata, dict):
-        raise _bad_request("metadata must be an object.")
-    name: str | None = None
-    if metadata.get("user_id") is not None:
-        raw = metadata["user_id"]
-        name = raw.strip() if isinstance(raw, str) else ""
-        if not _is_one_username(name):
-            raise _bad_request(f"{ON_BEHALF_FIELD} must hold exactly one username.")
+def _gateway_tags(request: Request | None) -> dict[str, str]:
+    """The ``key=value`` entries of ``X-Gateway-Tags`` (comma-separated,
+    values percent-encoded where they are not plain ASCII; the header may be
+    sent more than once). 400 for anything that is not that, so an
+    application finds out at once instead of missing its labels later."""
+    if request is None:
+        return {}
     tags: dict[str, str] = {}
-    for key, value in metadata.items():
-        if key == "user_id":
-            continue
-        if not isinstance(key, str) or not _TAG_KEY_RE.match(key):
-            raise _bad_request(
-                "A metadata key is 1 to 40 letters, digits or '_', "
-                f"starting with a letter or digit: {str(key)[:60]!r}."
-            )
-        if isinstance(value, bool):
-            text = "true" if value else "false"
-        elif isinstance(value, (str, int, float)):
-            text = str(value)
-        else:
-            raise _bad_request(f"metadata.{key} must be a string, a number or a boolean.")
-        if len(text) > METADATA_TAG_VALUE_MAX or not text.isprintable():
-            raise _bad_request(
-                f"metadata.{key} must be at most {METADATA_TAG_VALUE_MAX} printable characters."
-            )
-        tags[key] = text
-    if len(tags) > METADATA_TAG_MAX:
-        raise _bad_request(f"metadata holds at most {METADATA_TAG_MAX} entries beside user_id.")
-    if tags and name is None:
-        raise _bad_request(
-            f"metadata with entries of your own must also name the user in {ON_BEHALF_FIELD}."
-        )
-    return name, tags
+    for line in request.headers.getlist(TAGS_HEADER):
+        if not line.isascii():
+            raise _bad_tags("values that are not plain ASCII must be percent-encoded")
+        for entry in line.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            key, sep, raw = entry.partition("=")
+            key = key.strip()
+            if not sep or not _TAG_KEY_RE.match(key):
+                raise _bad_tags(
+                    "each entry is key=value, the key 1 to 40 letters, digits or '_' "
+                    f"starting with a letter or digit: {entry[:60]!r}"
+                )
+            if key in tags:
+                raise _bad_tags(f"'{key}' is there twice")
+            try:
+                value = unquote(raw.strip(), errors="strict")
+            except UnicodeDecodeError:
+                raise _bad_tags(f"the value of '{key}' is not percent-encoded UTF-8")
+            if not value or len(value) > GATEWAY_TAG_VALUE_MAX or not value.isprintable():
+                raise _bad_tags(
+                    f"the value of '{key}' must be 1 to {GATEWAY_TAG_VALUE_MAX} printable characters"
+                )
+            tags[key] = value
+    if len(tags) > GATEWAY_TAG_MAX:
+        raise _bad_tags(f"at most {GATEWAY_TAG_MAX} entries")
+    return tags
 
 
-def _on_behalf_claim(service_account: User, request: Request | None) -> tuple[str, dict[str, str]]:
-    """Who ``service_account`` says this request is for, and its own labels
-    for it: the header, else the body's ``metadata.user_id``. Refused, never
-    guessed: nobody named (400), or the two naming different people (400).
-    No database: the body is read here."""
+def _bad_tags(why: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST, detail=f"{TAGS_HEADER}: {why}.",
+    )
+
+
+def _on_behalf_of(session: Session, service_account: User, request: Request | None) -> User:
+    """The person ``service_account`` (``acts_for_users``) sends this request
+    for: the account named in ``X-On-Behalf-Of``, marked as reached through
+    the service account (``schema.via_service_account``).
+
+    Refused, never guessed: no header (400), a name the gateway has no
+    account for (403: nobody is provisioned on an application's word, the
+    person signs in to the dashboard once), another service account (403: it
+    would move spending between applications) and a disabled person (403).
+
+    The request's ``X-Gateway-Tags`` ride along on the returned account
+    (``schema.request_tags``); a malformed one is a 400.
+    """
     try:
-        header_name = _on_behalf_name(request)
-        body_name, tags = _metadata_claim(_request_metadata(request))
-        if header_name is not None and body_name is not None and header_name != body_name:
-            raise _bad_request(
-                f"{ON_BEHALF_HEADER} and {ON_BEHALF_FIELD} name different users. Send one, or the same name in both."
-            )
-        name = header_name if header_name is not None else body_name
-        if name is None:
-            raise _bad_request(
-                f"This service account sends requests for its users: name the user in the "
-                f"{ON_BEHALF_HEADER} header or in the body's {ON_BEHALF_FIELD} (their gateway username)."
-            )
+        name = _on_behalf_name(request)
+        tags = _gateway_tags(request)
     except HTTPException as exc:
         logger.warning(
             "On-behalf rejected: {} | service_account={}", exc.detail, service_account.username,
         )
         metrics.observe_rejection("on_behalf")
         raise
-    return name, tags
-
-
-def _on_behalf_of(session: Session, service_account: User, name: str, tags: dict[str, str]) -> User:
-    """The person ``service_account`` (``acts_for_users``) sends this request
-    for: the account called ``name`` (``_on_behalf_claim``), marked as
-    reached through the service account (``schema.via_service_account``) and
-    carrying the request's own labels (``schema.request_tags``).
-
-    Refused, never guessed: a name the gateway has no account for (403:
-    nobody is provisioned on an application's word, the person signs in to
-    the dashboard once), another service account (403: it would move
-    spending between applications) and a disabled person (403).
-    """
+    if name is None:
+        logger.warning("On-behalf rejected: no {} | service_account={}", ON_BEHALF_HEADER, service_account.username)
+        metrics.observe_rejection("on_behalf")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"This service account sends requests for its users: name the user in the "
+                f"{ON_BEHALF_HEADER} header (their gateway username)."
+            ),
+        )
     person = session.exec(select(User).where(User.username == name)).first()
     if person is None:
         reason = f"'{name}' has no account on the gateway. They sign in to the dashboard once to get one."
     elif person.is_service_account:
-        reason = f"'{name}' is a service account. A request is sent for a person."
+        reason = f"'{name}' is a service account. {ON_BEHALF_HEADER} names a person."
     elif person.is_disabled:
         reason = f"The account '{name}' is disabled. Contact your administrator."
     else:
@@ -570,18 +523,10 @@ def _authenticate(
             # The key, its last use and the address check above stay the
             # service account's. A person's key never gets here: nobody can
             # put a request on someone else's account with their own key.
-            acting = bool(user.is_service_account and user.acts_for_users)
-            if check_daily_limit and not acting:
+            if user.is_service_account and user.acts_for_users:
+                user = _on_behalf_of(session, user, request)
+            if check_daily_limit:
                 _check_daily_limit(session, user)
-        if acting:
-            # Who it is for may be in the body, and a body takes as long to
-            # read as the client takes to send it: the session above is
-            # closed first, and the person is looked up in a second one.
-            name, tags = _on_behalf_claim(user, request)
-            with Session(engine) as session:
-                user = _on_behalf_of(session, user, name, tags)
-                if check_daily_limit:
-                    _check_daily_limit(session, user)
     finally:
         if touch_id is not None:
             _record_key_use(touch_id)

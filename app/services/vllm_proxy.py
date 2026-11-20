@@ -591,11 +591,10 @@ async def vllm_forward_responses(
     Forward the raw request body to `base_url + path_suffix`.
     Only mutate the model field (alias -> real_model). Supports SSE streaming.
     """
-    # The cached parse every reader shares (auth may have taken a service
-    # account's ``metadata`` out of it), never a second parse of the bytes.
+    raw_body = await request.body()
     try:
-        body_json = await request.json()
-    except ValueError:
+        body_json = json.loads(raw_body)
+    except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
     model_name = body_json.get("model", "")

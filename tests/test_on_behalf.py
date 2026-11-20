@@ -253,143 +253,98 @@ class TestRefused:
 
 
 
-# ── The user named in the body (metadata.user_id) and the application's own labels ──
+# ── The application's own labels (X-Gateway-Tags) ──
 
-def _with(metadata, body=None) -> dict:
-    return {**(body or _CHAT), "metadata": metadata}
-
-
-def _sent_downstream(client, path, body, headers):
-    """Post ``body`` and return ``(response, the JSON bodies sent downstream)``."""
-    sent: list[dict] = []
-
-    async def fake_post(url, **kwargs):
-        sent.append(kwargs.get("json") if kwargs.get("json") is not None else json.loads(kwargs["content"]))
-        return make_httpx_response(200, _OK_CHAT)
-
-    with patch.object(client.__httpx_mock__, "post", side_effect=fake_post):
-        resp = client.post(path, json=body, headers=headers)
-    return resp, sent
-
-
-class TestNamedInTheBody:
-    def test_metadata_user_id_names_the_user(self, client, chat_app, alice):
-        resp, calls = _chat(client, _for(None), _with({"user_id": "alice"}))
-        assert resp.status_code == 200 and calls == ["vllm"]
-        [row] = _rows()
-        assert (row.user_id, row.via_user_id) == (alice.id, chat_app.id)
-
-    @pytest.mark.parametrize("path,body", [
-        ("/v1/chat/completions", _CHAT), ("/chat/completions", _CHAT),
-        ("/v1/messages", _MESSAGES), ("/messages", _MESSAGES),
-    ])
-    def test_on_every_endpoint_shape(self, client, chat_app, alice, path, body):
-        mock, calls = _downstream(client)
-        with mock:
-            resp = client.post(path, json=_with({"user_id": "alice"}, body), headers=_for(None))
-        assert resp.status_code == 200
-        assert [(r.user_id, r.via_user_id) for r in _rows()] == [(alice.id, chat_app.id)]
-
-    def test_the_header_and_the_body_may_both_name_the_user(self, client, chat_app, alice):
-        resp, _ = _chat(client, _for("alice"), _with({"user_id": "alice"}))
-        assert resp.status_code == 200
-
-    def test_naming_two_different_users_is_refused(self, client, chat_app, alice, test_user):
-        resp, calls = _chat(client, _for("alice"), _with({"user_id": test_user.username}))
-        assert resp.status_code == 400 and "different users" in resp.json()["detail"]
-        assert calls == [] and _rows() == []
-
-    def test_the_users_limit_decides_here_too(self, client, db_session, chat_app, alice):
-        _sent_for(db_session, alice, None, "10.00")
-        resp, calls = _chat(client, _for(None), _with({"user_id": "alice"}))
-        assert resp.status_code == 429 and calls == []
-
-    @pytest.mark.parametrize("name,status", [("nobody", 403), ("chat-app", 403), ("a b", 400), ("", 400), (7, 400)])
-    def test_refused_like_the_header(self, client, chat_app, alice, name, status):
-        resp, calls = _chat(client, _for(None), _with({"user_id": name}))
-        assert resp.status_code == status and calls == [] and _rows() == []
-
-    def test_a_route_without_a_body_has_the_header_only(self, client, chat_app, alice):
-        assert client.get("/v1/models", headers=_for(None)).status_code == 400
-        assert client.get("/v1/models", headers=_for("alice")).status_code == 200
-
-    def test_a_persons_key_names_nobody_this_way(self, client, chat_app, alice, test_user):
-        """Claude Code sends a ``metadata.user_id`` of its own: from a
-        person's key it is not read, and goes downstream as it came."""
-        resp, sent = _sent_downstream(
-            client, "/v1/chat/completions", _with({"user_id": "alice", "module": "x"}),
-            auth_header(test_user.api_key),
-        )
-        assert resp.status_code == 200
-        assert [(r.user_id, r.via_user_id) for r in _rows()] == [(test_user.id, 0)]
-        assert sent[0]["metadata"] == {"user_id": "alice", "module": "x"}
-
-    def test_a_service_account_without_the_switch_is_not_read_either(self, client, db_session, alice):
-        plain = _add(db_session, username="batch-job", api_key="sk-batch", is_service_account=True)
-        resp, _ = _chat(client, auth_header("sk-batch"), _with({"module": "x"}))
-        assert resp.status_code == 200
-        assert [(r.user_id, r.via_user_id) for r in _rows()] == [(plain.id, 0)]
+TAGS = "X-Gateway-Tags"
 
 
 class TestItsOwnLabels:
-    """Beside ``user_id`` an application may write entries of its own in
-    ``metadata``: they go to Langfuse with the request and nowhere else."""
+    """A service account that acts for its users may label a request in
+    ``X-Gateway-Tags``: recorded in Langfuse with it, and nowhere else."""
 
-    def _records(self, client, headers, metadata):
+    def _records(self, client, headers, body=None):
         captured = []
         with patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
              patch("app.services.billing.record_generation", captured.append):
-            resp, _ = _chat(client, headers, _with(metadata))
+            resp, _ = _chat(client, headers, body)
         return resp, captured
 
     def test_they_go_to_langfuse(self, client, chat_app, alice):
         from app.services.observability import trace_metadata
 
         resp, [rec] = self._records(
-            client, _for(None), {"user_id": "alice", "module": "invoice-ocr", "ticket": 4821, "beta": True},
+            client, {**_for("alice"), TAGS: "module=invoice-ocr, ticket=4821,team=%E8%B2%A1%E5%8B%99"},
         )
         assert resp.status_code == 200
         assert (rec.username, rec.service_account) == ("alice", "chat-app")
-        assert rec.request_tags == {"module": "invoice-ocr", "ticket": "4821", "beta": "true"}
+        assert rec.request_tags == {"module": "invoice-ocr", "ticket": "4821", "team": "財務"}
         assert trace_metadata(rec)["tag_module"] == "invoice-ocr"
 
-    def test_with_the_header_they_still_need_user_id(self, client, chat_app, alice):
-        resp, calls = _chat(client, _for("alice"), _with({"module": "invoice-ocr"}))
-        assert resp.status_code == 400 and "metadata.user_id" in resp.json()["detail"]
-        assert calls == [] and _rows() == []
+    def test_the_header_may_be_sent_more_than_once(self, client, chat_app, alice):
+        captured = []
+        mock, _ = _downstream(client)
+        with mock, patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.record_generation", captured.append):
+            resp = client.post(
+                "/v1/chat/completions", json=_CHAT,
+                headers=[*_for("alice").items(), (TAGS, "module=a"), (TAGS, "ticket=1")],
+            )
+        assert resp.status_code == 200 and captured[0].request_tags == {"module": "a", "ticket": "1"}
 
-    def test_without_any_of_its_own_the_header_is_enough(self, client, chat_app, alice):
-        resp, records = self._records(client, _for("alice"), {})
-        assert resp.status_code == 200 and records[0].request_tags == {}
+    def test_they_need_a_named_user_like_every_request(self, client, chat_app, alice):
+        resp, calls = _chat(client, {**_for(None), TAGS: "module=a"})
+        assert resp.status_code == 400 and HEADER in resp.json()["detail"] and calls == []
 
-    def test_a_request_with_the_users_own_key_carries_none(self, client, chat_app, alice):
-        resp, [rec] = self._records(client, auth_header("sk-alice"), {"user_id": "alice", "module": "x"})
+    def test_a_request_without_them_carries_none(self, client, chat_app, alice):
+        resp, [rec] = self._records(client, _for("alice"))
         assert resp.status_code == 200 and rec.request_tags == {}
 
-    @pytest.mark.parametrize("metadata", [
-        "module-a",                                   # not an object
-        {"user_id": "alice", "bad key": "x"},
-        {"user_id": "alice", "a.b": "x"},
-        {"user_id": "alice", "module": {"name": "x"}},
-        {"user_id": "alice", "module": ["x"]},
-        {"user_id": "alice", "module": None},
-        {"user_id": "alice", "module": "x" * 201},
-        {"user_id": "alice", **{f"k{i}": "v" for i in range(17)}},
-    ])
-    def test_what_is_refused(self, client, chat_app, alice, metadata):
-        resp, calls = _chat(client, _for(None), _with(metadata))
-        assert resp.status_code == 400 and calls == [] and _rows() == []
+    @pytest.mark.parametrize("key", ["sk-alice", "sk-batch"])
+    def test_from_any_other_key_the_header_is_not_read(self, client, db_session, chat_app, alice, key):
+        """Not even a malformed one is refused: it is not this account's to send."""
+        _add(db_session, username="batch-job", api_key="sk-batch", is_service_account=True)
+        resp, [rec] = self._records(client, {**auth_header(key), TAGS: "not a tag"})
+        assert resp.status_code == 200 and rec.request_tags == {}
 
-    @pytest.mark.parametrize("path,body", [
-        ("/v1/chat/completions", _CHAT), ("/v1/messages", _MESSAGES),
-        ("/v1/embeddings", {"model": "test-embedding", "input": "hi"}),
+    @pytest.mark.parametrize("value", [
+        "module",                       # no value
+        "module=",
+        "bad key=x",
+        "a.b=x",
+        "module=a,module=b",
+        "module=" + "x" * 201,
+        "module=%FF",                   # not UTF-8
+        "module=a%0Ab",                 # a line break
+        ",".join(f"k{i}=v" for i in range(17)),
     ])
-    def test_nothing_of_it_is_sent_downstream(self, client, chat_app, alice, path, body):
-        resp, sent = _sent_downstream(
-            client, path, _with({"user_id": "alice", "module": "invoice-ocr"}, body), _for(None),
-        )
-        assert sent, resp.text
-        assert all("metadata" not in b and "invoice-ocr" not in json.dumps(b) for b in sent)
+    def test_what_is_refused(self, client, chat_app, alice, value):
+        resp, calls = _chat(client, {**_for("alice"), TAGS: value})
+        assert resp.status_code == 400 and TAGS in resp.json()["detail"]
+        assert calls == [] and _rows() == []
+
+    def test_on_a_route_without_a_body_too(self, client, chat_app, alice):
+        assert client.get("/v1/models", headers={**_for("alice"), TAGS: "module=a"}).status_code == 200
+        assert client.get("/v1/models", headers={**_for("alice"), TAGS: "module"}).status_code == 400
+
+    def test_nothing_of_it_is_sent_downstream(self, client, chat_app, alice):
+        seen: list[dict] = []
+
+        async def fake_post(url, **kwargs):
+            seen.append(kwargs)
+            return make_httpx_response(200, _OK_CHAT)
+
+        with patch.object(client.__httpx_mock__, "post", side_effect=fake_post):
+            resp = client.post(
+                "/v1/chat/completions", json=_CHAT, headers={**_for("alice"), TAGS: "module=invoice-ocr"},
+            )
+        assert resp.status_code == 200 and seen
+        assert all("invoice-ocr" not in repr(k) and "alice" not in repr(k.get("headers")) for k in seen)
+
+    def test_the_body_names_nobody(self, client, chat_app, alice):
+        """``metadata.user_id`` is not a second way to name the user (it was
+        built and taken out by the owner's decision): the header is."""
+        resp, calls = _chat(client, _for(None), {**_CHAT, "metadata": {"user_id": "alice"}})
+        assert resp.status_code == 400 and calls == []
 
 
 # ── Who may speak for someone ──
