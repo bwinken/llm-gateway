@@ -260,11 +260,25 @@ curl https://your-gateway/v1/chat/completions \
   -d '{"model": "qwen3-coder", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-- **It only works once an administrator turned on *On behalf of users* for that service account.** Until then the header is ignored and the request is the service account's own. The dashboard's *Service accounts* tab says which it is, with a test to run.
+A request with a JSON body can name the user in the body instead, in `metadata.user_id` (the field Anthropic's Messages API has for it; the gateway reads it on chat, responses, embeddings and the rest too). Beside it you may add entries of your own, which are recorded with the request so it can be looked up later:
+
+```bash
+curl https://your-gateway/v1/messages \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "qwen3-coder", "max_tokens": 256,
+       "metadata": {"user_id": "alice", "module": "invoice-ocr", "ticket": 4821},
+       "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+- Header or `metadata.user_id`: either names the user. Send both only with the same name (400 otherwise). A request without a body, such as `GET /v1/models`, needs the header.
+- Your own entries need `metadata.user_id` in the same request, even when the header is there. Up to 16 of them, flat: a key of letters, digits and `_` (40 at most), a value that is a string, a number or a boolean (200 characters at most). Anything else is a 400. They are recorded only; nothing is decided by them, and `metadata` is not passed on to the model.
+- With the Anthropic SDK this is the `metadata` parameter (pass the extra entries through `extra_body` if your type checker objects); with the OpenAI SDK, `metadata` or `extra_body={"metadata": {...}}`.
+- **It only works once an administrator turned on *On behalf of users* for that service account.** Until then the header and `metadata` are not read and the request is the service account's own. The dashboard's *Service accounts* tab says which it is, with a test to run.
 - The value is the user's gateway username (their sign-in name), one per request. Not an email address or a display name.
 - The request is then that user's: their daily limit and cloud cap, their cloud access, their bill and their dashboard. Nothing is charged to the service account.
-- With it on, every request needs the header. `GET /v1/models` (or `/models`) with it lists the models that user may use, the same list they get with their own key; `GET /v1/me` gives that user's remaining budget. The other account endpoints are refused to an application.
-- Refused: no header or more than one name (400); a username that has no account on the gateway, a disabled account or a service account (403; a person gets an account by opening the dashboard once); the user over their limit (429).
+- With it on, every request names a user. `GET /v1/models` (or `/models`) with it lists the models that user may use, the same list they get with their own key; `GET /v1/me` gives that user's remaining budget. The other account endpoints are refused to an application.
+- Refused: no user named, or more than one name (400); a username that has no account on the gateway, a disabled account or a service account (403; a person gets an account by opening the dashboard once); the user over their limit (429).
 - Your application is what vouches for the user: sign them in before you send their name, send it from your server, and keep the key there. Whoever holds the key can spend any user's budget.
 
 ## Notices

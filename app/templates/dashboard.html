@@ -904,6 +904,13 @@
   -H "X-On-Behalf-Of: {{ user.username }}" \
   -H "Content-Type: application/json" \
   -d '{"model": "MODEL_FROM_STEP_1", "messages": [{"role": "user", "content": "Hello"}]}'</pre>
+            <p>
+                A request with a JSON body can name the user in the body instead of the header, as
+                <span class="font-mono text-t2">"metadata": {"user_id": "{{ user.username }}"}</span>. Beside it you may add
+                entries of your own, such as <span class="font-mono text-t2">"module": "invoice-ocr"</span>: they are recorded
+                with the request so it can be looked up later, and they need <span class="font-mono">user_id</span> in the same
+                <span class="font-mono">metadata</span>. <span class="font-mono">/models</span> has no body, so it needs the header.
+            </p>
             <p class="font-semibold text-t2">3. Check where it was billed</p>
             <p>
                 The example names you (<span class="font-mono text-t2">{{ user.username }}</span>), so the test is on your own budget:
@@ -913,7 +920,7 @@
             </p>
             <p class="font-semibold text-t2">What is refused</p>
             <ul class="list-disc pl-5 space-y-1">
-                <li><span class="font-mono text-t2">400</span>: no <span class="font-mono">X-On-Behalf-Of</span> header, or more than one username in it. Every request needs it, <span class="font-mono">/models</span> included.</li>
+                <li><span class="font-mono text-t2">400</span>: no user named (neither <span class="font-mono">X-On-Behalf-Of</span> nor <span class="font-mono">metadata.user_id</span>), more than one username, the two naming different users, or entries of your own in <span class="font-mono">metadata</span> without <span class="font-mono">user_id</span>. Every request names a user, <span class="font-mono">/models</span> included.</li>
                 <li><span class="font-mono text-t2">403</span>: the username has no account on this gateway (the person opens this dashboard once to get one), is disabled, or is a service account.</li>
                 <li><span class="font-mono text-t2">429</span>: that user has spent their daily limit. <span class="font-mono">GET {{ gateway_base }}/me</span> with the same two headers says how much they have left.</li>
             </ul>
@@ -935,7 +942,7 @@
                 <b class="text-t2">Sending requests for your users is off for this account.</b>
                 An application can name the person a request is for (<span class="font-mono text-t2">X-On-Behalf-Of: username</span>)
                 so that it is billed to that person and counted against their limit, but only once an administrator has turned on
-                <b class="text-t2">On behalf of users</b> for this account. Until then the header is ignored and everything is billed to this account.
+                <b class="text-t2">On behalf of users</b> for this account. Until then the header is ignored, <span class="font-mono">metadata</span> is not read, and everything is billed to this account.
                 Ask an administrator if your application has users of its own.
             </p>
             {% endif %}

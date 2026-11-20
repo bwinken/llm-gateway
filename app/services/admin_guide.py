@@ -378,10 +378,13 @@ SECTIONS: tuple[Section, ...] = (
                 keys=("users.acts_for_users", "usage_logs.via_user_id"),
                 default="off",
                 what=(
-                    "An application people sign in to sends each request with the header X-On-Behalf-Of: <username>. "
+                    "An application people sign in to names the person on each request: in the header X-On-Behalf-Of: <username>, "
+                    "or in the request body's metadata.user_id. Beside user_id it may add labels of its own in metadata "
+                    "(a module, a ticket number); those are recorded in Langfuse with the request, so it can be looked "
+                    "up later, and are not passed on to the model. "
                     "The request is then that person's: their daily limit and cloud cap, their cloud access, their "
                     "bill and their dashboard. The service account is recorded as the way it came in. A request "
-                    "without the header, or naming someone who has no account here, a disabled account or a "
+                    "that names nobody, or naming someone who has no account here, a disabled account or a "
                     "service account, is refused."
                 ),
                 why=(

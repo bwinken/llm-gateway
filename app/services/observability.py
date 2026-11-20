@@ -616,6 +616,9 @@ class GenerationRecord:
     # The service account that sent the request for this user
     # (X-On-Behalf-Of) -> metadata + tag; None for the account's own key.
     service_account: str | None = None
+    # What that service account wrote in the request's ``metadata`` beside
+    # ``user_id`` (deps._metadata_claim) -> metadata ``tag_<key>``.
+    request_tags: dict | None = None
     error: str | None = None
     is_error: bool = False              # failed request → level=ERROR + request_error score
     input_payload: Any = None           # Phase 2 (LANGFUSE_CAPTURE_IO)
@@ -751,6 +754,11 @@ def trace_metadata(rec: GenerationRecord) -> dict[str, str]:
     for key, value in (("model", rec.model_alias), ("real_model", rec.real_model)):
         if value:
             out[key] = str(value)[:_TRACE_METADATA_MAX]
+    # A service account's own labels for the request, on the trace as well:
+    # the Tracing list is filtered by trace metadata, and that is where
+    # someone looks a request up by them.
+    for key, value in (rec.request_tags or {}).items():
+        out[f"tag_{key}"] = str(value)[:_TRACE_METADATA_MAX]
     return out
 
 
@@ -801,6 +809,10 @@ def record_generation(rec: GenerationRecord) -> None:
             # not client text: safe as a tag.
             metadata["service_account"] = rec.service_account
             tags.append(f"service_account:{rec.service_account}")
+        # The application's own labels: its text, so metadata only (which a
+        # trace can be filtered by), never a tag, the version or a score.
+        for key, value in (rec.request_tags or {}).items():
+            metadata[f"tag_{key}"] = value
         if rec.user_agent:
             metadata["user_agent"] = rec.user_agent
         if rec.fallback_reason:

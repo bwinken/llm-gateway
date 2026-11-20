@@ -260,11 +260,25 @@ curl https://your-gateway/v1/chat/completions \
   -d '{"model": "qwen3-coder", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-- **只有管理員為該服務帳號開啟 *On behalf of users* 之後才有效。** 在那之前這個 header 會被忽略，請求算服務帳號自己的。dashboard 的 *Service accounts* 分頁會寫明目前是哪一種，並附上可以直接執行的測試。
+有 JSON body 的請求也可以把使用者寫在 body 的 `metadata.user_id`（Anthropic Messages API 用來標示使用者的欄位；gateway 在 chat、responses、embeddings 等端點也一樣會讀）。旁邊可以加上你自己的欄位，會跟著請求一起記錄，之後可以用來查詢：
+
+```bash
+curl https://your-gateway/v1/messages \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "qwen3-coder", "max_tokens": 256,
+       "metadata": {"user_id": "alice", "module": "invoice-ocr", "ticket": 4821},
+       "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+- header 或 `metadata.user_id` 擇一即可指名使用者。兩個都送時名稱必須相同（否則 400）。沒有 body 的請求（例如 `GET /v1/models`）只能用 header。
+- 自訂欄位必須和 `metadata.user_id` 一起送，即使已經帶了 header 也一樣。最多 16 個，只能是一層：key 由英數字和 `_` 組成（最多 40 字元），值是字串、數字或布林（最多 200 字元）。不符合就回 400。這些欄位只會被記錄，不影響任何判斷，`metadata` 也不會轉送給模型。
+- 用 Anthropic SDK 時就是 `metadata` 參數（型別檢查不接受額外欄位時改用 `extra_body`）；用 OpenAI SDK 時是 `metadata` 或 `extra_body={"metadata": {...}}`。
+- **只有管理員為該服務帳號開啟 *On behalf of users* 之後才有效。** 在那之前 header 和 `metadata` 都不會被讀取，請求算服務帳號自己的。dashboard 的 *Service accounts* 分頁會寫明目前是哪一種，並附上可以直接執行的測試。
 - 值是使用者在 gateway 的帳號名稱（登入名稱），一個請求一個。不是 email，也不是顯示名稱。
 - 之後這個請求就是該使用者的：用他的每日額度和雲端上限、他的雲端權限，記在他的帳上，出現在他的 dashboard。服務帳號不會被扣款。
-- 開啟後每個請求都要帶這個 header。帶著它呼叫 `GET /v1/models` （或 `/models`）會列出該使用者可用的模型，和他用自己的 key 看到的一樣；`GET /v1/me` 回傳該使用者的剩餘額度。其他帳號端點不開放給應用。
-- 會被拒絕的情況：沒帶 header 或寫了多個名稱（400）；該名稱在 gateway 沒有帳號、帳號已停用、或是服務帳號（403；使用者打開一次 dashboard 就會有帳號）；使用者額度用完（429）。
+- 開啟後每個請求都要指名使用者。帶著它呼叫 `GET /v1/models` （或 `/models`）會列出該使用者可用的模型，和他用自己的 key 看到的一樣；`GET /v1/me` 回傳該使用者的剩餘額度。其他帳號端點不開放給應用。
+- 會被拒絕的情況：沒有指名使用者或寫了多個名稱（400）；該名稱在 gateway 沒有帳號、帳號已停用、或是服務帳號（403；使用者打開一次 dashboard 就會有帳號）；使用者額度用完（429）。
 - 使用者的身分由你的應用擔保：先讓使用者登入再送出名稱，從你的伺服器送，key 也只放在伺服器上。拿到 key 的人可以花任何使用者的額度。
 
 ## 通知
