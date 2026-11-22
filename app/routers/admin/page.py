@@ -36,6 +36,8 @@ from app.routers.admin.common import _local_label, router, templates
 from app.routers.admin.security import _audit_rows, _guardrail_view, _ip_allowlist_view
 from app.routers.admin.settings import _weekly_reports_view
 from app.routers.admin.users import (
+    DESCRIPTION_MAX,
+    known_departments,
     USER_TABLE_PAGE_SIZES,
     USER_TABLE_SORTS,
     USER_TABLE_STATUSES,
@@ -47,6 +49,7 @@ from app.routers.admin.users import (
 from app.services import client_rules, client_settings, concurrency, guardrail, overflow
 from app.services.stats import (
     get_budget_pressure,
+    owners_to_review,
     get_today_totals,
     summarize_server_status,
     get_dau_trends,
@@ -218,6 +221,9 @@ def admin_page(
             "today_dau": today_dau,
             "default_daily_limit": get_default_daily_limit(),
             "cloud_daily_limit": get_cloud_daily_limit(),
+            "description_max": DESCRIPTION_MAX,
+            "departments": known_departments(session),
+            "owner_review": owners_to_review(session),
             "cloud_budget_fallback": get_cloud_budget_fallback(),
             "today_totals": today_totals,
             "budget_pressure": budget_pressure,

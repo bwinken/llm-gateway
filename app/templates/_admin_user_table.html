@@ -28,6 +28,10 @@
                 {% if u.display_name and u.display_name != u.username %}
                 <span class="ml-1 text-xs text-t4 font-mono">{{ u.username }}</span>
                 {% endif %}
+                {# What an admin wrote about a service account (its drawer edits it). #}
+                {% if u.description %}
+                <span class="ml-1 text-xs font-normal text-t3" title="{{ u.description }}">{{ u.description|truncate(48, True, '…') }}</span>
+                {% endif %}
                 {% if u.org_code %}
                 <span class="ml-1 text-[10px] text-t4 bg-n3 px-1 py-0.5 rounded">{{ u.org_code }}</span>
                 {% endif %}
@@ -40,6 +44,11 @@
     <td class="um-dim text-xs">
         {% if u.owners %}<span class="font-mono text-t2">{{ u.owners | join(', ') }}</span>
         {% else %}<span class="text-aa">nobody</span>{% endif %}
+        {# An owner outside the account's department (sees nothing of it meanwhile), or disabled: the drawer says who. #}
+        {% if u.owners_to_review %}
+        <div class="text-aa" data-owner-review
+             title="{% for o in u.owners_to_review %}{{ o.username }}: {{ 'disabled' if o.reason == 'disabled' else 'in ' ~ (o.org_code or 'no department') ~ ', not ' ~ u.org_code }}{{ '; ' if not loop.last }}{% endfor %}">{{ u.owners_to_review|length }} to review</div>
+        {% endif %}
     </td>
     {% endif %}
     <td class="whitespace-nowrap um-dim">

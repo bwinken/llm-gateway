@@ -373,6 +373,55 @@ SECTIONS: tuple[Section, ...] = (
                 tradeoffs=("Only a service account has owners, and an owner is an existing person: assigning a person's account would hand that person's key to someone else.",),
             ),
             Entry(
+                id="account-department",
+                name="Department of a service account",
+                keys=("users.org_code", "app_owners"),
+                default="none",
+                what=(
+                    "The department a service account belongs to, as an org code people sign in with. Its owners "
+                    "see the account on their dashboard (its key, its usage, who it was used for) only while "
+                    "their own department is that one. An owner who is in another department is told the account "
+                    "is not shown and why, cannot regenerate its key, and is listed under Needs attention as an "
+                    "owner to review, as is an owner whose account is disabled. Nothing is removed: the owner "
+                    "stays assigned until you remove them, and sees the account again if their department matches again."
+                ),
+                why=(
+                    "People change departments and leave. An owner sees the account's API key and who uses the "
+                    "application, so that should end when they are no longer part of the team it belongs to, "
+                    "without waiting for someone to remember the assignment."
+                ),
+                tradeoffs=(
+                    "A person's department is what their last sign-in said. Someone who moved is noticed when they next sign in; someone who left never signs in again, so the gateway only knows once their account is disabled or deleted.",
+                    "Hiding the account does not take back a key the owner already copied. When an owner is listed for review, regenerate the key if they should no longer have it.",
+                    "The code must be one at least one person has, compared without regard to case: a typing mistake would hide the account from every owner. A new owner must be in the department; one assigned earlier is never dropped by an edit.",
+                    "With no department the owners are not checked, as before this setting existed.",
+                    "The IP allowlist does not read it: a rule for a department admits that department's people, and a service account is admitted by its name or by a rule for everyone.",
+                ),
+                decided=(
+                    "An owner must belong to the service account's department to see it, and an admin is warned "
+                    "when one no longer does."
+                ),
+            ),
+            Entry(
+                id="account-description",
+                name="Description of a service account",
+                keys=("users.description",),
+                default="empty",
+                what=(
+                    "One line saying what the account is, such as \"HR chat page\". It is shown beside the "
+                    "account's name on its owners' dashboards and, for an account that acts for its users, on the "
+                    "dashboard of every person it sent requests for: under Spent today and in the Usage Flow card."
+                ),
+                why=(
+                    "A person who finds part of their spend came \"through svc-hr-01\" has only a name to go by. "
+                    "The description tells them which application that is."
+                ),
+                tradeoffs=(
+                    "Everyone the account sends requests for can read it: write nothing there that only its owners should know.",
+                    "It is text for people. Nothing routes, limits or bills by it, and a person's account has none (a person is named by their sign-in).",
+                ),
+            ),
+            Entry(
                 id="account-acts-for-users",
                 name="On behalf of users (a service account that sends requests for its users)",
                 keys=("users.acts_for_users", "usage_logs.via_user_id"),

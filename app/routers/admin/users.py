@@ -14,7 +14,8 @@ from urllib.parse import urlencode
 
 from fastapi import Depends, Form, HTTPException, Query, Request, Security
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from sqlalchemy import case, delete, false as sa_false, update
+from sqlalchemy import case, delete, exists, false as sa_false, update
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, func, select
 
 from app.core.auth import get_web_user
@@ -26,6 +27,9 @@ from app.models.schema import (
     AppOwner,
     User,
     UsageLog,
+    department_of,
+    in_department,
+    same_department,
     service_account_clause,
     is_legacy_api_key,
     legacy_api_key_clause,
@@ -42,7 +46,7 @@ from app.routers.admin.common import (
     templates,
 )
 from app.services import audit, concurrency, overflow
-from app.services.stats import get_monthly_all_users_usage, get_on_behalf_month
+from app.services.stats import get_monthly_all_users_usage, get_on_behalf_month, owners_to_review
 
 
 _PAGE_SIZE = 15
@@ -82,6 +86,9 @@ USER_TABLE_STATUSES: dict[str, str] = {
     "no_overflow": "No cloud overflow",
     "on_behalf": "On behalf of users",
     "disabled": "Disabled",
+    # Not a permission: service accounts with an owner an admin should look
+    # at (``stats.owners_to_review``). Deliberately not in SPECIAL_ACCESS_KEYS.
+    "owner_review": "Owner to review",
     # Not a permission: tracks how many keys still predate the current format
     # (schema.is_legacy_api_key). Deliberately not in SPECIAL_ACCESS_KEYS.
     "legacy_key": "Older-format API key",
@@ -128,6 +135,21 @@ def _key_use_label(last_used: datetime | None, now: datetime) -> str:
     return "used yesterday" if days == 1 else f"used {days} d ago"
 
 
+def _owner_review_clause():
+    """SQL twin of ``stats.owners_to_review``: a service account with an
+    owner who is disabled, or (the account has a department) not in it."""
+    owner = aliased(User)
+    return exists().where(
+        AppOwner.app_id == User.id,
+        owner.id == AppOwner.owner_id,
+        (owner.is_disabled == True)  # noqa: E712
+        | (
+            (func.trim(User.org_code) != "")
+            & (func.lower(func.trim(owner.org_code)) != func.lower(func.trim(User.org_code)))
+        ),
+    )
+
+
 def _status_clause(status: str, is_apps: bool):
     """The WHERE clause of a Users / Apps table filter (None for "all").
     ``special`` is every account with something other than the defaults of
@@ -152,6 +174,7 @@ def _status_clause(status: str, is_apps: bool):
         "no_overflow": no_overflow,
         "on_behalf": on_behalf,
         "disabled": User.is_disabled == True,  # noqa: E712
+        "owner_review": _owner_review_clause() if is_apps else sa_false(),
         "legacy_key": legacy_api_key_clause(),
         "stale_key": _stale_key_clause(),
     }
@@ -237,6 +260,7 @@ def _user_table(
             User.username.ilike(like)  # type: ignore[attr-defined]
             | User.display_name.ilike(like)  # type: ignore[union-attr]
             | User.org_code.ilike(like)  # type: ignore[union-attr]
+            | User.description.ilike(like)  # type: ignore[attr-defined]
         )
     status = state["status"]
     status_clause = _status_clause(status, is_apps)
@@ -286,6 +310,8 @@ def _user_table(
         for app_id, owner_name in links:
             owners.setdefault(int(app_id), []).append(str(owner_name))
 
+    # Owners an admin should look at (outside the account's department, or disabled).
+    review = {entry["id"]: entry["owners"] for entry in owners_to_review(session)} if is_apps else {}
     empty = {"cost": 0.0, "input_tokens": 0, "output_tokens": 0, "requests": 0}
     now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     rows = []
@@ -296,6 +322,7 @@ def _user_table(
             "id": u.id,
             "username": u.username,
             "display_name": u.display_name,
+            "description": u.description,
             "org_code": u.org_code,
             "daily_limit_usd": u.daily_limit_usd,
             "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
@@ -317,6 +344,7 @@ def _user_table(
                 f"last used {_local_label(u.api_key_last_used_at) or 'never'} (Asia/Taipei)."
             ),
             "owners": owners.get(u.id, []),
+            "owners_to_review": review.get(u.id, []),
             "monthly_cost": monthly["cost"],
             "monthly_tokens": monthly["input_tokens"] + monthly["output_tokens"],
             "monthly_reqs": monthly["requests"],
@@ -408,10 +436,18 @@ def _account_detail(session: Session, target: User) -> dict:
     cloud_limit = effective_cloud_limit(target) if cloud else None
     cloud_spent = today["azure_cost_usd"] + today["bedrock_cost_usd"]
 
+    owner_issues: list[dict] = []
     if target.is_service_account:
-        related = session.exec(
-            select(User.username).join(AppOwner, AppOwner.owner_id == User.id).where(AppOwner.app_id == target.id)
+        owners = session.exec(
+            select(User).join(AppOwner, AppOwner.owner_id == User.id).where(AppOwner.app_id == target.id)
         ).all()
+        related = [o.username for o in owners]
+        # Owners an admin should look at: the same two tests as ``stats.owners_to_review``.
+        for o in sorted(owners, key=lambda o: o.username):
+            if not in_department(o, target):
+                owner_issues.append({"username": o.username, "org_code": o.org_code or "", "reason": "department"})
+            elif o.is_disabled:
+                owner_issues.append({"username": o.username, "org_code": o.org_code or "", "reason": "disabled"})
     else:
         related = session.exec(
             select(User.username).join(AppOwner, AppOwner.app_id == User.id).where(AppOwner.owner_id == target.id)
@@ -438,6 +474,8 @@ def _account_detail(session: Session, target: User) -> dict:
         "models": models[:8],
         "more_models": max(len(models) - 8, 0),
         "related": sorted(related),
+        "owner_issues": owner_issues,
+        "department": department_of(target) if target.is_service_account else "",
         "violations": client_rules.account_violations(session, target.username),
         "anomalies": [
             {"rule": a.rule, "severity": a.severity, "status": a.status, "at": _local_label(a.created_at)}
@@ -475,6 +513,8 @@ def user_detail_panel(
             "d": _account_detail(session, target),
             "is_self": target.id == admin_user.id,
             "cloud_daily_limit": get_cloud_daily_limit(),
+            "description_max": DESCRIPTION_MAX,
+            "departments": known_departments(session) if target.is_service_account else [],
         },
     )
 
@@ -506,14 +546,19 @@ def _owner_names(raw: object) -> list[str]:
     return list(dict.fromkeys(name.strip() for name in str(raw or "").split(",") if name.strip()))
 
 
-def _owners(session: Session, names: list[str], already: frozenset[int] = frozenset()) -> list[User]:
+def _owners(
+    session: Session, names: list[str], already: frozenset[int] = frozenset(), department: str = "",
+) -> list[User]:
     """The accounts behind ``names``, checked as owners of a service
-    account: each must exist and be a person. A service account cannot own
-    one (it has no dashboard to see it on). 400 naming what is wrong.
+    account: each must exist and be a person, and in the account's
+    ``department`` when it has one (an owner outside it would see nothing
+    of the account). A service account cannot own one (it has no dashboard
+    to see it on). 400 naming what is wrong.
 
     ``already`` holds the ids of the account's current owners: an
-    assignment made before this rule existed is never refused, so editing
-    the list cannot take an existing owner away by accident."""
+    assignment made before a rule existed, or before the owner moved to
+    another department, is never refused, so editing the list cannot take
+    an existing owner away by accident."""
     if not names:
         return []
     found = {u.username: u for u in session.exec(select(User).where(User.username.in_(names))).all()}  # type: ignore[attr-defined]
@@ -527,6 +572,16 @@ def _owners(session: Session, names: list[str], already: frozenset[int] = frozen
             detail=f"Only a person can own a service account; {', '.join(service)} "
                    f"{'is a service account' if len(service) == 1 else 'are service accounts'}.",
         )
+    outside = [
+        name for name in names
+        if department and found[name].id not in already and not same_department(found[name].org_code, department)
+    ]
+    if outside:
+        raise HTTPException(
+            status_code=400,
+            detail=f"This account is for department {department}; not in it: "
+                   + ", ".join(f"{name} ({found[name].org_code or 'no department'})" for name in outside) + ".",
+        )
     return [found[name] for name in names]
 
 
@@ -534,7 +589,9 @@ def _current_owner_ids(session: Session, account_id: int) -> frozenset[int]:
     return frozenset(session.exec(select(AppOwner.owner_id).where(AppOwner.app_id == account_id)).all())
 
 
-def _owners_by_id(session: Session, raw: object, already: frozenset[int] = frozenset()) -> list[User]:
+def _owners_by_id(
+    session: Session, raw: object, already: frozenset[int] = frozenset(), department: str = "",
+) -> list[User]:
     """``owner_ids`` of the JSON API, checked like ``_owners``."""
     if raw in (None, []):
         return []
@@ -545,7 +602,7 @@ def _owners_by_id(session: Session, raw: object, already: frozenset[int] = froze
     unknown = [str(oid) for oid in ids if oid not in found]
     if unknown:
         raise HTTPException(status_code=400, detail=f"User id(s) not found: {', '.join(unknown)}")
-    return _owners(session, [found[oid].username for oid in ids], already)
+    return _owners(session, [found[oid].username for oid in ids], already, department)
 
 
 def _service_account_or_400(target: User) -> None:
@@ -723,7 +780,9 @@ async def create_app_account_web(
 ):
     """Create a service account (web UI form): an account for a program,
     used by API key only. The name is taken as given (the ``app_`` prefix
-    older accounts carry is no longer added or needed). ``owner_usernames``
+    older accounts carry is no longer added or needed). ``description``
+    says what it is, for the dashboards that show it; ``org_code`` is the
+    department it is for (its owners must be in it). ``owner_usernames``
     (comma-separated; ``owner_username`` is the older single field) are the
     people it is assigned to: each must be an existing person, checked
     before anything is created."""
@@ -731,14 +790,22 @@ async def create_app_account_web(
     form = await request.form()
     username = _service_account_name(form.get("username"))
     daily_limit = form.get("daily_limit_usd")
+    description = _description(form.get("description"))
+    department = _department(session, form.get("org_code"))
 
     existing = session.exec(select(User).where(User.username == username)).first()
     if existing:
         raise HTTPException(status_code=409, detail=f"User '{username}' already exists.")
-    owners = _owners(session, _owner_names(f"{form.get('owner_usernames') or ''},{form.get('owner_username') or ''}"))
+    owners = _owners(
+        session, _owner_names(f"{form.get('owner_usernames') or ''},{form.get('owner_username') or ''}"),
+        department=department,
+    )
 
     # Service accounts start waived from the concurrency limit.
-    user = User(username=username, is_service_account=True, concurrency_waived=True)
+    user = User(
+        username=username, is_service_account=True, concurrency_waived=True,
+        description=description, org_code=department,
+    )
     if daily_limit is not None:
         user.daily_limit_usd = _limit_usd(daily_limit, "daily_limit_usd")
     session.add(user)
@@ -770,7 +837,10 @@ async def update_user_owner(
     _service_account_or_400(target)
 
     form = await request.form()
-    owners = _owners(session, _owner_names(form.get("owner_usernames")), _current_owner_ids(session, user_id))
+    owners = _owners(
+        session, _owner_names(form.get("owner_usernames")), _current_owner_ids(session, user_id),
+        department_of(target),
+    )
 
     session.execute(delete(AppOwner).where(AppOwner.app_id == user_id))
     for owner in owners:
@@ -948,6 +1018,120 @@ def toggle_overflow(
 # whoever holds the account's key spend any person's budget, so it is an
 # explicit switch, counted in the Special access strip.
 
+def known_departments(session: Session) -> list[str]:
+    """Every department a person is in (their ``org_code``, from their
+    sign-in), in order: what a service account can be made for."""
+    codes = session.exec(
+        select(User.org_code).where(~service_account_clause(), User.org_code != "").distinct()
+    ).all()
+    return sorted({str(c).strip() for c in codes if c and str(c).strip()}, key=str.casefold)
+
+
+def _department(session: Session, raw: object) -> str:
+    """The department a service account is for, as an admin typed it: empty
+    (none), or the org code of at least one person, returned as those
+    people have it. A code nobody has is refused: it would be a typing
+    mistake that hides the account from every owner."""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    for code in known_departments(session):
+        if same_department(code, text):
+            return code
+    raise HTTPException(
+        status_code=400,
+        detail=f"No user is in department '{text}'. Use an org code people sign in with.",
+    )
+
+
+def _department_or_400(target: User, department: str) -> None:
+    """Only a service account is given a department here: a person's comes
+    from their sign-in."""
+    if department and not target.is_service_account:
+        raise HTTPException(status_code=400, detail="A person's department comes from their sign-in.")
+
+
+def _owners_outside(session: Session, target: User) -> list[str]:
+    """The owners of ``target`` who are not in its department (they see
+    nothing of it meanwhile), by name."""
+    owners = session.exec(
+        select(User).join(AppOwner, AppOwner.owner_id == User.id).where(AppOwner.app_id == target.id)
+    ).all()
+    return sorted(o.username for o in owners if not in_department(o, target))
+
+
+@router.post("/users/{user_id}/department")
+async def update_user_department(
+    user_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Say which department a service account is for (``org_code``: a code
+    people sign in with; empty for none). Its owners see it, its key and
+    its usage only while they are in that department. The owners are left
+    as they are: ``outside`` names the ones who are not in it, for the
+    admin to look at."""
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    form = await request.form()
+    department = _department(session, form.get("org_code"))
+    _department_or_400(target, department)
+    if target.is_service_account:
+        target.org_code = department
+        session.add(target)
+        session.commit()
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "org_code": target.org_code, "outside": _owners_outside(session, target)})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+DESCRIPTION_MAX = 120
+
+
+def _description(raw: object) -> str:
+    """A service account's description as an admin typed it: one line (any
+    run of whitespace is one space), at most ``DESCRIPTION_MAX`` characters.
+    It is shown beside the account's name on dashboards, so it stays
+    short; pages escape it."""
+    text = " ".join(str(raw or "").split())
+    if len(text) > DESCRIPTION_MAX:
+        raise HTTPException(
+            status_code=400, detail=f"A description is at most {DESCRIPTION_MAX} characters.",
+        )
+    return text
+
+
+def _description_or_400(target: User, description: str) -> None:
+    """Only a service account is described: a person is named by their
+    sign-in (``display_name``), which an admin does not edit."""
+    if description and not target.is_service_account:
+        raise HTTPException(status_code=400, detail="Only a service account has a description.")
+
+
+@router.post("/users/{user_id}/description")
+async def update_user_description(
+    user_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Say what a service account is (``description``, one line; empty
+    clears it). Shown beside its name on its owners' dashboards and on the
+    dashboard of every person it sent requests for."""
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    form = await request.form()
+    description = _description(form.get("description"))
+    _description_or_400(target, description)
+    target.description = description
+    session.add(target)
+    session.commit()
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "description": target.description})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 def _acts_for_users_or_400(target: User, enabled: bool) -> None:
     """Only a service account acts for users: on a person's account the
     switch would let that person put requests on a colleague's bill."""
@@ -1114,6 +1298,7 @@ def list_users_api(
             "can_overflow_cloud": u.can_overflow_cloud,
             "is_service_account": u.is_service_account,
             "acts_for_users": u.acts_for_users,
+            "description": u.description,
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
@@ -1150,12 +1335,21 @@ def create_user_api(
         _service_account_name(username)
     # Owners are people, and only a service account has any: checked before
     # the account is created.
-    owners = _owners_by_id(session, body.get("owner_ids"))
+    department = _department(session, body.get("org_code"))
+    if department and not is_service:
+        raise HTTPException(status_code=400, detail="A person's department comes from their sign-in.")
+    owners = _owners_by_id(session, body.get("owner_ids"), department=department)
     if owners and not is_service:
         raise HTTPException(status_code=400, detail="Only a service account has owners.")
+    description = _description(body.get("description"))
+    if description and not is_service:
+        raise HTTPException(status_code=400, detail="Only a service account has a description.")
     # Service accounts start waived from the concurrency limit; an explicit
     # "concurrency_waived" in the body (handled below) still wins.
-    new_user = User(username=username, is_service_account=is_service, concurrency_waived=is_service)
+    new_user = User(
+        username=username, is_service_account=is_service, concurrency_waived=is_service,
+        description=description, org_code=department,
+    )
     if "daily_limit_usd" in body:
         new_user.daily_limit_usd = _limit_usd(body["daily_limit_usd"], "daily_limit_usd")
     if "cloud_daily_limit_usd" in body:
@@ -1213,9 +1407,20 @@ def update_user_api(
         enabled = _strict_bool(body["acts_for_users"], "acts_for_users")
         _acts_for_users_or_400(target, enabled)
         target.acts_for_users = enabled
+    if "description" in body:
+        description = _description(body["description"])
+        _description_or_400(target, description)
+        target.description = description
+    if "org_code" in body:
+        department = _department(session, body["org_code"])
+        _department_or_400(target, department)
+        if target.is_service_account:
+            target.org_code = department
     if "owner_ids" in body:
         current = _current_owner_ids(session, user_id)
-        owners = _owners_by_id(session, body["owner_ids"], current)
+        owners = _owners_by_id(
+            session, body["owner_ids"], current, department_of(target) if target.is_service_account else "",
+        )
         # A person's account gets no new owner; one it already has may stay
         # (or be taken away) like any other.
         if any(owner.id not in current for owner in owners):

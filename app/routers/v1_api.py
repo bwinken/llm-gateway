@@ -643,6 +643,24 @@ def _model_usage_row(row: dict) -> dict:
     return out
 
 
+def _usage_source(source: dict) -> dict:
+    """One way an account's usage came in (``stats.get_usage_sources``) as
+    ``/v1/usage`` gives it: its own key, or a service account that sent
+    requests for it, with the totals and the models they went to."""
+    out = {"source": source["source"]}
+    for key in ("service_account", "description"):
+        if source.get(key):
+            out[key] = source[key]
+    out.update(
+        requests=source["requests"],
+        input_tokens=source["input_tokens"],
+        output_tokens=source["output_tokens"],
+        cost_usd=_usd(source["cost_usd"]),
+        models=[_model_usage_row(r) for r in source["models"]],
+    )
+    return out
+
+
 @router.get("/v1/usage", tags=["account"])
 def usage_history(
     days: int = Query(7, ge=1, le=USAGE_MAX_DAYS, description="How many days back, today included."),
@@ -660,15 +678,26 @@ def usage_history(
     model the gateway served in place of a congested on-prem one: it is
     listed whatever cloud access the account has, and is on its bill.
 
+    ``sources``, in ``today`` and in ``month``, is that same usage by the
+    way it came in: ``source`` ``own_key`` for requests sent with the
+    account's own key, and one ``service_account`` entry per application
+    that sent requests for the account after its user signed in to it
+    (``X-On-Behalf-Of``), named in ``service_account`` and, when an admin
+    described it, ``description``. Each has its totals and its own
+    ``models`` rows; together they add up to the period's totals. It is
+    part of the figures above, never on top of them. Other ``source``
+    values may be added later: skip one you do not know.
+
     Answers once the daily limit is spent. Plain ``def``: it reads the
     database and awaits nothing.
     """
     history = get_usage_history(user, days)
     catalog = model_catalog.current_catalog_keys()
 
-    def by_model(rows: list[dict]) -> dict:
+    def by_model(rows: list[dict], sources: list[dict]) -> dict:
         """Totals and one row per model and backend, in the dashboard's
-        order, without the cloud backends the account may not use."""
+        order, without the cloud backends the account may not use; then
+        the same usage by the way it came in."""
         rows = model_catalog.sort_usage_rows(model_catalog.visible_usage_rows(rows, user), catalog)
         return {
             "requests": sum(r["requests"] for r in rows),
@@ -676,6 +705,7 @@ def usage_history(
             "output_tokens": sum(r["output_tokens"] for r in rows),
             "cost_usd": _usd(sum(r["cost_usd"] for r in rows)),
             "models": [_model_usage_row(r) for r in rows],
+            "sources": [_usage_source(s) for s in sources],
         }
 
     return {
@@ -691,8 +721,14 @@ def usage_history(
             }
             for day in history["days"]
         ],
-        "today": {"date": local_today().isoformat(), **by_model(history["today_models"])},
-        "month": {"month": local_month_start().strftime("%Y-%m"), **by_model(history["models"])},
+        "today": {
+            "date": local_today().isoformat(),
+            **by_model(history["today_models"], history["today_sources"]),
+        },
+        "month": {
+            "month": local_month_start().strftime("%Y-%m"),
+            **by_model(history["models"], history["sources"]),
+        },
     }
 
 
@@ -703,6 +739,10 @@ def _owned_service_account_rows(user: User) -> list[dict]:
     return [
         {
             "username": account["username"],
+            # What an admin wrote about it; absent when there is none.
+            **({"description": account["description"]} if account.get("description") else {}),
+            # The department it is for (its owners must be in it); absent when it has none.
+            **({"department": account["department"]} if account.get("department") else {}),
             "daily_limit_usd": max(0.0, float(account["daily_limit_usd"])),
             "legacy_key": account["legacy_key"],
             "month": {
@@ -738,6 +778,11 @@ def owned_service_accounts(user: User = Depends(get_account_holder)):
     order (as ``month.models`` of ``/v1/usage``), and adds up to the
     month's totals. Nothing is left out of it: it is that account's bill,
     whatever cloud access the caller has.
+
+    ``description`` is one line an admin wrote to say what the account is,
+    ``department`` the department it is for; each key is absent when there
+    is none. An account made for another department than the caller's is
+    left out of the list, as on the dashboard, until an admin has looked.
 
     ``acts_for_users`` says the account sends requests for the people using
     it (``X-On-Behalf-Of``); ``on_behalf`` is what it sent for them this

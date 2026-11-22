@@ -551,16 +551,21 @@ def get_today_usage(user: User) -> dict:
 
 def get_usage_history(user: User, days: int) -> dict:
     """``user``'s usage for ``GET /v1/usage``: one row per local day for the
-    last ``days`` days (today included, quiet days as zeros) and this month's
-    rows per model and backend. Both read through ``usage_rollup.aggregate``
-    like the dashboard's. Short-lived session; blocking."""
-    from app.services.stats import get_daily_trends, get_model_breakdown
+    last ``days`` days (today included, quiet days as zeros), this month's
+    rows per model and backend, and the same two periods by the way the
+    usage came in (``stats.get_usage_sources``: the account's own key, or a
+    service account that sent requests for it). All read through
+    ``usage_rollup.aggregate`` like the dashboard's. Short-lived session;
+    blocking."""
+    from app.services.stats import get_daily_trends, get_model_breakdown, get_usage_sources
 
     with Session(engine) as session:
         return {
             "days": get_daily_trends(session, user.id, days=days),
             "models": get_model_breakdown(session, user.id, period="month"),
             "today_models": get_model_breakdown(session, user.id, period="day"),
+            "sources": get_usage_sources(session, user, period="month"),
+            "today_sources": get_usage_sources(session, user, period="day"),
         }
 
 

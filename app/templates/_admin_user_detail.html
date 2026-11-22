@@ -34,6 +34,7 @@
                 <div class="text-xs text-t4 font-mono truncate">
                     {{ u.username }}{% if u.org_code %} · {{ u.org_code }}{% endif %}{% if d.created %} · since {{ d.created[:10] }}{% endif %}
                 </div>
+                {% if u.description %}<div class="text-xs text-t3 truncate" data-ud-description title="{{ u.description }}">{{ u.description }}</div>{% endif %}
                 <div class="flex flex-wrap gap-1 mt-1.5">
                     {% if u.is_service_account %}<span class="gw-badge">Service</span>{% else %}<span class="gw-badge gw-badge-muted">User</span>{% endif %}
                     {% if is_self %}<span class="gw-badge gw-badge-muted">You</span>{% endif %}
@@ -102,6 +103,25 @@
         </div>
 
         {% if is_apps %}
+        {# What the account is, in the admin's words: shown beside its name on dashboards. Saves like an amount. #}
+        <form action="/admin/users/{{ u.id }}/description" method="POST" data-action="description" class="mt-3">
+            <label class="ud-label gw-tip gw-tip-wide" for="udDescription"
+                   data-tip="One line saying what this account is. Shown beside its name on its owners' dashboards and, when it acts for its users, on the dashboard of every person it sent requests for, who otherwise sees only the name.">Description</label>
+            <input id="udDescription" type="text" name="description" value="{{ u.description }}" maxlength="{{ description_max }}"
+                   data-autosave data-saved="{{ u.description }}" placeholder="HR chat page (intranet)"
+                   title="Enter or leave the field to save; Esc to undo" autocomplete="off"
+                   class="gw-input w-full text-sm py-1 px-2">
+        </form>
+        {# The department the account is for: its owners see it only while they are in it. #}
+        <form action="/admin/users/{{ u.id }}/department" method="POST" data-action="department" class="mt-3">
+            <label class="ud-label gw-tip gw-tip-wide" for="udDepartment"
+                   data-tip="The department this account belongs to, as an org code people sign in with. Its owners see the account, its key and its usage on their dashboard only while they are in this department; an owner who moved elsewhere sees nothing of it and is listed at the top of the admin page as an owner to review. Empty: no such check.">Department</label>
+            <input id="udDepartment" type="text" name="org_code" value="{{ d.department }}" maxlength="64" list="udDepartments"
+                   data-autosave data-saved="{{ d.department }}" placeholder="none: owners are not checked"
+                   title="Enter or leave the field to save; Esc to undo" autocomplete="off"
+                   class="gw-input w-56 text-sm font-mono py-1 px-2">
+            <datalist id="udDepartments">{% for code in departments %}<option value="{{ code }}">{% endfor %}</datalist>
+        </form>
         {# Owner picker (admin.html: data-owner-picker). A change is saved at once. #}
         <div class="ud-label mt-3 gw-tip gw-tip-wide"
              data-tip="The people this account is assigned to. Each sees it on the Service accounts tab of their dashboard: its key (and can regenerate it) and this month's usage. Only existing users can be picked.">Owners</div>
@@ -113,6 +133,19 @@
                 <input type="hidden" name="owner_usernames" value="{{ d.related|join(',') }}">
             </div>
         </form>
+        {# Owners an admin should look at. Nothing is taken away here: removing one is the picker's ×. #}
+        {% if d.owner_issues %}
+        <div class="mt-2 text-xs text-aa" data-ud-owner-issues>
+            {% for o in d.owner_issues %}
+            <div>
+                <span class="font-mono">{{ o.username }}</span>
+                {% if o.reason == 'department' %}is in {{ o.org_code or 'no department' }}, not {{ d.department }}: sees nothing of this account.
+                {% else %}is disabled.{% endif %}
+            </div>
+            {% endfor %}
+            <div class="text-t4 mt-0.5">Remove the owner, or change the department. If they still know the key, regenerate it.</div>
+        </div>
+        {% endif %}
         {% endif %}
     </section>
 

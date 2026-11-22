@@ -210,6 +210,22 @@ curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-ap
        "requests": 380, "input_tokens": 1200000, "output_tokens": 150000, "cost_usd": 30.0},
       {"model": "gpt-5", "backend": "azure", "type": "llm",
        "requests": 32, "input_tokens": 110000, "output_tokens": 14000, "cost_usd": 12.1}
+    ],
+    "sources": [
+      {"source": "own_key",
+       "requests": 372, "input_tokens": 1190000, "output_tokens": 148000, "cost_usd": 38.6,
+       "models": [
+         {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
+          "requests": 340, "input_tokens": 1080000, "output_tokens": 134000, "cost_usd": 26.5},
+         {"model": "gpt-5", "backend": "azure", "type": "llm",
+          "requests": 32, "input_tokens": 110000, "output_tokens": 14000, "cost_usd": 12.1}
+       ]},
+      {"source": "service_account", "service_account": "hr-chat", "description": "HR 問答頁面",
+       "requests": 40, "input_tokens": 120000, "output_tokens": 16000, "cost_usd": 3.5,
+       "models": [
+         {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
+          "requests": 40, "input_tokens": 120000, "output_tokens": 16000, "cost_usd": 3.5}
+       ]}
     ]
   }
 }
@@ -218,6 +234,8 @@ curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-ap
 - `days` 每個 `Asia/Taipei` 日曆日一筆，由舊到新，最後一筆是今天（仍在累計）。沒有用量的日子也會出現，數值為 0。`?days=` 決定回傳幾天：1 到 90，預設 7。
 - `today` 和 `month` 分別是今天和本月到目前為止的合計，`models` 依模型和後端分列，順序和 dashboard 一樣。
 - 和 dashboard 一樣，`today` 和 `month` 不包含你已經沒有權限的雲端後端；`days` 則全部都算，和每日額度的算法一致。
+- `today` 和 `month` 裡的 `sources`（範例只列出本月的）是同一份用量依「從哪裡進來」拆開，也就是 dashboard 的 *Usage Flow* 卡片。`own_key` 是你用自己的 API key 送的；每個 `service_account` 是一個你登入過、替你送請求的應用（見[下方](#有自己使用者的應用x-on-behalf-of)），名稱在 `service_account`，管理員有寫說明時會附上 `description`。每一筆都有自己的合計和 `models`。它們是該期間用量的一部分，不是額外的，加總等於該期間的合計。沒有用量的來源不會出現，所以完全沒用量時是空陣列。之後可能新增其他 `source` 值：遇到不認得的請略過。
+- 模型列可能帶有 `"overflow": true`：你指定的是地端模型，但地端壅塞時 gateway 改由這個雲端模型服務。
 
 ## 服務帳號
 
@@ -230,7 +248,8 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
   "object": "service_accounts",
   "month": "2026-10",
   "service_accounts": [
-    {"username": "billing-etl", "daily_limit_usd": 50.0, "legacy_key": false,
+    {"username": "billing-etl", "description": "每晚的帳務匯出", "department": "FIN2",
+     "daily_limit_usd": 50.0, "legacy_key": false,
      "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5,
                "models": [
                  {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
@@ -244,6 +263,8 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
 
 - 服務帳號是給程式用的帳號（批次工作、服務），由管理員指派給你。它以前叫 app 帳號：舊的帳號名稱是 `app_...`，新的可以是任何名稱。
 - `service_accounts` 列出你名下的服務帳號（沒有的話是空陣列），各自有自己的每日上限和本月用量：就是 dashboard 的 *Service accounts* 分頁。
+- `description` 是管理員寫的一行說明，講這個帳號是什麼；`department` 是它所屬的部門。沒有設定時不會有對應的 key。
+- 所屬部門和你不同的服務帳號不會列出來（dashboard 也一樣），即使它仍然指派給你：dashboard 的 *Service accounts* 分頁會寫出是哪一個帳號以及原因。如果這不對，請找管理員。
 - `month.models` 是當月依模型拆開的用量：每個模型和後端一列，順序和 dashboard 相同，加總等於當月合計。服務帳號用過的後端都會列出，和你自己的權限無關。
 - 不包含服務帳號的 API key，任何端點都不會回傳 key。要查看或重新產生，請到 dashboard 的 *Service accounts* 分頁。
 - `acts_for_users` 和 `on_behalf` 是給「替自己的使用者送請求」的應用用的（見下一節）：管理員是否為這個帳號開啟此功能，以及它本月替使用者送了多少（`users` 是幾位使用者）。這些用量記在使用者頭上，所以不在 `month` 裡。

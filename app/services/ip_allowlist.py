@@ -277,7 +277,12 @@ def check(request: Request, user: User) -> None:
     if mode == "off":
         return
     addr = client_address(request)
-    result = verdict(addr, user.username, user.org_code or "")
+    # A rule for a department admits its people. A service account's
+    # ``org_code`` is the department its owners must be in, set by an admin
+    # for another purpose: it opens no address here. A service account is
+    # admitted by name, or by a rule for everyone.
+    org_code = "" if user.is_service_account else (user.org_code or "")
+    result = verdict(addr, user.username, org_code)
     if result == "allowed":
         return
     addr_text = str(addr) if addr is not None else str(request.client.host if request.client else "")
