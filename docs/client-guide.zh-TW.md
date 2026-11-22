@@ -248,7 +248,8 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
   "object": "service_accounts",
   "month": "2026-10",
   "service_accounts": [
-    {"username": "billing-etl", "description": "每晚的帳務匯出", "daily_limit_usd": 50.0, "legacy_key": false,
+    {"username": "billing-etl", "description": "每晚的帳務匯出", "department": "FIN2",
+     "daily_limit_usd": 50.0, "legacy_key": false,
      "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5,
                "models": [
                  {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
@@ -262,7 +263,8 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
 
 - 服務帳號是給程式用的帳號（批次工作、服務），由管理員指派給你。它以前叫 app 帳號：舊的帳號名稱是 `app_...`，新的可以是任何名稱。
 - `service_accounts` 列出你名下的服務帳號（沒有的話是空陣列），各自有自己的每日上限和本月用量：就是 dashboard 的 *Service accounts* 分頁。
-- `description` 是管理員寫的一行說明，講這個帳號是什麼。沒有寫時不會有這個 key。
+- `description` 是管理員寫的一行說明，講這個帳號是什麼；`department` 是它所屬的部門。沒有設定時不會有對應的 key。
+- 所屬部門和你不同的服務帳號不會列出來（dashboard 也一樣），即使它仍然指派給你：dashboard 的 *Service accounts* 分頁會寫出是哪一個帳號以及原因。如果這不對，請找管理員。
 - `month.models` 是當月依模型拆開的用量：每個模型和後端一列，順序和 dashboard 相同，加總等於當月合計。服務帳號用過的後端都會列出，和你自己的權限無關。
 - 不包含服務帳號的 API key，任何端點都不會回傳 key。要查看或重新產生，請到 dashboard 的 *Service accounts* 分頁。
 - `acts_for_users` 和 `on_behalf` 是給「替自己的使用者送請求」的應用用的（見下一節）：管理員是否為這個帳號開啟此功能，以及它本月替使用者送了多少（`users` 是幾位使用者）。這些用量記在使用者頭上，所以不在 `month` 裡。

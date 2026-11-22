@@ -125,7 +125,7 @@
 
 {# ── Needs attention: anomalies, servers, budgets — what to act on first ── #}
 {% set n_crit = anomalies|selectattr('severity', 'equalto', 'critical')|list|length + system_status.down|length + budget_pressure|selectattr('percent', 'ge', 100)|list|length %}
-{% set n_attention = anomalies|length + system_status.down|length + system_status.queueing|length + budget_pressure|length + client_rule_attention|length %}
+{% set n_attention = anomalies|length + system_status.down|length + system_status.queueing|length + budget_pressure|length + client_rule_attention|length + owner_review|length %}
 {# A one-line strip on every tab; it opens to the details. Open by default
    on Overview, folded on the other tabs (see the script below), so the tab
    bar and the tab's own content are on screen when the page opens. #}
@@ -149,6 +149,7 @@
             {% if n_blocked_today %}<span class="gw-att-chip gw-att-crit">{{ n_blocked_today }} at daily limit</span>{% endif %}
             {% if budget_pressure|length - n_blocked_today %}<span class="gw-att-chip gw-att-warn">{{ budget_pressure|length - n_blocked_today }} near daily limit</span>{% endif %}
             {% if client_rule_attention %}<span class="gw-att-chip gw-att-warn">{{ client_rule_attention|length }} client rule{{ '' if client_rule_attention|length == 1 else 's' }} violated</span>{% endif %}
+            {% if owner_review %}<span class="gw-att-chip gw-att-warn">{{ owner_review|length }} service account owner{{ '' if owner_review|length == 1 else 's' }} to review</span>{% endif %}
         </span>
         <span class="ml-auto flex items-center gap-1.5 text-xs text-t4">
             <span class="group-open:hidden">Show</span><span class="hidden group-open:inline">Hide</span>
@@ -231,6 +232,20 @@
             {% for r in client_rule_attention %}
             <a href="#clients" onclick="setTimeout(function(){gwAdminReveal('client-rule-{{ r.id }}',{block:'center'});},50)"
                class="text-xs px-2 py-1 rounded hover:bg-[rgba(255,255,255,0.06)]" style="background:rgba(245,166,35,0.08);color:#f5a623"><span class="font-mono">{{ r.id }}</span> {{ r.name }} · {{ r.count }} account{{ '' if r.count == 1 else 's' }}</a>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+    {# Service accounts with an owner who is outside the account's department, or disabled #}
+    {% if owner_review %}
+    <div id="ownerReviewAttention" class="p-4" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <div class="text-[11px] font-bold uppercase tracking-wider text-t3 mb-2 gw-tip gw-tip-wide"
+             data-tip="An owner who is no longer in the department their service account is for sees nothing of it until you have looked; a disabled owner cannot sign in. Either may still know the key. Open the account to remove the owner or change the department. A person's department is what their last sign-in said.">Service account owners to review</div>
+        <div class="flex flex-wrap gap-1.5">
+            {% for a in owner_review %}
+            <button type="button" data-um-detail="{{ a.id }}"
+                    class="text-xs px-2 py-1 rounded hover:bg-[rgba(255,255,255,0.06)]" style="background:rgba(245,166,35,0.08);color:#f5a623"><span class="font-mono">{{ a.username }}</span>{% if a.department %} ({{ a.department }}){% endif %}:
+                {% for o in a.owners %}<span class="font-mono">{{ o.username }}</span> {{ 'disabled' if o.reason == 'disabled' else 'is in ' ~ (o.org_code or 'no department') }}{{ ', ' if not loop.last }}{% endfor %}</button>
             {% endfor %}
         </div>
     </div>
@@ -710,6 +725,12 @@ function submitExportCsv() {
             <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="One line saying what this account is. Shown beside its name on its owners' dashboards and on the dashboard of the people it sends requests for. Optional; change it later in the account's drawer.">Description</label>
             <input type="text" name="description" placeholder="Nightly billing export" maxlength="{{ description_max }}" autocomplete="off"
                    class="gw-input w-64 text-sm py-1.5 px-2">
+        </div>
+        <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="The department this account belongs to, as an org code people sign in with. Its owners must be in it: an owner who later moves elsewhere stops seeing the account and is listed at the top of this page as an owner to review. Empty: owners are not checked.">Department</label>
+            <input type="text" name="org_code" placeholder="org code" maxlength="64" list="createDepartments" autocomplete="off"
+                   class="gw-input w-36 text-sm font-mono py-1.5 px-2">
+            <datalist id="createDepartments">{% for code in departments %}<option value="{{ code }}">{% endfor %}</datalist>
         </div>
         <div>
             <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Max daily spend in USD. API returns 429 when limit is reached. 0 = $0 (every request refused).">Daily Limit (USD)</label>
@@ -2850,6 +2871,14 @@ function submitExportCsv() {
             if (action === 'cloud-limit') {
                 input.value = data.cloud_daily_limit_usd == null ? '' : data.cloud_daily_limit_usd;
                 gwToast(name + ': ' + (data.cloud_daily_limit_usd == null ? 'cloud cap follows the default.' : 'cloud cap $' + data.cloud_daily_limit_usd + '.'), 'ok');
+            }
+            if (action === 'department') {
+                // As the people in it have it spelled.
+                input.value = data.org_code || '';
+                var outside = data.outside || [];
+                gwToast(name + ': ' + (data.org_code ? 'department ' + data.org_code + '.' : 'no department: owners are not checked.')
+                        + (outside.length ? ' Not in it: ' + outside.join(', ') + '. They see nothing of this account now.' : ''),
+                        outside.length ? 'error' : 'ok');
             }
             if (action === 'description') {
                 // As the server keeps it: one line, whitespace collapsed.

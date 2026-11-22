@@ -72,6 +72,31 @@ def service_account_clause():
     return User.is_service_account.is_(True)  # type: ignore[attr-defined]
 
 
+def department_of(account: "User") -> str:
+    """The department a service account is for (its ``org_code``, set by an
+    admin), or "" when it has none. A person's ``org_code`` is their own
+    department, from their sign-in."""
+    return (account.org_code or "").strip()
+
+
+def same_department(a: str | None, b: str | None) -> bool:
+    """Two org codes name the same department: compared as the IP
+    allowlist compares them, ignoring case and surrounding space."""
+    return (a or "").strip().casefold() == (b or "").strip().casefold()
+
+
+def in_department(person: "User", account: "User") -> bool:
+    """May ``person``, an owner of the service account ``account``, see it?
+    Yes while the account has no department, or the person's own department
+    (``org_code``, kept from their last sign-in) is that one. Someone who
+    moved to another department keeps the assignment (only an admin ends
+    one) but sees nothing of the account until an admin has looked. The one
+    test for it: the dashboard, the key reissue and ``/v1/service-accounts``
+    all ask here, and the admin's warning is its negation."""
+    department = department_of(account)
+    return not department or same_department(person.org_code, department)
+
+
 def service_account_names(session) -> set[str]:
     """The usernames of every service account (``users`` is small): for code
     that holds usernames and no account, such as the client-rule violations."""
@@ -156,6 +181,11 @@ class User(SQLModel, table=True):
     description: str = Field(default="")
     owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     display_name: str = Field(default="")
+    # A person's department, from their sign-in (``auth._sync_user``). On a
+    # service account it is the department the account is for, set by an
+    # admin: its owners see it only while they are in that department
+    # (``in_department``). The IP allowlist does not read it there
+    # (``ip_allowlist.check``): a rule for a department admits its people.
     org_code: str = Field(default="")
     created_at: NaiveDatetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     # When the current API key was issued (NULL: before this was tracked and

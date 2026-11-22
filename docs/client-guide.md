@@ -248,7 +248,8 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
   "object": "service_accounts",
   "month": "2026-10",
   "service_accounts": [
-    {"username": "billing-etl", "description": "Nightly billing export", "daily_limit_usd": 50.0, "legacy_key": false,
+    {"username": "billing-etl", "description": "Nightly billing export", "department": "FIN2",
+     "daily_limit_usd": 50.0, "legacy_key": false,
      "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5,
                "models": [
                  {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
@@ -262,7 +263,8 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
 
 - A service account is an account for a program (a batch job, a service) that an administrator assigned to you. They used to be called app accounts: older ones are named `app_...`, newer ones anything.
 - `service_accounts` lists the ones you own (empty when you own none), each with its own daily limit and its usage this month: the dashboard's *Service accounts* tab.
-- `description` is one line an administrator wrote to say what the account is. It is absent when there is none.
+- `description` is one line an administrator wrote to say what the account is, and `department` is the department it belongs to. Each is absent when there is none.
+- An account that belongs to another department than yours is not listed, here or on the dashboard, even though it is still assigned to you: the dashboard's *Service accounts* tab names it and says why. Ask an administrator if that is wrong.
 - `month.models` is that month by model: one row per model and backend, in the dashboard's order, adding up to the month's totals. Every backend the service account used is listed, whatever your own access.
 - A service account's API key is not included, and no endpoint returns a key. See or regenerate it on the dashboard's *Service accounts* tab.
 - `acts_for_users` and `on_behalf` are about an application that sends requests for its users, below: whether an administrator turned that on for the account, and what it sent for them this month (for how many `users`). That usage is billed to those users, so it is no part of `month`.

@@ -44,6 +44,11 @@
     <td class="um-dim text-xs">
         {% if u.owners %}<span class="font-mono text-t2">{{ u.owners | join(', ') }}</span>
         {% else %}<span class="text-aa">nobody</span>{% endif %}
+        {# An owner outside the account's department (sees nothing of it meanwhile), or disabled: the drawer says who. #}
+        {% if u.owners_to_review %}
+        <div class="text-aa" data-owner-review
+             title="{% for o in u.owners_to_review %}{{ o.username }}: {{ 'disabled' if o.reason == 'disabled' else 'in ' ~ (o.org_code or 'no department') ~ ', not ' ~ u.org_code }}{{ '; ' if not loop.last }}{% endfor %}">{{ u.owners_to_review|length }} to review</div>
+        {% endif %}
     </td>
     {% endif %}
     <td class="whitespace-nowrap um-dim">

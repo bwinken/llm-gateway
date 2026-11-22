@@ -12,7 +12,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
-from app.models.schema import LEGACY_SERVICE_PREFIX, AppOwner, User, has_legacy_service_name, is_legacy_api_key
+from app.models.schema import (
+    LEGACY_SERVICE_PREFIX,
+    AppOwner,
+    User,
+    has_legacy_service_name,
+    in_department,
+    is_legacy_api_key,
+)
 
 from app.core.auth import get_web_user
 from app.core.deps import effective_cloud_limit
@@ -46,9 +53,12 @@ from app.services.model_order import (
     type_rank,
 )
 from app.services.stats import (
+    FLOW_TOP_USERS,
     get_daily_trends,
     get_model_breakdown,
+    get_on_behalf_users,
     get_owned_apps_summary,
+    get_withheld_apps,
     get_user_daily_summary,
     get_usage_sources,
     get_user_on_behalf_today,
@@ -203,6 +213,35 @@ def _usage_flow(session: Session, user: User) -> dict:
     return {"sources": sources, "total_cost_usd": round(total, 6)}
 
 
+def _service_flow(flow: dict | None) -> dict | None:
+    """A service account's month by the users it sent requests for
+    (``stats.get_on_behalf_users``), as its dashboard card shows it:
+    ``rows`` for the drawing (one per user and backend) and ``people``,
+    the same per user for the table under it, with ``share`` of the cost.
+    None when it sent nothing for anyone."""
+    if not flow:
+        return None
+    people: dict[str, dict] = {}
+    for row in flow["rows"]:
+        row["backend_label"] = _BACKEND_LABELS.get(row["backend"], row["backend"])
+        person = people.setdefault(row["user"], {
+            "user": row["user"], "display_name": row["display_name"], "others": row.get("others", 0),
+            "requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "backends": [],
+        })
+        for key in ("requests", "input_tokens", "output_tokens"):
+            person[key] += row[key]
+        person["cost_usd"] = round(person["cost_usd"] + row["cost_usd"], 6)
+        person["backends"].append(row["backend"])
+    total = sum(p["cost_usd"] for p in people.values())
+    for person in people.values():
+        person["share"] = round(person["cost_usd"] / total * 100 if total > 0 else 0.0, 1)
+        person["backends"].sort(key=lambda b: _BACKEND_ORDER.index(b) if b in _BACKEND_ORDER else len(_BACKEND_ORDER))
+    return {"rows": flow["rows"], "people": list(people.values()), "users": flow["users"]}
+
+
+_BACKEND_ORDER = ("vllm", "azure", "bedrock")
+
+
 def _owned_service_accounts(session: Session, user: User) -> list[dict]:
     """The dashboard's *Service accounts* tab: the accounts ``user`` owns
     (``stats.get_owned_apps_summary``, the data ``GET /v1/service-accounts`` serves), by
@@ -210,7 +249,10 @@ def _owned_service_accounts(session: Session, user: User) -> list[dict]:
     month. Every row is shown, whatever cloud access the viewer has: it is
     the service account's bill, not the viewer's."""
     accounts = sorted(get_owned_apps_summary(session, user.id), key=lambda a: natural_key(a["username"]))
+    # Who each sent requests for this month, and on which backend: the card's flow chart.
+    flows = get_on_behalf_users(session, [a["id"] for a in accounts if a["on_behalf"]["requests"]])
     for account in accounts:
+        account["flow"] = _service_flow(flows.get(account["id"]))
         name = account["username"]
         # Older accounts are named app_<name>: the letters after the prefix say more.
         account["initials"] = (name[len(LEGACY_SERVICE_PREFIX):] if has_legacy_service_name(name) else name)[:2].upper() or "?"
@@ -452,6 +494,8 @@ def dashboard(
             model_breakdown_groups=model_breakdown_groups,
             today_str=datetime.now(LOCAL_TZ).strftime("%Y-%m-%d"),
             owned_apps=owned_apps,
+            withheld_apps=get_withheld_apps(session, user.id),
+            flow_top_users=FLOW_TOP_USERS,
             service_month=local_month_start().strftime("%Y-%m"),
             legacy_key=is_legacy_api_key(user.api_key),
             legacy_app_keys=sum(1 for a in owned_apps if a.get("legacy_key")),
@@ -526,6 +570,14 @@ def refresh_owned_app_key(
     ).first()
     if not ownership:
         raise HTTPException(status_code=403, detail="You do not own this service account.")
+    # Assigned, but made for a department the owner is no longer in: they
+    # see nothing of it (``schema.in_department``), so they change nothing.
+    owner = session.get(User, user.id)
+    if owner is None or not in_department(owner, target):
+        raise HTTPException(
+            status_code=403,
+            detail="This service account is for another department than yours. Ask an administrator.",
+        )
 
     from app.models.schema import issue_api_key
     issue_api_key(target)

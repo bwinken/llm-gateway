@@ -741,6 +741,8 @@ def _owned_service_account_rows(user: User) -> list[dict]:
             "username": account["username"],
             # What an admin wrote about it; absent when there is none.
             **({"description": account["description"]} if account.get("description") else {}),
+            # The department it is for (its owners must be in it); absent when it has none.
+            **({"department": account["department"]} if account.get("department") else {}),
             "daily_limit_usd": max(0.0, float(account["daily_limit_usd"])),
             "legacy_key": account["legacy_key"],
             "month": {
@@ -777,8 +779,10 @@ def owned_service_accounts(user: User = Depends(get_account_holder)):
     month's totals. Nothing is left out of it: it is that account's bill,
     whatever cloud access the caller has.
 
-    ``description`` is one line an admin wrote to say what the account is;
-    the key is absent when there is none.
+    ``description`` is one line an admin wrote to say what the account is,
+    ``department`` the department it is for; each key is absent when there
+    is none. An account made for another department than the caller's is
+    left out of the list, as on the dashboard, until an admin has looked.
 
     ``acts_for_users`` says the account sends requests for the people using
     it (``X-On-Behalf-Of``); ``on_behalf`` is what it sent for them this

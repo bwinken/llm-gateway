@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from datetime import timedelta
 
 from sqlalchemy import case as sa_case
+from sqlalchemy.orm import aliased as sa_aliased
 from sqlmodel import Session, func, select
 
 from app.core.timeutil import local_day_start_utc, local_month_start, local_today
@@ -15,6 +16,8 @@ from app.models.schema import (
     AppOwner,
     UsageLog,
     User,
+    department_of,
+    in_department,
     service_account_clause,
     is_legacy_api_key,
 )
@@ -430,6 +433,140 @@ def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
     }
 
 
+def _assigned_apps(session: Session, owner_id: int) -> tuple[list[User], list[User]]:
+    """The service accounts assigned to this person (``app_owners``), as
+    ``(seen, withheld)``: the ones they may see, and the ones made for a
+    department they are not in (``schema.in_department``)."""
+    owner = session.get(User, owner_id)
+    if owner is None:
+        return [], []
+    app_ids = select(AppOwner.app_id).where(AppOwner.owner_id == owner_id)
+    apps = session.exec(select(User).where(User.id.in_(app_ids))).all()  # type: ignore[attr-defined]
+    seen = [a for a in apps if in_department(owner, a)]
+    return seen, [a for a in apps if a not in seen]
+
+
+def get_withheld_apps(session: Session, owner_id: int) -> list[dict]:
+    """The service accounts assigned to this person that they may not see
+    now, because each is for another department than theirs: ``username``
+    and ``department``, by name. Nothing else of the account is given."""
+    _, withheld = _assigned_apps(session, owner_id)
+    return sorted(
+        ({"username": a.username, "department": department_of(a)} for a in withheld),
+        key=lambda a: a["username"],
+    )
+
+
+def owners_to_review(session: Session) -> list[dict]:
+    """For the admin: the service accounts with an owner who should no
+    longer be one as things stand. Per account ``id``, ``username``,
+    ``department`` and ``owners``, each ``{"username", "org_code",
+    "reason"}`` with ``reason`` ``department`` (the account is for a
+    department the owner is not in: ``schema.in_department``, so they see
+    nothing of it meanwhile) or ``disabled`` (the owner's account is
+    disabled: how the gateway knows someone left). By account name.
+
+    Read from ``users`` and ``app_owners`` as they are now, so it clears
+    itself once an admin removes the owner, changes the department or the
+    person signs in from the right one. A person's department is what their
+    last sign-in said: the gateway learns of a move when they next sign in."""
+    owner = sa_aliased(User)
+    rows = session.exec(
+        select(User, owner)
+        .join(AppOwner, AppOwner.app_id == User.id)
+        .join(owner, owner.id == AppOwner.owner_id)
+        .order_by(User.username, owner.username)
+    ).all()
+    found: dict[int, dict] = {}
+    for account, person in rows:
+        if not in_department(person, account):
+            reason = "department"
+        elif person.is_disabled:
+            reason = "disabled"
+        else:
+            continue
+        entry = found.setdefault(int(account.id), {
+            "id": account.id, "username": account.username, "department": department_of(account), "owners": [],
+        })
+        entry["owners"].append({"username": person.username, "org_code": person.org_code or "", "reason": reason})
+    return list(found.values())
+
+
+FLOW_TOP_USERS = 10
+
+
+def get_on_behalf_users(
+    session: Session, service_account_ids: Iterable[int], top: int = FLOW_TOP_USERS,
+) -> dict[int, dict]:
+    """Per service account, who it sent requests for this local month and
+    on which backend (``X-On-Behalf-Of``): for its owner's flow chart.
+
+    ``{id: {"rows": [...], "users": n}}``. A row is one user on one backend:
+    ``user`` (the username, or ``#<id>`` for a deleted account),
+    ``display_name``, ``backend`` and the usual totals. Only the ``top``
+    users by cost (tokens, then name, where the cost is the same: on-prem
+    may be priced at $0) are named; the rest are one row per backend with
+    ``user`` ``""`` and ``others``, how many users it stands for. ``users``
+    counts all of them. Accounts with nothing are absent. It is those
+    users' usage (their bills), read through ``aggregate``."""
+    ids = sorted({int(i) for i in service_account_ids})
+    per: dict[int, dict[int, dict[str, dict]]] = {}
+    for (via, uid, backend), entry in aggregate(
+        session, local_month_start(), _tomorrow(), ("via_user_id", "user_id", "backend"), via_user_ids=ids,
+    ).items():
+        if not via:
+            continue
+        per.setdefault(int(via), {}).setdefault(int(uid), {})[backend or "vllm"] = _totals(entry)
+    if not per:
+        return {}
+    people = {
+        int(uid): (username, display_name or "")
+        for uid, username, display_name in session.exec(
+            select(User.id, User.username, User.display_name)
+            .where(User.id.in_(sorted({uid for users in per.values() for uid in users})))  # type: ignore[attr-defined]
+        ).all()
+    }
+
+    def _sum(backends: dict[str, dict], key: str):
+        return sum(t[key] for t in backends.values())
+
+    def _in_order(backends: dict[str, dict]) -> list[tuple[str, dict]]:
+        """On-prem, Azure, Bedrock, then any other: the pages' backend order."""
+        return sorted(backends.items(), key=lambda item: (
+            SPEND_BACKENDS.index(item[0]) if item[0] in SPEND_BACKENDS else len(SPEND_BACKENDS), item[0],
+        ))
+
+    out: dict[int, dict] = {}
+    for via, users in per.items():
+        ranked = sorted(users, key=lambda uid: (
+            -_sum(users[uid], "cost"),
+            -(_sum(users[uid], "input_tokens") + _sum(users[uid], "output_tokens")),
+            people.get(uid, (f"#{uid}", ""))[0],
+        ))
+        rows: list[dict] = []
+        for uid in ranked[:top]:
+            username, display_name = people.get(uid, (f"#{uid}", ""))
+            for backend, t in _in_order(users[uid]):
+                rows.append({
+                    "user": username, "display_name": display_name, "backend": backend,
+                    "requests": t["requests"], "input_tokens": t["input_tokens"],
+                    "output_tokens": t["output_tokens"], "cost_usd": round(t["cost"], 6),
+                })
+        rest: dict[str, dict] = {}
+        for uid in ranked[top:]:
+            for backend, t in _in_order(users[uid]):
+                row = rest.setdefault(backend, {
+                    "user": "", "display_name": "", "backend": backend, "others": len(ranked) - top,
+                    "requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0,
+                })
+                row["requests"] += t["requests"]
+                row["input_tokens"] += t["input_tokens"]
+                row["output_tokens"] += t["output_tokens"]
+                row["cost_usd"] = round(row["cost_usd"] + t["cost"], 6)
+        out[via] = {"rows": rows + [row for _, row in _in_order(rest)], "users": len(ranked)}
+    return out
+
+
 def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
     """The service accounts this user owns (``app_owners``), each with this
     local month's usage: the totals and one ``models`` row per model and
@@ -437,9 +574,12 @@ def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
     of them, and one for ``on_behalf``: what the account sent for its users
     (``get_on_behalf_month``), which is on their bills and in none of the
     account's own figures. ("apps" in the names here is the older word for service
-    accounts.)"""
-    app_ids_stmt = select(AppOwner.app_id).where(AppOwner.owner_id == owner_id)
-    apps = session.exec(select(User).where(User.id.in_(app_ids_stmt))).all()  # type: ignore[attr-defined]
+    accounts.)
+
+    Only the accounts the owner may see now: one made for another
+    department than the owner's is left out (``schema.in_department``;
+    ``get_withheld_apps`` names those)."""
+    apps, _ = _assigned_apps(session, owner_id)
     if not apps:
         return []
 
@@ -471,6 +611,7 @@ def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
             "id": app.id,
             "username": app.username,
             "description": app.description or "",
+            "department": department_of(app),
             "api_key": app.api_key,
             "legacy_key": is_legacy_api_key(app.api_key),
             "daily_limit_usd": app.daily_limit_usd,

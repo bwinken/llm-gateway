@@ -18,6 +18,20 @@
 {% macro money(v) -%}${{ "%.4f"|format(v) if 0 < v < 0.01 else "%.2f"|format(v) }}{%- endmacro %}
 {# A price per 1M tokens: two decimals ($0.50, $15.00), more only when the
    price has more ($0.025). #}
+{# The parts every flow chart has (gwFlowChart, in the Usage tab): the measure switch, and the
+   drawing with its legend. #}
+{% macro flow_metric() -%}
+<div class="bg-n1 p-1 rounded-lg inline-flex items-center gap-0.5" data-flow-metric-bar>
+    <button type="button" data-flow-metric="cost" class="gw-chtab gw-chtab-on" aria-pressed="true">Cost</button>
+    <button type="button" data-flow-metric="tokens" class="gw-chtab" aria-pressed="false">Tokens</button>
+    <button type="button" data-flow-metric="requests" class="gw-chtab" aria-pressed="false">Requests</button>
+</div>
+{%- endmacro %}
+{% macro flow_body(label) -%}
+<div class="gw-flow" data-flow-chart role="img" aria-label="{{ label }}"></div>
+<div class="text-sm text-t4 py-6 text-center" data-flow-empty style="display:none">Nothing to draw for this measure: every figure is zero.</div>
+<div class="gw-flow-legend" data-flow-legend></div>
+{%- endmacro %}
 {% macro price(v) -%}${{ "%.2f"|format(v) if (v * 100)|round(6) == (v * 100)|round(0) else "%g"|format(v) }}{%- endmacro %}
 {% set band = {
     'ok':        {'color': '#3dd68c', 'soft': 'rgba(61,214,140,0.10)',  'edge': 'rgba(61,214,140,0.22)'},
@@ -196,7 +210,7 @@
         <span class="gw-tab-count">{{ money(total_cost) }} this month</span>
     </button>
     {# Only for people an admin assigned a service account to. #}
-    {% if owned_apps %}
+    {% if owned_apps or withheld_apps %}
     <button type="button" class="gw-tab" data-tab="service" role="tab">
         Service accounts
         <span class="gw-tab-count">{{ owned_apps | length }}</span>
@@ -508,19 +522,12 @@
         <h3 class="text-xs font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide"
             data-tip="Where this month's usage came in (your own API key, or an application that sent requests for you after you signed in to it) and which models served it. All of it is on your bill.">Usage Flow <span class="text-t4 font-normal normal-case tracking-normal ml-1">This month</span></h3>
         {% if usage_flow.sources %}
-        <div class="bg-n1 p-1 rounded-lg inline-flex items-center gap-0.5" id="ufMetric">
-            <button type="button" data-uf-metric="cost" class="gw-chtab gw-chtab-on" aria-pressed="true">Cost</button>
-            <button type="button" data-uf-metric="tokens" class="gw-chtab" aria-pressed="false">Tokens</button>
-            <button type="button" data-uf-metric="requests" class="gw-chtab" aria-pressed="false">Requests</button>
-        </div>
+        {{ flow_metric() }}
         {% endif %}
     </div>
     {% if usage_flow.sources %}
     <div class="px-5 pt-5">
-        <div id="ufChart" class="gw-flow" role="img"
-             aria-label="This month's usage by the way it came in and the models that served it. The table below has the same figures."></div>
-        <div id="ufEmpty" class="text-sm text-t4 py-6 text-center" style="display:none">Nothing to draw for this measure: every figure is zero.</div>
-        <div class="gw-flow-legend" id="ufLegend"></div>
+        {{ flow_body("This month's usage by the way it came in and the models that served it. The table below has the same figures.") }}
     </div>
     <div class="overflow-x-auto" style="max-height:420px;overflow-y:auto">
         <table class="gw-table" id="ufTable">
@@ -608,30 +615,38 @@
     .gw-flow-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
 </style>
 
-{% if usage_flow.sources %}
-<div id="ufData" data-sources='{{ usage_flow.sources | tojson }}' style="display:none;"></div>
 <script>
-    // ── Usage flow: a two-column Sankey, drawn as SVG ──
-    // Left, the ways the usage came in; right, the models, in the page's backend hues
-    // (green = on-prem, purple = Azure, orange = AWS). A band's thickness is the chosen
-    // measure. Names come from the server as data and are only ever set with textContent.
-    (function () {
-        var chart = document.getElementById('ufChart');
-        var SOURCES = JSON.parse(document.getElementById('ufData').dataset.sources || '[]');
+    // ── Flow charts: a two-column Sankey, drawn as SVG ──
+    // gwFlowChart(root, build) draws into root's [data-flow-chart]. build(measure) gives the
+    // graph for the chosen measure: {left, right, links, keys}. A node is {label, color, total,
+    // kind (a word said beside its figure, or ''), note (for the tooltip)}; a link is {from, to,
+    // total, color}; a total is {cost_usd, requests, input_tokens, output_tokens}; keys are the
+    // legend, [label, colour]. A band's thickness is the measure. Every name is data from the
+    // server and is only ever set with textContent.
+    var GW_FLOW_BACKENDS = ['vllm', 'azure', 'bedrock'];
+    var GW_FLOW_BACKEND = {
+        vllm:    { label: 'On-prem', color: '#3dd68c' },
+        azure:   { label: 'Azure',   color: '#a78bfa' },
+        bedrock: { label: 'AWS',     color: '#ff9933' }
+    };
+    function gwFlowBackend(key) { return GW_FLOW_BACKEND[key] || { label: key, color: '#9aa1b3' }; }
+    function gwFlowBackendRank(key) { var i = GW_FLOW_BACKENDS.indexOf(key); return i < 0 ? GW_FLOW_BACKENDS.length : i; }
+    function gwFlowZero() { return { cost_usd: 0, requests: 0, input_tokens: 0, output_tokens: 0 }; }
+    function gwFlowAdd(into, r) {
+        into.cost_usd += r.cost_usd; into.requests += r.requests;
+        into.input_tokens += r.input_tokens; into.output_tokens += r.output_tokens;
+    }
+
+    function gwFlowChart(root, build) {
+        var chart = root.querySelector('[data-flow-chart]');
+        var emptyNote = root.querySelector('[data-flow-empty]');
+        var legend = root.querySelector('[data-flow-legend]');
+        var bar = root.querySelector('[data-flow-metric-bar]');
         var NS = 'http://www.w3.org/2000/svg';
-        var BACKENDS = ['vllm', 'azure', 'bedrock'];
-        var BACKEND = {
-            vllm:    { label: 'On-prem', color: '#3dd68c' },
-            azure:   { label: 'Azure',   color: '#a78bfa' },
-            bedrock: { label: 'AWS',     color: '#ff9933' }
-        };
-        var OTHER_COLOR = '#9aa1b3', OWN_COLOR = '#c4c9d4', APP_COLOR = '#6398ff';
-        var MAX_MODELS = 8;      // model nodes shown by name; the rest fold per backend
         var NODE_W = 12, GAP = 10, SLOT = 32, MIN_NODE = 2;
         var metric = 'cost';
         var tip = null;
 
-        function backendOf(key) { return BACKEND[key] || { label: key, color: OTHER_COLOR }; }
         function measure(r) {
             if (metric === 'cost') return r.cost_usd;
             if (metric === 'requests') return r.requests;
@@ -646,78 +661,12 @@
             if (metric === 'cost') return gwMoney(v);
             return fmtCount(v) + (metric === 'requests' ? ' req' : ' tok');
         }
-        function add(into, r) {
-            into.cost_usd += r.cost_usd; into.requests += r.requests;
-            into.input_tokens += r.input_tokens; into.output_tokens += r.output_tokens;
-        }
-        function zero() { return { cost_usd: 0, requests: 0, input_tokens: 0, output_tokens: 0 }; }
-
-        // Sources, models and the bands between them, for the chosen measure.
-        function graph() {
-            var models = {}, order = [];
-            SOURCES.forEach(function (s) {
-                s.models.forEach(function (r) {
-                    var key = r.backend + '|' + r.model;
-                    if (!models[key]) { models[key] = { key: key, backend: r.backend, label: r.model, total: zero() }; order.push(key); }
-                    add(models[key].total, r);
-                });
-            });
-            // The largest models keep their name; the others fold into their backend.
-            var ranked = order.map(function (k) { return models[k]; })
-                .sort(function (a, b) { return measure(b.total) - measure(a.total); });
-            var named = {};
-            ranked.slice(0, MAX_MODELS).forEach(function (m) { named[m.key] = true; });
-            var targets = {}, links = {};
-            var left = [];
-            SOURCES.forEach(function (s, i) {
-                var node = {
-                    id: 's' + i, side: 'left', total: zero(),
-                    label: s.source === 'own_key' ? 'Your API key' : s.service_account,
-                    note: s.source === 'own_key' ? '' : (s.description || ''),
-                    kind: s.source === 'own_key' ? '' : 'application',
-                    color: s.source === 'own_key' ? OWN_COLOR : APP_COLOR
-                };
-                s.models.forEach(function (r) {
-                    var key = r.backend + '|' + r.model;
-                    var id = named[key] ? key : 'other|' + r.backend;
-                    if (!targets[id]) {
-                        targets[id] = {
-                            id: id, side: 'right', backend: r.backend, total: zero(), folded: named[key] ? 0 : {},
-                            label: named[key] ? r.model : 'Other ' + backendOf(r.backend).label + ' models',
-                            kind: backendOf(r.backend).label, color: backendOf(r.backend).color, note: ''
-                        };
-                    }
-                    if (!named[key]) targets[id].folded[key] = true;
-                    add(targets[id].total, r);
-                    add(node.total, r);
-                    var lid = node.id + '>' + id;
-                    if (!links[lid]) links[lid] = { from: node, to: targets[id], total: zero() };
-                    add(links[lid].total, r);
-                });
-                left.push(node);
-            });
-            var rank = function (b) { var i = BACKENDS.indexOf(b); return i < 0 ? BACKENDS.length : i; };
-            var right = Object.keys(targets).map(function (k) { return targets[k]; });
-            right.forEach(function (t) {
-                if (t.folded) { t.note = Object.keys(t.folded).length + ' models'; }
-            });
-            right.sort(function (a, b) {
-                return rank(a.backend) - rank(b.backend) || (!!a.folded - !!b.folded) || measure(b.total) - measure(a.total);
-            });
-            var live = function (n) { return measure(n.total) > 0; };
-            return {
-                left: left.filter(live), right: right.filter(live),
-                links: Object.keys(links).map(function (k) { return links[k]; }).filter(live)
-            };
-        }
-
         function svg(tag, attrs, parent) {
             var el = document.createElementNS(NS, tag);
             for (var k in attrs) el.setAttribute(k, attrs[k]);
             if (parent) parent.appendChild(el);
             return el;
         }
-
         // Shorten a label until it fits its margin (names are data: any length).
         function fit(text, full, width) {
             text.textContent = full;
@@ -727,7 +676,6 @@
                 text.textContent = s + '…';
             }
         }
-
         function place(nodes, total, height) {
             var scale = (height - GAP * (nodes.length - 1)) / total;
             var y = 0;
@@ -740,7 +688,6 @@
             });
             return y - GAP;
         }
-
         function hideTip() { if (tip) { tip.remove(); tip = null; } }
         function showTip(title, note, totals, x, y) {
             hideTip();
@@ -770,10 +717,12 @@
             if (!width) return;   // inside a hidden tab: drawn on the resize the tab switch fires
             hideTip();
             chart.querySelectorAll('svg').forEach(function (old) { old.remove(); });
-            var g = graph();
+            var g = build(measure);
+            var live = function (n) { return measure(n.total) > 0; };
+            g.left = g.left.filter(live); g.right = g.right.filter(live); g.links = g.links.filter(live);
             var total = g.left.reduce(function (a, n) { return a + measure(n.total); }, 0);
-            document.getElementById('ufEmpty').style.display = total > 0 ? 'none' : '';
-            document.getElementById('ufLegend').style.display = total > 0 ? '' : 'none';
+            emptyNote.style.display = total > 0 ? 'none' : '';
+            legend.style.display = total > 0 ? '' : 'none';
             if (!(total > 0)) return;
 
             var narrow = width < 620;
@@ -783,12 +732,12 @@
             var hl = place(g.left, total, height), hr = place(g.right, total, height);
             var full = Math.max(hl, hr);
             // The shorter column sits in the middle of the taller one.
-            g.left.forEach(function (n) { n.y += (full - hl) / 2; });
-            g.right.forEach(function (n) { n.y += (full - hr) / 2; });
+            g.left.forEach(function (n) { n.side = 'left'; n.y += (full - hl) / 2; });
+            g.right.forEach(function (n) { n.side = 'right'; n.y += (full - hr) / 2; });
 
-            var root = svg('svg', { viewBox: '0 0 ' + width + ' ' + (full + 8), height: full + 8 }, chart);
+            var top = svg('svg', { viewBox: '0 0 ' + width + ' ' + (full + 8), height: full + 8 }, chart);
             var x0 = ml + NODE_W, x1 = width - mr - NODE_W, mid = (x0 + x1) / 2;
-            var bands = svg('g', {}, root);
+            var bands = svg('g', {}, top);
             var linkEls = [];
 
             function emphasize(test) {
@@ -797,7 +746,7 @@
                 });
             }
 
-            // Bands leave a source in the order of the models, so none cross at its edge.
+            // Bands leave a node in the order of the other column, so none cross at its edge.
             g.links.sort(function (a, b) {
                 return g.left.indexOf(a.from) - g.left.indexOf(b.from) || g.right.indexOf(a.to) - g.right.indexOf(b.to);
             });
@@ -810,13 +759,12 @@
                 link.to.used += v / measure(link.to.total) * link.to.h;
                 var d = 'M' + x0 + ',' + a + ' C' + mid + ',' + a + ' ' + mid + ',' + b + ' ' + x1 + ',' + b +
                         ' L' + x1 + ',' + (b + t1) + ' C' + mid + ',' + (b + t1) + ' ' + mid + ',' + (a + t0) + ' ' + x0 + ',' + (a + t0) + ' Z';
-                var el = svg('path', { d: d, fill: link.to.color, 'fill-opacity': 0.38, 'class': 'gw-flow-link' }, bands);
-                var item = { el: el, link: link };
-                linkEls.push(item);
+                var el = svg('path', { d: d, fill: link.color, 'fill-opacity': 0.38, 'class': 'gw-flow-link' }, bands);
+                linkEls.push({ el: el, link: link });
                 el.addEventListener('pointermove', function (e) {
                     emphasize(function (l) { return l === link; });
                     var p = at(e);
-                    showTip(link.from.label + ' → ' + link.to.label, link.to.kind, link.total, p[0], p[1]);
+                    showTip(link.from.label + ' → ' + link.to.label, link.note || '', link.total, p[0], p[1]);
                 });
                 el.addEventListener('pointerleave', function () { emphasize(null); hideTip(); });
             });
@@ -828,7 +776,7 @@
                 var group = svg('g', {
                     'class': 'gw-flow-node', tabindex: 0, role: 'img',
                     'aria-label': n.label + (n.kind ? ' (' + n.kind + ')' : '') + ': ' + fmt(measure(n.total)) + ', ' + share + '%'
-                }, root);
+                }, top);
                 svg('rect', { x: x, y: n.y, width: NODE_W, height: n.h, rx: Math.min(3, n.h / 2), fill: n.color }, group);
                 // A wider, invisible target: a thin node is hard to point at.
                 svg('rect', { x: left ? 0 : x - 4, y: n.y - (n.slot - n.h) / 2, width: left ? ml + NODE_W + 4 : mr + NODE_W + 4, height: n.slot, fill: 'transparent' }, group);
@@ -838,7 +786,8 @@
                 fit(name, n.label, room);
                 var value = svg('text', { x: tx, y: cy + 11, 'text-anchor': left ? 'end' : 'start', 'class': 'gw-flow-value' }, group);
                 // On a narrow screen the figures alone: the tooltip and the table say what kind it is.
-                fit(value, (n.kind && !narrow ? (n.kind === 'application' ? 'app' : n.kind) + ' · ' : '') + fmt(measure(n.total)) + ' · ' + share + '%', room);
+                var word = n.kind && !narrow ? (n.kind === 'application' ? 'app' : n.kind) + ' · ' : '';
+                fit(value, word + fmt(measure(n.total)) + ' · ' + share + '%', room);
                 var mine = function (l) { return l.from === n || l.to === n; };
                 var open = function (px, py) {
                     emphasize(mine);
@@ -853,17 +802,8 @@
             g.right.forEach(drawNode);
 
             // The legend names what the colours stand for; only what is drawn is listed.
-            var legend = document.getElementById('ufLegend');
             legend.textContent = '';
-            var keys = [];
-            if (g.left.some(function (n) { return !n.kind; })) keys.push(['Your API key', OWN_COLOR]);
-            if (g.left.some(function (n) { return n.kind; })) keys.push(['An application, for you', APP_COLOR]);
-            var seen = {};
-            g.right.forEach(function (n) {
-                if (seen[n.kind]) return;
-                seen[n.kind] = true; keys.push([n.kind + ' model', n.color]);
-            });
-            keys.forEach(function (k) {
+            (g.keys || []).forEach(function (k) {
                 var item = document.createElement('span'); item.className = 'gw-flow-key';
                 var swatch = document.createElement('span'); swatch.className = 'gw-flow-swatch'; swatch.style.background = k[1];
                 var label = document.createElement('span'); label.textContent = k[0];
@@ -871,15 +811,18 @@
             });
         }
 
-        document.getElementById('ufMetric').addEventListener('click', function (e) {
-            var btn = e.target.closest('[data-uf-metric]');
-            if (!btn || btn.dataset.ufMetric === metric) return;
-            metric = btn.dataset.ufMetric;
-            this.querySelectorAll('[data-uf-metric]').forEach(function (b) {
-                var on = b === btn;
+        function setMetric(next) {
+            metric = next;
+            bar.querySelectorAll('[data-flow-metric]').forEach(function (b) {
+                var on = b.dataset.flowMetric === metric;
                 b.className = on ? 'gw-chtab gw-chtab-on' : 'gw-chtab';
                 b.setAttribute('aria-pressed', on ? 'true' : 'false');
             });
+        }
+        bar.addEventListener('click', function (e) {
+            var btn = e.target.closest('[data-flow-metric]');
+            if (!btn || btn.dataset.flowMetric === metric) return;
+            setMetric(btn.dataset.flowMetric);
             render();
         });
         var pending = 0;
@@ -887,18 +830,81 @@
             cancelAnimationFrame(pending);
             pending = requestAnimationFrame(render);
         });
+        return {
+            // On-prem prices may be $0: a month that cost nothing opens on tokens.
+            start: function (anyCost) { if (!anyCost) setMetric('tokens'); render(); }
+        };
+    }
+</script>
 
-        // On-prem prices may be $0: when the month cost nothing, open on tokens.
-        if (!SOURCES.some(function (s) { return s.cost_usd > 0; })) {
-            var tokens = document.querySelector('[data-uf-metric="tokens"]');
-            metric = 'tokens';
-            document.querySelectorAll('#ufMetric [data-uf-metric]').forEach(function (b) {
-                var on = b === tokens;
-                b.className = on ? 'gw-chtab gw-chtab-on' : 'gw-chtab';
-                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+{% if usage_flow.sources %}
+<div id="ufData" data-sources='{{ usage_flow.sources | tojson }}' style="display:none;"></div>
+<script>
+    // ── Usage flow: the ways the usage came in → the models that served it ──
+    (function () {
+        var SOURCES = JSON.parse(document.getElementById('ufData').dataset.sources || '[]');
+        var OWN_COLOR = '#c4c9d4', APP_COLOR = '#6398ff';
+        var MAX_MODELS = 8;      // model nodes shown by name; the rest fold per backend
+
+        function graph(measure) {
+            var models = {}, order = [];
+            SOURCES.forEach(function (s) {
+                s.models.forEach(function (r) {
+                    var key = r.backend + '|' + r.model;
+                    if (!models[key]) { models[key] = { key: key, total: gwFlowZero() }; order.push(key); }
+                    gwFlowAdd(models[key].total, r);
+                });
             });
+            // The largest models keep their name; the others fold into their backend.
+            var named = {};
+            order.map(function (k) { return models[k]; })
+                .sort(function (a, b) { return measure(b.total) - measure(a.total); })
+                .slice(0, MAX_MODELS).forEach(function (m) { named[m.key] = true; });
+            var targets = {}, links = {}, left = [];
+            SOURCES.forEach(function (s, i) {
+                var own = s.source === 'own_key';
+                var node = {
+                    total: gwFlowZero(), label: own ? 'Your API key' : s.service_account,
+                    note: own ? '' : (s.description || ''), kind: own ? '' : 'application',
+                    color: own ? OWN_COLOR : APP_COLOR
+                };
+                s.models.forEach(function (r) {
+                    var key = r.backend + '|' + r.model, backend = gwFlowBackend(r.backend);
+                    var id = named[key] ? key : 'other|' + r.backend;
+                    if (!targets[id]) {
+                        targets[id] = {
+                            backend: r.backend, total: gwFlowZero(), folded: named[key] ? null : {},
+                            label: named[key] ? r.model : 'Other ' + backend.label + ' models',
+                            kind: backend.label, color: backend.color, note: ''
+                        };
+                    }
+                    if (!named[key]) targets[id].folded[key] = true;
+                    gwFlowAdd(targets[id].total, r);
+                    gwFlowAdd(node.total, r);
+                    var lid = i + '>' + id;
+                    if (!links[lid]) links[lid] = { from: node, to: targets[id], total: gwFlowZero(), color: backend.color, note: backend.label };
+                    gwFlowAdd(links[lid].total, r);
+                });
+                left.push(node);
+            });
+            var right = Object.keys(targets).map(function (k) { return targets[k]; });
+            right.forEach(function (t) { if (t.folded) t.note = Object.keys(t.folded).length + ' models'; });
+            right.sort(function (a, b) {
+                return gwFlowBackendRank(a.backend) - gwFlowBackendRank(b.backend) || (!!a.folded - !!b.folded) || measure(b.total) - measure(a.total);
+            });
+            var keys = [];
+            if (left.some(function (n) { return !n.kind && measure(n.total) > 0; })) keys.push(['Your API key', OWN_COLOR]);
+            if (left.some(function (n) { return n.kind && measure(n.total) > 0; })) keys.push(['An application, for you', APP_COLOR]);
+            var seen = {};
+            right.forEach(function (n) {
+                if (seen[n.kind] || !(measure(n.total) > 0)) return;
+                seen[n.kind] = true; keys.push([n.kind + ' model', n.color]);
+            });
+            return { left: left, right: right, links: Object.keys(links).map(function (k) { return links[k]; }), keys: keys };
         }
-        render();
+
+        gwFlowChart(document.getElementById('usageFlow'), graph)
+            .start(SOURCES.some(function (s) { return s.cost_usd > 0; }));
     })();
 </script>
 {% endif %}
@@ -1226,12 +1232,24 @@
 
 {# ── Service accounts: the accounts for programs an admin assigned to this user (app_owners),
       each with its key and this month's usage per model. Formerly "My App Accounts". ── #}
-{% if owned_apps %}
+{% if owned_apps or withheld_apps %}
 <div data-panel="service">
 <p class="text-xs text-t4 mb-4 max-w-3xl">
     Accounts for programs (a batch job, a service) that an administrator assigned to you. Each has its own API key, daily limit and bill, separate from yours.
     Usage below is this month's, {{ service_month }}.
 </p>
+{# Assigned to this person, but made for a department they are not in (schema.in_department):
+   named, and nothing else of the account is shown. An administrator is told as well. #}
+{% if withheld_apps %}
+<div class="gw-card p-4 mb-6 text-sm" style="border-color:rgba(245,166,35,0.3);background:rgba(245,166,35,0.05)" data-service-withheld>
+    <div class="font-semibold text-aa mb-1">{{ withheld_apps | length }} service account{{ '' if withheld_apps | length == 1 else 's' }} not shown</div>
+    <p class="text-xs text-t3 max-w-3xl">
+        {% for a in withheld_apps %}<span class="font-mono text-t2">{{ a.username }}</span> is for department <span class="font-mono text-t2">{{ a.department }}</span>{{ '; ' if not loop.last else '. ' }}{% endfor %}
+        Your account is in <span class="font-mono text-t2">{{ org_code or 'no department' }}</span>, so its key and usage are not shown to you.
+        If that is wrong, ask an administrator: they have been told.
+    </p>
+</div>
+{% endif %}
 {% for app in owned_apps %}
 <div class="gw-card p-6 mb-6 gw-anim" data-service-account="{{ app.username }}">
     <div class="flex flex-wrap items-center gap-x-4 gap-y-3 mb-4">
@@ -1241,7 +1259,7 @@
                 <div class="text-base font-semibold text-t1 font-mono">{{ app.username }}</div>
                 {# What an administrator wrote about it; the people it sends requests for see the same line. #}
                 {% if app.description %}<div class="text-xs text-t3" data-service-description>{{ app.description }}</div>{% endif %}
-                <div class="text-[11px] text-t4">Daily limit {{ money(app.daily_limit_usd) }}</div>
+                <div class="text-[11px] text-t4">Daily limit {{ money(app.daily_limit_usd) }}{% if app.department %} · department <span class="font-mono">{{ app.department }}</span>{% endif %}</div>
             </div>
         </div>
         <div class="flex items-center gap-2 ml-auto">
@@ -1286,6 +1304,64 @@
         <span class="font-mono text-t2">{{ app.on_behalf.users }}</span> user{{ '' if app.on_behalf.users == 1 else 's' }}, billed to them.
     </p>
     {% endif %}
+    {% endif %}
+    {# Who it sent requests for this month: backends on the left, the users on the right (the
+       largest by cost by name, the rest as one node). stats.get_on_behalf_users. #}
+    {% if app.flow %}
+    <div class="mb-4 rounded-lg" style="border:1px solid rgba(255,255,255,0.05)" data-service-flow>
+        <div class="px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap" style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <h4 class="text-[11px] font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide"
+                data-tip="This month's requests this account sent for its users: which backend served them, and for whom. It is those users' usage, billed to them. The {{ flow_top_users }} users with the highest cost are named; the rest are one entry.">Who it was used for
+                <span class="text-t4 font-normal normal-case tracking-normal ml-1">{{ app.flow.users }} user{{ '' if app.flow.users == 1 else 's' }} this month</span></h4>
+            {{ flow_metric() }}
+        </div>
+        <div class="px-4 pt-4">
+            {{ flow_body("This month's requests this account sent for its users, by backend and by user. The table below has the same figures.") }}
+        </div>
+        <div class="overflow-x-auto" style="max-height:340px;overflow-y:auto">
+            <table class="gw-table">
+                <thead><tr>
+                    <th class="text-left">User</th>
+                    <th class="text-left">Served by</th>
+                    <th style="text-align:right">Requests</th>
+                    <th style="text-align:right">Input</th>
+                    <th style="text-align:right">Output</th>
+                    <th style="text-align:right">Cost</th>
+                    <th class="text-left" style="min-width:120px">Share</th>
+                </tr></thead>
+                <tbody>
+                    {% for person in app.flow.people %}
+                    <tr data-flow-user="{{ person.user }}">
+                        <td class="whitespace-nowrap">
+                            {% if person.user %}
+                            <code class="text-sm font-mono font-medium text-t1">{{ person.user }}</code>
+                            {% if person.display_name and person.display_name != person.user %}<span class="text-xs text-t4 ml-1.5">{{ person.display_name }}</span>{% endif %}
+                            {% else %}
+                            <span class="text-sm text-t2">Other users</span> <span class="text-xs text-t4">{{ person.others }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="whitespace-nowrap">
+                            {% for b in person.backends %}<span class="inline-flex items-center gap-1 text-xs text-t3 mr-2"><span class="w-2 h-2 rounded-full" style="background:{{ backend_colors.get(b, '#9aa1b3') }}"></span>{{ {'vllm': 'On-prem', 'azure': 'Azure', 'bedrock': 'AWS'}.get(b, b) }}</span>{% endfor %}
+                        </td>
+                        <td class="text-right text-sm font-mono text-t3">{{ person.requests }}</td>
+                        <td class="text-right text-sm font-mono text-t3">{{ format_token(person.input_tokens) }}</td>
+                        <td class="text-right text-sm font-mono text-t3">{{ format_token(person.output_tokens) }}</td>
+                        <td class="text-right text-sm font-mono text-t2">{{ money(person.cost_usd) }}</td>
+                        <td>
+                            <div class="flex items-center gap-2">
+                                <div class="flex-1 rounded-full h-1.5 overflow-hidden bg-n3" style="min-width:60px">
+                                    <div class="h-1.5 rounded-full" style="width: {{ person.share }}%; background:#6398ff"></div>
+                                </div>
+                                <span class="text-[11px] font-mono text-t4 tabular-nums" style="min-width:38px;text-align:right">{{ person.share }}%</span>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div data-flow-rows='{{ app.flow.rows | tojson }}' style="display:none;"></div>
+    </div>
     {% endif %}
     {# How to call the gateway with this account, and how to check it worked. The key is never written
        here: SERVICE_ACCOUNT_KEY stands for it (Copy, above). #}
@@ -1555,6 +1631,38 @@ result = client.system_one(
     </div>
 </details>
 </div>
+<script>
+    // ── A service account's flow: the backends → the users it sent requests for ──
+    document.querySelectorAll('[data-service-flow]').forEach(function (box) {
+        var ROWS = JSON.parse(box.querySelector('[data-flow-rows]').dataset.flowRows || '[]');
+        var USER_COLOR = '#6398ff', OTHER_COLOR = '#9aa1b3';
+        function graph(measure) {
+            var backends = {}, users = {}, order = [], links = [];
+            ROWS.forEach(function (r) {
+                var b = gwFlowBackend(r.backend);
+                if (!backends[r.backend]) backends[r.backend] = { key: r.backend, label: b.label, color: b.color, total: gwFlowZero(), kind: '', note: '' };
+                if (!users[r.user]) {
+                    users[r.user] = r.user
+                        ? { label: r.user, note: r.display_name && r.display_name !== r.user ? r.display_name : '', kind: '', color: USER_COLOR, total: gwFlowZero() }
+                        : { label: 'Other users', note: r.others + ' users', kind: '', color: OTHER_COLOR, total: gwFlowZero(), rest: true };
+                    order.push(r.user);
+                }
+                gwFlowAdd(backends[r.backend].total, r);
+                gwFlowAdd(users[r.user].total, r);
+                links.push({ from: backends[r.backend], to: users[r.user], total: r, color: b.color, note: '' });
+            });
+            var left = Object.keys(backends).map(function (k) { return backends[k]; })
+                .sort(function (a, b) { return gwFlowBackendRank(a.key) - gwFlowBackendRank(b.key); });
+            // The users by the chosen measure, "Other users" last.
+            var right = order.map(function (k) { return users[k]; })
+                .sort(function (a, b) { return (!!a.rest - !!b.rest) || measure(b.total) - measure(a.total); });
+            var keys = left.filter(function (n) { return measure(n.total) > 0; }).map(function (n) { return [n.label, n.color]; });
+            keys.push(['A user', USER_COLOR]);
+            return { left: left, right: right, links: links, keys: keys };
+        }
+        gwFlowChart(box, graph).start(ROWS.some(function (r) { return r.cost_usd > 0; }));
+    });
+</script>
 <script>gwTabs('dashTabs', 'dashTab');</script>
 <script>
 /* "I've applied it" on a client-rule notice: post it, then take the panel
