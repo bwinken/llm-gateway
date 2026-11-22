@@ -373,6 +373,25 @@ SECTIONS: tuple[Section, ...] = (
                 tradeoffs=("Only a service account has owners, and an owner is an existing person: assigning a person's account would hand that person's key to someone else.",),
             ),
             Entry(
+                id="account-description",
+                name="Description of a service account",
+                keys=("users.description",),
+                default="empty",
+                what=(
+                    "One line saying what the account is, such as \"HR chat page\". It is shown beside the "
+                    "account's name on its owners' dashboards and, for an account that acts for its users, on the "
+                    "dashboard of every person it sent requests for: under Spent today and in the Usage Flow card."
+                ),
+                why=(
+                    "A person who finds part of their spend came \"through svc-hr-01\" has only a name to go by. "
+                    "The description tells them which application that is."
+                ),
+                tradeoffs=(
+                    "Everyone the account sends requests for can read it: write nothing there that only its owners should know.",
+                    "It is text for people. Nothing routes, limits or bills by it, and a person's account has none (a person is named by their sign-in).",
+                ),
+            ),
+            Entry(
                 id="account-acts-for-users",
                 name="On behalf of users (a service account that sends requests for its users)",
                 keys=("users.acts_for_users", "usage_logs.via_user_id"),

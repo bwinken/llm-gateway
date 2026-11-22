@@ -50,6 +50,7 @@ from app.services.stats import (
     get_model_breakdown,
     get_owned_apps_summary,
     get_user_daily_summary,
+    get_usage_sources,
     get_user_on_behalf_today,
     get_user_monthly_summary,
     summarize_server_status,
@@ -182,6 +183,24 @@ def _build_model_breakdown(
 
 
 _BACKEND_LABELS = {"vllm": "On-Prem", "azure": "Azure", "bedrock": "AWS Bedrock"}
+
+
+def _usage_flow(session: Session, user: User) -> dict:
+    """The dashboard's *Usage Flow* card: this month's usage by the way it
+    came in (the account's own key, or an application that sent requests for
+    it) and the models each went to. ``stats.get_usage_sources``, the data
+    ``GET /v1/usage`` gives as ``month.sources``, with what the page adds:
+    a label, each source's share of the month's cost and the backends'
+    display names. The same rows as Cost by Model, so the two cards add up
+    to the same total."""
+    sources = get_usage_sources(session, user, period="month")
+    total = sum(s["cost_usd"] for s in sources)
+    for source in sources:
+        source["label"] = source.get("service_account") or "Your API key"
+        source["share"] = round(source["cost_usd"] / total * 100 if total > 0 else 0.0, 1)
+        for row in source["models"]:
+            row["backend_label"] = _BACKEND_LABELS.get(row["backend"], row["backend"])
+    return {"sources": sources, "total_cost_usd": round(total, 6)}
 
 
 def _owned_service_accounts(session: Session, user: User) -> list[dict]:
@@ -425,6 +444,7 @@ def dashboard(
             vllm_today_cost=round(today["vllm_cost_usd"], 4),
             overflow_today_cost=round(today["overflow_cost_usd"], 4),
             on_behalf_today=get_user_on_behalf_today(session, user.id),
+            usage_flow=_usage_flow(session, user),
             cloud_limit=cloud_limit,
             cloud_today_cost=round(cloud_today_cost, 4),
             cloud_usage_percent=round(cloud_usage_percent, 1),

@@ -103,7 +103,7 @@
                 {% if on_behalf_today %}
                 <div class="mt-1 text-xs text-t3 gw-tip gw-tip-wide"
                      data-tip="Requests an application sent for you after you signed in to it. They are yours: billed to you and counted toward your daily limit, like the requests you send with your own key.">
-                    {% for a in on_behalf_today %}<span class="font-mono text-t2">{{ money(a.cost_usd) }}</span> through <span class="font-mono text-t2">{{ a.service_account }}</span>{{ ', ' if not loop.last }}{% endfor %}
+                    {% for a in on_behalf_today %}<span class="font-mono text-t2">{{ money(a.cost_usd) }}</span> through <span class="font-mono text-t2">{{ a.service_account }}</span>{% if a.description %} <span class="text-t4">({{ a.description }})</span>{% endif %}{{ ', ' if not loop.last }}{% endfor %}
                 </div>
                 {% endif %}
             </div>
@@ -496,11 +496,417 @@
     }
 </script>
 
+{% set backend_colors = {'vllm': '#3dd68c', 'azure': '#a78bfa', 'bedrock': '#ff9933'} %}
+{# ── Usage flow (this month): the way the usage came in → the models that served it ──
+   Left: the account's own key and every application that sent requests for it
+   (X-On-Behalf-Of). Right: the models, coloured by backend; beyond the largest few they
+   fold into one "Other" node per backend. Drawn here as SVG (no chart library has it);
+   the table under it has every number, and is the same data as "sources" in GET /v1/usage
+   (stats.get_usage_sources). #}
+<div class="gw-card overflow-hidden mb-8 gw-anim" id="usageFlow" data-usage-flow>
+    <div class="px-5 py-3 flex items-center justify-between gap-3 flex-wrap" style="border-bottom:1px solid rgba(255,255,255,0.04)">
+        <h3 class="text-xs font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide"
+            data-tip="Where this month's usage came in (your own API key, or an application that sent requests for you after you signed in to it) and which models served it. All of it is on your bill.">Usage Flow <span class="text-t4 font-normal normal-case tracking-normal ml-1">This month</span></h3>
+        {% if usage_flow.sources %}
+        <div class="bg-n1 p-1 rounded-lg inline-flex items-center gap-0.5" id="ufMetric">
+            <button type="button" data-uf-metric="cost" class="gw-chtab gw-chtab-on" aria-pressed="true">Cost</button>
+            <button type="button" data-uf-metric="tokens" class="gw-chtab" aria-pressed="false">Tokens</button>
+            <button type="button" data-uf-metric="requests" class="gw-chtab" aria-pressed="false">Requests</button>
+        </div>
+        {% endif %}
+    </div>
+    {% if usage_flow.sources %}
+    <div class="px-5 pt-5">
+        <div id="ufChart" class="gw-flow" role="img"
+             aria-label="This month's usage by the way it came in and the models that served it. The table below has the same figures."></div>
+        <div id="ufEmpty" class="text-sm text-t4 py-6 text-center" style="display:none">Nothing to draw for this measure: every figure is zero.</div>
+        <div class="gw-flow-legend" id="ufLegend"></div>
+    </div>
+    <div class="overflow-x-auto" style="max-height:420px;overflow-y:auto">
+        <table class="gw-table" id="ufTable">
+            <thead><tr>
+                <th class="text-left">Came in through</th>
+                <th style="text-align:right">Requests</th>
+                <th style="text-align:right">Input</th>
+                <th style="text-align:right">Output</th>
+                <th style="text-align:right">Cost</th>
+                <th class="text-left gw-tip" data-tip="Share of this month's total cost" style="min-width:120px">Share</th>
+            </tr></thead>
+            <tbody>
+                {% for src in usage_flow.sources %}
+                <tr style="background:rgba(255,255,255,0.015)" data-flow-source="{{ src.label }}">
+                    <td>
+                        <span class="inline-block w-2.5 h-2.5 rounded-sm mr-2 align-middle" style="background:{{ '#c4c9d4' if src.source == 'own_key' else '#6398ff' }}"></span>
+                        {% if src.source == 'own_key' %}
+                        <span class="text-sm font-medium text-t1">Your API key</span>
+                        {% else %}
+                        <code class="text-sm font-mono font-medium text-t1">{{ src.service_account }}</code>
+                        <span class="gw-badge gw-badge-muted ml-1.5 gw-tip gw-tip-wide" data-tip="An application you signed in to. It sent these requests for you: they are billed to you and count toward your daily limit, like the requests you send with your own key.">application</span>
+                        {% if src.description %}<div class="text-xs text-t3 mt-0.5" style="margin-left:1.125rem">{{ src.description }}</div>{% endif %}
+                        {% endif %}
+                    </td>
+                    <td class="text-right text-sm font-mono text-t2">{{ src.requests }}</td>
+                    <td class="text-right text-sm font-mono text-t2">{{ format_token(src.input_tokens) }}</td>
+                    <td class="text-right text-sm font-mono text-t2">{{ format_token(src.output_tokens) }}</td>
+                    <td class="text-right text-sm font-mono text-t1">{{ money(src.cost_usd) }}</td>
+                    <td>
+                        <div class="flex items-center gap-2">
+                            <div class="flex-1 rounded-full h-1.5 overflow-hidden bg-n3" style="min-width:60px">
+                                <div class="h-1.5 rounded-full" style="width: {{ src.share }}%; background:{{ '#c4c9d4' if src.source == 'own_key' else '#6398ff' }}"></div>
+                            </div>
+                            <span class="text-[11px] font-mono text-t4 tabular-nums" style="min-width:38px;text-align:right">{{ src.share }}%</span>
+                        </div>
+                    </td>
+                </tr>
+                {# The models under each way in, once there is more than one: with a single
+                   source they would repeat Cost by Model row for row. #}
+                {% if usage_flow.sources | length > 1 %}
+                {% for m in src.models %}
+                <tr>
+                    <td class="whitespace-nowrap" style="padding-left:2.4rem">
+                        <span class="inline-block w-2 h-2 rounded-full mr-2 align-middle" style="background:{{ backend_colors.get(m.backend, '#9aa1b3') }}" title="{{ m.backend_label }}"></span>
+                        <code class="text-sm font-mono text-t2">{{ m.model }}</code>
+                        <span class="text-[10px] text-t4 ml-1.5">{{ m.backend_label }}</span>
+                        {% if m.overflow %}<span class="gw-badge gw-badge-muted ml-1.5">overflow</span>{% endif %}
+                    </td>
+                    <td class="text-right text-sm font-mono text-t3">{{ m.requests }}</td>
+                    <td class="text-right text-sm font-mono text-t3">{{ format_token(m.input_tokens) }}</td>
+                    <td class="text-right text-sm font-mono text-t3">{{ format_token(m.output_tokens) }}</td>
+                    <td class="text-right text-sm font-mono text-t2">{{ money(m.cost_usd) }}</td>
+                    <td></td>
+                </tr>
+                {% endfor %}
+                {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-center py-6 text-sm text-t4">Nothing used yet this month.</p>
+    {% endif %}
+</div>
+
+<style>
+    .gw-flow { position: relative; width: 100%; }
+    .gw-flow svg { display: block; width: 100%; overflow: visible; }
+    .gw-flow-link { transition: fill-opacity 0.15s; }
+    .gw-flow-node { cursor: default; outline: none; }
+    .gw-flow-node:focus-visible rect { stroke: #eef0f4; stroke-width: 1.5; }
+    .gw-flow-name { font: 500 12px 'Plus Jakarta Sans', sans-serif; fill: #eef0f4; }
+    .gw-flow-value { font: 11px 'JetBrains Mono', monospace; fill: #9aa1b3; }
+    .gw-flow-tip {
+        position: absolute; z-index: 5; pointer-events: none; min-width: 170px; max-width: 280px;
+        background: #1f2029; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 12px;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.35); font-size: 12px; color: #c4c9d4;
+    }
+    .gw-flow-tip-title { font-weight: 600; color: #eef0f4; margin-bottom: 2px; word-break: break-word; }
+    .gw-flow-tip-note { color: #9aa1b3; margin-bottom: 4px; word-break: break-word; }
+    .gw-flow-tip-row { display: flex; justify-content: space-between; gap: 16px; font-family: 'JetBrains Mono', monospace; }
+    .gw-flow-tip-row span:first-child { color: #9aa1b3; font-family: 'Plus Jakarta Sans', sans-serif; }
+    .gw-flow-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 10px 0 14px; font-size: 11px; color: #9aa1b3; }
+    .gw-flow-key { display: inline-flex; align-items: center; gap: 6px; }
+    .gw-flow-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+</style>
+
+{% if usage_flow.sources %}
+<div id="ufData" data-sources='{{ usage_flow.sources | tojson }}' style="display:none;"></div>
+<script>
+    // ── Usage flow: a two-column Sankey, drawn as SVG ──
+    // Left, the ways the usage came in; right, the models, in the page's backend hues
+    // (green = on-prem, purple = Azure, orange = AWS). A band's thickness is the chosen
+    // measure. Names come from the server as data and are only ever set with textContent.
+    (function () {
+        var chart = document.getElementById('ufChart');
+        var SOURCES = JSON.parse(document.getElementById('ufData').dataset.sources || '[]');
+        var NS = 'http://www.w3.org/2000/svg';
+        var BACKENDS = ['vllm', 'azure', 'bedrock'];
+        var BACKEND = {
+            vllm:    { label: 'On-prem', color: '#3dd68c' },
+            azure:   { label: 'Azure',   color: '#a78bfa' },
+            bedrock: { label: 'AWS',     color: '#ff9933' }
+        };
+        var OTHER_COLOR = '#9aa1b3', OWN_COLOR = '#c4c9d4', APP_COLOR = '#6398ff';
+        var MAX_MODELS = 8;      // model nodes shown by name; the rest fold per backend
+        var NODE_W = 12, GAP = 10, SLOT = 32, MIN_NODE = 2;
+        var metric = 'cost';
+        var tip = null;
+
+        function backendOf(key) { return BACKEND[key] || { label: key, color: OTHER_COLOR }; }
+        function measure(r) {
+            if (metric === 'cost') return r.cost_usd;
+            if (metric === 'requests') return r.requests;
+            return r.input_tokens + r.output_tokens;
+        }
+        function fmtCount(n) {
+            if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+            return String(n);
+        }
+        function fmt(v) {
+            if (metric === 'cost') return gwMoney(v);
+            return fmtCount(v) + (metric === 'requests' ? ' req' : ' tok');
+        }
+        function add(into, r) {
+            into.cost_usd += r.cost_usd; into.requests += r.requests;
+            into.input_tokens += r.input_tokens; into.output_tokens += r.output_tokens;
+        }
+        function zero() { return { cost_usd: 0, requests: 0, input_tokens: 0, output_tokens: 0 }; }
+
+        // Sources, models and the bands between them, for the chosen measure.
+        function graph() {
+            var models = {}, order = [];
+            SOURCES.forEach(function (s) {
+                s.models.forEach(function (r) {
+                    var key = r.backend + '|' + r.model;
+                    if (!models[key]) { models[key] = { key: key, backend: r.backend, label: r.model, total: zero() }; order.push(key); }
+                    add(models[key].total, r);
+                });
+            });
+            // The largest models keep their name; the others fold into their backend.
+            var ranked = order.map(function (k) { return models[k]; })
+                .sort(function (a, b) { return measure(b.total) - measure(a.total); });
+            var named = {};
+            ranked.slice(0, MAX_MODELS).forEach(function (m) { named[m.key] = true; });
+            var targets = {}, links = {};
+            var left = [];
+            SOURCES.forEach(function (s, i) {
+                var node = {
+                    id: 's' + i, side: 'left', total: zero(),
+                    label: s.source === 'own_key' ? 'Your API key' : s.service_account,
+                    note: s.source === 'own_key' ? '' : (s.description || ''),
+                    kind: s.source === 'own_key' ? '' : 'application',
+                    color: s.source === 'own_key' ? OWN_COLOR : APP_COLOR
+                };
+                s.models.forEach(function (r) {
+                    var key = r.backend + '|' + r.model;
+                    var id = named[key] ? key : 'other|' + r.backend;
+                    if (!targets[id]) {
+                        targets[id] = {
+                            id: id, side: 'right', backend: r.backend, total: zero(), folded: named[key] ? 0 : {},
+                            label: named[key] ? r.model : 'Other ' + backendOf(r.backend).label + ' models',
+                            kind: backendOf(r.backend).label, color: backendOf(r.backend).color, note: ''
+                        };
+                    }
+                    if (!named[key]) targets[id].folded[key] = true;
+                    add(targets[id].total, r);
+                    add(node.total, r);
+                    var lid = node.id + '>' + id;
+                    if (!links[lid]) links[lid] = { from: node, to: targets[id], total: zero() };
+                    add(links[lid].total, r);
+                });
+                left.push(node);
+            });
+            var rank = function (b) { var i = BACKENDS.indexOf(b); return i < 0 ? BACKENDS.length : i; };
+            var right = Object.keys(targets).map(function (k) { return targets[k]; });
+            right.forEach(function (t) {
+                if (t.folded) { t.note = Object.keys(t.folded).length + ' models'; }
+            });
+            right.sort(function (a, b) {
+                return rank(a.backend) - rank(b.backend) || (!!a.folded - !!b.folded) || measure(b.total) - measure(a.total);
+            });
+            var live = function (n) { return measure(n.total) > 0; };
+            return {
+                left: left.filter(live), right: right.filter(live),
+                links: Object.keys(links).map(function (k) { return links[k]; }).filter(live)
+            };
+        }
+
+        function svg(tag, attrs, parent) {
+            var el = document.createElementNS(NS, tag);
+            for (var k in attrs) el.setAttribute(k, attrs[k]);
+            if (parent) parent.appendChild(el);
+            return el;
+        }
+
+        // Shorten a label until it fits its margin (names are data: any length).
+        function fit(text, full, width) {
+            text.textContent = full;
+            var s = full;
+            while (s.length > 1 && text.getComputedTextLength() > width) {
+                s = s.slice(0, -1);
+                text.textContent = s + '…';
+            }
+        }
+
+        function place(nodes, total, height) {
+            var scale = (height - GAP * (nodes.length - 1)) / total;
+            var y = 0;
+            nodes.forEach(function (n) {
+                n.h = Math.max(MIN_NODE, measure(n.total) * scale);
+                n.slot = Math.max(n.h, SLOT);
+                n.y = y + (n.slot - n.h) / 2;
+                n.used = 0;
+                y += n.slot + GAP;
+            });
+            return y - GAP;
+        }
+
+        function hideTip() { if (tip) { tip.remove(); tip = null; } }
+        function showTip(title, note, totals, x, y) {
+            hideTip();
+            tip = document.createElement('div');
+            tip.className = 'gw-flow-tip';
+            var line = function (cls, value) {
+                var d = document.createElement('div'); d.className = cls; d.textContent = value; tip.appendChild(d);
+            };
+            line('gw-flow-tip-title', title);
+            if (note) line('gw-flow-tip-note', note);
+            [['Cost', gwMoney(totals.cost_usd)], ['Requests', fmtCount(totals.requests)],
+             ['Tokens in / out', fmtCount(totals.input_tokens) + ' / ' + fmtCount(totals.output_tokens)]].forEach(function (row) {
+                var d = document.createElement('div'); d.className = 'gw-flow-tip-row';
+                var a = document.createElement('span'), b = document.createElement('span');
+                a.textContent = row[0]; b.textContent = row[1];
+                d.appendChild(a); d.appendChild(b); tip.appendChild(d);
+            });
+            chart.appendChild(tip);
+            var w = chart.clientWidth, tw = tip.offsetWidth, th = tip.offsetHeight;
+            tip.style.left = Math.max(0, Math.min(x + 14, w - tw)) + 'px';
+            tip.style.top = Math.max(0, y - th - 10) + 'px';
+        }
+        function at(e) { var b = chart.getBoundingClientRect(); return [e.clientX - b.left, e.clientY - b.top]; }
+
+        function render() {
+            var width = chart.clientWidth;
+            if (!width) return;   // inside a hidden tab: drawn on the resize the tab switch fires
+            hideTip();
+            chart.querySelectorAll('svg').forEach(function (old) { old.remove(); });
+            var g = graph();
+            var total = g.left.reduce(function (a, n) { return a + measure(n.total); }, 0);
+            document.getElementById('ufEmpty').style.display = total > 0 ? 'none' : '';
+            document.getElementById('ufLegend').style.display = total > 0 ? '' : 'none';
+            if (!(total > 0)) return;
+
+            var narrow = width < 620;
+            var ml = narrow ? Math.round(width * 0.28) : 205, mr = narrow ? Math.round(width * 0.34) : 230;
+            var rows = Math.max(g.left.length, g.right.length);
+            var height = Math.max(200, rows * (SLOT + GAP));
+            var hl = place(g.left, total, height), hr = place(g.right, total, height);
+            var full = Math.max(hl, hr);
+            // The shorter column sits in the middle of the taller one.
+            g.left.forEach(function (n) { n.y += (full - hl) / 2; });
+            g.right.forEach(function (n) { n.y += (full - hr) / 2; });
+
+            var root = svg('svg', { viewBox: '0 0 ' + width + ' ' + (full + 8), height: full + 8 }, chart);
+            var x0 = ml + NODE_W, x1 = width - mr - NODE_W, mid = (x0 + x1) / 2;
+            var bands = svg('g', {}, root);
+            var linkEls = [];
+
+            function emphasize(test) {
+                linkEls.forEach(function (item) {
+                    item.el.setAttribute('fill-opacity', test ? (test(item.link) ? 0.75 : 0.1) : 0.38);
+                });
+            }
+
+            // Bands leave a source in the order of the models, so none cross at its edge.
+            g.links.sort(function (a, b) {
+                return g.left.indexOf(a.from) - g.left.indexOf(b.from) || g.right.indexOf(a.to) - g.right.indexOf(b.to);
+            });
+            g.links.forEach(function (link) {
+                var v = measure(link.total);
+                var t0 = Math.max(1, v / measure(link.from.total) * link.from.h);
+                var t1 = Math.max(1, v / measure(link.to.total) * link.to.h);
+                var a = link.from.y + link.from.used, b = link.to.y + link.to.used;
+                link.from.used += v / measure(link.from.total) * link.from.h;
+                link.to.used += v / measure(link.to.total) * link.to.h;
+                var d = 'M' + x0 + ',' + a + ' C' + mid + ',' + a + ' ' + mid + ',' + b + ' ' + x1 + ',' + b +
+                        ' L' + x1 + ',' + (b + t1) + ' C' + mid + ',' + (b + t1) + ' ' + mid + ',' + (a + t0) + ' ' + x0 + ',' + (a + t0) + ' Z';
+                var el = svg('path', { d: d, fill: link.to.color, 'fill-opacity': 0.38, 'class': 'gw-flow-link' }, bands);
+                var item = { el: el, link: link };
+                linkEls.push(item);
+                el.addEventListener('pointermove', function (e) {
+                    emphasize(function (l) { return l === link; });
+                    var p = at(e);
+                    showTip(link.from.label + ' → ' + link.to.label, link.to.kind, link.total, p[0], p[1]);
+                });
+                el.addEventListener('pointerleave', function () { emphasize(null); hideTip(); });
+            });
+
+            function drawNode(n) {
+                var left = n.side === 'left';
+                var x = left ? ml : width - mr - NODE_W;
+                var share = Math.round(measure(n.total) / total * 1000) / 10;
+                var group = svg('g', {
+                    'class': 'gw-flow-node', tabindex: 0, role: 'img',
+                    'aria-label': n.label + (n.kind ? ' (' + n.kind + ')' : '') + ': ' + fmt(measure(n.total)) + ', ' + share + '%'
+                }, root);
+                svg('rect', { x: x, y: n.y, width: NODE_W, height: n.h, rx: Math.min(3, n.h / 2), fill: n.color }, group);
+                // A wider, invisible target: a thin node is hard to point at.
+                svg('rect', { x: left ? 0 : x - 4, y: n.y - (n.slot - n.h) / 2, width: left ? ml + NODE_W + 4 : mr + NODE_W + 4, height: n.slot, fill: 'transparent' }, group);
+                var tx = left ? ml - 8 : width - mr + 8, cy = n.y + n.h / 2;
+                var room = (left ? ml : mr) - 10;
+                var name = svg('text', { x: tx, y: cy - 3, 'text-anchor': left ? 'end' : 'start', 'class': 'gw-flow-name' }, group);
+                fit(name, n.label, room);
+                var value = svg('text', { x: tx, y: cy + 11, 'text-anchor': left ? 'end' : 'start', 'class': 'gw-flow-value' }, group);
+                // On a narrow screen the figures alone: the tooltip and the table say what kind it is.
+                fit(value, (n.kind && !narrow ? (n.kind === 'application' ? 'app' : n.kind) + ' · ' : '') + fmt(measure(n.total)) + ' · ' + share + '%', room);
+                var mine = function (l) { return l.from === n || l.to === n; };
+                var open = function (px, py) {
+                    emphasize(mine);
+                    showTip(n.label, [n.kind, n.note].filter(Boolean).join(' · '), n.total, px, py);
+                };
+                group.addEventListener('pointermove', function (e) { var p = at(e); open(p[0], p[1]); });
+                group.addEventListener('pointerleave', function () { emphasize(null); hideTip(); });
+                group.addEventListener('focus', function () { open(left ? ml : width - mr - 200, n.y); });
+                group.addEventListener('blur', function () { emphasize(null); hideTip(); });
+            }
+            g.left.forEach(drawNode);
+            g.right.forEach(drawNode);
+
+            // The legend names what the colours stand for; only what is drawn is listed.
+            var legend = document.getElementById('ufLegend');
+            legend.textContent = '';
+            var keys = [];
+            if (g.left.some(function (n) { return !n.kind; })) keys.push(['Your API key', OWN_COLOR]);
+            if (g.left.some(function (n) { return n.kind; })) keys.push(['An application, for you', APP_COLOR]);
+            var seen = {};
+            g.right.forEach(function (n) {
+                if (seen[n.kind]) return;
+                seen[n.kind] = true; keys.push([n.kind + ' model', n.color]);
+            });
+            keys.forEach(function (k) {
+                var item = document.createElement('span'); item.className = 'gw-flow-key';
+                var swatch = document.createElement('span'); swatch.className = 'gw-flow-swatch'; swatch.style.background = k[1];
+                var label = document.createElement('span'); label.textContent = k[0];
+                item.appendChild(swatch); item.appendChild(label); legend.appendChild(item);
+            });
+        }
+
+        document.getElementById('ufMetric').addEventListener('click', function (e) {
+            var btn = e.target.closest('[data-uf-metric]');
+            if (!btn || btn.dataset.ufMetric === metric) return;
+            metric = btn.dataset.ufMetric;
+            this.querySelectorAll('[data-uf-metric]').forEach(function (b) {
+                var on = b === btn;
+                b.className = on ? 'gw-chtab gw-chtab-on' : 'gw-chtab';
+                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+            render();
+        });
+        var pending = 0;
+        window.addEventListener('resize', function () {
+            cancelAnimationFrame(pending);
+            pending = requestAnimationFrame(render);
+        });
+
+        // On-prem prices may be $0: when the month cost nothing, open on tokens.
+        if (!SOURCES.some(function (s) { return s.cost_usd > 0; })) {
+            var tokens = document.querySelector('[data-uf-metric="tokens"]');
+            metric = 'tokens';
+            document.querySelectorAll('#ufMetric [data-uf-metric]').forEach(function (b) {
+                var on = b === tokens;
+                b.className = on ? 'gw-chtab gw-chtab-on' : 'gw-chtab';
+                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+        }
+        render();
+    })();
+</script>
+{% endif %}
+
 {# ── Cost by Model (this month, split per backend) ──
    Initial render is server-side (table) + JS (chart); the Refresh button
    re-fetches /dashboard/api/model-breakdown and re-renders both in place.
    mbRenderTable() below must produce the same markup as this Jinja table. #}
-{% set backend_colors = {'vllm': '#3dd68c', 'azure': '#a78bfa', 'bedrock': '#ff9933'} %}
 <div class="gw-card overflow-hidden mb-8 gw-anim">
     <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid rgba(255,255,255,0.04)">
         <h3 class="text-xs font-bold text-t3 uppercase tracking-wider gw-tip gw-tip-wide"
@@ -833,6 +1239,8 @@
             <div class="h-8 w-8 rounded-lg bg-[rgba(99,152,255,0.1)] flex items-center justify-center text-ab font-bold text-xs">{{ app.initials }}</div>
             <div>
                 <div class="text-base font-semibold text-t1 font-mono">{{ app.username }}</div>
+                {# What an administrator wrote about it; the people it sends requests for see the same line. #}
+                {% if app.description %}<div class="text-xs text-t3" data-service-description>{{ app.description }}</div>{% endif %}
                 <div class="text-[11px] text-t4">Daily limit {{ money(app.daily_limit_usd) }}</div>
             </div>
         </div>

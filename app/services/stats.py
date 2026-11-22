@@ -229,7 +229,8 @@ def get_on_behalf_month(
 def get_user_on_behalf_today(session: Session, user_id: int) -> list[dict]:
     """What service accounts sent for this user today (local day), by
     service account, highest cost first: ``service_account`` (its name, or
-    ``#<id>`` once it was deleted), ``cost_usd``, ``requests``. Part of the
+    ``#<id>`` once it was deleted), ``description`` when an admin wrote one,
+    ``cost_usd``, ``requests``. Part of the
     user's own figures for the day (``get_user_daily_summary``), never added
     to them. Today only, so read from ``usage_logs``."""
     rows = session.exec(
@@ -241,15 +242,93 @@ def get_user_on_behalf_today(session: Session, user_id: int) -> list[dict]:
     ).all()
     if not rows:
         return []
-    names = dict(session.exec(
-        select(User.id, User.username).where(User.id.in_([int(via) for via, _, _ in rows]))  # type: ignore[attr-defined]
-    ).all())
+    labels = service_account_labels(session, [int(via) for via, _, _ in rows])
     out = [
-        {"service_account": names.get(int(via)) or f"#{int(via)}", "cost_usd": round(float(cost), 6), "requests": int(n)}
+        {**labels[int(via)], "cost_usd": round(float(cost), 6), "requests": int(n)}
         for via, cost, n in rows
     ]
     out.sort(key=lambda r: (-r["cost_usd"], r["service_account"]))
     return out
+
+
+def service_account_labels(session: Session, ids: Iterable[int]) -> dict[int, dict]:
+    """How a page names the service accounts a person's usage came through
+    (``usage_logs.via_user_id``): ``{id: {"service_account": its name, or
+    "#<id>" once it was deleted (the usage is kept), "description": what an
+    admin wrote about it}}``. ``description`` is absent when there is none."""
+    ids = sorted({int(i) for i in ids})
+    found = {
+        int(uid): (username, description)
+        for uid, username, description in session.exec(
+            select(User.id, User.username, User.description).where(User.id.in_(ids))  # type: ignore[attr-defined]
+        ).all()
+    } if ids else {}
+    out: dict[int, dict] = {}
+    for i in ids:
+        username, description = found.get(i, (f"#{i}", ""))
+        out[i] = {"service_account": username}
+        if description:
+            out[i]["description"] = description
+    return out
+
+
+SOURCE_OWN_KEY = "own_key"
+SOURCE_SERVICE_ACCOUNT = "service_account"
+
+
+def get_usage_sources(session: Session, user: User, period: str = "month") -> list[dict]:
+    """Where ``user``'s usage came in, and which models it went to: one
+    entry for the account's own key (``source`` ``own_key``) and one per
+    service account that sent requests for it (``source``
+    ``service_account``, with ``service_account`` and, when an admin wrote
+    one, ``description``; ``X-On-Behalf-Of``). Each has its totals and
+    ``models``, one row per model and backend in the order every page lists
+    models, shaped like ``get_model_breakdown``'s rows.
+
+    The same window and the same rows as the Cost by Model card
+    (``period`` ``"month"`` or ``"day"``; cloud backends the account may no
+    longer use left out, peak overflow kept: ``model_catalog.visible_usage_rows``),
+    only split by the way they came in, so the entries add up to that card's
+    total. The own key comes first, then the service accounts by cost.
+    Entries without usage are absent. Read through ``aggregate``."""
+    from app.services import model_catalog
+
+    start = local_today() if period == "day" else local_month_start()
+    by_via: dict[int, list[dict]] = {}
+    for (via, model, model_type, backend, overflow), entry in aggregate(
+        session, start, _tomorrow(), ("via_user_id", "model", "model_type", "backend", "overflow"),
+        user_ids=[user.id],
+    ).items():
+        by_via.setdefault(int(via or 0), []).append({
+            "model": model,
+            "type": model_type,
+            "backend": backend or "vllm",
+            "overflow": bool(overflow),
+            "requests": int(entry["requests"]),
+            "input_tokens": int(entry["input_tokens"]),
+            "output_tokens": int(entry["output_tokens"]),
+            "cost_usd": round(float(entry["cost_usd"]), 6),
+        })
+    catalog = model_catalog.current_catalog_keys() if by_via else {}
+    labels = service_account_labels(session, [via for via in by_via if via])
+    sources = []
+    for via, rows in by_via.items():
+        rows = model_catalog.sort_usage_rows(model_catalog.visible_usage_rows(rows, user), catalog)
+        if not rows:
+            continue
+        who = {"source": SOURCE_SERVICE_ACCOUNT, **labels[via]} if via else {"source": SOURCE_OWN_KEY}
+        sources.append({
+            **who,
+            "requests": sum(r["requests"] for r in rows),
+            "input_tokens": sum(r["input_tokens"] for r in rows),
+            "output_tokens": sum(r["output_tokens"] for r in rows),
+            "cost_usd": round(sum(r["cost_usd"] for r in rows), 6),
+            "models": rows,
+        })
+    sources.sort(key=lambda s: (
+        s["source"] != SOURCE_OWN_KEY, -s["cost_usd"], s.get("service_account", ""),
+    ))
+    return sources
 
 
 def get_monthly_overview(session: Session, leaderboard_size: int = 10) -> dict:
@@ -391,6 +470,7 @@ def get_owned_apps_summary(session: Session, owner_id: int) -> list[dict]:
         return {
             "id": app.id,
             "username": app.username,
+            "description": app.description or "",
             "api_key": app.api_key,
             "legacy_key": is_legacy_api_key(app.api_key),
             "daily_limit_usd": app.daily_limit_usd,

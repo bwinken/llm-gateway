@@ -576,6 +576,222 @@ class TestReports:
         ]
 
 
+# ── The month by the way it came in: the dashboard's Usage Flow card, "sources" in /v1/usage ──
+
+def _came_in(sources: list[dict]) -> list[tuple]:
+    return [(s["source"], s.get("service_account"), s["cost_usd"], s["requests"]) for s in sources]
+
+
+class TestWhereItCameFrom:
+    def _usage(self, client, key: str = "sk-alice") -> dict:
+        resp = client.get("/v1/usage", headers=auth_header(key))
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    def test_the_users_own_key_and_each_application_apart(self, client, db_session, chat_app, alice):
+        ocr = _add(db_session, username="invoice-ocr", api_key="sk-ocr", is_service_account=True, acts_for_users=True)
+        _sent_for(db_session, alice, None, "2")
+        _sent_for(db_session, alice, chat_app, "1.25")
+        _sent_for(db_session, alice, chat_app, "0.25")
+        _sent_for(db_session, alice, ocr, "3")
+        sources = stats.get_usage_sources(db_session, alice)
+        # Her own key first, then the applications by what they cost her.
+        assert _came_in(sources) == [
+            ("own_key", None, 2.0, 1), ("service_account", "invoice-ocr", 3.0, 1), ("service_account", "chat-app", 1.5, 2),
+        ]
+        assert [(m["model"], m["backend"], m["requests"]) for m in sources[2]["models"]] == [("test-llm", "vllm", 2)]
+        # Part of her month, never on top of it.
+        assert sum(s["cost_usd"] for s in sources) == stats.get_user_monthly_summary(db_session, alice.id)["total_cost_usd"]
+        assert _came_in(stats.get_usage_sources(db_session, alice, period="day")) == _came_in(sources)
+        # The application's own account has none of it.
+        assert stats.get_usage_sources(db_session, chat_app) == []
+
+    def test_the_usage_endpoint_gives_it_beside_what_it_gave_before(self, client, db_session, chat_app, alice):
+        _sent_for(db_session, alice, None, "2")
+        before = self._usage(client)
+        assert _came_in(before["month"]["sources"]) == [("own_key", None, 2.0, 1)]
+        _sent_for(db_session, alice, chat_app, "1.5")
+        body = self._usage(client)
+        for period in ("today", "month"):
+            block = body[period]
+            # Every key a client was built against is still there, counting everything.
+            assert set(before[period]) == set(block)
+            assert block["cost_usd"] == 3.5 and block["requests"] == 2
+            assert [(m["model"], m["backend"], m["requests"], m["cost_usd"]) for m in block["models"]] == [
+                ("test-llm", "onprem", 2, 3.5),
+            ]
+            assert block["sources"] == [
+                {"source": "own_key", "requests": 1, "input_tokens": 1000, "output_tokens": 500, "cost_usd": 2.0,
+                 "models": [{"model": "test-llm", "backend": "onprem", "type": "llm", "overflow": False,
+                             "requests": 1, "input_tokens": 1000, "output_tokens": 500, "cost_usd": 2.0}]},
+                {"source": "service_account", "service_account": "chat-app",
+                 "requests": 1, "input_tokens": 1000, "output_tokens": 500, "cost_usd": 1.5,
+                 "models": [{"model": "test-llm", "backend": "onprem", "type": "llm", "overflow": False,
+                             "requests": 1, "input_tokens": 1000, "output_tokens": 500, "cost_usd": 1.5}]},
+            ]
+            # They add up to the period's own totals.
+            for key in ("requests", "input_tokens", "output_tokens", "cost_usd"):
+                assert sum(s[key] for s in block["sources"]) == block[key]
+        assert body["days"] == before["days"][:-1] + [{**before["days"][-1], "requests": 2, "input_tokens": 2000,
+                                                       "output_tokens": 1000, "cost_usd": 3.5}]
+
+    def test_nothing_used_is_an_empty_list(self, client, alice):
+        body = self._usage(client)
+        assert body["month"]["sources"] == [] and body["today"]["sources"] == []
+
+    def test_the_description_an_admin_wrote_comes_with_the_name(self, client, db_session, chat_app, alice):
+        _sent_for(db_session, alice, chat_app, "1")
+        assert "description" not in self._usage(client)["month"]["sources"][0]  # none: no key, never a null
+        chat_app.description = "HR chat page"
+        db_session.add(chat_app)
+        db_session.commit()
+        [source] = self._usage(client)["month"]["sources"]
+        assert (source["service_account"], source["description"]) == ("chat-app", "HR chat page")
+        assert stats.get_user_on_behalf_today(db_session, alice.id) == [
+            {"service_account": "chat-app", "description": "HR chat page", "cost_usd": 1.0, "requests": 1},
+        ]
+
+    def test_the_same_once_rolled_up(self, client, db_session, chat_app, alice):
+        earlier = datetime.now(timezone.utc) - timedelta(days=2)
+        _sent_for(db_session, alice, chat_app, "1", created_at=earlier)
+        _sent_for(db_session, alice, None, "2", created_at=earlier)
+        _sent_for(db_session, alice, chat_app, "0.5")
+        before = self._usage(client)["month"]["sources"]
+        usage_rollup.advance(db_session, now=datetime.now(timezone.utc))
+        assert self._usage(client)["month"]["sources"] == before
+
+    def test_a_cloud_backend_the_user_may_not_use_is_left_out_as_in_cost_by_model(
+        self, client, db_session, chat_app, alice,
+    ):
+        _sent_for(db_session, alice, chat_app, "1")
+        db_session.add(UsageLog(
+            user_id=alice.id, model="azure-gpt-4", model_type="llm", input_tokens=10, output_tokens=5,
+            cost_usd=Decimal("4"), endpoint="/v1/chat/completions", backend="azure", via_user_id=chat_app.id,
+            created_at=earlier_today(),
+        ))
+        db_session.commit()
+        month = self._usage(client)["month"]  # alice has no Azure access
+        assert month["cost_usd"] == 1.0
+        assert _came_in(month["sources"]) == [("service_account", "chat-app", 1.0, 1)]
+
+    def test_a_deleted_application_keeps_its_place(self, db_session, chat_app, alice):
+        _sent_for(db_session, alice, chat_app, "1")
+        gone = chat_app.id
+        db_session.delete(chat_app)
+        db_session.commit()
+        assert _came_in(stats.get_usage_sources(db_session, alice)) == [("service_account", f"#{gone}", 1.0, 1)]
+
+    def test_an_application_cannot_read_it_for_a_user(self, client, chat_app, alice):
+        assert client.get("/v1/usage", headers=_for("alice")).status_code == 403
+
+    def _flow(self, client, sub: str) -> str:
+        page = client.get("/dashboard", headers=web_auth_header(sub=sub)).text
+        card = page[page.index("data-usage-flow"):]
+        return card[:card.index("Cost by Model")]
+
+    def test_the_dashboard_shows_the_month_as_a_flow(self, client, db_session, chat_app, alice):
+        chat_app.description = "HR <b>chat</b> page"
+        db_session.add(chat_app)
+        db_session.commit()
+        _sent_for(db_session, alice, None, "2")
+        _sent_for(db_session, alice, chat_app, "1.5")
+        card = self._flow(client, "alice")
+        assert 'data-flow-source="Your API key"' in card and 'data-flow-source="chat-app"' in card
+        assert "$2.00" in card and "$1.50" in card
+        # What the admin wrote is shown as text, never as markup.
+        assert "HR &lt;b&gt;chat&lt;/b&gt; page" in card and "<b>chat</b>" not in card
+        # The drawing reads the same data, from one place.
+        data = card[card.index("data-sources='") + len("data-sources='"):]
+        sources = json.loads(data[:data.index("'")].replace("&#34;", '"').replace("&lt;", "<").replace("&gt;", ">"))
+        assert [(s["label"], s["cost_usd"]) for s in sources] == [("Your API key", 2.0), ("chat-app", 1.5)]
+        # Today's line names it too.
+        page = client.get("/dashboard", headers=web_auth_header(sub="alice")).text
+        assert "(HR &lt;b&gt;chat&lt;/b&gt; page)" in page
+
+    def test_a_month_without_usage_says_so(self, client, alice):
+        card = self._flow(client, "alice")
+        assert "Nothing used yet this month." in card and "data-sources" not in card
+
+
+# ── What a service account is, in an admin's words ──
+
+class TestDescription:
+    def _describe(self, client, user: User, text: str, headers=None):
+        return client.post(f"/admin/users/{user.id}/description", data={"description": text},
+                           headers=headers or {**_admin(), **_JSON})
+
+    def test_an_admin_writes_one_line(self, client, db_session, admin_user, chat_app):
+        resp = self._describe(client, chat_app, "  HR chat page\n (intranet)  ")
+        assert resp.json() == {"ok": True, "description": "HR chat page (intranet)"}
+        db_session.expire_all()
+        assert db_session.get(User, chat_app.id).description == "HR chat page (intranet)"
+        # Empty clears it.
+        assert self._describe(client, chat_app, "").json() == {"ok": True, "description": ""}
+
+    def test_what_is_refused(self, client, db_session, admin_user, chat_app, alice):
+        from app.routers.admin.users import DESCRIPTION_MAX
+
+        assert self._describe(client, chat_app, "x" * DESCRIPTION_MAX).status_code == 200
+        assert self._describe(client, chat_app, "x" * (DESCRIPTION_MAX + 1)).status_code == 400
+        # A person is named by their sign-in, not by an admin.
+        resp = self._describe(client, alice, "a colleague")
+        assert resp.status_code == 400 and "service account" in resp.json()["detail"]
+        assert client.patch(f"/admin/users/{alice.id}", json={"description": "x"}, headers=_admin()).status_code == 400
+        assert self._describe(client, chat_app, "x", headers=web_auth_header(sub="alice")).status_code == 403
+        assert client.post("/admin/users/99999/description", data={"description": "x"},
+                           headers={**_admin(), **_JSON}).status_code == 404
+        db_session.expire_all()
+        assert db_session.get(User, alice.id).description == ""
+
+    def test_given_when_the_account_is_created(self, client, db_session, admin_user):
+        resp = client.post("/admin/users/create", data={"username": "billing-etl", "description": "Nightly billing export"},
+                           headers={**_admin(), **_JSON})
+        assert resp.status_code == 200, resp.text
+        created = db_session.exec(select(User).where(User.username == "billing-etl")).one()
+        assert created.description == "Nightly billing export" and created.is_service_account
+
+    def test_the_json_api(self, client, db_session, admin_user, chat_app):
+        resp = client.post("/admin/users", json={"username": "ocr", "is_service_account": True, "description": "Invoice OCR"},
+                           headers=_admin())
+        assert resp.status_code == 200, resp.text
+        assert client.post("/admin/users", json={"username": "bob", "description": "a person"},
+                           headers=_admin()).status_code == 400
+        assert client.patch(f"/admin/users/{chat_app.id}", json={"description": "HR chat page"}, headers=_admin()).status_code == 200
+        rows = {u["username"]: u["description"] for u in client.get("/admin/users", headers=_admin()).json()}
+        assert rows["ocr"] == "Invoice OCR" and rows["chat-app"] == "HR chat page"
+        assert rows["admin"] == ""  # a person has none: an empty string, as stored
+
+    def test_the_admin_sees_and_finds_it(self, client, db_session, admin_user, chat_app, alice):
+        self._describe(client, chat_app, "HR chat page")
+        drawer = client.get(f"/admin/users/{chat_app.id}/detail", headers=_admin()).text
+        assert f'action="/admin/users/{chat_app.id}/description"' in drawer and 'value="HR chat page"' in drawer
+        assert "/description" not in client.get(f"/admin/users/{alice.id}/detail", headers=_admin()).text
+        table = client.get("/admin/user-table", params={"kind": "apps", "q": "hr chat"}, headers=_admin()).text
+        assert 'data-username="chat-app"' in table and "HR chat page" in table
+
+    def test_the_owner_sees_it_on_the_card_and_by_key(self, client, db_session, admin_user, chat_app, test_user):
+        db_session.add(AppOwner(app_id=chat_app.id, owner_id=test_user.id))
+        db_session.commit()
+        [account] = client.get("/v1/service-accounts", headers=auth_header()).json()["service_accounts"]
+        assert "description" not in account
+        self._describe(client, chat_app, "HR <i>chat</i> page")
+        [account] = client.get("/v1/service-accounts", headers=auth_header()).json()["service_accounts"]
+        assert account["description"] == "HR <i>chat</i> page"
+        page = client.get("/dashboard", headers=web_auth_header(sub="testuser")).text
+        card = page[page.index('data-service-account="chat-app"'):]
+        card = card[:card.index("data-service-howto=")]
+        assert "data-service-description" in card and "HR &lt;i&gt;chat&lt;/i&gt; page" in card
+
+    def test_the_change_is_in_the_audit_log(self, client, db_session, admin_user, chat_app):
+        from app.models.schema import AuditLog
+
+        assert self._describe(client, chat_app, "HR chat page").status_code == 200
+        db_session.expire_all()
+        [row] = [r for r in db_session.exec(select(AuditLog)).all() if r.route.endswith("/description")]
+        detail = json.loads(row.detail)
+        assert (row.actor, detail["target"], detail["request"]) == ("admin", "chat-app", {"description": "HR chat page"})
+
+
 # ── The owner's dashboard: how to use it, and how to test ──
 
 class TestOwnersDashboard:

@@ -237,6 +237,7 @@ def _user_table(
             User.username.ilike(like)  # type: ignore[attr-defined]
             | User.display_name.ilike(like)  # type: ignore[union-attr]
             | User.org_code.ilike(like)  # type: ignore[union-attr]
+            | User.description.ilike(like)  # type: ignore[attr-defined]
         )
     status = state["status"]
     status_clause = _status_clause(status, is_apps)
@@ -296,6 +297,7 @@ def _user_table(
             "id": u.id,
             "username": u.username,
             "display_name": u.display_name,
+            "description": u.description,
             "org_code": u.org_code,
             "daily_limit_usd": u.daily_limit_usd,
             "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
@@ -475,6 +477,7 @@ def user_detail_panel(
             "d": _account_detail(session, target),
             "is_self": target.id == admin_user.id,
             "cloud_daily_limit": get_cloud_daily_limit(),
+            "description_max": DESCRIPTION_MAX,
         },
     )
 
@@ -723,7 +726,8 @@ async def create_app_account_web(
 ):
     """Create a service account (web UI form): an account for a program,
     used by API key only. The name is taken as given (the ``app_`` prefix
-    older accounts carry is no longer added or needed). ``owner_usernames``
+    older accounts carry is no longer added or needed). ``description``
+    says what it is, for the dashboards that show it. ``owner_usernames``
     (comma-separated; ``owner_username`` is the older single field) are the
     people it is assigned to: each must be an existing person, checked
     before anything is created."""
@@ -731,6 +735,7 @@ async def create_app_account_web(
     form = await request.form()
     username = _service_account_name(form.get("username"))
     daily_limit = form.get("daily_limit_usd")
+    description = _description(form.get("description"))
 
     existing = session.exec(select(User).where(User.username == username)).first()
     if existing:
@@ -738,7 +743,7 @@ async def create_app_account_web(
     owners = _owners(session, _owner_names(f"{form.get('owner_usernames') or ''},{form.get('owner_username') or ''}"))
 
     # Service accounts start waived from the concurrency limit.
-    user = User(username=username, is_service_account=True, concurrency_waived=True)
+    user = User(username=username, is_service_account=True, concurrency_waived=True, description=description)
     if daily_limit is not None:
         user.daily_limit_usd = _limit_usd(daily_limit, "daily_limit_usd")
     session.add(user)
@@ -948,6 +953,52 @@ def toggle_overflow(
 # whoever holds the account's key spend any person's budget, so it is an
 # explicit switch, counted in the Special access strip.
 
+DESCRIPTION_MAX = 120
+
+
+def _description(raw: object) -> str:
+    """A service account's description as an admin typed it: one line (any
+    run of whitespace is one space), at most ``DESCRIPTION_MAX`` characters.
+    It is shown beside the account's name on dashboards, so it stays
+    short; pages escape it."""
+    text = " ".join(str(raw or "").split())
+    if len(text) > DESCRIPTION_MAX:
+        raise HTTPException(
+            status_code=400, detail=f"A description is at most {DESCRIPTION_MAX} characters.",
+        )
+    return text
+
+
+def _description_or_400(target: User, description: str) -> None:
+    """Only a service account is described: a person is named by their
+    sign-in (``display_name``), which an admin does not edit."""
+    if description and not target.is_service_account:
+        raise HTTPException(status_code=400, detail="Only a service account has a description.")
+
+
+@router.post("/users/{user_id}/description")
+async def update_user_description(
+    user_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Say what a service account is (``description``, one line; empty
+    clears it). Shown beside its name on its owners' dashboards and on the
+    dashboard of every person it sent requests for."""
+    target = session.exec(select(User).where(User.id == user_id)).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    form = await request.form()
+    description = _description(form.get("description"))
+    _description_or_400(target, description)
+    target.description = description
+    session.add(target)
+    session.commit()
+    if _wants_json(request):
+        return JSONResponse({"ok": True, "description": target.description})
+    return RedirectResponse(url="/admin", status_code=303)
+
+
 def _acts_for_users_or_400(target: User, enabled: bool) -> None:
     """Only a service account acts for users: on a person's account the
     switch would let that person put requests on a colleague's bill."""
@@ -1114,6 +1165,7 @@ def list_users_api(
             "can_overflow_cloud": u.can_overflow_cloud,
             "is_service_account": u.is_service_account,
             "acts_for_users": u.acts_for_users,
+            "description": u.description,
             "owner_ids": app_owners_map.get(u.id, []),
             "display_name": u.display_name,
             "org_code": u.org_code,
@@ -1153,9 +1205,15 @@ def create_user_api(
     owners = _owners_by_id(session, body.get("owner_ids"))
     if owners and not is_service:
         raise HTTPException(status_code=400, detail="Only a service account has owners.")
+    description = _description(body.get("description"))
+    if description and not is_service:
+        raise HTTPException(status_code=400, detail="Only a service account has a description.")
     # Service accounts start waived from the concurrency limit; an explicit
     # "concurrency_waived" in the body (handled below) still wins.
-    new_user = User(username=username, is_service_account=is_service, concurrency_waived=is_service)
+    new_user = User(
+        username=username, is_service_account=is_service, concurrency_waived=is_service,
+        description=description,
+    )
     if "daily_limit_usd" in body:
         new_user.daily_limit_usd = _limit_usd(body["daily_limit_usd"], "daily_limit_usd")
     if "cloud_daily_limit_usd" in body:
@@ -1213,6 +1271,10 @@ def update_user_api(
         enabled = _strict_bool(body["acts_for_users"], "acts_for_users")
         _acts_for_users_or_400(target, enabled)
         target.acts_for_users = enabled
+    if "description" in body:
+        description = _description(body["description"])
+        _description_or_400(target, description)
+        target.description = description
     if "owner_ids" in body:
         current = _current_owner_ids(session, user_id)
         owners = _owners_by_id(session, body["owner_ids"], current)

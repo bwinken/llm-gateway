@@ -707,6 +707,11 @@ function submitExportCsv() {
                    class="gw-input w-56 text-sm font-mono py-1.5 px-2">
         </div>
         <div>
+            <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="One line saying what this account is. Shown beside its name on its owners' dashboards and on the dashboard of the people it sends requests for. Optional; change it later in the account's drawer.">Description</label>
+            <input type="text" name="description" placeholder="Nightly billing export" maxlength="{{ description_max }}" autocomplete="off"
+                   class="gw-input w-64 text-sm py-1.5 px-2">
+        </div>
+        <div>
             <label class="block text-[11px] font-semibold text-t4 uppercase tracking-wider mb-1.5 gw-tip gw-tip-wide" data-tip="Max daily spend in USD. API returns 429 when limit is reached. 0 = $0 (every request refused).">Daily Limit (USD)</label>
             <div class="flex items-center gap-1">
                 <span class="text-sm text-t4">$</span>
@@ -2845,6 +2850,11 @@ function submitExportCsv() {
             if (action === 'cloud-limit') {
                 input.value = data.cloud_daily_limit_usd == null ? '' : data.cloud_daily_limit_usd;
                 gwToast(name + ': ' + (data.cloud_daily_limit_usd == null ? 'cloud cap follows the default.' : 'cloud cap $' + data.cloud_daily_limit_usd + '.'), 'ok');
+            }
+            if (action === 'description') {
+                // As the server keeps it: one line, whitespace collapsed.
+                input.value = data.description || '';
+                gwToast(name + ': ' + (data.description ? 'description saved.' : 'description cleared.'), 'ok');
             }
             input.dataset.saved = input.value;
             flash(input, true);

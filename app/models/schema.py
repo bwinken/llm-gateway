@@ -148,6 +148,12 @@ class User(SQLModel, table=True):
     # everyone until an admin turns it on; means nothing on a person's
     # account. See ``deps._on_behalf_of``.
     acts_for_users: bool = Field(default=False)
+    # What a service account is, in an admin's words ("HR chat page"): shown
+    # beside its name wherever an account sees it, on the owner's dashboard
+    # and on the dashboard of a person it sent requests for. One line of
+    # text an admin wrote, shown escaped; nothing reads it to decide
+    # anything. Empty for people (their name is ``display_name``).
+    description: str = Field(default="")
     owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     display_name: str = Field(default="")
     org_code: str = Field(default="")

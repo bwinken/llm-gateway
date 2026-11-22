@@ -210,6 +210,22 @@ curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-ap
        "requests": 380, "input_tokens": 1200000, "output_tokens": 150000, "cost_usd": 30.0},
       {"model": "gpt-5", "backend": "azure", "type": "llm",
        "requests": 32, "input_tokens": 110000, "output_tokens": 14000, "cost_usd": 12.1}
+    ],
+    "sources": [
+      {"source": "own_key",
+       "requests": 372, "input_tokens": 1190000, "output_tokens": 148000, "cost_usd": 38.6,
+       "models": [
+         {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
+          "requests": 340, "input_tokens": 1080000, "output_tokens": 134000, "cost_usd": 26.5},
+         {"model": "gpt-5", "backend": "azure", "type": "llm",
+          "requests": 32, "input_tokens": 110000, "output_tokens": 14000, "cost_usd": 12.1}
+       ]},
+      {"source": "service_account", "service_account": "hr-chat", "description": "HR chat page",
+       "requests": 40, "input_tokens": 120000, "output_tokens": 16000, "cost_usd": 3.5,
+       "models": [
+         {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
+          "requests": 40, "input_tokens": 120000, "output_tokens": 16000, "cost_usd": 3.5}
+       ]}
     ]
   }
 }
@@ -218,6 +234,8 @@ curl "https://your-gateway/v1/usage?days=3" -H "Authorization: Bearer sk-your-ap
 - `days` has one entry per `Asia/Taipei` calendar day, oldest first. The last one is today and still running. Days without usage are present as zeros. `?days=` is how many to return: 1 to 90, default 7.
 - `today` and `month` are today and the current month so far, each with one `models` entry per model and backend, in the dashboard's order.
 - `today` and `month` leave out a cloud backend you no longer have access to, as the dashboard does; `days` counts everything, as your daily budget does.
+- `sources`, in `today` and in `month` (the example shows the month's), is that same usage by the way it came in: the dashboard's *Usage Flow* card. `own_key` is what you sent with your own API key; each `service_account` entry is an application you signed in to that sent requests for you ([below](#an-application-with-users-of-its-own-x-on-behalf-of)), named in `service_account`, with `description` when an administrator wrote one. Each has its totals and its own `models` rows. They are part of the period's figures, not on top of them, and add up to them. An entry without usage is absent, so the list is empty when nothing was used. More `source` values may be added later: skip one you do not know.
+- A model row may carry `"overflow": true`: you asked for an on-prem model and the gateway served it from this cloud model while on-prem was congested.
 
 ## Service accounts
 
@@ -230,7 +248,7 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
   "object": "service_accounts",
   "month": "2026-10",
   "service_accounts": [
-    {"username": "billing-etl", "daily_limit_usd": 50.0, "legacy_key": false,
+    {"username": "billing-etl", "description": "Nightly billing export", "daily_limit_usd": 50.0, "legacy_key": false,
      "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5,
                "models": [
                  {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
@@ -244,6 +262,7 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
 
 - A service account is an account for a program (a batch job, a service) that an administrator assigned to you. They used to be called app accounts: older ones are named `app_...`, newer ones anything.
 - `service_accounts` lists the ones you own (empty when you own none), each with its own daily limit and its usage this month: the dashboard's *Service accounts* tab.
+- `description` is one line an administrator wrote to say what the account is. It is absent when there is none.
 - `month.models` is that month by model: one row per model and backend, in the dashboard's order, adding up to the month's totals. Every backend the service account used is listed, whatever your own access.
 - A service account's API key is not included, and no endpoint returns a key. See or regenerate it on the dashboard's *Service accounts* tab.
 - `acts_for_users` and `on_behalf` are about an application that sends requests for its users, below: whether an administrator turned that on for the account, and what it sent for them this month (for how many `users`). That usage is billed to those users, so it is no part of `month`.
