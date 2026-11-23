@@ -224,6 +224,26 @@ def via_user_id(user: User) -> int:
     return int(via.id) if via is not None and via.id is not None else 0
 
 
+# An account endpoint (``/v1/me`` ...) takes an API key or an SSO sign-in
+# (``deps.get_account_user``). Which one it was is kept on the object for
+# the one request, like the service account above: a signed-in person is
+# shown more (the admin link, the masked key, who an application was used
+# for), and nothing may show that to a key.
+_SSO_ATTR = "_signed_in_by_sso"
+
+
+def mark_signed_in_by_sso(user: User) -> None:
+    """Mark ``user`` (a detached, per-request object) as authenticated by
+    an SSO token, not by an API key."""
+    object.__setattr__(user, _SSO_ATTR, True)
+
+
+def signed_in_by_sso(user: User) -> bool:
+    """True when this request's account signed in by SSO; False for an API
+    key, and for any ``User`` that did not come from the account sign-in."""
+    return bool(getattr(user, _SSO_ATTR, False))
+
+
 # What the service account wrote in the request's ``X-Gateway-Tags`` header
 # (``deps._gateway_tags``): its own labels for the request,
 # kept for the one request like the service account above and sent to

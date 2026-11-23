@@ -96,13 +96,13 @@ class TestReportPagesRunOffTheEventLoop:
     work ran on the event loop and stalled every stream on the worker."""
 
     def test_handlers_are_sync(self):
-        from app.routers import admin, dashboard
+        from app.routers import account_api, admin, dashboard
 
         for fn in (
             admin.page.admin_page, admin.users.user_table_panel, admin.users.user_detail_panel,
             admin.overview.export_usage_report,
             admin.overview.export_user_backend_costs_csv, admin.users.export_users_csv,
             dashboard.page.dashboard, dashboard.api.model_breakdown_api,
-            dashboard.api.usage, dashboard.api.service_accounts, dashboard.api.notices,
+            account_api.usage_history, account_api.owned_service_accounts, account_api.client_notices,
         ):
             assert not inspect.iscoroutinefunction(fn), fn.__name__

@@ -7,18 +7,21 @@ A browser user signs in through oauth2-proxy and reads their key on the
 dashboard. A terminal tool cannot hold that cookie session, so it signs in
 with AuthCenter itself (AuthCenter's own CLI flow), gets the same access
 token the web UI gets, and trades it here, once, for the account's API key.
-From then on it uses the key like every other API client; the token is not
-used again and nothing else in the gateway accepts it from a client:
+From then on it uses the key like every other API client. This is the one
+route that gives a key for the token:
 
-- ``/v1/*``, ``/azure/*``, ``/aws/*`` look a bearer value up as an API key;
+- the model API (``/v1/*`` inference, ``/azure/*``, ``/aws/*``) looks a
+  bearer value up as an API key, and a token is a 401 there;
+- the account endpoints (``/v1/me``, ``/v1/usage`` ...) take the token as a
+  sign-in too (``deps.get_account_user``): what the dashboard shows, never
+  a key;
 - ``/admin`` and ``/dashboard`` sit behind oauth2-proxy, and nginx replaces
   ``Authorization`` with the token of the cookie session.
 
-Why its own prefix and not ``/v1``: ``/v1`` is the model API, authenticated
-by API key on every route (``TestEveryApiRouteIsChecked``). This is the one
-route authenticated by an SSO token, so it lives apart, in its own nginx
-``location /auth/`` (no oauth2-proxy in front: the client's own
-``Authorization`` header must arrive untouched).
+Why its own prefix and not ``/v1``: it hands out a credential, and nothing
+under ``/v1`` does. It lives apart, in its own nginx ``location /auth/``
+(no oauth2-proxy in front: the client's own ``Authorization`` header must
+arrive untouched).
 
 The token is validated exactly as the web UI validates it
 (``auth._decode_jwt``: RS256 with AuthCenter's public key, audience, issuer)

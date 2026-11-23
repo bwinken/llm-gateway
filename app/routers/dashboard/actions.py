@@ -125,7 +125,7 @@ def model_change_applied(
     their dashboard and they are no longer mailed about it. It stays listed,
     with its script, for as long as the admin shows it. The change is named
     by its number (``3``) or as the account is shown it (``MC3``, the ``id``
-    in ``GET /dashboard/api/notices``)."""
+    in ``GET /v1/notices``)."""
     number = model_changes.parse_ref(change_id)
     if number is None or not model_changes.set_applied(session, number, user):
         raise HTTPException(status_code=404, detail="No such model change for this account.")

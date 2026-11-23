@@ -1,6 +1,6 @@
 # Endpoint 盤點
 
-Gateway 目前註冊的每一條路由：誰在呼叫、用什麼驗證、要不要留。日期：2026-11-23，共 **147** 條（另有 `/static` 靜態檔掛載，不算在內）。
+Gateway 目前註冊的每一條路由：誰在呼叫、用什麼驗證、要不要留。日期：2026-11-23，共 **142** 條（另有 `/static` 靜態檔掛載，不算在內）。
 
 這份清單和程式是對齊的：`tests/test_endpoint_inventory.py` 會比對這裡每一列和實際註冊的路由，新增或刪除路由而沒改這份文件，測試會失敗。
 
@@ -10,8 +10,8 @@ Gateway 目前註冊的每一條路由：誰在呼叫、用什麼驗證、要不
 
 | 類別 | 條數 | 處理 |
 |---|---|---|
-| 已刪除 | 5 | `GET /redoc`、`GET /docs/oauth2-redirect`、`GET /v1/model-changes`、`GET /dashboard/client-notices`、`GET /dashboard/model-changes` |
-| 新增 | 8 | `GET /v1/version`，以及 dashboard 的 JSON API 七條（前後端分離需要） |
+| 已刪除 | 10 | `GET /redoc`、`GET /docs/oauth2-redirect`、`GET /v1/model-changes`、`GET /dashboard/client-notices`、`GET /dashboard/model-changes`，以及併入帳號端點的 `GET /dashboard/api/me`、`status`、`usage`、`service-accounts`、`notices` |
+| 新增 | 3 | `GET /v1/version`，以及 dashboard 上看完整 key 的兩條（`/dashboard/api/api-key`、`/dashboard/api/service-accounts/{id}/api-key`） |
 | 保留，但值得之後再看（見「刪除候選」） | 25 | 頁面沒在用、可能有外部呼叫者：先保留，看 access log 再決定 |
 | 保留 | 其餘 | 有頁面、文件或 client 在用 |
 
@@ -26,6 +26,7 @@ Gateway 目前註冊的每一條路由：誰在呼叫、用什麼驗證、要不
 | `GET /v1/model-changes` | 內容已經在 `GET /v1/notices` 的 `model_changes` 區塊裡，問一個地方就好。**還在讀這一條的工具會收到 404，要改讀 `/v1/notices`** |
 | `GET /dashboard/client-notices` | 只回傳通知面板的 HTML 片段，只有 dashboard 頁面在按下 *I've applied it* 後用它重畫。頁面改成整頁重新載入 |
 | `GET /dashboard/model-changes` | 同上，模型汰換面板的 HTML 片段（按下 *I've switched* 之後）。`/dashboard/model-changes/patch.{bat,sh}` 與 `.../applied` 不受影響 |
+| `GET /dashboard/api/me`、`status`、`usage`、`service-accounts`、`notices` | 和同名的帳號端點（`GET /v1/me` ...）回一樣的內容，只是登入方式不同。帳號端點現在兩種登入都收（API key 或 SSO），所以只留 `/v1` 那一條；登入者多看到的部分（`is_admin`、遮罩的 key、`site`、service account 的 `id` 與 `sent_for`）也搬過去，只給 SSO 登入。刪的時候還沒有任何頁面或前端在用這五條 |
 
 ### 刪除候選（這次沒有刪）
 
@@ -63,17 +64,14 @@ grep -cE '"(GET|POST|PATCH) /admin/(users(/[0-9]+)?|api/anomalies|api/audit-log)
 | `GET /metrics` | `health_api.prometheus_metrics` |
 | `GET /v1/version` | `health_api.api_version` |
 
-### Dashboard 的 JSON API（SSO）
+### Dashboard 上只給登入者的 API（SSO）
 
-新增。`me`、`status`、`usage`、`service-accounts`、`notices` 的內容就是同名 `/v1` 端點的回應（兩邊都呼叫 `app/services/account_view.py` 裡的同一個函式），再加上只有登入者能看的部分。兩條 `api-key` 各回傳一把完整的 key，會記在稽核紀錄。`model-breakdown` 是原本就有的，給現有頁面的 Cost by Model 卡片用。
+Dashboard 的資料（`me`、`status`、`usage`、`service-accounts`、`notices`）不在這裡：它們就是下面的帳號端點，瀏覽器用 SSO 登入去讀同一條 `/v1` 路由。
+
+留在 `/dashboard/api` 的是 API key 不能做的事：兩條 `api-key` 各回傳一把完整的 key，會記在稽核紀錄。它們留在 `/dashboard` 前綴下，沒登入的請求在 proxy 那一層就被擋掉，不只靠 gateway 的程式。`model-breakdown` 是原本就有的，給現有頁面的 Cost by Model 卡片用。
 
 | 端點 | Handler |
 |---|---|
-| `GET /dashboard/api/me` | `dashboard.api.me` |
-| `GET /dashboard/api/status` | `dashboard.api.status` |
-| `GET /dashboard/api/usage` | `dashboard.api.usage` |
-| `GET /dashboard/api/service-accounts` | `dashboard.api.service_accounts` |
-| `GET /dashboard/api/notices` | `dashboard.api.notices` |
 | `GET /dashboard/api/api-key` | `dashboard.api.own_api_key` |
 | `GET /dashboard/api/service-accounts/{app_id}/api-key` | `dashboard.api.service_account_api_key` |
 | `GET /dashboard/api/model-breakdown` | `dashboard.api.model_breakdown_api` |
@@ -81,6 +79,8 @@ grep -cE '"(GET|POST|PATCH) /admin/(users(/[0-9]+)?|api/anomalies|api/audit-log)
 ### Dashboard 的動作與下載（SSO）
 
 原本就有，從 `web_ui.py` 搬到 `app/routers/dashboard/actions.py`。帶 `Accept: application/json` 就回 JSON，所以現有頁面和之後的獨立前端共用。
+
+兩條 `resolved` 是現有頁面的表單在用的。獨立前端改打 `POST /v1/notices/resolved`（同一個動作，SSO 登入也收），所以這兩條會跟著頁面一起退場。現在不能先刪：瀏覽器的登入 cookie 只有經過 `location /` 才會換成 token，頁面的表單打不到 `/v1/`。
 
 | 端點 | Handler |
 |---|---|
@@ -94,9 +94,11 @@ grep -cE '"(GET|POST|PATCH) /admin/(users(/[0-9]+)?|api/anomalies|api/audit-log)
 | `GET /dashboard/api-key/patch.{fmt}` | `dashboard.actions.api_key_patch` |
 | `GET /dashboard/install-claude-code.bat` | `dashboard.actions.personalized_claude_installer` |
 
-### 帳號端點（API key）
+### 帳號端點（API key 或 SSO）
 
-給 repo 以外的程式用（terminal 工具、狀態列、設定 client 的桌面程式）：帳號查詢自己的資訊。只增不改，不能刪。
+帳號查詢自己的資訊。兩種 client 打同一條路由：repo 以外的程式（terminal 工具、狀態列、設定 client 的桌面程式）帶帳號的 API key；瀏覽器（dashboard 的獨立前端）帶 SSO 登入，由前面的 proxy 把登入 cookie 換成 token 再轉進來（範例見 `deploy/llm-gateway-example.nginx.conf` 的 `/dashboard/v1/`）。只增不改，不能刪。
+
+SSO 登入的人多看到一些：`/v1/me` 多 `is_admin`（依 token 的 scope）、`org_code`、遮罩的 `api_key`、`site`；`/v1/service-accounts` 多每個帳號的 `id`、`api_key_masked`、`sent_for`，以及 `withheld`、`top_users`。這些不給 API key。兩種登入都拿不到完整的 key。
 
 路徑雖然也在 `/v1` 底下，但和下面的「模型 API」是兩回事：這裡不呼叫模型、不計費、額度用完照樣回應。程式上也分開，在 `app/routers/account_api.py`；模型 API 在 `app/routers/v1_api.py`。
 
@@ -195,7 +197,7 @@ SDK、Claude Code 與其他 client 呼叫的推論 API：會送到後端模型�
 
 ### Dashboard 頁面
 
-`GET /dashboard`，整頁由 gateway 繪製。獨立前端上線後可以刪，`/dashboard/api/model-breakdown` 也可以跟著刪（只有這個頁面在用）。
+`GET /dashboard`，整頁由 gateway 繪製。獨立前端上線後可以刪，`/dashboard/api/model-breakdown` 和兩條 `/dashboard/client-rules/.../resolved` 也可以跟著刪（只有這個頁面在用）。
 
 | 端點 | Handler |
 |---|---|

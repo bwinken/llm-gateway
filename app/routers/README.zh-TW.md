@@ -45,7 +45,7 @@ graph LR
 
 ## `v1_api.py` — 模型 API：統一的 `/v1/*` 推論（OpenAI 與 Anthropic 相容）
 
-**認證**：`deps.get_current_user`（API key + daily limit 檢查）。`chat/completions`、`responses`、`messages` 改用 `deps.limited_current_user`（相同檢查，另外佔一個並行名額）；`/v1/me` 用 `deps.get_current_user_unmetered`（不做每日額度 429）。
+**認證**：`deps.get_current_user`（API key + daily limit 檢查）。`chat/completions`、`responses`、`messages` 改用 `deps.limited_current_user`（相同檢查，另外佔一個並行名額）；`/v1/me` 是帳號端點（見下），用 `deps.get_account_user`（不做每日額度 429）。
 
 `v1_api.py` 是模型 API，也是主要的公開入口：這裡每一條路由都會呼叫模型（或列出模型給 client 的選單）。同樣在 `/v1` 底下的帳號端點在 `account_api.py`（下一節）。
 
@@ -121,7 +121,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 ## `account_api.py` — 帳號端點
 
-**認證**：`deps.get_current_user_unmetered`（API key，**不做** daily limit 檢查，所以額度用完照樣回應），或 `deps.get_account_holder`（另外會拒絕服務帳號代替使用者送出的請求）。
+**認證**：`deps.get_account_user`：帳號的 API key（檢查方式同 `get_current_user`，含 IP 白名單，但**不做** daily limit 檢查，所以額度用完照樣回應），或使用者的 SSO 登入（瀏覽器；沿用 web UI 的 token 檢查與規則，跨站的寫入會被拒絕，不過 IP 白名單）。或是在它之上的 `deps.get_account_holder`，另外拒絕服務帳號替使用者送的請求。SSO 登入的人會多看到一些：`/v1/me` 多 `is_admin`（依 token 的 scope）、`org_code`、遮罩的 `api_key` 與 `site`；`/v1/service-accounts` 多每個帳號的 `id`、`api_key_masked`、`sent_for`，以及 `withheld`、`top_users`。兩種登入都拿不到完整的 key。
 
 帳號查詢與回報自己的資訊，以 JSON 回傳，給不是瀏覽器的程式用（terminal 工具、狀態列）。它們和 `v1_api.py` 的模型 API 只是共用 `/v1` 前綴，其他都不同：不呼叫模型、不計費、不佔併發名額。五條讀取（`me`、`status`、`usage`、`service-accounts`、`notices`）的內容由 `app/services/account_view.py` 組裝，dashboard 的 `/dashboard/api/*` 也呼叫它。只增不改，不回傳 `null`。
 
@@ -207,17 +207,12 @@ Dashboard 是獨立的 package：`app/routers/dashboard/`，正在分階段拆�
 | `GET` | `/dashboard` | Dashboard 頁面：今日額度、用量統計、趨勢圖、各模型費用、伺服器狀態，以及給 owner 的 *Service accounts* 分頁。按下 *I've applied it* 或 *I've switched* 之後，頁面的 script 會整頁重新載入：沒有只回傳頁面一部分的路由 |
 | `GET` | `/setup` | Claude Code 安裝頁（Windows）。`SETUP_PAGE_ENABLED=false` 時和安裝檔下載一樣回 404（`web_ui.py`） |
 
-### Dashboard 的 JSON（`dashboard/api.py`）
+### 只有登入者能呼叫的（`dashboard/api.py`）
 
-給獨立的前端用，前端要和 gateway 同源。前五條的內容就是同名 `/v1` 端點的回應（兩邊都呼叫 `app/services/account_view.py` 裡的同一個函式），再加上只有登入者能看的部分。只增不改，不回傳 `null`。
+Dashboard 的資料不在這裡：獨立的前端讀帳號端點（`GET /v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`），它們除了 API key 也收使用者的 SSO 登入，並讓登入者多看到一些（見上面的「帳號端點」）。留在 `/dashboard/api` 的是 API key 不能做的事。只增不改，不回傳 `null`。
 
 | 方法 | 路徑 | 說明 |
 |---|---|---|
-| `GET` | `/dashboard/api/me` | `GET /v1/me`，加上 `is_admin`（依 token 的 scope）、`org_code`、`api_key`（`masked`、`created_at`）與 `site`（標題、`api_base`、管理員設定的連結、`setup_page`、`installer`） |
-| `GET` | `/dashboard/api/status` | `GET /v1/status` |
-| `GET` | `/dashboard/api/usage` | `GET /v1/usage`（`?days=`，1 到 90） |
-| `GET` | `/dashboard/api/service-accounts` | `GET /v1/service-accounts`，每個帳號加上 `id`、`api_key_masked` 與 `sent_for`（這個月替誰送過請求），另有 `withheld` |
-| `GET` | `/dashboard/api/notices` | `GET /v1/notices`（模型汰換在它的 `model_changes` 區塊），加上 `quiet_days` |
 | `GET` | `/dashboard/api/api-key` | 呼叫者自己的完整 key。不快取，會記在稽核紀錄 |
 | `GET` | `/dashboard/api/service-accounts/{app_id}/api-key` | 名下服務帳號的完整 key：必須是 owner 且在該帳號的部門，否則 403。不快取，會記在稽核紀錄 |
 | `GET` | `/dashboard/api/model-breakdown` | 頁面的 Cost by Model 卡片資料（`?period=month` 預設，或 `day`；其他回 400）。供頁面的 Month/Today 切換與重新整理按鈕使用 |

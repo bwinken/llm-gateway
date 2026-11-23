@@ -299,6 +299,7 @@ curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
 {
   "object": "notices",
   "window_days": 15,
+  "quiet_days": 14,
   "notices": [
     {"id": "CC001", "title": "Auto mode needs a setting on this gateway",
      "message": "Claude Code is waiting for a server-side check this gateway does not provide.",
@@ -347,7 +348,7 @@ curl -X POST https://your-gateway/v1/notices/resolved -H "Authorization: Bearer 
 ```
 
 - `resolved` lists the notices that were open and are now cleared. An id with nothing open is left out and a second call answers an empty list; neither is an error. `400`: `ids` is not a list of ids.
-- The gateway cannot see your settings file, so it takes your word. It leaves you alone for at least two weeks after that; if it still sees the same problem then (a second machine, a patch that did not take), the notice comes back. A notice also goes away by itself once the gateway has not seen the problem for `window_days` days.
+- The gateway cannot see your settings file, so it takes your word. It leaves you alone for at least two weeks after that (`quiet_days` in `GET /v1/notices`); if it still sees the same problem then (a second machine, a patch that did not take), the notice comes back. A notice also goes away by itself once the gateway has not seen the problem for `window_days` days.
 - These calls are in the gateway's audit log, like the dashboard's button.
 
 ## Settings

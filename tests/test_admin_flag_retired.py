@@ -154,15 +154,31 @@ def test_nothing_on_the_api_path_reads_the_column():
     """A guard against the exemption coming back: the modules an API-key
     request runs through do not mention ``is_admin`` except where
     ``deps._authenticate`` clears it and ``/v1/me`` reports false (its body
-    is built in ``account_view``)."""
+    is built in ``account_view``).
+
+    The account endpoints also take an SSO sign-in. There the attribute is
+    set from the token's scope for the one request, exactly as
+    ``get_web_user`` sets it (``deps._authenticate_sso``), and
+    ``account_view.me_signed_in`` reports that: still never the column."""
     from pathlib import Path
 
     app = Path(__file__).resolve().parent.parent / "app"
     allowed = {
-        "core/deps.py": ["    user.is_admin = False"],
+        "core/deps.py": [
+            "    user.is_admin = False",
+            '    user.is_admin = "admin" in scopes',
+            "    if user.is_disabled and not user.is_admin:",
+        ],
         "routers/v1_api.py": [],
-        "routers/account_api.py": [],
-        "services/account_view.py": ['        "is_admin": False,'],
+        # The handler's description of the answer (shown in /docs), no code.
+        "routers/account_api.py": [
+            "    frame needs: ``is_admin`` true for an admin (the token's ``admin``",
+        ],
+        "services/account_view.py": [
+            '        "is_admin": False,',
+            "    ``is_admin`` (true by the token's ``admin`` scope; by key it is always",
+            '    extra: dict[str, object] = {"is_admin": bool(user.is_admin)}',
+        ],
         "routers/azure_api.py": [],
         "routers/aws_api.py": [],
     }

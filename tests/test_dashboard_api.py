@@ -1,11 +1,12 @@
-"""The dashboard as data: ``/dashboard/api/*`` (``app/routers/dashboard``).
+"""The dashboard as data, for a frontend of its own, signed in by SSO.
 
-What the dashboard page shows, as JSON for a frontend of its own, signed in
-by SSO. ``me`` / ``status`` / ``usage`` / ``service-accounts`` / ``notices``
-answer what the account endpoints of the same name answer by API key, from
-the same function (``app/services/account_view.py``), plus what only a signed-in person may see. A key is in
-none of them: the two routes that show one do nothing else and are in the
-audit log."""
+``me`` / ``status`` / ``usage`` / ``service-accounts`` / ``notices`` are the
+account endpoints (``GET /v1/me`` ...): one route answers an API key and an
+SSO sign-in from the same function (``app/services/account_view.py``), and
+shows a signed-in person a little more. A key is in none of them: the two
+routes that show one stay under ``/dashboard/api``, do nothing else and are
+in the audit log. How the sign-in itself is judged is in
+``tests/test_account_sign_in.py``."""
 
 from __future__ import annotations
 
@@ -40,7 +41,8 @@ def _sso(sub: str = "testuser", **kw) -> dict[str, str]:
 
 
 def _get(client, name: str, sub: str = "testuser", **params) -> dict:
-    resp = client.get(f"/dashboard/api/{name}", headers=_sso(sub), params=params)
+    """An account endpoint, signed in by SSO."""
+    resp = client.get(f"/v1/{name}", headers=_sso(sub), params=params)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert _no_nulls(body), body
@@ -103,10 +105,19 @@ def hr_chat(db_session, owner) -> User:
 
 
 class TestSignIn:
-    @pytest.mark.parametrize("name", READS + ["api-key", "model-breakdown"])
+    @pytest.mark.parametrize("name", ["api-key", "model-breakdown"])
     def test_needs_the_sso_sign_in_and_an_api_key_is_not_one(self, client, test_user, name):
         assert client.get(f"/dashboard/api/{name}").status_code in (401, 403)
         assert client.get(f"/dashboard/api/{name}", headers=auth_header()).status_code in (401, 403)
+
+    @pytest.mark.parametrize("name", READS)
+    def test_the_five_reads_are_the_account_endpoints(self, client, test_user, name):
+        """They were routes here too (``/dashboard/api/me`` ...), answering
+        the same. One route is left, and it takes both sign-ins."""
+        assert client.get(f"/dashboard/api/{name}", headers=_sso()).status_code == 404
+        assert client.get(f"/v1/{name}", headers=_sso()).status_code == 200
+        assert client.get(f"/v1/{name}", headers=auth_header()).status_code == 200
+        assert client.get(f"/v1/{name}").status_code == 401
 
     def test_every_dashboard_route_signs_in_by_sso(self):
         from fastapi.routing import iter_route_contexts
@@ -120,7 +131,9 @@ class TestSignIn:
         contexts = list(iter_route_contexts(dashboard.router.routes))
         paths = {context.path for context in contexts}
         # The page, its data and its actions are all here, and nowhere else.
-        assert {"/dashboard", "/dashboard/api/me", "/dashboard/refresh-key", "/dashboard/api/api-key"} <= paths
+        assert {"/dashboard", "/dashboard/api/model-breakdown", "/dashboard/refresh-key", "/dashboard/api/api-key"} <= paths
+        # The account's data is not here any more: it is the account endpoints.
+        assert not {"/dashboard/api/me", "/dashboard/api/usage", "/dashboard/api/notices"} & paths
         assert all(path == "/dashboard" or path.startswith("/dashboard/") for path in paths)
         assert [context.path for context in contexts if not walk(context.dependant)] == []
 
@@ -133,7 +146,7 @@ class TestSignIn:
 
 
 class TestTheSameAsByKey:
-    """One shape for a client, whichever way it signed in."""
+    """One route and one shape for a client, whichever way it signed in."""
 
     def test_status(self, client, test_user):
         assert _get(client, "status") == _by_key(client, "status")
@@ -146,14 +159,14 @@ class TestTheSameAsByKey:
 
     @pytest.mark.parametrize("days", [0, 91])
     def test_usage_takes_the_same_days(self, client, test_user, days):
-        assert client.get("/dashboard/api/usage", headers=_sso(), params={"days": days}).status_code == 422
+        assert client.get("/v1/usage", headers=_sso(), params={"days": days}).status_code == 422
 
     def test_notices(self, client, db_session, test_user):
         _violation(db_session)
         body = _get(client, "notices")
         from app.services import client_rules
 
-        assert body.pop("quiet_days") == client_rules.RESOLVED_QUIET_DAYS
+        assert body["quiet_days"] == client_rules.RESOLVED_QUIET_DAYS
         assert body == _by_key(client, "notices")
         assert [n["id"] for n in body["notices"]] == ["CC001"]
         assert body["model_changes"] == {"changes": [], "retiring": [], "patch": {"models": {}}}
@@ -163,7 +176,7 @@ class TestTheSameAsByKey:
         body = _get(client, "me")
         by_key = _by_key(client, "me")
         extra = {"api_key", "site"}
-        assert set(body) == set(by_key) | extra
+        assert set(body) == set(by_key) | extra and not extra & set(by_key)
         # The clock moves between the two calls; everything else is the same.
         body["daily"].pop("resets_in_seconds"), by_key["daily"].pop("resets_in_seconds")
         assert {k: v for k, v in body.items() if k not in extra} == by_key
@@ -180,7 +193,7 @@ class TestTheSameAsByKey:
 class TestWhatOnlyTheSignedInPersonSees:
     def test_an_admin_is_one_by_the_token(self, client, test_user):
         assert _get(client, "me")["is_admin"] is False
-        body = client.get("/dashboard/api/me", headers=_sso(scopes=["admin"])).json()
+        body = client.get("/v1/me", headers=_sso(scopes=["admin"])).json()
         assert body["is_admin"] is True
         # By API key nobody is: the scope exists on the web UI only.
         assert _by_key(client, "me")["is_admin"] is False
@@ -202,7 +215,7 @@ class TestWhatOnlyTheSignedInPersonSees:
         assert all(site["links"].values())
 
     def test_the_installer_follows_the_setup_page_switch(self, client, test_user, monkeypatch):
-        monkeypatch.setattr("app.routers.dashboard.api.setup_page_enabled", lambda: False)
+        monkeypatch.setattr("app.services.account_view.setup_page_enabled", lambda: False)
         site = _get(client, "me")["site"]
         assert site["setup_page"] is False and site["installer"] is False
 
@@ -229,7 +242,7 @@ class TestWhatOnlyTheSignedInPersonSees:
         assert "sent_for" not in _get(client, "service-accounts")["service_accounts"][0]
 
     def test_the_users_beyond_the_top_are_one_row_without_a_name(self, client, db_session, hr_chat):
-        from app.routers.dashboard.api import _sent_for
+        from app.services.account_view import sent_for as _sent_for
 
         flow = {"users": 12, "rows": [
             {"user": "alice", "display_name": "", "backend": "bedrock", "requests": 2,
@@ -254,8 +267,9 @@ class TestKeys:
     @pytest.mark.parametrize("name", READS)
     def test_no_data_route_holds_a_key(self, client, db_session, hr_chat, name):
         _violation(db_session)
-        text = client.get(f"/dashboard/api/{name}", headers=_sso()).text
-        assert OWN_KEY not in text and SERVICE_KEY not in text
+        for headers in (_sso(), auth_header()):
+            text = client.get(f"/v1/{name}", headers=headers).text
+            assert OWN_KEY not in text and SERVICE_KEY not in text
 
     def test_the_own_key_is_one_call_never_cached_and_audited(self, client, db_session, test_user):
         resp = client.get("/dashboard/api/api-key", headers=_sso())
@@ -352,7 +366,7 @@ class TestThePageAndTheApiAgree:
 
         for fn in (
             page.dashboard,
-            api.usage, api.service_accounts, api.notices, api.model_breakdown_api, api.service_account_api_key,
+            api.own_api_key, api.model_breakdown_api, api.service_account_api_key,
             actions.refresh_own_key, actions.refresh_owned_app_key, actions.client_rules_resolved_all,
         ):
             assert not inspect.iscoroutinefunction(fn), fn.__name__

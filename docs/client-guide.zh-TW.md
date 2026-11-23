@@ -299,6 +299,7 @@ curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
 {
   "object": "notices",
   "window_days": 15,
+  "quiet_days": 14,
   "notices": [
     {"id": "CC001", "title": "Auto mode needs a setting on this gateway",
      "message": "Claude Code is waiting for a server-side check this gateway does not provide.",

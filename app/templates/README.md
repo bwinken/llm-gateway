@@ -71,7 +71,7 @@ The budget hero stays at the top; the lower half is split into two tabs (**Model
 | Regenerate service account key | `POST /dashboard/app/{id}/refresh-key` | Regenerate owned service account's API key (owner only) |
 | Copy service account key | Button | Copy service account's full API key |
 | Cost by Model refresh | `GET /dashboard/api/model-breakdown?period=` | JSON for the Cost by Model card (`month` or `day`) |
-| The page's data as JSON | `GET /dashboard/api/me` · `status` · `usage` · `service-accounts` · `notices` · `api-key` | Not used by this page: for a frontend of its own (see *Dashboard* in `docs/architecture.md`) |
+| The page's data as JSON | `GET /v1/me` · `/v1/status` · `/v1/usage` · `/v1/service-accounts` · `/v1/notices`, signed in by SSO; a key in full is `GET /dashboard/api/api-key` | Not used by this page: for a frontend of its own (see *Dashboard* in `docs/architecture.md`) |
 | Download installer | `GET /dashboard/install-claude-code.bat` | Personalized Claude Code installer (linked from `/setup`) |
 | Download settings patch | `GET /dashboard/client-rules/all/patch.{bat,sh}` | One script for everything the account has open (the mail links to the same URL) |
 | I've applied it / everything | `POST /dashboard/client-rules/{id}/resolved` · `/all/resolved` | Hides the notice(s); the page then loads again |

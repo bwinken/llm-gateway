@@ -20,6 +20,7 @@ from app.models.schema import User
 from app.core.auth import get_web_user
 from app.core.config import (
     APP_TITLE,
+    api_base_url,
     get_site_links,
     setup_page_enabled,
 )
@@ -41,11 +42,10 @@ templates.env.globals["static_url"] = static_url
 
 
 def gateway_base(request: Request) -> str:
-    """The API base URL to show this caller (``https://host/v1``), built
-    from the Host header (reliable behind the reverse proxy)."""
-    host = request.headers.get("host", request.url.hostname or "localhost")
-    scheme = request.headers.get("x-forwarded-proto", request.url.scheme or "http")
-    return f"{scheme}://{host}/v1"
+    """The API base URL to show this caller (``https://host/v1``):
+    ``config.api_base_url``, which ``GET /v1/me`` gives a signed-in person
+    too."""
+    return api_base_url(request)
 
 
 def _common_ctx(request: Request, **extra) -> dict:

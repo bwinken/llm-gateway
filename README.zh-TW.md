@@ -141,7 +141,7 @@ ANTHROPIC_BASE_URL=https://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key cla
 | 端點 | 用途 |
 |---|---|
 | `/dashboard` | 額度、用量、模型狀態、API key、client 通知與 patch 下載、名下的服務帳號 |
-| `GET /dashboard/api/me`、`status`、`usage`、`service-accounts`、`notices` | 同一份資料的 JSON，給獨立的前端用：內容就是同名 `/v1` 端點的回應，再加上只有登入者能看的部分 |
+| `GET /v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices` | 同一份資料的 JSON。同一條路由給兩種 client：帶帳號 API key 的工具，以及瀏覽器裡帶 SSO 登入的獨立前端（登入者會多看到一些） |
 | `GET /dashboard/api/api-key`、`/dashboard/api/service-accounts/{id}/api-key` | 完整的 key（自己的，或名下服務帳號的）：一次一把，會記在稽核紀錄 |
 | `/setup` | Claude Code 的 Windows 安裝檔（可以關閉） |
 

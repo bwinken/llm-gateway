@@ -52,7 +52,7 @@ def _no_nulls(value) -> bool:
 # GET /v1/notices with nothing to tell: no violation open, and (a second
 # category beside them, a block of its own) no model being replaced.
 NOTHING_OPEN = {
-    "object": "notices", "window_days": 15, "notices": [],
+    "object": "notices", "window_days": 15, "quiet_days": 14, "notices": [],
     "model_changes": {"changes": [], "retiring": [], "patch": {"models": {}}},
 }
 

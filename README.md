@@ -141,7 +141,7 @@ The pages a user sees after signing in through SSO, and the dashboard's data as 
 | Endpoint | What it is for |
 |---|---|
 | `/dashboard` | Budget, usage, model status, the API key, client notices and their patch download, owned service accounts |
-| `GET /dashboard/api/me`, `status`, `usage`, `service-accounts`, `notices` | The same data as JSON, for a frontend of its own: what the `/v1` endpoint of the same name answers, plus what only a signed-in person sees |
+| `GET /v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` | The same data as JSON. One route for two kinds of client: a tool with the account's API key, and a frontend of its own in a browser with the person's SSO sign-in, which is shown a little more |
 | `GET /dashboard/api/api-key`, `/dashboard/api/service-accounts/{id}/api-key` | A key in full (the person's own, or an owned service account's): one per call, in the audit log |
 | `/setup` | The Windows installer for Claude Code (can be turned off) |
 

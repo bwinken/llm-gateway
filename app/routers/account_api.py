@@ -1,45 +1,59 @@
 """
 The account endpoints: what an account reads and reports about itself, by
-API key.
+API key or by SSO sign-in.
 
 ``/v1`` is two different things that share a prefix, and they are kept in
 two modules so they are not mixed up:
 
 - ``v1_api.py``, the **model API**: inference. Billed, limited, routed to a
-  backend.
+  backend. API key only.
 - this one, the **account endpoints**: ``GET /v1/me`` (also ``/me``),
   ``/v1/status``, ``/v1/usage``, ``/v1/service-accounts``, ``/v1/notices``,
   ``/v1/settings``, and the two that write, ``POST /v1/notices/resolved``
-  and ``POST /v1/events``. What the dashboard shows an account, as JSON,
-  for a program that is not a browser (a terminal tool, a status line).
+  and ``POST /v1/events``. What the dashboard shows an account, as JSON.
   Never billed, never routed to a model; they answer once the budget is
   spent, since that is when people look.
 
-Every route here authenticates with ``get_current_user_unmetered`` (or
-``get_account_holder``, which also refuses a request a service account
-sends for a user), so it passes the IP allowlist like every API route.
-None returns an API key.
+Two kinds of client ask, and one route serves both
+(``deps.get_account_user``):
 
-The five reads the dashboard's own API answers too (``me``, ``status``,
-``usage``, ``service-accounts``, ``notices``) have their body built in
-``app/services/account_view.py``: a handler here authenticates and calls
-it. These answers are what programs outside this repository are built
-against: change them by addition only, and never return a ``null``.
+- a program that is not a browser (a terminal tool, a status line), with
+  the account's **API key**. It passes the IP allowlist like every API
+  route.
+- a browser, with the person's **SSO sign-in**: a frontend of its own for
+  the dashboard. The proxy in front trades the session cookie for the
+  access token, so it arrives as the same ``Authorization: Bearer`` header.
+  The web UI's rules apply: the token check and account of
+  ``get_web_user``, a write refused cross-site, no IP allowlist.
+
+Every route authenticates with ``get_account_user`` (or
+``get_account_holder``, which also refuses a request a service account
+sends for a user). A signed-in person is shown a little more than a key
+(``account_view.*_signed_in``: the admin link, the masked key, who an
+application was used for). None returns an API key in full, to either:
+showing and regenerating a key stays under ``/dashboard``, behind the
+proxy's sign-in.
+
+Each body is built in ``app/services/account_view.py``: a handler here
+authenticates and calls it. These answers are what programs outside this
+repository are built against: change them by addition only, and never
+return a ``null``.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
+from app.core.config import api_base_url
 from app.core.deps import (
     get_account_holder,
-    get_current_user_unmetered,
+    get_account_user,
     record_client_event,
     resolve_client_notices,
 )
 from app.core.logger import logger
-from app.models.schema import User
+from app.models.schema import User, signed_in_by_sso
 from app.services import account_view, audit, client_events, client_settings
 
 # One group of /docs: every route here is an account endpoint.
@@ -48,7 +62,7 @@ router = APIRouter(tags=["account"])
 
 @router.get("/v1/me")
 @router.get("/me")
-async def account_info(user: User = Depends(get_current_user_unmetered)):
+async def account_info(request: Request, user: User = Depends(get_account_user)):
     """The caller's own access and today's budget, for clients and scripts.
 
     Answers even once the daily limit is spent (no 429 at auth), since
@@ -72,12 +86,23 @@ async def account_info(user: User = Depends(get_current_user_unmetered)):
 
     ``legacy_key``: the key is of the older, weaker format and the dashboard
     asks its holder to regenerate it. The key itself is never returned.
+
+    Signed in by SSO (a browser), the answer also has what the dashboard's
+    frame needs: ``is_admin`` true for an admin (the token's ``admin``
+    scope; by API key it is always false), ``org_code`` (the person's
+    department, when their sign-in gave one), ``api_key`` (``masked`` and
+    ``created_at``; the key in full is ``GET /dashboard/api/api-key``) and
+    ``site`` (``title``, the ``api_base`` to show in examples, the admin's
+    ``links``, ``setup_page``, ``installer``).
     """
-    return await run_in_threadpool(account_view.me, user)
+    body = await run_in_threadpool(account_view.me, user)
+    if signed_in_by_sso(user):
+        body.update(account_view.me_signed_in(user, api_base_url(request)))
+    return body
 
 
 @router.get("/v1/status")
-async def model_status(user: User = Depends(get_current_user_unmetered)):
+async def model_status(user: User = Depends(get_account_user)):
     """The models this key can use and whether they are up, for clients and
     scripts: what the dashboard's model tables show.
 
@@ -90,7 +115,9 @@ async def model_status(user: User = Depends(get_current_user_unmetered)):
     the on-prem ones up. A key is never omitted as null: it is left out.
 
     Like ``/v1/me`` it answers once the daily limit is spent. No database
-    read.
+    read by API key. Signed in by SSO, an admin (the token's ``admin``
+    scope) sees the cloud models whatever their own cloud access, as on the
+    dashboard page.
     """
     return account_view.status(user)
 
@@ -155,8 +182,21 @@ def owned_service_accounts(user: User = Depends(get_account_holder)):
     the dashboard, behind SSO. ``legacy_key`` says its key is of the older
     format.
 
+    Signed in by SSO (a browser), the owner is shown more, as on the
+    dashboard: per account its ``id`` (for the key routes,
+    ``GET /dashboard/api/service-accounts/{id}/api-key``),
+    ``api_key_masked``, and ``sent_for`` when it sent requests for its users
+    this month: how many ``users``, and ``rows`` of one user on one backend,
+    the ``top_users`` by cost by name and the rest as one row per backend
+    with ``others`` instead of ``user``. ``withheld`` names the accounts
+    assigned to the person that they may not see now, each made for another
+    ``department`` than theirs. None of that is given to an API key: a
+    leaked key must not say who uses an application.
+
     Answers once the daily limit is spent. Plain ``def`` (database read).
     """
+    if signed_in_by_sso(user):
+        return account_view.service_accounts_signed_in(user)
     return account_view.service_accounts(user)
 
 
@@ -200,8 +240,12 @@ def client_notices(user: User = Depends(get_account_holder)):
     value is exactly the old name; a bracket suffix (``old[1m]``) is kept.
     Add nothing: a user who chose another model keeps it.
 
-    Read-only: reporting a notice as fixed is ``POST /v1/notices/resolved``.
-    Answers once the daily limit is spent. Plain ``def``.
+    ``quiet_days`` is how long a notice reported as applied is left alone.
+
+    Read-only: reporting a notice as fixed is ``POST /v1/notices/resolved``
+    (a model change as switched stays on the dashboard:
+    ``POST /dashboard/model-changes/{id}/applied``, with the ``id`` given
+    here). Answers once the daily limit is spent. Plain ``def``.
     """
     return account_view.notices(user)
 
@@ -211,8 +255,10 @@ def client_notices_resolved(
     body: dict | None = Body(default=None),
     user: User = Depends(get_account_holder),
 ):
-    """*I've applied it*, for a client that is not a browser: the caller's
-    open notices are marked as fixed, as the dashboard's button does.
+    """*I've applied it*: the caller's open notices are marked as fixed, as
+    the dashboard's button does. By API key (a client that is not a
+    browser) or signed in by SSO (a frontend of its own for the dashboard;
+    refused when another site's page sent it).
 
     Without a body (or without ``ids``) everything open is resolved; with
     ``{"ids": ["CC001", ...]}`` only those. The answer lists what was open
@@ -222,8 +268,8 @@ def client_notices_resolved(
     for two weeks (``client_rules.RESOLVED_QUIET_DAYS``): a notice comes
     back only if its problem is still seen after that.
 
-    The one write an API key has on its account, and in the audit log.
-    Plain ``def``.
+    The one write an API key has on its account, and in the audit log
+    (with how the caller signed in). Plain ``def``.
     """
     ids = None
     if body is not None and body.get("ids") is not None:
@@ -233,14 +279,17 @@ def client_notices_resolved(
             or not all(isinstance(rule_id, str) and len(rule_id) <= 20 for rule_id in ids)
         ):
             raise HTTPException(status_code=400, detail="ids must be a list of notice ids, such as [\"CC001\"].")
-    audit.note_actor(user.username)
+    via = "sso" if signed_in_by_sso(user) else "api_key"
+    audit.note_actor(user.username, via=via)
     try:
         resolved = resolve_client_notices(user, ids)
     except Exception as exc:
         logger.warning("Client notices resolve failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
         raise HTTPException(status_code=503, detail="Could not record this now. Try again later.")
     audit.note(resolved=resolved)
-    logger.info("Client rules marked as fixed by API key | user={} rules={}", user.username, ",".join(resolved) or "-")
+    logger.info(
+        "Client rules marked as fixed | user={} via={} rules={}", user.username, via, ",".join(resolved) or "-",
+    )
     return {"object": "notices.resolved", "resolved": resolved}
 
 

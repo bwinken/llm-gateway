@@ -154,7 +154,7 @@ FastAPI dependency：驗證 API key、檢查每日額度與雲端上限，並佔
 | 函式 | 回傳 | 說明 |
 |---|---|---|
 | `get_current_user(request, credentials, x_api_key)` | `User` | 驗證 API key（`Authorization: Bearer` 或 `x-api-key`；兩者都送時逐一嘗試）、套用 API IP 白名單（`ip_allowlist.check`）+ 檢查每日額度。若 `user.is_disabled` 則丟出 `AccountDisabledError`（沒有例外：API key 不帶 admin 權限），並清掉 `user.is_admin`（已退役的資料庫旗標） |
-| `get_current_user_unmetered(request, credentials, x_api_key)` | `User` | 相同認證（含 IP 白名單）但不檢查每日額度。供 `GET /v1/me` 使用，額度用完時仍須回應 |
+| `get_account_user(request, credentials, x_api_key)` | `User` | 帳號端點（`/v1/me`、`/v1/status`、`/v1/usage` ...）的認證：帳號的 API key（和 `get_current_user` 一樣交給 `_authenticate`，含 IP 白名單，但不檢查每日額度，所以額度用完照樣回應），或使用者的 SSO 登入（`_authenticate_sso`：web UI 的 `_decode_jwt` 與 `_sync_user`、`read` scope、admin 依 token 的 scope、跨站的寫入會被拒絕、不過 IP 白名單）。先當 key 查；只有不是任何帳號的 key、而且長得像 token 的值才當 token 驗。`schema.signed_in_by_sso(user)` 回答這次是哪一種。在它之上的 `get_account_holder` 另外拒絕服務帳號替使用者送的請求 |
 | `require_azure_access(user)` | `User` | 包裝 `get_current_user`；若 `not user.can_use_azure` 則回 403，再呼叫 `ensure_azure_budget`。`/azure/v1/*` 使用 |
 | `require_bedrock_access(user)` | `User` | 同上，檢查 `can_use_bedrock` + `ensure_bedrock_budget`。`/aws/v1/*` 使用 |
 | `limited_current_user` / `limited_azure_access` / `limited_bedrock_access` | `User`（yield） | 以 `_limited` 包裝上面三個 dependency，持有併發 lease 直到回應（含串流）送完。僅用於推論端點（chat / responses / messages） |
@@ -185,7 +185,7 @@ auth_throttle：位址因過多不同的錯誤 key 被鎖定 → 429（不查詢
 自己的短期 Session: SELECT * FROM users WHERE api_key = ?（逐一嘗試）
        ↓  找不到 → 401（並由 auth_throttle 計數）；停用（非 admin）→ AccountDisabledError (403)
 IP 白名單 → 403
-檢查今日 cost_usd vs daily_limit_usd → 429（get_current_user_unmetered 略過）
+檢查今日 cost_usd vs daily_limit_usd → 429（get_account_user 略過）
        ↓  session 關閉；寫入 api_key_last_used_at（最多每小時一次）
 require_azure_access / require_bedrock_access：權限旗標 → 403，雲端上限 → 429
        ↓
@@ -307,6 +307,6 @@ SSO cookie 的 `SameSite=lax` 單獨不夠：同網域底下的其他子網站�
 | **認證方式** | API key（`Authorization: Bearer` 或 `x-api-key`） | JWT（oauth2-proxy 注入） |
 | **查詢對象** | DB `users.api_key` 欄位 | JWT `sub` claim → DB `users.username` |
 | **DB session** | 自己的短期 session | `Depends(get_session)` |
-| **額度檢查** | 每次請求檢查 `daily_limit_usd`（`get_current_user_unmetered` 除外），雲端路由檢查雲端上限，推論端點檢查併發 | 不檢查（Web UI 僅查看） |
+| **額度檢查** | 每次請求檢查 `daily_limit_usd`（`get_account_user` 除外），雲端路由檢查雲端上限，推論端點檢查併發 | 不檢查（Web UI 僅查看） |
 | **Admin 判斷** | 無：API key 不帶 admin 權限（資料庫的 `users.is_admin` 已退役） | `"admin" in scopes`（JWT scope） |
 | **自動建立帳號** | 否（key 不存在回 401） | 是（首次登入自動 provision） |

@@ -66,8 +66,9 @@ def _hostname(value: str) -> str:
     return (urlsplit("//" + netloc).hostname or "").lower()
 
 
-def refusal_reason(method: str, path: str, headers: dict[str, str]) -> str | None:
-    """Why this request must be refused as cross-site, or None to let it through.
+def cross_site_reason(method: str, headers: dict[str, str]) -> str | None:
+    """Why this request is a cross-site write, or None: the check itself,
+    whatever the path.
 
     Uses what the browser itself computed, ``Sec-Fetch-Site``, when present
     (pages cannot forge it and it stays correct behind proxies that rewrite
@@ -75,7 +76,7 @@ def refusal_reason(method: str, path: str, headers: dict[str, str]) -> str | Non
     A request carrying neither header did not come from a browser page
     (curl, scripts), so there is no ambient cookie to abuse: let it through.
     """
-    if method.upper() in SAFE_METHODS or not is_cookie_auth_path(path):
+    if method.upper() in SAFE_METHODS:
         return None
     fetch_site = headers.get("sec-fetch-site", "").strip().lower()
     if fetch_site:
@@ -91,6 +92,19 @@ def refusal_reason(method: str, path: str, headers: dict[str, str]) -> str | Non
     if _hostname(origin) and _hostname(origin) == _hostname(host):
         return None
     return "origin does not match host"
+
+
+def refusal_reason(method: str, path: str, headers: dict[str, str]) -> str | None:
+    """Why this request must be refused as cross-site, or None to let it
+    through: ``cross_site_reason`` for the cookie-authenticated prefixes.
+
+    The account endpoints (``/v1/me`` ...) are under no such prefix and take
+    an SSO sign-in too: there the same check runs where the sign-in is read
+    (``deps._authenticate_sso``), since only then is it known that the
+    request was not authenticated by an API key."""
+    if not is_cookie_auth_path(path):
+        return None
+    return cross_site_reason(method, headers)
 
 
 class CrossSiteRequestGuard:

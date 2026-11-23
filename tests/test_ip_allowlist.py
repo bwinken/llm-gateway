@@ -206,11 +206,24 @@ class TestRules:
 class TestEveryApiRouteIsChecked:
     def test_every_api_route_authenticates_through_the_checked_dependencies(self):
         """The allowlist runs inside deps._authenticate. An API route that
-        authenticated some other way would silently skip it."""
+        authenticated some other way would silently skip it. The account
+        endpoints authenticate through ``get_account_user``, which hands
+        every API key to ``_authenticate`` (``test_every_api_router_is_gated``
+        asks them from an unlisted address)."""
         from app.core import deps
         from app.routers import account_api, aws_api, azure_api, v1_api
 
-        checked = {deps.get_current_user, deps.get_current_user_unmetered}
+        checked = {deps.get_current_user, deps.get_account_user}
+        model_api = {deps.get_current_user}
+
+        def calls(dependant) -> set:
+            return {dependant.call} | {c for d in dependant.dependencies for c in calls(d)}
+
+        # Only the account endpoints take a sign-in other than the key.
+        for router in (v1_api.router, azure_api.router, aws_api.router):
+            for route in router.routes:
+                found = calls(route.dependant)
+                assert found & model_api and deps.get_account_user not in found, route.path
 
         def walk(dependant) -> bool:
             return dependant.call in checked or any(walk(d) for d in dependant.dependencies)

@@ -942,6 +942,16 @@ def set_cloud_daily_limit(value: float | None) -> None:
 _SITE_LINK_KEYS: tuple[str, ...] = ("support_bot_url", "install_guide_url")
 
 
+def api_base_url(request) -> str:
+    """The API base URL to show the caller of ``request``
+    (``https://host/v1``), built from the Host header (reliable behind the
+    reverse proxy). For the pages' examples and ``site.api_base`` of
+    ``GET /v1/me``."""
+    host = request.headers.get("host", request.url.hostname or "localhost")
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme or "http")
+    return f"{scheme}://{host}/v1"
+
+
 def setup_page_enabled() -> bool:
     """Whether the web UI offers the Setup page (``/setup``) and the Claude
     Code installer download behind it.

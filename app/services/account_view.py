@@ -3,16 +3,18 @@ What an account is told about itself, as data: the one place each answer is
 put together.
 
 ``GET /v1/me``, ``/v1/status``, ``/v1/usage``, ``/v1/service-accounts`` and
-``/v1/notices`` (by API key, ``app/routers/v1_api.py``) and the dashboard's
-``GET /dashboard/api/*`` of the same names (by SSO,
-``app/routers/dashboard/api.py``) are the same answers for two ways of
-signing in. Each route authenticates and calls the function here; neither
-router calls the other. A function takes the ``User`` the route
-authenticated and returns the response body. It does not care how that
-user signed in. The one difference between the two is not decided here:
-an admin by the token's scope, which only the SSO sign-in can make one,
-sees the cloud models whatever their own access
-(``model_catalog.hidden_cloud_backends``).
+``/v1/notices`` (``app/routers/account_api.py``) are asked two ways: by a
+program with the account's API key, and by a browser with the person's SSO
+sign-in. One route serves both and calls the function here, which takes the
+``User`` the route authenticated and returns the response body.
+
+A signed-in person is shown more than a key is, and that is decided here
+too, in the functions named ``*_signed_in``: whether they are an admin, the
+masked key, the site's links, a service account's id and who it sent
+requests for. The route calls them only for an SSO sign-in
+(``schema.signed_in_by_sso``); a key never gets them. One more difference
+comes from the sign-in itself: an admin by the token's scope sees the cloud
+models whatever their own access (``model_catalog.hidden_cloud_backends``).
 
 What the programs outside this repository are built against is decided
 here: change an answer by addition only (never rename or remove a key, or
@@ -29,10 +31,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.core.config import (
+    APP_TITLE,
     get_cloud_budget_fallback,
     get_concurrency_cloud_limit,
     get_concurrency_offpeak,
     get_concurrency_settings,
+    get_site_links,
+    setup_page_enabled,
 )
 from app.core.deps import (
     _enforce_daily_limit,
@@ -40,6 +45,7 @@ from app.core.deps import (
     get_client_notices,
     get_model_changes,
     get_owned_apps,
+    get_owned_apps_signed_in,
     get_today_usage,
     get_usage_history,
 )
@@ -50,9 +56,10 @@ from app.core.timeutil import (
     next_local_midnight,
     seconds_until_local_midnight,
 )
-from app.models.schema import User, is_legacy_api_key
-from app.services import client_rules, concurrency, model_catalog
+from app.models.schema import User, is_legacy_api_key, mask_api_key
+from app.services import client_rules, concurrency, dashboard_view, model_catalog
 from app.services.model_order import natural_key
+from app.services.stats import FLOW_TOP_USERS
 
 # How far back ``usage`` goes at most.
 USAGE_MAX_DAYS = 90
@@ -157,6 +164,37 @@ def me(user: User) -> dict:
     }
 
 
+def me_signed_in(user: User, api_base: str) -> dict:
+    """What ``GET /v1/me`` adds for a person signed in by SSO: what the
+    dashboard's frame needs, and nothing a key may be told.
+
+    ``is_admin`` (true by the token's ``admin`` scope; by key it is always
+    false), ``org_code`` (the department the sign-in gave, absent without
+    one), ``api_key`` (``masked``, enough to recognise the key and not to
+    use it, and ``created_at``) and ``site``: its ``title``, the
+    ``api_base`` to show in examples, the admin's ``links`` (only the ones
+    that are set), whether the Setup page is on (``setup_page``) and
+    whether the Windows installer can be downloaded (``installer``)."""
+    extra: dict[str, object] = {"is_admin": bool(user.is_admin)}
+    if user.org_code:
+        extra["org_code"] = user.org_code
+    key: dict[str, object] = {"masked": mask_api_key(user.api_key)}
+    if user.api_key_created_at is not None:
+        key["created_at"] = (
+            user.api_key_created_at.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).isoformat(timespec="seconds")
+        )
+    extra["api_key"] = key
+    setup_page = setup_page_enabled()
+    extra["site"] = {
+        "title": APP_TITLE,
+        "api_base": api_base,
+        "links": {name: url for name, url in get_site_links().items() if url},
+        "setup_page": setup_page,
+        "installer": setup_page and dashboard_view.installer_available(),
+    }
+    return extra
+
+
 def status(user: User) -> dict:
     """The models the account can see and whether they are up:
     ``GET /v1/status``. No database read."""
@@ -259,8 +297,8 @@ def usage(user: User, days: int) -> dict:
 
 def service_account_row(account: dict) -> dict:
     """One service account (a row of ``stats.get_owned_apps_summary``) as the
-    account endpoints give it: never a key. ``GET /dashboard/api/service-accounts`` adds to it
-    what only a signed-in owner may see."""
+    account endpoints give it: never a key. ``service_accounts_signed_in``
+    adds to it what only a signed-in owner may see."""
     return {
         "username": account["username"],
         # What an admin wrote about it; absent when there is none.
@@ -302,6 +340,63 @@ def service_accounts(user: User) -> dict:
     }
 
 
+def sent_for(flow: dict) -> dict:
+    """Who a service account sent requests for this month
+    (``stats.get_on_behalf_users``), as data: ``users`` counts all of them,
+    ``rows`` is one per user and backend for the ones named, then one per
+    backend for the rest (no ``user``; ``others`` says how many it stands
+    for)."""
+    rows = []
+    for row in flow["rows"]:
+        entry: dict[str, object] = {}
+        if row["user"]:
+            entry["user"] = row["user"]
+            if row["display_name"]:
+                entry["display_name"] = row["display_name"]
+        else:
+            entry["others"] = row.get("others", 0)
+        entry.update(
+            backend=model_catalog.BACKEND_NAMES.get(row["backend"], row["backend"]),
+            requests=row["requests"],
+            input_tokens=row["input_tokens"],
+            output_tokens=row["output_tokens"],
+            cost_usd=row["cost_usd"],
+        )
+        rows.append(entry)
+    return {"users": flow["users"], "rows": rows}
+
+
+def service_accounts_signed_in(user: User) -> dict:
+    """``GET /v1/service-accounts`` for an owner signed in by SSO: every
+    account as ``service_accounts`` gives it, plus what only its signed-in
+    owner sees. Per account its ``id`` (for the key routes on the
+    dashboard), ``api_key_masked``, and ``sent_for`` when it sent requests
+    for its users this month. ``withheld`` names the accounts assigned to
+    the person that they may not see now (made for another department), and
+    ``top_users`` is how many users ``sent_for`` names before it folds the
+    rest. Never a key in full, and never by API key: a leaked personal key
+    must not say who uses an application."""
+    found = get_owned_apps_signed_in(user)
+    rows = []
+    for account in sorted(found["accounts"], key=lambda account: natural_key(account["username"])):
+        row = {
+            "id": account["id"],
+            **service_account_row(account),
+            "api_key_masked": mask_api_key(account["api_key"]),
+        }
+        flow = found["flows"].get(account["id"])
+        if flow:
+            row["sent_for"] = sent_for(flow)
+        rows.append(row)
+    return {
+        "object": "service_accounts",
+        "month": local_month_start().strftime("%Y-%m"),
+        "service_accounts": rows,
+        "withheld": found["withheld"],
+        "top_users": FLOW_TOP_USERS,
+    }
+
+
 def _patch(env: dict[str, str | None]) -> dict:
     """A settings patch as data: the variables to set in the ``env`` block
     of Claude Code's settings.json and the ones to take out of it."""
@@ -331,6 +426,8 @@ def notices(user: User) -> dict:
     body: dict[str, object] = {
         "object": "notices",
         "window_days": client_rules.WINDOW_DAYS,
+        # How long a notice reported as applied is left alone.
+        "quiet_days": client_rules.RESOLVED_QUIET_DAYS,
         "notices": notices,
     }
     combined = found["combined"]
