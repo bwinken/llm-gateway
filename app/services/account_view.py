@@ -8,20 +8,19 @@ program with the account's API key, and by a browser with the person's SSO
 sign-in. One route serves both and calls the function here, which takes the
 ``User`` the route authenticated and returns the response body.
 
-The account holder is shown the same either way, with two exceptions for a
-person signed in by SSO, both in the functions named ``*_signed_in``, which
-the route calls only for a sign-in (``schema.signed_in_by_sso``):
-``is_admin`` true for an admin (a key has no admin right, so by key it is
-always false), and who a service account sent requests for (``sent_for``:
-a leaked personal key must not say who uses an application). One more
-difference comes from the sign-in itself: an admin by the token's scope
-sees the cloud models whatever their own access
-(``model_catalog.hidden_cloud_backends``).
+Every answer is about the account the credential belongs to, and nobody
+else's: a service account that sends model requests for its users
+(``X-On-Behalf-Of``) reads its own account here, and the header is refused
+on these routes (``deps._authenticate``).
 
-``me_holder`` is what the holder of the account is told on top of the
-budget (department, masked key, the site): given to a key and to a sign-in,
-but not to an application that sends a request for the user
-(``X-On-Behalf-Of``), which gets what it needs to serve them and no more.
+The account is told the same either way, with two exceptions for a person
+signed in by SSO, both in the functions named ``*_signed_in``, which the
+route calls only for a sign-in (``schema.signed_in_by_sso``): ``is_admin``,
+true or false by the token's scope (absent by key: a key cannot say), and
+who a service account sent requests for (``sent_for``: a leaked personal
+key must not say who uses an application). One more difference comes from
+the sign-in itself: an admin by the token's scope sees the cloud models
+whatever their own access (``model_catalog.hidden_cloud_backends``).
 
 What the programs outside this repository are built against is decided
 here: change an answer by addition only (never rename or remove a key, or
@@ -115,9 +114,9 @@ def me(user: User) -> dict:
         "object": "account",
         "username": user.username,
         "display_name": user.display_name,
-        # Kept for clients built against it; always false. An API key has no
-        # admin right: that is the AuthCenter token's scope, on the web UI.
-        "is_admin": False,
+        # No "is_admin" here: whether the person is an admin is the SSO
+        # token's scope, which an API key cannot show either way. It is
+        # added for a sign-in only (``me_signed_in``), true or false.
         "legacy_key": is_legacy_api_key(user.api_key),
         "daily": {
             "limit_usd": daily_limit,
@@ -173,8 +172,7 @@ def me(user: User) -> dict:
 def me_holder(user: User, api_base: str) -> dict:
     """What ``GET /v1/me`` tells the holder of the account on top of the
     budget: what a dashboard's or a tool's frame needs. For the account's
-    own key and for an SSO sign-in alike; not for an application that sends
-    the request for the user (the route leaves it out then).
+    own key and for an SSO sign-in alike.
 
     ``org_code`` (the department the person's sign-in gave, absent without
     one), ``api_key`` (``masked``, enough to recognise the key and not to
@@ -203,9 +201,11 @@ def me_holder(user: User, api_base: str) -> dict:
 
 
 def me_signed_in(user: User) -> dict:
-    """What ``GET /v1/me`` says differently to a person signed in by SSO:
-    ``is_admin``, true for an admin by the token's ``admin`` scope. An API
-    key carries no admin right, so by key it is always false."""
+    """What ``GET /v1/me`` adds for a person signed in by SSO: ``is_admin``,
+    true or false by the token's ``admin`` scope. It is absent for an API
+    key: a key carries no admin right and cannot say whether its holder is
+    an admin, so it says nothing (it used to say false, which read as "this
+    person is no admin")."""
     return {"is_admin": bool(user.is_admin)}
 
 

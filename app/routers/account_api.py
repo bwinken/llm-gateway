@@ -26,13 +26,14 @@ Two kinds of client ask, and one route serves both
   The web UI's rules apply: the token check and account of
   ``get_web_user``, a write refused cross-site, no IP allowlist.
 
-Every route authenticates with ``get_account_user`` (or
-``get_account_holder``, which also refuses a request a service account
-sends for a user). Both sign-ins get the same answer, with two exceptions
-for a person signed in by SSO (``account_view.*_signed_in``): ``is_admin``
-true for an admin, and who a service account sent requests for. None
-returns an API key in full, to either: showing and regenerating a key stays
-under ``/dashboard``, behind the proxy's sign-in.
+Every route authenticates with ``get_account_user``, and answers about the
+account the credential belongs to, nobody else's: ``X-On-Behalf-Of`` (a
+service account sending model requests for its users) is refused here.
+Both sign-ins get the same answer, with two exceptions for a person signed
+in by SSO (``account_view.*_signed_in``): ``is_admin``, and who a service
+account sent requests for. None returns an API key in full, to either:
+showing and regenerating a key stays under ``/dashboard``, behind the
+proxy's sign-in.
 
 Each body is built in ``app/services/account_view.py``: a handler here
 authenticates and calls it. These answers are what programs outside this
@@ -47,13 +48,12 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.config import api_base_url
 from app.core.deps import (
-    get_account_holder,
     get_account_user,
     record_client_event,
     resolve_client_notices,
 )
 from app.core.logger import logger
-from app.models.schema import User, signed_in_by_sso, via_service_account
+from app.models.schema import User, signed_in_by_sso
 from app.services import account_view, audit, client_events, client_settings
 
 # One group of /docs: every route here is an account endpoint.
@@ -87,21 +87,22 @@ async def account_info(request: Request, user: User = Depends(get_account_user))
     ``legacy_key``: the key is of the older, weaker format and the dashboard
     asks its holder to regenerate it. The key itself is never returned.
 
-    The holder of the account is also told what a dashboard's or a tool's
-    frame needs: ``org_code`` (the person's department, when their sign-in
-    gave one), ``api_key`` (``masked``, enough to recognise the key and not
-    to use it, and ``created_at``) and ``site`` (``title``, the ``api_base``
-    to show in examples, the admin's ``links``, ``setup_page``,
-    ``installer``). An application that sends the request for a user
-    (``X-On-Behalf-Of``) is not given these.
+    Also what a dashboard's or a tool's frame needs: ``org_code`` (the
+    person's department, when their sign-in gave one), ``api_key``
+    (``masked``, enough to recognise the key and not to use it, and
+    ``created_at``) and ``site`` (``title``, the ``api_base`` to show in
+    examples, the admin's ``links``, ``setup_page``, ``installer``).
 
-    ``is_admin`` is true only for a person signed in by SSO whose token has
-    the ``admin`` scope. An API key carries no admin right: by key it is
-    always false.
+    ``is_admin`` is there only for a person signed in by SSO: true or false
+    by the token's ``admin`` scope. By API key it is absent: a key carries
+    no admin right and cannot say whether its holder is an admin.
+
+    The answer is about the account the credential belongs to. A service
+    account that sends model requests for its users reads its own account
+    here; ``X-On-Behalf-Of`` is refused (403) on every account endpoint.
     """
     body = await run_in_threadpool(account_view.me, user)
-    if via_service_account(user) is None:
-        body.update(account_view.me_holder(user, api_base_url(request)))
+    body.update(account_view.me_holder(user, api_base_url(request)))
     if signed_in_by_sso(user):
         body.update(account_view.me_signed_in(user))
     return body
@@ -131,7 +132,7 @@ async def model_status(user: User = Depends(get_account_user)):
 @router.get("/v1/usage")
 def usage_history(
     days: int = Query(7, ge=1, le=account_view.USAGE_MAX_DAYS, description="How many days back, today included."),
-    user: User = Depends(get_account_holder),
+    user: User = Depends(get_account_user),
 ):
     """The caller's own usage: one row per day and this month by model,
     the figures behind the dashboard's trend chart and Cost by Model card.
@@ -162,7 +163,7 @@ def usage_history(
 
 
 @router.get("/v1/service-accounts")
-def owned_service_accounts(user: User = Depends(get_account_holder)):
+def owned_service_accounts(user: User = Depends(get_account_user)):
     """The service accounts the caller owns (accounts for programs, assigned
     by an admin), with each one's daily limit and this month's usage, in
     total and per model: the dashboard's *Service accounts* tab.
@@ -208,7 +209,7 @@ def owned_service_accounts(user: User = Depends(get_account_holder)):
 
 
 @router.get("/v1/notices")
-def client_notices(user: User = Depends(get_account_holder)):
+def client_notices(user: User = Depends(get_account_user)):
     """What the dashboard's notices panel tells the caller: the client
     checks (``CC001``...) this account tripped in the last ``window_days``
     days and has not reported as fixed.
@@ -260,7 +261,7 @@ def client_notices(user: User = Depends(get_account_holder)):
 @router.post("/v1/notices/resolved")
 def client_notices_resolved(
     body: dict | None = Body(default=None),
-    user: User = Depends(get_account_holder),
+    user: User = Depends(get_account_user),
 ):
     """*I've applied it*: the caller's open notices are marked as fixed, as
     the dashboard's button does. By API key (a client that is not a
@@ -303,7 +304,7 @@ def client_notices_resolved(
 @router.post("/v1/events")
 def client_event(
     body: dict = Body(...),
-    user: User = Depends(get_account_holder),
+    user: User = Depends(get_account_user),
 ):
     """What a setup tool did on its user's machine, for the admin's *Client
     installs* list: which account installed, updated, removed or configured
@@ -345,7 +346,7 @@ def client_event(
 
 
 @router.get("/v1/settings")
-async def client_settings_fields(user: User = Depends(get_account_holder)):
+async def client_settings_fields(user: User = Depends(get_account_user)):
     """The client settings this account can be offered, for a tool that
     sets a client up: apply every ``default``, or let the user pick.
 

@@ -176,6 +176,8 @@ class TestTheSameAsByKey:
         body = _get(client, "me")
         by_key = _by_key(client, "me")
         assert {"api_key", "site"} <= set(by_key)
+        # A sign-in also says whether the person is an admin; a key cannot.
+        assert body.pop("is_admin") is False and "is_admin" not in by_key
         # The clock moves between the two calls; everything else is the same.
         body["daily"].pop("resets_in_seconds"), by_key["daily"].pop("resets_in_seconds")
         assert body == by_key
@@ -194,8 +196,8 @@ class TestWhatTheHolderIsTold:
         assert _get(client, "me")["is_admin"] is False
         body = client.get("/v1/me", headers=_sso(scopes=["admin"])).json()
         assert body["is_admin"] is True
-        # By API key nobody is: the scope exists on the web UI only.
-        assert _by_key(client, "me")["is_admin"] is False
+        # A key cannot say either way: the scope is the token's.
+        assert "is_admin" not in _by_key(client, "me")
 
     def test_the_department_and_the_masked_key(self, client, owner):
         body = _get(client, "me")

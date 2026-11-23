@@ -114,7 +114,6 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
   "object": "account",
   "username": "alice",
   "display_name": "Alice",
-  "is_admin": false,
   "legacy_key": false,
   "org_code": "RD1",
   "api_key": {"masked": "sk-xxxxxxxx…xxxx", "created_at": "2026-09-02T10:15:00+08:00"},
@@ -147,10 +146,10 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 - 只有在 `used_usd` 已達上限時才會拒絕請求，所以當天最後一個請求可能會稍微超出上限。
 - `enforced: false` 代表超額時 gateway 只記 log，不會回 429。
 - `cloud_budget_fallback: true` 代表雲端每日上限用完時，`/v1/*` 的請求會改由地端模型回答，而不是回 429。
-- 用 API key 呼叫時 `is_admin` 固定是 `false`：key 不帶管理員權限。只有改帶 SSO 的 access token（見下）、而且 token 有 admin scope 時才會是 `true`。
+- 用 API key 呼叫時回應裡沒有 `is_admin`：key 不帶管理員權限，也無法說明持有人是不是管理員。只有改帶 SSO 的 access token（見下）時才會有這個欄位，值是 `true` 或 `false`。沒有這個欄位就當作「不知道」。
 - `legacy_key: true` 代表你的 key 是較舊、較弱的格式，方便時請到 dashboard 重新產生。任何端點都不會回傳 key 本身。
 - `api_key.masked` 足以認出是哪一把 key（開頭和最後四碼），但不能拿來用；`created_at` 是發出的時間。`org_code` 是你的部門，登入資料沒有部門時不會有這個 key。`site` 是工具在數字周圍要顯示的東西：站台的 `title`、範例裡要印的 `api_base`、管理員設定的 `links`（只有有設定的），以及 Setup 頁和 Windows 安裝檔是否可用。
-- 程式也可以改用登入時拿到的 SSO access token 來打這些帳號端點（`/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings`）：`Authorization: Bearer <access token>`。回應相同，只多兩件事：`is_admin` 可能是 `true`，以及 `/v1/service-accounts` 會說出每個應用程式替誰送過請求（`sent_for`）。token 會過期、key 不會，所以多數工具只用 token 換一次 key（見「從 terminal 工具登入」），之後都用 key。模型 API（chat、messages、embeddings）只收 key。
+- 程式也可以改用登入時拿到的 SSO access token 來打這些帳號端點（`/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings`）：`Authorization: Bearer <access token>`。回應相同，只多兩件事：`is_admin`（`true` 或 `false`），以及 `/v1/service-accounts` 會說出每個應用程式替誰送過請求（`sent_for`）。token 會過期、key 不會，所以多數工具只用 token 換一次 key（見「從 terminal 工具登入」），之後都用 key。模型 API（chat、messages、embeddings）只收 key。
 - `concurrency.limit` 是你的 key 同時可以進行幾個請求。`"mode": "off"` 代表不限，此時不帶 `limit`。
 
 ## 模型狀態
@@ -295,7 +294,8 @@ curl https://your-gateway/v1/chat/completions \
 - **只有管理員為該服務帳號開啟 *On behalf of users* 之後才有效。** 在那之前這個 header 會被忽略，請求算服務帳號自己的。dashboard 的 *Service accounts* 分頁會寫明目前是哪一種，並附上可以直接執行的測試。
 - 值是使用者在 gateway 的帳號名稱（登入名稱），一個請求一個。不是 email，也不是顯示名稱。
 - 之後這個請求就是該使用者的：用他的每日額度和雲端上限、他的雲端權限，記在他的帳上，出現在他的 dashboard。服務帳號不會被扣款。
-- 開啟後每個請求都要帶這個 header。帶著它呼叫 `GET /v1/models` （或 `/models`）會列出該使用者可用的模型，和他用自己的 key 看到的一樣；`GET /v1/me` 回傳該使用者的剩餘額度。其他帳號端點不開放給應用。
+- 開啟後每個模型請求都要帶這個 header。帶著它呼叫 `GET /v1/models` （或 `/models`）會列出該使用者可用的模型，和他用自己的 key 看到的一樣。
+- 這個 header 只對模型請求有效。帳號端點（`/v1/me`、`/v1/status`、`/v1/usage` ...）只回答這把 key 所屬的帳號：不帶 header 會回服務帳號自己的資料（可以用來確認 key 有效），帶了會回 403。應用讀不到使用者的額度或其他任何資料；使用者自己在 dashboard 或用自己的 key 看，而替額度已用完的使用者送請求時會收到 429。
 - 可以替請求加上自己的標籤，之後用來查詢（哪個功能模組送的、工單編號等）：`-H "X-Gateway-Tags: module=invoice-ocr,ticket=4821"`。以逗號分隔的 `key=value`，最多 16 個；key 由英數字和 `_` 組成（最多 40 字元），值最多 200 字元，非 ASCII 的值要 percent-encode（`team=%E8%B2%A1%E5%8B%99`）。格式不對會回 400。標籤只會跟著請求被記錄，不影響任何判斷，也不會轉送給模型。使用 SDK 時，兩個 header 都用 `default_headers` 或單次請求的 `extra_headers` 帶。
 - 會被拒絕的情況：沒帶 header 或寫了多個名稱（400）；該名稱在 gateway 沒有帳號、帳號已停用、或是服務帳號（403；使用者打開一次 dashboard 就會有帳號）；使用者額度用完（429）。
 - 使用者的身分由你的應用擔保：先讓使用者登入再送出名稱，從你的伺服器送，key 也只放在伺服器上。拿到 key 的人可以花任何使用者的額度。

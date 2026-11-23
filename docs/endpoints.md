@@ -98,7 +98,7 @@ Dashboard 的資料（`me`、`status`、`usage`、`service-accounts`、`notices`
 
 帳號查詢自己的資訊。兩種 client 打同一條路由：repo 以外的程式（terminal 工具、狀態列、設定 client 的桌面程式）帶帳號的 API key；瀏覽器（dashboard 的獨立前端）帶 SSO 登入，由前面的 proxy 把登入 cookie 換成 token 再轉進來（範例見 `deploy/llm-gateway-example.nginx.conf` 的 `/dashboard/v1/`）。只增不改，不能刪。
 
-兩種登入拿到的回應相同（`/v1/me` 都有 `org_code`、遮罩的 `api_key`、`site`；`/v1/service-accounts` 都有每個帳號的 `id`、`api_key_masked`，以及 `withheld`），只有兩件事只告訴 SSO 登入的人：admin 的 `is_admin` 為 true（key 不帶管理員權限），以及 `/v1/service-accounts` 的 `sent_for` 和 `top_users`（這個帳號替誰送過請求：外洩的個人 key 不應該說出誰在用某個應用程式）。兩種登入都拿不到完整的 key。
+兩種登入拿到的回應相同（`/v1/me` 都有 `org_code`、遮罩的 `api_key`、`site`；`/v1/service-accounts` 都有每個帳號的 `id`、`api_key_masked`，以及 `withheld`），只有兩件事只告訴 SSO 登入的人：`is_admin`（true 或 false；用 key 時沒有這個欄位，因為 key 不帶管理員權限），以及 `/v1/service-accounts` 的 `sent_for` 和 `top_users`（這個帳號替誰送過請求：外洩的個人 key 不應該說出誰在用某個應用程式）。兩種登入都拿不到完整的 key。回應只關於憑證自己的帳號：`X-On-Behalf-Of` 只對模型請求有效，帶著它打帳號端點會回 403。
 
 路徑雖然也在 `/v1` 底下，但和下面的「模型 API」是兩回事：這裡不呼叫模型、不計費、額度用完照樣回應。程式上也分開，在 `app/routers/account_api.py`；模型 API 在 `app/routers/v1_api.py`。
 

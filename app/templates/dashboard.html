@@ -1403,9 +1403,10 @@
             </p>
             <p class="font-semibold text-t2">What is refused</p>
             <ul class="list-disc pl-5 space-y-1">
-                <li><span class="font-mono text-t2">400</span>: no <span class="font-mono">X-On-Behalf-Of</span> header, or more than one username in it. Every request needs it, <span class="font-mono">/models</span> included. Also a malformed <span class="font-mono">X-Gateway-Tags</span>.</li>
+                <li><span class="font-mono text-t2">400</span>: no <span class="font-mono">X-On-Behalf-Of</span> header, or more than one username in it. Every model request needs it, <span class="font-mono">/models</span> included. Also a malformed <span class="font-mono">X-Gateway-Tags</span>.</li>
                 <li><span class="font-mono text-t2">403</span>: the username has no account on this gateway (the person opens this dashboard once to get one), is disabled, or is a service account.</li>
-                <li><span class="font-mono text-t2">429</span>: that user has spent their daily limit. <span class="font-mono">GET {{ gateway_base }}/me</span> with the same two headers says how much they have left.</li>
+                <li><span class="font-mono text-t2">429</span>: that user has spent their daily limit. They see how much is left on their own dashboard; your application cannot ask for them.</li>
+                <li><span class="font-mono text-t2">403</span> on <span class="font-mono">/me</span>, <span class="font-mono">/status</span>, <span class="font-mono">/usage</span> and the other account endpoints with the header: it is for model requests only. Without it they answer about this service account itself.</li>
             </ul>
             <p>
                 Keep the key on your application's server, never in a browser or an app people install: whoever holds it can

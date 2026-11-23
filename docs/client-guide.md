@@ -114,7 +114,6 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
   "object": "account",
   "username": "alice",
   "display_name": "Alice",
-  "is_admin": false,
   "legacy_key": false,
   "org_code": "RD1",
   "api_key": {"masked": "sk-xxxxxxxx…xxxx", "created_at": "2026-09-02T10:15:00+08:00"},
@@ -147,10 +146,10 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 - A request is refused only once `used_usd` reaches the limit, so the last request of the day can overshoot it slightly.
 - `enforced: false` means the gateway only logs overages instead of returning 429.
 - `cloud_budget_fallback: true` means a `/v1/*` request for a cloud model whose cap is spent is answered by an on-prem model instead of a 429.
-- `is_admin` is always `false` with an API key: a key carries no admin right. It is `true` only when you call with your SSO access token (below) and that token has the admin scope.
+- `is_admin` is not in the answer for an API key: a key carries no admin right and cannot say whether its holder is an administrator. It is there, `true` or `false`, only when you call with your SSO access token (below). Read it as absent = not known.
 - `legacy_key: true` means your key is of an older, weaker format; regenerate it on the dashboard when convenient. The key itself is never returned by any endpoint.
 - `api_key.masked` is enough to recognise your key (its start and its last four characters), not to use it; `created_at` is when it was issued. `org_code` is your department, absent when your sign-in gave none. `site` is what a tool shows around the figures: the site's `title`, the `api_base` to print in examples, the administrator's `links` (only the ones that are set) and whether the Setup page and the Windows installer are available.
-- A program can also call these account endpoints (`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices`, `/v1/settings`) with the SSO access token it signed in with, instead of the key: `Authorization: Bearer <access token>`. The answer is the same, with two additions: `is_admin` may be `true`, and `/v1/service-accounts` says who each application was used for (`sent_for`). The token expires and the key does not, so most tools trade the token for the key once (*Signing in from a terminal tool*) and use the key. The model API (chat, messages, embeddings) takes the key only.
+- A program can also call these account endpoints (`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices`, `/v1/settings`) with the SSO access token it signed in with, instead of the key: `Authorization: Bearer <access token>`. The answer is the same, with two additions: `is_admin` (`true` or `false`), and in `/v1/service-accounts` who each application was used for (`sent_for`). The token expires and the key does not, so most tools trade the token for the key once (*Signing in from a terminal tool*) and use the key. The model API (chat, messages, embeddings) takes the key only.
 - `concurrency.limit` is how many requests your key may have in flight at once. With `"mode": "off"` there is no limit and `limit` is left out.
 
 ## Model status
@@ -295,7 +294,8 @@ curl https://your-gateway/v1/chat/completions \
 - **It only works once an administrator turned on *On behalf of users* for that service account.** Until then the header is ignored and the request is the service account's own. The dashboard's *Service accounts* tab says which it is, with a test to run.
 - The value is the user's gateway username (their sign-in name), one per request. Not an email address or a display name.
 - The request is then that user's: their daily limit and cloud cap, their cloud access, their bill and their dashboard. Nothing is charged to the service account.
-- With it on, every request needs the header. `GET /v1/models` (or `/models`) with it lists the models that user may use, the same list they get with their own key; `GET /v1/me` gives that user's remaining budget. The other account endpoints are refused to an application.
+- With it on, every model request needs the header. `GET /v1/models` (or `/models`) with it lists the models that user may use, the same list they get with their own key.
+- The header is for model requests only. The account endpoints (`/v1/me`, `/v1/status`, `/v1/usage`, ...) answer about the account the key belongs to: without the header they give the service account's own (a way to check the key works), with it they answer 403. An application cannot read a user's budget or anything else about them; the user sees that on their dashboard or with their own key, and a request for a user who is over their limit comes back as 429.
 - You may label a request with entries of your own, to look it up by later (which feature or module sent it, a ticket number): `-H "X-Gateway-Tags: module=invoice-ocr,ticket=4821"`. Comma-separated `key=value`, up to 16; a key is letters, digits and `_` (40 at most), a value up to 200 characters, percent-encoded when it is not plain ASCII (`team=%E8%B2%A1%E5%8B%99`). A malformed header is a 400. The labels are recorded with the request only: nothing is decided by them and they are not passed on to the model. With an SDK, send both headers through `default_headers` or the per-request `extra_headers`.
 - Refused: no header or more than one name (400); a username that has no account on the gateway, a disabled account or a service account (403; a person gets an account by opening the dashboard once); the user over their limit (429).
 - Your application is what vouches for the user: sign them in before you send their name, send it from your server, and keep the key there. Whoever holds the key can spend any user's budget.

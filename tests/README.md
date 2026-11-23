@@ -482,12 +482,12 @@ both sign-ins from one service (`account_view`) is in
 
 How `deps.get_account_user` judges an API key and an SSO sign-in.
 `TestEitherSignIn`: every account endpoint answers both. `TestWhatAKeyIsNotShown`:
-the answer is the same either way but for the admin right and who an
-application was used for; an application acting for a user is not told the
-holder's part. `TestTheModelApiIsByKeyOnly`: a token is a 401 on inference,
+the answer is the same either way but for the admin flag (a sign-in only)
+and who an application was used for. `TestTheModelApiIsByKeyOnly`: a token is a 401 on inference,
 and only the account endpoints take it. `TestTheSignInIsTheWebUis`: scope,
 disabled accounts, no sign-in as a service account. `TestAKeyKeepsItsRules`:
-a key of any shape is still a key. `TestIpAllowlist`: the list refuses a
+a key of any shape is still a key; an application reads its own account and
+no user's. `TestIpAllowlist`: the list refuses a
 key from an unlisted address, not a sign-in. `TestThrottle`: expired tokens
 never lock an address; a key beside a bad token is counted. `TestCrossSite`:
 a write by sign-in from another site is refused, a key's never.

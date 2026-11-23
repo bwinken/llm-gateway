@@ -121,7 +121,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 ## `account_api.py` — 帳號端點
 
-**認證**：`deps.get_account_user`：帳號的 API key（檢查方式同 `get_current_user`，含 IP 白名單，但**不做** daily limit 檢查，所以額度用完照樣回應），或使用者的 SSO 登入（瀏覽器；沿用 web UI 的 token 檢查與規則，跨站的寫入會被拒絕，不過 IP 白名單）。或是在它之上的 `deps.get_account_holder`，另外拒絕服務帳號替使用者送的請求。兩種登入拿到的回應相同，只有兩件事只告訴 SSO 登入的人：admin 的 `is_admin` 為 true（依 token 的 scope；用 key 一律 false），以及 `/v1/service-accounts` 裡每個帳號替誰送過請求（`sent_for`，連同 `top_users`）。兩種登入都拿不到完整的 key：`/v1/me` 裡是呼叫者自己遮罩過的 key，`/v1/service-accounts` 裡是各帳號遮罩過的 key。
+**認證**：`deps.get_account_user`：帳號的 API key（檢查方式同 `get_current_user`，含 IP 白名單，但**不做** daily limit 檢查，所以額度用完照樣回應），或使用者的 SSO 登入（瀏覽器；沿用 web UI 的 token 檢查與規則，跨站的寫入會被拒絕，不過 IP 白名單）。回應只關於這份憑證所屬的帳號：`X-On-Behalf-Of` 只用在模型請求，在這裡會被拒絕（403），替使用者送請求的服務帳號在這裡讀到的是它自己的帳號。兩種登入拿到的回應相同，只有兩件事只告訴 SSO 登入的人：`is_admin`（依 token 的 scope 為 true 或 false；用 key 時沒有這個欄位），以及 `/v1/service-accounts` 裡每個帳號替誰送過請求（`sent_for`，連同 `top_users`）。兩種登入都拿不到完整的 key：`/v1/me` 裡是呼叫者自己遮罩過的 key，`/v1/service-accounts` 裡是各帳號遮罩過的 key。
 
 帳號查詢與回報自己的資訊，以 JSON 回傳，給不是瀏覽器的程式用（terminal 工具、狀態列）。它們和 `v1_api.py` 的模型 API 只是共用 `/v1` 前綴，其他都不同：不呼叫模型、不計費、不佔併發名額。五條讀取（`me`、`status`、`usage`、`service-accounts`、`notices`）的內容由 `app/services/account_view.py` 組裝，dashboard 的 `/dashboard/api/*` 也呼叫它。只增不改，不回傳 `null`。
 

@@ -445,13 +445,15 @@ SECTIONS: tuple[Section, ...] = (
                     "The application cannot give a person more than they have: a cloud model is served only to a user with that cloud access, and a user over their limit gets the usual 429.",
                     "The header is honoured from a service account with this switch on, and from nobody else. A person's key that sends it is served as that person.",
                     "The key, its last use and the IP allowlist stay the application's; the concurrency limit counts on the person, together with what they send themselves.",
-                    "On behalf of a user the application reads the model list (/v1/models), /v1/me and /v1/status. The user's usage history, notices and settings are refused to it.",
+                    "The header is for model requests only. On behalf of a user the application sends requests and reads the model list (/v1/models). It cannot read anything about the user's account: /v1/me, /v1/status, usage history, notices and settings answer 403 with the header, and without it they answer about the service account itself.",
                     "The model list it gets is the named user's own: the models that user would see with their own key. Which models are listed at all is one tick per model for everyone, Listed in GET /v1/models on the Models page; there is no list per application.",
                     "Client rules ignore these requests: what they show is the application's setup, not the person's client.",
                 ),
                 decided=(
                     "Usage through such an application is charged to the user, not to the service account. A user "
-                    "who has no account on the gateway is refused, never created on the application's word."
+                    "who has no account on the gateway is refused, never created on the application's word. "
+                    "An application cannot read a user's budget or status: the header only says whose model "
+                    "request this is."
                 ),
             ),
         ),

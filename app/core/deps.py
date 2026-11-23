@@ -37,7 +37,6 @@ from app.models.schema import (
     mask_api_key,
     set_request_tags,
     set_via_service_account,
-    via_service_account,
 )
 from app.services import auth_throttle, ip_allowlist, metrics
 
@@ -433,6 +432,7 @@ def _authenticate(
     *,
     check_daily_limit: bool,
     request: Request | None = None,
+    acts_for: bool = True,
 ) -> User:
     # NOTE: request-header capture for observability lives in
     # RequestMetaMiddleware (pure ASGI), NOT here — a contextvar written in this
@@ -527,8 +527,29 @@ def _authenticate(
             # The key, its last use and the address check above stay the
             # service account's. A person's key never gets here: nobody can
             # put a request on someone else's account with their own key.
+            #
+            # Only where a model is called (``acts_for``): the header says
+            # whose request, and so whose bill, this is. An account endpoint
+            # answers the account the key belongs to and nobody else's, so
+            # there the header is refused: an application must not read its
+            # users' budgets or anything else about them with its own key.
             if user.is_service_account and user.acts_for_users:
-                user = _on_behalf_of(session, user, request)
+                if acts_for:
+                    user = _on_behalf_of(session, user, request)
+                elif request is not None and request.headers.get(ON_BEHALF_HEADER) is not None:
+                    logger.warning(
+                        "On-behalf rejected: an account endpoint | service_account={}", user.username,
+                    )
+                    metrics.observe_rejection("on_behalf")
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=(
+                            f"{ON_BEHALF_HEADER} applies to model requests only. This endpoint answers "
+                            "about the account the key belongs to: send it without the header to read "
+                            "the service account's own. A user reads theirs with their own API key or "
+                            "on the dashboard."
+                        ),
+                    )
             if check_daily_limit:
                 _check_daily_limit(session, user)
     finally:
@@ -769,9 +790,16 @@ def get_account_user(
     was.
 
     A key is checked as ``get_current_user`` checks it (``_authenticate``:
-    the lookup, the disabled account, the IP allowlist, ``X-On-Behalf-Of``)
-    but without the daily-limit check: these routes must still answer once
-    the budget is spent, which is exactly when a client asks.
+    the lookup, the disabled account, the IP allowlist) but without the
+    daily-limit check: these routes must still answer once the budget is
+    spent, which is exactly when a client asks.
+
+    The answer is always about the account the credential belongs to. A
+    service account that sends model requests for its users
+    (``X-On-Behalf-Of``) reads its own account here, and the header is
+    refused (403): an application must not read a user's budget, models or
+    anything else about them with its own key. A leaked application key
+    would otherwise tell every user's spending.
 
     The key comes first. Only a bearer value that is no account's key and is
     shaped like a token is checked as one, with the web UI's own
@@ -790,42 +818,22 @@ def get_account_user(
     """
     bearer = credentials.credentials if credentials is not None else ""
     if not bearer or not _looks_like_token(bearer):
-        return _authenticate(credentials, x_api_key, check_daily_limit=False, request=request)
+        return _authenticate(credentials, x_api_key, check_daily_limit=False, request=request, acts_for=False)
     other_key = x_api_key if x_api_key and x_api_key != bearer else None
     client_addr = request.client.host if request.client else None
     locked = auth_throttle.retry_after(client_addr) is not None
     if not locked and _is_api_key([bearer] + ([other_key] if other_key else [])):
-        return _authenticate(credentials, x_api_key, check_daily_limit=False, request=request)
+        return _authenticate(credentials, x_api_key, check_daily_limit=False, request=request, acts_for=False)
     payload = auth._decode_jwt(bearer)  # module attribute: tests patch it
     if payload and payload.get("sub"):
         return _authenticate_sso(payload, request)
     if other_key:
-        return _authenticate(None, other_key, check_daily_limit=False, request=request)
+        return _authenticate(None, other_key, check_daily_limit=False, request=request, acts_for=False)
     logger.warning("Account sign-in rejected: invalid or expired access token | client={}", client_addr or "-")
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired access token.",
     )
-
-
-def get_account_holder(user: User = Depends(get_account_user)) -> User:
-    """``get_account_user`` for the account endpoints that are the
-    account holder's own business (usage history, notices, owned service
-    accounts, client settings, and the two that write): refused for a request
-    a service account sends for a user. An application gets what it needs to
-    serve that user (``/v1/models``, ``/v1/me``, ``/v1/status``) and no more:
-    a leaked application key must not read every account's history or speak
-    for its holder."""
-    via = via_service_account(user)
-    if via is not None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                f"Not available to a service account acting for a user ({ON_BEHALF_HEADER}). "
-                "The user reads this with their own API key or on the dashboard."
-            ),
-        )
-    return user
 
 
 def require_azure_access(

@@ -27,7 +27,6 @@ from tests.conftest import auth_header, web_auth_header
 # app.routers.* are imported inside the tests, never at module level.
 
 READS = ["me", "status", "usage", "service-accounts", "notices", "settings"]
-HOLDER_ONLY = ["usage", "service-accounts", "notices", "settings"]
 OWN_KEY = "sk-testkey123"
 OUTSIDE = "192.0.2.99"
 EVENT = {"event": "installed", "tool": "setup-tool", "tool_version": "1.0", "component": "claude-code", "os": "linux"}
@@ -103,10 +102,13 @@ class TestWhatAKeyIsNotShown:
         db_session.commit()
         by_key = client.get("/v1/me", headers=auth_header()).json()
         signed_in = client.get("/v1/me", headers=_sso(scopes=["admin"])).json()
-        assert by_key["is_admin"] is False and signed_in["is_admin"] is True
+        # A sign-in says whether the person is an admin, true or false; a key
+        # cannot say, so it says nothing.
+        assert signed_in.pop("is_admin") is True and "is_admin" not in by_key
+        assert client.get("/v1/me", headers=_sso()).json()["is_admin"] is False
         assert set(by_key) == set(signed_in) and {"api_key", "site", "org_code"} <= set(by_key)
         for body in (by_key, signed_in):
-            body.pop("is_admin"), body["daily"].pop("resets_in_seconds")
+            body["daily"].pop("resets_in_seconds")
         # An admin sees every cloud backend; nothing else differs.
         by_key.pop("backends"), signed_in.pop("backends")
         assert by_key == signed_in
@@ -145,25 +147,6 @@ class TestWhatAKeyIsNotShown:
         assert {k: v for k, v in row.items() if k != "sent_for"} == key_row
         assert "sent_for" not in by_key.text and "alice" not in by_key.text
         assert "sk-hr-chat-secret" not in by_key.text and key_row["api_key_masked"].endswith("cret")
-
-    def test_an_application_acting_for_a_user_is_not_told_the_holders_part(self, client, db_session, test_user):
-        """It gets what it needs to serve the user (the budget) and no
-        more: not the user's key, masked or not, nor their department."""
-        _add(
-            db_session, username="hr-chat", api_key="sk-hr-chat-secret", is_service_account=True,
-            acts_for_users=True, concurrency_waived=True,
-        )
-        test_user.org_code = "RD1"
-        db_session.add(test_user)
-        db_session.commit()
-        body = client.get("/v1/me", headers={**auth_header("sk-hr-chat-secret"), "X-On-Behalf-Of": "testuser"}).json()
-        assert body["username"] == "testuser" and "daily" in body
-        assert not {"api_key", "site", "org_code"} & set(body)
-
-    @pytest.mark.parametrize("name", READS)
-    def test_no_read_holds_the_key_in_full_either_way(self, client, test_user, name):
-        for headers in (auth_header(), _sso()):
-            assert OWN_KEY not in client.get(f"/v1/{name}", headers=headers).text
 
 
 class TestTheModelApiIsByKeyOnly:
@@ -234,7 +217,7 @@ class TestAKeyKeepsItsRules:
         _add(db_session, username="oldtimer", api_key="legacy.key.value")
         resp = client.get("/v1/me", headers=auth_header("legacy.key.value"))
         assert resp.status_code == 200 and resp.json()["username"] == "oldtimer"
-        assert resp.json()["is_admin"] is False
+        assert "is_admin" not in resp.json()
         assert client.get("/v1/service-accounts", headers=auth_header("legacy.key.value")).json().keys() \
             == {"object", "month", "service_accounts", "withheld"}  # a key's answer, not a sign-in's
 
@@ -246,15 +229,21 @@ class TestAKeyKeepsItsRules:
         # Judged as the key it is: the answer a key gets, not a sign-in's.
         assert "top_users" not in client.get("/v1/service-accounts", headers=headers).json()
 
-    @pytest.mark.parametrize("name", HOLDER_ONLY)
-    def test_an_application_acting_for_a_user_still_reads_only_what_it_needs(self, client, db_session, test_user, name):
+    @pytest.mark.parametrize("name", READS)
+    def test_an_application_reads_its_own_account_and_no_users(self, client, db_session, test_user, name):
+        """The answer is about the account the key belongs to. A service
+        account that sends model requests for its users reads its own
+        account, and naming a user (``X-On-Behalf-Of``) is refused."""
         _add(
             db_session, username="hr-chat", api_key="sk-hr-chat-secret", is_service_account=True,
             acts_for_users=True, concurrency_waived=True,
         )
-        headers = {**auth_header("sk-hr-chat-secret"), "X-On-Behalf-Of": "testuser"}
-        assert client.get("/v1/me", headers=headers).json()["username"] == "testuser"
-        assert client.get(f"/v1/{name}", headers=headers).status_code == 403
+        own = client.get(f"/v1/{name}", headers=auth_header("sk-hr-chat-secret"))
+        assert own.status_code == 200
+        if name == "me":
+            assert own.json()["username"] == "hr-chat"
+        for_user = client.get(f"/v1/{name}", headers={**auth_header("sk-hr-chat-secret"), "X-On-Behalf-Of": "testuser"})
+        assert for_user.status_code == 403 and "testuser" not in for_user.text
 
 
 class TestIpAllowlist:

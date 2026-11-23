@@ -153,8 +153,8 @@ class TestAuthCenterDecides:
 def test_nothing_on_the_api_path_reads_the_column():
     """A guard against the exemption coming back: the modules an API-key
     request runs through do not mention ``is_admin`` except where
-    ``deps._authenticate`` clears it and ``/v1/me`` reports false (its body
-    is built in ``account_view``).
+    ``deps._authenticate`` clears it. By key ``/v1/me`` does not report it at
+    all (its body is built in ``account_view``).
 
     The account endpoints also take an SSO sign-in. There the attribute is
     set from the token's scope for the one request, exactly as
@@ -172,13 +172,12 @@ def test_nothing_on_the_api_path_reads_the_column():
         "routers/v1_api.py": [],
         # The handler's description of the answer (shown in /docs), no code.
         "routers/account_api.py": [
-            "for a person signed in by SSO (``account_view.*_signed_in``): ``is_admin``",
-            "    ``is_admin`` is true only for a person signed in by SSO whose token has",
+            "in by SSO (``account_view.*_signed_in``): ``is_admin``, and who a service",
+            "    ``is_admin`` is there only for a person signed in by SSO: true or false",
         ],
         "services/account_view.py": [
-            "``is_admin`` true for an admin (a key has no admin right, so by key it is",
-            '        "is_admin": False,',
-            "    ``is_admin``, true for an admin by the token's ``admin`` scope. An API",
+            "route calls only for a sign-in (``schema.signed_in_by_sso``): ``is_admin``,",
+                    '    """What ``GET /v1/me`` adds for a person signed in by SSO: ``is_admin``,',
             '    return {"is_admin": bool(user.is_admin)}',
         ],
         "routers/azure_api.py": [],

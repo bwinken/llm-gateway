@@ -59,7 +59,8 @@ class TestAccountInfo:
         body = _me(client)
         assert body["object"] == "account"
         assert body["username"] == "testuser"
-        assert body["is_admin"] is False
+        # Whether the person is an admin is the SSO token's to say: a key says nothing.
+        assert "is_admin" not in body
         daily = body["daily"]
         assert "unlimited" not in daily
         assert daily["limit_usd"] == 100.0
@@ -141,10 +142,10 @@ class TestAccountInfo:
 
     def test_the_stored_admin_flag_grants_nothing(self, client, admin_user):
         # users.is_admin is retired: who is an admin is AuthCenter's to say,
-        # and an API key carries no admin right. The key stays in the reply
-        # for clients built against it, always false.
+        # and an API key carries no admin right. By key the reply does not
+        # say either way (``is_admin`` is there for an SSO sign-in only).
         body = _me(client, headers=auth_header(admin_user.api_key))
-        assert body["is_admin"] is False
+        assert "is_admin" not in body
         assert body["backends"]["azure"]["access"] is False
         assert body["backends"]["aws"]["access"] is False
 
