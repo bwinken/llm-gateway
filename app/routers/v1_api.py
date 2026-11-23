@@ -45,6 +45,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
+from app.core import api_docs
 from app.core.config import (
     _MODEL_METADATA_KEYS,
     get_azure_models_snapshot,
@@ -89,7 +90,11 @@ from app.services.vllm_proxy import (
     vllm_forward_tokenize,
 )
 
-router = APIRouter(tags=["v1"])
+router = APIRouter(tags=["v1"], responses=api_docs.MODEL_API_ERRORS)
+
+# Every docstring below is the route's description in /docs and openapi.json,
+# written to the plan in ``app/core/api_docs.py``: what it does; **Sign-in**;
+# **Body**; **Response**; **Limits and things to know**; **Errors**.
 
 
 async def _peek_model_alias(request: Request) -> str:
@@ -372,27 +377,39 @@ _TYPE_CAPABILITIES: dict[str, str] = {
 }
 
 
-@router.get("/v1/models")
-@router.get("/models")
+@router.get("/v1/models", summary="Models to pick from", responses=api_docs.answers(api_docs.ModelList))
+@router.get(
+    "/models", summary="Models to pick from (alias of /v1/models)", responses=api_docs.answers(api_docs.ModelList),
+)
 async def list_models(user: User = Depends(get_current_user)):
-    """List chat-capable models available to this user.
+    """The chat models this key may use, in OpenAI's list shape: what a client's model picker reads.
 
-    vLLM entries are always included. Azure entries are merged in only when
-    the user has ``can_use_azure`` so an Anthropic / OpenAI
-    client pointed at this single base URL sees exactly the set of aliases
-    its API key may actually use.
+    **Sign-in.** API key only: `Authorization: Bearer <key>` or `x-api-key: <key>`. An SSO access token is not a key here.
 
-    Which models are in it is an admin's tick per model (*Listed in
-    GET /v1/models*, Admin → Models; ``config.listed_in_api``), so a model
-    can be staged or retired without showing up in client pickers (Claude
-    Code, Roo Code). It is apart from the tick that shows a model on the
-    dashboard (``hidden``): a model can be in one list and not the other.
-    A listing concern only: requests that name the alias are still served.
+    **Response**
 
-    A service account that acts for its users (``X-On-Behalf-Of``) gets the
-    list of the user it names, exactly what that user gets with their own
-    key: their cloud access decides, and that one tick per model, the same
-    for everyone, is the only thing an admin takes out of it.
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `object` | string | `list` |
+    | `data` | array | One entry per model: on-prem first, then Azure, then AWS |
+    | `data[].id` | string | The name to send as `model` |
+    | `data[].object` | string | `model` |
+    | `data[].owned_by` | string | `llm-gateway` (on-prem), `azure-openai` or `aws-bedrock` |
+    | `data[].type`, `capability` | string | `llm` / `vlm`, and the same in words (`text-generation`, `vision-language`) |
+    | `data[].display_name`, `context_window`, `max_output_tokens`, `supports_tools`, `supports_vision`, `supports_prompt_caching`, `is_reasoning` | various | What the admin declared for the model. Each absent when not declared |
+
+    **Limits and things to know**
+
+    - Chat models only (`llm`, `vlm`). Embedding and reranker models are not in this list;
+      `GET /v1/status` lists every model the account can see.
+    - Azure and AWS models are listed only for an account with access to that cloud.
+    - An admin can leave a model out of this list (Admin, Models, *Listed in GET /v1/models*). That is
+      about the list only: a request that names the model is still served.
+    - It does not say whether a model is up and gives no price: `GET /v1/status` has both.
+    - With `X-On-Behalf-Of`, the list is the named user's, exactly what they get with their own key.
+    - Not billed, but it passes the budget check like every model route: 429 once today's budget is spent.
+
+    **Errors.** Only the group's (400, 401, 403, 429).
     """
     models = []
     for name, route in get_model_routing_snapshot().items():
@@ -453,9 +470,54 @@ async def list_models(user: User = Depends(get_current_user)):
     return {"object": "list", "data": models}
 
 
-@router.post("/v1/chat/completions")
-@router.post("/chat/completions")
+_CHAT_RESPONSES = {**api_docs.upstream(api_docs.OPENAI_CHAT), **api_docs.GUARDRAIL_400, **api_docs.BUSY_429}
+
+
+@router.post("/v1/chat/completions", summary="Chat completion (OpenAI format)", responses=_CHAT_RESPONSES)
+@router.post(
+    "/chat/completions", summary="Chat completion (alias of /v1/chat/completions)", responses=_CHAT_RESPONSES,
+)
 async def chat_completions(request: Request, user: User = Depends(limited_v1_user)):
+    """Generate a reply to a conversation, in OpenAI's Chat Completions format.
+
+    **Sign-in.** API key only: `Authorization: Bearer <key>` or `x-api-key: <key>`. An SSO access token is not a key here.
+
+    **Body.** An OpenAI Chat Completions request: `model`, `messages`, and whatever else the format
+    allows (`stream`, `tools`, `temperature`, `max_tokens`, ...). The gateway does not validate it: it is
+    forwarded as sent, with `model` replaced by the backend's own name for the model.
+
+    **Response.** An OpenAI Chat Completions response as the backend gave it. With `stream: true`, a
+    stream of `data:` events ending in `data: [DONE]`.
+
+    **Limits and things to know**
+
+    - `model` picks the backend: an Azure or AWS model the account has access to goes to that cloud,
+      anything else goes on-prem.
+    - A name the gateway does not have, an on-prem model that is down, or a cloud model the account has
+      no access to is answered by an on-prem model instead of a 404. The response header
+      `X-Model-Fallback` says which, and why.
+    - A cloud model whose cap is spent is a 429, unless the admin turned the cloud budget fallback on:
+      then an on-prem model answers, and the header `X-Budget-Fallback` says so.
+    - While an on-prem server is congested the gateway may serve some accounts from the cloud model an
+      admin named for it. The header `X-Overflow` says so, and the request is billed as that cloud model.
+    - Billed by the tokens the backend reports, at the model's price, against today's budget.
+    - Holds one of the account's concurrent-request slots until the response, a stream included, has
+      been sent.
+    - A prompt for an on-prem model is screened by the guardrail when an admin turned it on. By default
+      it only records its verdict; set to block, it answers 400.
+    - A non-streamed answer, or a stream's first event, has to arrive within 280 seconds; a stream that
+      then says nothing for 300 seconds is ended.
+    - On an Azure model `temperature` and the other sampling fields are not sent on, and an output limit
+      under 16 tokens is raised to 16.
+
+    **Errors**
+
+    | Status | When |
+    |---|---|
+    | 400 | The guardrail refused the prompt (`X-Guardrail: blocked`) |
+    | 429 | Also when the account's requests in flight are at their limit (`Retry-After: 5`) |
+    | 502 | The backend failed or could not be reached |
+    """
     alias = await _peek_model_alias(request)
     budget_fallback: str | None = None
     if alias and _route_to_azure(alias, user):
@@ -728,8 +790,14 @@ _RENDER_OPENAPI: dict[str, object] = {
 }
 
 
-@router.post("/v1/chat/completions/render", openapi_extra=_RENDER_OPENAPI)
-@router.post("/chat/completions/render", openapi_extra=_RENDER_OPENAPI)
+@router.post(
+    "/v1/chat/completions/render", summary="Show the prompt a chat request renders into",
+    openapi_extra=_RENDER_OPENAPI,
+)
+@router.post(
+    "/chat/completions/render", summary="Show the rendered prompt (alias of /v1/chat/completions/render)",
+    openapi_extra=_RENDER_OPENAPI,
+)
 async def chat_completions_render(
     request: Request,
     decode: bool = Query(
@@ -747,11 +815,15 @@ async def chat_completions_render(
     """See exactly what the model receives — the chat template applied to your
 request, **without generating anything**.
 
+**Sign-in.** API key only: `Authorization: Bearer <key>` or `x-api-key: <key>`. An SSO access token is not a key here.
+
+**Body.** The same body you would post to `/v1/chat/completions`.
+
 Post the same body you would post to `/v1/chat/completions`; you get back the
 prompt that request renders into, plus the sampling parameters it resolves to.
 Nothing is generated, so it is fast and **not billed**.
 
-### Use it when
+**Use it when**
 
 * the model behaves as if it saw something other than what you sent
 * you want to check how your `tools` are turned into prompt text
@@ -759,7 +831,7 @@ Nothing is generated, so it is fast and **not billed**.
   need to confirm the switch actually changed the prompt
 * you want the resolved `sampling_params` — the defaults your request inherits
 
-### Reading the response
+**Response.** The rendered request as one object; the table under *Responses* below lists its keys.
 
 `decoded_prompt` is the prompt as text and is usually the only field you need.
 vLLM itself returns token IDs only, so the gateway detokenizes them for you;
@@ -767,7 +839,7 @@ pass `?decode=false` to skip that and get exactly what vLLM sent. If the
 detokenize step fails the render is still returned, with the reason in
 `decode_error`.
 
-### Try it
+**Try it**
 
 ```bash
 curl -s "$GATEWAY/v1/chat/completions/render" \
@@ -789,7 +861,7 @@ resp = client.post("/chat/completions/render", cast_to=httpx.Response,
 print(resp.json()["decoded_prompt"])
 ```
 
-### Limits
+**Limits and things to know**
 
 * **On-prem vLLM only.** Azure and Bedrock have no rendering surface, so a
   cloud alias posted here is not dispatched to them — it falls back to a vLLM
@@ -797,21 +869,66 @@ print(resp.json()["decoded_prompt"])
 * Any field not listed in the schema below is **forwarded verbatim**; this is
   a pass-through, not a validated API.
 * A downstream on an older vLLM answers 404 — see the response below.
+* Not billed, and it holds no concurrent-request slot, but it passes the budget check: 429 once
+  today's budget is spent.
+
+**Errors**
+
+| Status | When |
+|---|---|
+| 404 | The model's vLLM is too old to render |
+| 502 | The model's server could not be reached |
 """
     return await vllm_forward_render(
         request, user, allowed_types=["llm", "vlm"], decode=decode
     )
 
 
-@router.post("/v1/responses")
-@router.post("/responses")
-async def responses(request: Request, user: User = Depends(limited_v1_responses_user)):
-    """OpenAI Responses API endpoint.
+_RESPONSES_RESPONSES = {
+    **api_docs.upstream(api_docs.OPENAI_RESPONSES), **api_docs.GUARDRAIL_400, **api_docs.BUSY_429,
+}
 
-    Dispatches to the Azure backend (pure Responses pass-through) when the
-    requested ``model`` alias is Azure-configured and the user has permission;
-    otherwise forwards to vLLM. Same Azure dispatch rule as
-    ``/v1/chat/completions``; see ``_route_to_azure``.
+
+@router.post("/v1/responses", summary="Response (OpenAI Responses format)", responses=_RESPONSES_RESPONSES)
+@router.post("/responses", summary="Response (alias of /v1/responses)", responses=_RESPONSES_RESPONSES)
+async def responses(request: Request, user: User = Depends(limited_v1_responses_user)):
+    """Generate a response, in OpenAI's Responses API format.
+
+    **Sign-in.** API key only: `Authorization: Bearer <key>` or `x-api-key: <key>`. An SSO access token is not a key here.
+
+    **Body.** An OpenAI Responses API request (`model`, `input`, and whatever else the format allows).
+    Forwarded as sent, with `model` replaced by the backend's own name for the model.
+
+    **Response.** An OpenAI Responses API response as the backend gave it. With `stream: true`, a stream
+    of its typed events.
+
+    **Limits and things to know**
+
+    - `model` picks the backend: an Azure model the account has access to goes to Azure's Responses API
+      untouched, anything else goes on-prem. There is no AWS model on this route: one named here is
+      answered on-prem.
+    - A name the gateway does not have, or an on-prem model that is down, is answered by another on-prem
+      model instead of a 404; the header `X-Model-Fallback` says which, and why.
+    - A cloud model whose cap is spent is a 429, unless the admin turned the cloud budget fallback on
+      (header `X-Budget-Fallback`). `X-Overflow` marks a request served from the cloud because its
+      on-prem server was congested.
+    - Billed by the tokens the backend reports, at the model's price, against today's budget.
+    - Holds one of the account's concurrent-request slots until the response, a stream included, has
+      been sent.
+    - A prompt for an on-prem model is screened by the guardrail when an admin turned it on. By default
+      it only records its verdict; set to block, it answers 400.
+    - A non-streamed answer, or a stream's first event, has to arrive within 280 seconds; a stream that
+      then says nothing for 300 seconds is ended.
+    - State the Responses API keeps on the server (`previous_response_id`, `store`) lives on the backend
+      that answered: it is not carried from one backend to another.
+
+    **Errors**
+
+    | Status | When |
+    |---|---|
+    | 400 | The guardrail refused the prompt (`X-Guardrail: blocked`) |
+    | 429 | Also when the account's requests in flight are at their limit (`Retry-After: 5`) |
+    | 502 | The backend failed or could not be reached |
     """
     alias = await _peek_model_alias(request)
     budget_fallback: str | None = None
@@ -838,22 +955,64 @@ async def responses(request: Request, user: User = Depends(limited_v1_responses_
     return response
 
 
-@router.post("/v1/messages")
-@router.post("/messages")
+_MESSAGES_RESPONSES = {
+    **api_docs.upstream(api_docs.ANTHROPIC_MESSAGES),
+    400: {"description": api_docs.GUARDRAIL_400[400]["description"] + " Or a reminder that this client needs a "
+                         "setting changed (the day's first such request, when an admin set the check to "
+                         "remind); `GET /v1/notices` has the fix."},
+    **api_docs.BUSY_429,
+}
+
+
+@router.post("/v1/messages", summary="Message (Anthropic format)", responses=_MESSAGES_RESPONSES)
+@router.post("/messages", summary="Message (alias of /v1/messages)", responses=_MESSAGES_RESPONSES)
 async def messages(request: Request, user: User = Depends(limited_v1_user)):
-    """Anthropic Messages API compatibility endpoint.
+    """Generate a reply to a conversation, in Anthropic's Messages format: what Claude Code and the Anthropic SDK call.
 
-    Translates Anthropic /v1/messages requests to OpenAI chat completions
-    format, forwards to the downstream LLM/VLM, then translates the response
-    back to Anthropic format.
+    **Sign-in.** API key only: `Authorization: Bearer <key>` or `x-api-key: <key>`. An SSO access token is not a key here.
 
-    Both ``/v1/messages`` and ``/messages`` are accepted so that clients work
-    regardless of whether their ``ANTHROPIC_BASE_URL`` already includes the
-    ``/v1`` prefix (a common Claude Code / Anthropic SDK misconfiguration
-    that otherwise causes a silent 404 on the direct connection).
+    **Body.** An Anthropic Messages request (`model`, `max_tokens`, `messages`, and whatever else the
+    format allows: `system`, `tools`, `stream`, `thinking`, ...).
 
-    Dispatches to the Azure backend when the requested ``model`` alias is
-    Azure-configured and the user has permission; see ``_route_to_azure``.
+    **Response.** An Anthropic Messages response. With `stream: true`, Anthropic's event stream
+    (`message_start` ... `message_stop`).
+
+    **Limits and things to know**
+
+    - `model` picks the backend: an Azure or AWS model the account has access to goes to that cloud,
+      anything else goes on-prem.
+    - A name the gateway does not have, an on-prem model that is down, or a cloud model the account has
+      no access to is answered by an on-prem model instead of a 404. The response header
+      `X-Model-Fallback` says which, and why.
+    - A cloud model whose cap is spent is a 429, unless the admin turned the cloud budget fallback on:
+      then an on-prem model answers, and the header `X-Budget-Fallback` says so.
+    - While an on-prem server is congested the gateway may serve some accounts from the cloud model an
+      admin named for it. The header `X-Overflow` says so, and the request is billed as that cloud model.
+    - Billed by the tokens the backend reports, at the model's price, against today's budget.
+    - Holds one of the account's concurrent-request slots until the response, a stream included, has
+      been sent.
+    - A prompt for an on-prem model is screened by the guardrail when an admin turned it on. By default
+      it only records its verdict; set to block, it answers 400.
+    - A non-streamed answer, or a stream's first event, has to arrive within 280 seconds; a stream that
+      then says nothing for 300 seconds is ended.
+    - For most models the gateway translates the request to the backend's own format and the answer
+      back, so a field the backend has no counterpart for is dropped. A model an admin marked as native
+      gets the Anthropic body as it is.
+    - While the model is silent the stream carries a `ping` event every 10 seconds.
+    - A stream that ends without a stop reason is closed with an `overloaded_error` event, which Claude
+      Code retries, never with a `message_stop` that would pass for a finished answer.
+    - The gateway does not run Claude Code's server-side auto mode check. `GET /v1/notices` tells an
+      account whose client waits for it which setting to change.
+    - Claude Code's version and setup are read from these requests for the account's notices (not from
+      a request sent with `X-On-Behalf-Of`).
+
+    **Errors**
+
+    | Status | When |
+    |---|---|
+    | 400 | The guardrail refused the prompt (`X-Guardrail: blocked`); or a reminder that this client needs a setting changed, on the day's first such request, when an admin set that check to remind |
+    | 429 | Also when the account's requests in flight are at their limit (`Retry-After: 5`) |
+    | 502 | The backend failed or could not be reached |
     """
     alias = await _peek_model_alias(request)
     reminder = await client_rules.observe_request(request, user)
@@ -886,24 +1045,39 @@ async def messages(request: Request, user: User = Depends(limited_v1_user)):
     return response
 
 
-@router.post("/v1/messages/count_tokens")
-@router.post("/messages/count_tokens")
+@router.post(
+    "/v1/messages/count_tokens", summary="Count a message's input tokens (Anthropic format)",
+    responses=api_docs.answers(api_docs.TokenCount),
+)
+@router.post(
+    "/messages/count_tokens", summary="Count input tokens (alias of /v1/messages/count_tokens)",
+    responses=api_docs.answers(api_docs.TokenCount),
+)
 async def messages_count_tokens(
     request: Request, user: User = Depends(get_current_user)
 ):
-    """Anthropic-compatible token counting endpoint.
+    """How many input tokens a Messages request would be, without sending it to a model: Anthropic's count_tokens.
 
-    Used by Claude Code (and other Anthropic SDK clients) to estimate the
-    input token count of a prospective request — typically for context
-    window tracking. Forwards to the downstream vLLM ``/tokenize`` endpoint
-    and returns ``{"input_tokens": N}``. Not billed.
+    **Sign-in.** API key only: `Authorization: Bearer <key>` or `x-api-key: <key>`. An SSO access token is not a key here.
 
-    Mirrors ``/v1/messages`` by also exposing ``/messages/count_tokens`` for
-    clients whose base URL already includes the ``/v1`` prefix.
+    **Body.** The Anthropic Messages request to count (`model`, `messages`, `system`, `tools`, ...).
 
-    Same Azure dispatch rule as ``/v1/messages``: Azure-configured aliases
-    are routed to the Azure count-tokens helper (chars/4 estimate) when the
-    user has permission; otherwise vLLM's tokenizer-backed count is used.
+    **Response**
+
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `input_tokens` | integer | The count |
+
+    **Limits and things to know**
+
+    - For an on-prem model the count is the model's own tokenizer's. If that cannot be asked it is an
+      estimate of one token per four characters.
+    - For an Azure or AWS model it is always that estimate: neither offers a token counter.
+    - `model` picks the backend as on `/v1/messages`, with the same headers when another model answers.
+    - Not billed, and it holds no concurrent-request slot, but it passes the budget check: 429 once
+      today's budget is spent.
+
+    **Errors.** Only the group's (400, 401, 403, 429, 502).
     """
     alias = await _peek_model_alias(request)
     budget_fallback: str | None = None
@@ -928,23 +1102,62 @@ async def messages_count_tokens(
     return response
 
 
-@router.post("/v1/tokenize")
-@router.post("/tokenize")
-async def tokenize(request: Request, user: User = Depends(get_current_user)):
-    """vLLM-native ``/tokenize`` pass-through.
+_TOKENIZE_200 = api_docs.upstream("What vLLM's `/tokenize` answered: `count`, `max_model_len`, `tokens` (the ids).")
 
-    vLLM exposes ``/tokenize`` (not ``/v1/tokenize``) since it isn't part of
-    the OpenAI API spec. The gateway accepts both paths for client convenience
-    and forwards to the downstream ``/tokenize`` endpoint. Not billed.
+
+@router.post("/v1/tokenize", summary="Tokenize with an on-prem model's tokenizer", responses=_TOKENIZE_200)
+@router.post("/tokenize", summary="Tokenize (alias of /v1/tokenize)", responses=_TOKENIZE_200)
+async def tokenize(request: Request, user: User = Depends(get_current_user)):
+    """Turn text or a chat into token ids with an on-prem model's own tokenizer: vLLM's `/tokenize`.
+
+    **Sign-in.** API key only: `Authorization: Bearer <key>` or `x-api-key: <key>`. An SSO access token is not a key here.
+
+    **Body.** A vLLM tokenize request: `model`, and either `prompt` (text) or `messages` (a chat, which is
+    run through the model's chat template first). Forwarded as sent.
+
+    **Response.** What vLLM answered, untouched: `count`, `max_model_len` and `tokens` (the ids).
+
+    **Limits and things to know**
+
+    - On-prem only. An Azure or AWS model named here is answered by an on-prem model's tokenizer, like
+      any name the on-prem side does not have (header `X-Model-Fallback`).
+    - Not billed, and it holds no concurrent-request slot, but it passes the budget check: 429 once
+      today's budget is spent.
+
+    **Errors.** Only the group's (400, 401, 403, 429, 502).
     """
     return await vllm_forward_tokenize(
         request, user, allowed_types=["llm", "vlm"]
     )
 
 
-@router.post("/v1/embeddings")
-@router.post("/embeddings")
+_EMBEDDINGS_200 = api_docs.upstream("An OpenAI Embeddings response, as the model's server gave it.")
+
+
+@router.post("/v1/embeddings", summary="Embeddings (OpenAI format)", responses=_EMBEDDINGS_200)
+@router.post("/embeddings", summary="Embeddings (alias of /v1/embeddings)", responses=_EMBEDDINGS_200)
 async def embeddings(request: Request, user: User = Depends(get_current_user)):
+    """Turn text (or, for a vision embedding model, images) into vectors, in OpenAI's Embeddings format.
+
+    **Sign-in.** API key only: `Authorization: Bearer <key>` or `x-api-key: <key>`. An SSO access token is not a key here.
+
+    **Body.** An OpenAI Embeddings request (`model`, `input`, ...). Forwarded as sent, with `model`
+    replaced by the server's own name for the model.
+
+    **Response.** An OpenAI Embeddings response as the model's server gave it.
+
+    **Limits and things to know**
+
+    - On-prem embedding models only (`embedding`, `vision_embedding`). There is no cloud embedding on this
+      route.
+    - A name the gateway does not have, or a model that is down, is answered by another embedding model
+      instead of a 404; the header `X-Model-Fallback` says which. Vectors of two models are not
+      comparable, so check that header before storing a vector.
+    - Billed by the input tokens the server reports.
+    - It holds no concurrent-request slot and is not screened by the guardrail.
+
+    **Errors.** Only the group's (400, 401, 403, 429, 502).
+    """
     return await vllm_forward_simple_request(
         request,
         user,
@@ -954,11 +1167,36 @@ async def embeddings(request: Request, user: User = Depends(get_current_user)):
     )
 
 
-@router.post("/v1/rerank")
-@router.post("/v1/score")
-@router.post("/rerank")
-@router.post("/score")
+_SCORE_200 = api_docs.upstream("What vLLM's `/score` answered: one score per pair, under `data`.")
+
+
+@router.post("/v1/rerank", summary="Score text pairs (alias of /v1/score)", responses=_SCORE_200)
+@router.post("/v1/score", summary="Score text pairs with a reranker", responses=_SCORE_200)
+@router.post("/rerank", summary="Score text pairs (alias of /v1/score)", responses=_SCORE_200)
+@router.post("/score", summary="Score text pairs (alias of /v1/score)", responses=_SCORE_200)
 async def rerank(request: Request, user: User = Depends(get_current_user)):
+    """Score how well texts match a query with a reranker model: vLLM's `/score`.
+
+    **Sign-in.** API key only: `Authorization: Bearer <key>` or `x-api-key: <key>`. An SSO access token is not a key here.
+
+    **Body.** A vLLM score request: `model`, `text_1` (the query, or a list) and `text_2` (the texts to
+    score against it). Forwarded as sent.
+
+    **Response.** What vLLM's `/score` answered: one entry per pair under `data`, each with its `score`,
+    and `usage`.
+
+    **Limits and things to know**
+
+    - `/v1/rerank` is the same route under another name: it takes and answers the **score** format, not
+      Cohere's or Jina's rerank format (`query` / `documents`).
+    - On-prem reranker models only (`reranker`, `vision_reranker`).
+    - A name the gateway does not have, or a model that is down, is answered by another reranker
+      instead of a 404; the header `X-Model-Fallback` says which. Scores of two models are not
+      comparable.
+    - Billed by the input tokens the server reports. No concurrent-request slot, no guardrail.
+
+    **Errors.** Only the group's (400, 401, 403, 429, 502).
+    """
     return await vllm_forward_simple_request(
         request,
         user,
@@ -968,16 +1206,27 @@ async def rerank(request: Request, user: User = Depends(get_current_user)):
     )
 
 
-@router.post("/v1/systemone")
-@router.post("/systemone")
-async def systemone(request: Request, user: User = Depends(get_current_user)):
-    """System One typed decisions, in TypeSafe's ``/v1/systemone`` wire format.
+_SYSTEMONE_200 = api_docs.upstream("The decisions: calibrated probabilities per question, under `answers`.")
 
-    Served by ``[models.systemone.*]`` routes (e.g. Mapika's decider): post a
-    ``state`` plus named ``questions`` — each a ``choice``, ``score`` or
-    ``noul`` — and get calibrated probabilities back under ``answers``, from
-    one forward pass. ``model`` is optional; without it the default
-    systemone model answers. On-prem only, billed on input tokens (nothing
-    is generated). See ``vllm_forward_systemone``.
+
+@router.post("/v1/systemone", summary="Typed decisions (System One)", responses=_SYSTEMONE_200)
+@router.post("/systemone", summary="Typed decisions (alias of /v1/systemone)", responses=_SYSTEMONE_200)
+async def systemone(request: Request, user: User = Depends(get_current_user)):
+    """Answer named questions about a state with calibrated probabilities, from one forward pass: System One.
+
+    **Sign-in.** API key only: `Authorization: Bearer <key>` or `x-api-key: <key>`. An SSO access token is not a key here.
+
+    **Body.** TypeSafe's `/v1/systemone` format: a `state`, and named `questions`, each a `choice`, a
+    `score` or a `noul`. `model` is optional: without it the default System One model answers.
+
+    **Response.** The probabilities per question, under `answers`.
+
+    **Limits and things to know**
+
+    - On-prem only, and only by a model of type `systemone`.
+    - Nothing is generated, so it is billed by input tokens alone.
+    - It holds no concurrent-request slot and is not screened by the guardrail.
+
+    **Errors.** Only the group's (400, 401, 403, 429, 502).
     """
     return await vllm_forward_systemone(request, user, allowed_types=["systemone"])

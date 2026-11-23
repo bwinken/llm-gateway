@@ -97,6 +97,35 @@ class TestDependenciesReleaseConnection:
         assert pooled_engine.pool.checkedout() == 0
 
 
+    def test_the_account_sign_in_releases_connection(self, pooled_engine):
+        """The account endpoints take an API key or an SSO sign-in
+        (``deps.get_account_user``). Either way the session is closed before
+        the dependency returns, the account's first sign-in included."""
+        from starlette.requests import Request
+
+        from tests.conftest import _make_test_jwt
+
+        def request() -> Request:
+            return Request({
+                "type": "http", "method": "GET", "path": "/v1/me", "headers": [],
+                "client": ("203.0.113.9", 50000), "scheme": "https", "server": ("gateway", 443),
+            })
+
+        by_key = deps.get_account_user(request=request(), credentials=_bearer(), x_api_key=None)
+        assert by_key.username == "pooluser" and pooled_engine.pool.checkedout() == 0
+
+        for sub in ("pooluser", "first-sign-in"):
+            token = _bearer(_make_test_jwt(sub=sub))
+            signed_in = deps.get_account_user(request=request(), credentials=token, x_api_key=None)
+            assert signed_in.username == sub
+            assert pooled_engine.pool.checkedout() == 0
+            assert object_session(signed_in) is None and signed_in.daily_limit_usd >= 0
+
+        with pytest.raises(Exception):
+            deps.get_account_user(request=request(), credentials=_bearer("not.a.token"), x_api_key=None)
+        assert pooled_engine.pool.checkedout() == 0
+
+
 class TestStreamDoesNotHoldConnection:
     def test_chat_stream_serves_with_pool_empty(self, client, pooled_engine):
         """End-to-end through the app: while the SSE body is being produced

@@ -12,9 +12,14 @@ would have neither.
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
+
+from app.core import api_docs
 from fastapi.responses import Response
 
-router = APIRouter(tags=["web"])
+# 401 and 403 are every dashboard route's, so they are in /docs once, here.
+# A route's docstring is its description there, written to the plan in
+# ``app/core/api_docs.py``.
+router = APIRouter(tags=["web"], responses=api_docs.DASHBOARD_ERRORS)
 
 
 def wants_json(request: Request) -> bool:

@@ -19,7 +19,9 @@ from sqlmodel import Session, func, select, update
 from urllib.parse import unquote
 from starlette.concurrency import run_in_threadpool
 
+from app.core import auth
 from app.core.auth import AccountDisabledError
+from app.core.browser_security import cross_site_reason
 from app.core.config import (
     get_cloud_daily_limit,
     get_concurrency_cloud_limit,
@@ -31,9 +33,10 @@ from app.core.timeutil import local_day_start_utc, seconds_until_local_midnight
 from app.models.schema import (
     UsageLog,
     User,
+    mark_signed_in_by_sso,
+    mask_api_key,
     set_request_tags,
     set_via_service_account,
-    via_service_account,
 )
 from app.services import auth_throttle, ip_allowlist, metrics
 
@@ -429,6 +432,7 @@ def _authenticate(
     *,
     check_daily_limit: bool,
     request: Request | None = None,
+    acts_for: bool = True,
 ) -> User:
     # NOTE: request-header capture for observability lives in
     # RequestMetaMiddleware (pure ASGI), NOT here — a contextvar written in this
@@ -523,8 +527,29 @@ def _authenticate(
             # The key, its last use and the address check above stay the
             # service account's. A person's key never gets here: nobody can
             # put a request on someone else's account with their own key.
+            #
+            # Only where a model is called (``acts_for``): the header says
+            # whose request, and so whose bill, this is. An account endpoint
+            # answers the account the key belongs to and nobody else's, so
+            # there the header is refused: an application must not read its
+            # users' budgets or anything else about them with its own key.
             if user.is_service_account and user.acts_for_users:
-                user = _on_behalf_of(session, user, request)
+                if acts_for:
+                    user = _on_behalf_of(session, user, request)
+                elif request is not None and request.headers.get(ON_BEHALF_HEADER) is not None:
+                    logger.warning(
+                        "On-behalf rejected: an account endpoint | service_account={}", user.username,
+                    )
+                    metrics.observe_rejection("on_behalf")
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=(
+                            f"{ON_BEHALF_HEADER} applies to model requests only. This endpoint answers "
+                            "about the account the key belongs to: send it without the header to read "
+                            "the service account's own. A user reads theirs with their own API key or "
+                            "on the dashboard."
+                        ),
+                    )
             if check_daily_limit:
                 _check_daily_limit(session, user)
     finally:
@@ -569,16 +594,36 @@ def get_usage_history(user: User, days: int) -> dict:
         }
 
 
-def get_owned_apps(user: User) -> list[dict]:
+def get_owned_apps(user: User, *, sent_for: bool = False) -> dict:
     """The service accounts ``user`` owns with this month's usage, in total
-    and per model (``stats.get_owned_apps_summary``), for ``GET /v1/service-accounts``.
-    Their API keys are taken out here: no API-key endpoint hands out a key. Short-lived
-    session; blocking."""
-    from app.services.stats import get_owned_apps_summary
+    and per model, for ``GET /v1/service-accounts``: ``accounts``
+    (``stats.get_owned_apps_summary``) and ``withheld`` (the ones assigned to
+    ``user`` that are for another department, ``stats.get_withheld_apps``:
+    name and department only).
+
+    Their API keys are taken out here and ``api_key_masked`` put in their
+    place (``mask_api_key``): no account endpoint hands out a key, so the
+    key never leaves this function.
+
+    ``sent_for``: also ``flows``, who each account sent requests for this
+    month (``stats.get_on_behalf_users``, by account id). The caller asks
+    for it only for a person signed in by SSO: a leaked personal key must
+    not say who uses an application. Short-lived session; blocking."""
+    from app.services.stats import get_on_behalf_users, get_owned_apps_summary, get_withheld_apps
 
     with Session(engine) as session:
         apps = get_owned_apps_summary(session, user.id)
-    return [{key: value for key, value in app.items() if key != "api_key"} for app in apps]
+        found: dict = {
+            "accounts": [
+                {**{key: value for key, value in app.items() if key != "api_key"},
+                 "api_key_masked": mask_api_key(app["api_key"])}
+                for app in apps
+            ],
+            "withheld": get_withheld_apps(session, user.id),
+        }
+        if sent_for:
+            found["flows"] = get_on_behalf_users(session, [a["id"] for a in apps if a["on_behalf"]["requests"]])
+    return found
 
 
 def get_client_notices(user: User) -> dict:
@@ -659,35 +704,136 @@ def get_current_user(
     return _authenticate(credentials, x_api_key, check_daily_limit=True, request=request)
 
 
-def get_current_user_unmetered(
+# ── The account endpoints: an API key, or an SSO sign-in ──
+#
+# ``/v1/me``, ``/v1/status``, ``/v1/usage`` ... are what an account reads and
+# reports about itself. A terminal tool asks with the account's API key; a
+# browser asks with the person's SSO sign-in, which reaches the gateway as
+# the same ``Authorization: Bearer`` header (the proxy in front trades the
+# session cookie for the access token). Both are the account holder asking
+# about their own account, so these routes take either. The model API never
+# does: inference is authenticated by API key only.
+
+# The scopes that let an account use the web UI at all (``get_web_user``
+# with ``scopes=["read"]``, which ``admin`` also satisfies).
+_SSO_SCOPES = frozenset({"read", "admin"})
+
+
+def _looks_like_token(value: str) -> bool:
+    """True for a value shaped like a signed token (three dot-separated
+    parts). Decides only whether the SSO check is tried after the key
+    lookup missed: an API key is never refused by its shape."""
+    parts = value.split(".")
+    return len(parts) == 3 and all(parts)
+
+
+def _is_api_key(candidates: list[str]) -> bool:
+    with Session(engine) as session:
+        return any(
+            session.exec(select(User.id).where(User.api_key == key)).first() is not None
+            for key in candidates
+        )
+
+
+def _authenticate_sso(payload: dict, request: Request) -> User:
+    """The account a verified SSO access token (its ``payload``) belongs
+    to, for an account endpoint.
+
+    The web UI's own rules, with its own ``auth._sync_user``: the ``read``
+    scope, an admin by the token's ``admin`` scope, a disabled account
+    refused unless it is one. What belongs to a key is not applied: no IP
+    allowlist (the dashboard is reachable from any address, and these routes
+    return no key), no last-use stamp, no ``X-On-Behalf-Of``.
+    """
+    client_addr = request.client.host if request.client else None
+    username = str(payload.get("sub") or "")
+    scopes = payload.get("scopes") or []
+    if not _SSO_SCOPES.intersection(scopes):
+        logger.warning("Account sign-in rejected: no read scope | user={}", username)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient scope: 'read' required.")
+
+    # A browser attaches the session cookie by itself, so a write signed in
+    # this way is refused when another site's page sent it. By API key there
+    # is nothing ambient to abuse, and this function is never reached.
+    headers = {name.lower(): value for name, value in request.headers.items()}
+    reason = cross_site_reason(request.method, headers)
+    if reason is not None:
+        logger.warning(
+            "Cross-site request refused | method={} path={} reason={} origin={!r} client={}",
+            request.method, request.url.path, reason, headers.get("origin", ""), client_addr or "-",
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-site request refused.")
+
+    # Own short-lived session, like the API-key auth.
+    with Session(engine) as session:
+        user = auth._sync_user(
+            session,
+            username,
+            str(payload.get("display_name") or ""),
+            str(payload.get("org_id") or payload.get("org_code") or ""),
+        )
+    user.is_admin = "admin" in scopes
+    if user.is_disabled and not user.is_admin:
+        logger.warning("Account sign-in rejected: user '{}' is disabled", user.username)
+        raise AccountDisabledError(user.username)
+    mark_signed_in_by_sso(user)
+    return user
+
+
+def get_account_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
 ) -> User:
-    """Same auth as ``get_current_user`` but without the daily-limit check,
-    for read-only account endpoints (``GET /v1/me``) that must still answer
-    once the budget is spent — that is exactly when a client asks."""
-    return _authenticate(credentials, x_api_key, check_daily_limit=False, request=request)
+    """Auth for the account endpoints: the account's API key, or the
+    person's SSO sign-in. ``schema.signed_in_by_sso(user)`` says which it
+    was.
 
+    A key is checked as ``get_current_user`` checks it (``_authenticate``:
+    the lookup, the disabled account, the IP allowlist) but without the
+    daily-limit check: these routes must still answer once the budget is
+    spent, which is exactly when a client asks.
 
-def get_account_holder(user: User = Depends(get_current_user_unmetered)) -> User:
-    """``get_current_user_unmetered`` for the account endpoints that are the
-    account holder's own business (usage history, notices, owned service
-    accounts, client settings, and the two that write): refused for a request
-    a service account sends for a user. An application gets what it needs to
-    serve that user (``/v1/models``, ``/v1/me``, ``/v1/status``) and no more:
-    a leaked application key must not read every account's history or speak
-    for its holder."""
-    via = via_service_account(user)
-    if via is not None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                f"Not available to a service account acting for a user ({ON_BEHALF_HEADER}). "
-                "The user reads this with their own API key or on the dashboard."
-            ),
-        )
-    return user
+    The answer is always about the account the credential belongs to. A
+    service account that sends model requests for its users
+    (``X-On-Behalf-Of``) reads its own account here, and the header is
+    refused (403): an application must not read a user's budget, models or
+    anything else about them with its own key. A leaked application key
+    would otherwise tell every user's spending.
+
+    The key comes first. Only a bearer value that is no account's key and is
+    shaped like a token is checked as one, with the web UI's own
+    ``auth._decode_jwt``: every key that worked keeps working, and nothing
+    but a token the SSO provider signed is ever taken for a sign-in.
+
+    The failed-auth throttle is about keys, and stays about keys. A token
+    that does not verify is a 401 and is not counted: it cannot be guessed
+    (it is signed), and a browser whose session outlived its token sends an
+    expired one, so counting them would lock an office's address when
+    several people's tokens run out together. While an address is locked no
+    key is looked up for it, here either; a valid sign-in from it still
+    answers. A key sent beside a bad token (``x-api-key``) is judged as a
+    key, failure counted, so a token-shaped header is no way round the
+    throttle.
+    """
+    bearer = credentials.credentials if credentials is not None else ""
+    if not bearer or not _looks_like_token(bearer):
+        return _authenticate(credentials, x_api_key, check_daily_limit=False, request=request, acts_for=False)
+    other_key = x_api_key if x_api_key and x_api_key != bearer else None
+    client_addr = request.client.host if request.client else None
+    locked = auth_throttle.retry_after(client_addr) is not None
+    if not locked and _is_api_key([bearer] + ([other_key] if other_key else [])):
+        return _authenticate(credentials, x_api_key, check_daily_limit=False, request=request, acts_for=False)
+    payload = auth._decode_jwt(bearer)  # module attribute: tests patch it
+    if payload and payload.get("sub"):
+        return _authenticate_sso(payload, request)
+    if other_key:
+        return _authenticate(None, other_key, check_daily_limit=False, request=request, acts_for=False)
+    logger.warning("Account sign-in rejected: invalid or expired access token | client={}", client_addr or "-")
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired access token.",
+    )
 
 
 def require_azure_access(

@@ -35,7 +35,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
-from app.core import api_versions
+from app.core import api_docs, api_versions
 from app.core.config import APP_TITLE
 from app.core.database import engine
 from app.core.logger import logger
@@ -95,28 +95,37 @@ def prometheus_metrics() -> Response:
     return Response(content=body, media_type=content_type)
 
 
-@router.get("/v1/version")
-async def api_version() -> dict:
-    """The API versions this gateway serves, for a frontend or a tool that
-    is released apart from it: is the version I was built against still
-    served here?
+@router.get(
+    "/v1/version", summary="The API versions this gateway serves", responses=api_docs.answers(api_docs.Versions),
+)
+async def api_version():
+    """Which versions of the API this gateway serves, and how far along each is: what a tool or a frontend released apart from the gateway asks first.
 
-    ``versions`` lists every version served, each with its ``status``:
+    **Sign-in.** None: no API key and no sign-in, so it can be a client's first call.
 
-    - ``stable``: served, and changed by addition only. ``stable`` at the
-      top names it: the version to build against.
-    - ``deprecated``: still served until ``sunset`` (a date, the last day);
-      move to ``successor``.
-    - ``nightly``: served for trying out; it may change or go without
-      notice.
+    **Response**
 
-    A version that is not listed is not served. ``statuses`` is every
-    status there is now; another may be added later, and a client treats
-    one it does not know like ``nightly``. ``gateway`` is the gateway's own
-    release, for a bug report: never compare it to decide what is
-    supported.
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `object` | string | `version` |
+    | `gateway` | string | The gateway's own release (`0.1.0`), for a bug report |
+    | `stable` | string | The version to build against (`v1`) |
+    | `statuses` | array of string | Every status there is now: `stable`, `deprecated`, `nightly` |
+    | `versions` | array | Every version served |
+    | `versions[].version`, `status` | string | The version, and its status |
+    | `versions[].sunset`, `successor` | string | On a `deprecated` version: its last day (`YYYY-MM-DD`) and the version to move to. Absent otherwise |
+    | `versions[].note` | string | A line for people. Absent when there is none |
 
-    No API key and no sign-in, so it can be the first call a client makes;
-    it says nothing about accounts, models or settings. No database read.
+    **Limits and things to know**
+
+    - `stable`: served, and changed by addition only. `deprecated`: still served until `sunset`.
+      `nightly`: for trying out; it may change or go without notice.
+    - A version that is not listed is not served.
+    - Another status may be added later: treat one you do not know like `nightly`.
+    - Never compare `gateway` to decide what is supported. To know whether a key of an answer is there,
+      look for it: a value the gateway does not have is a key it leaves out.
+    - It says nothing about accounts, models or settings. No database read.
+
+    **Errors.** None of its own.
     """
     return api_versions.payload()

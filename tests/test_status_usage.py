@@ -52,7 +52,7 @@ def _no_nulls(value) -> bool:
 # GET /v1/notices with nothing to tell: no violation open, and (a second
 # category beside them, a block of its own) no model being replaced.
 NOTHING_OPEN = {
-    "object": "notices", "window_days": 15, "notices": [],
+    "object": "notices", "window_days": 15, "quiet_days": 14, "notices": [],
     "model_changes": {"changes": [], "retiring": [], "patch": {"models": {}}},
 }
 
@@ -87,6 +87,92 @@ class TestDocsGroups:
         assert len(operations) > 50
         for key, tags in operations.items():
             assert len(tags) == 1 and tags[0] in known, (key, tags)
+
+    def test_every_account_endpoint_is_described_to_one_plan(self, client):
+        """What /docs and openapi.json say about an account endpoint is what
+        a tool's author reads. Each has a title and the same sections in the
+        same order, so the limits and the errors are always in one place."""
+        spec = client.get("/openapi.json").json()
+        sections = ["**Sign-in.**", "**Response**", "**Limits and things to know**", "**Errors"]
+        seen = 0
+        for path in self.ACCOUNT:
+            for method, operation in spec["paths"][path].items():
+                seen += 1
+                where = (method, path)
+                # A title someone wrote, not the handler's name turned into words.
+                assert operation["summary"] and operation["summary"][0].isupper(), where
+                assert " " in operation["summary"], where
+                text = operation["description"]
+                first = text.splitlines()[0]
+                assert first.endswith(".") and len(first) < 200, where
+                found = [text.find(section) for section in sections]
+                assert all(at > 0 for at in found) and found == sorted(found), (where, found)
+                # A table per answer, and it parses as one: a header row and its rule.
+                response = text[text.index("**Response**"):]
+                assert "| Key | Type | Meaning |\n|---|---|---|\n| `object`" in response, where
+                # What every one of them can answer is in the document too.
+                assert {"200", "401", "403", "429"} <= set(operation["responses"]), where
+                for code in ("401", "403", "429"):
+                    assert operation["responses"][code]["description"], (where, code)
+        assert seen == len(self.ACCOUNT) == 9
+
+    def test_every_route_outside_admin_is_described_to_the_plan(self, client):
+        """The model API, the cloud routes, the sign-in, the version and the
+        dashboard are read by the people who build against the gateway too.
+        Each has a title someone wrote and the plan's sections in order
+        (``app/core/api_docs.py``), and says what it can refuse."""
+        spec = client.get("/openapi.json").json()
+        sections = ["**Sign-in.**", "**Response", "**Limits and things to know**", "**Errors"]
+        groups: dict[str, int] = {}
+        for path, item in spec["paths"].items():
+            for method, operation in item.items():
+                (group,) = operation["tags"]
+                if group == "admin":
+                    continue
+                where = (method, path)
+                groups[group] = groups.get(group, 0) + 1
+                summary = operation["summary"]
+                handler_name = " ".join(word.capitalize() for word in operation["operationId"].split("_"))
+                assert not handler_name.startswith(summary), (where, summary)
+                text = operation.get("description", "")
+                assert text, where
+                found = [text.find(section) for section in sections]
+                assert all(at > 0 for at in found) and found == sorted(found), (where, found)
+                assert len(text.splitlines()[0]) < 200, where
+                if path != "/v1/version":
+                    refused = [code for code in operation["responses"] if code[0] in "45" and code != "422"]
+                    assert refused, where
+                    for code in refused:
+                        assert operation["responses"][code]["description"], (where, code)
+        assert groups == {"account": 9, "v1": 22, "azure": 10, "aws": 8, "auth": 1, "health": 1, "web": 15}
+
+    def test_the_model_api_says_what_any_of_its_routes_can_refuse(self, client):
+        paths = client.get("/openapi.json").json()["paths"]
+        for path in ("/v1/chat/completions", "/v1/embeddings", "/azure/v1/messages", "/aws/v1/chat/completions"):
+            assert {"400", "401", "403", "429", "502"} <= set(paths[path]["post"]["responses"]), path
+        # The routes that hold a slot say so, and the cloud routes say there is no on-prem stand-in.
+        assert "in flight" in paths["/v1/chat/completions"]["post"]["responses"]["429"]["description"]
+        assert "in flight" not in paths["/v1/embeddings"]["post"]["responses"]["429"]["description"]
+        assert "access" in paths["/azure/v1/chat/completions"]["post"]["responses"]["403"]["description"]
+        assert "X-Guardrail" in paths["/v1/messages"]["post"]["responses"]["400"]["description"]
+        # A body in someone else's format has no schema of the gateway's own.
+        ok = paths["/v1/chat/completions"]["post"]["responses"]["200"]
+        assert "OpenAI Chat Completions" in ok["description"]
+
+    def test_a_route_lists_its_own_errors_and_limits(self, client):
+        paths = client.get("/openapi.json").json()["paths"]
+        assert {"400", "503"} <= set(paths["/v1/notices/resolved"]["post"]["responses"])
+        assert {"400", "503"} <= set(paths["/v1/events"]["post"]["responses"])
+        events = paths["/v1/events"]["post"]
+        assert "300 events" in events["responses"]["429"]["description"]
+        assert "At most 300 events an hour" in events["description"]
+        # The numbers a description states are the code's.
+        from app.services import account_view, client_events, client_rules
+
+        assert client_events.MAX_PER_HOUR == 300 and account_view.USAGE_MAX_DAYS == 90
+        assert "`1` to `90`" in paths["/v1/usage"]["get"]["description"]
+        notices = paths["/v1/notices"]["get"]["description"]
+        assert f"({client_rules.WINDOW_DAYS})" in notices and f"({client_rules.RESOLVED_QUIET_DAYS})" in notices
 
     def test_the_account_endpoints_are_one_group(self, client):
         operations = self._operations(client)
@@ -364,7 +450,7 @@ class TestApps:
 
     def test_owned_apps_with_this_months_usage(self, client, db_session, test_user):
         batch = self._app(db_session, test_user, "app_batch10")
-        self._app(db_session, test_user, "app_batch2", daily_limit_usd=0.0)
+        batch2 = self._app(db_session, test_user, "app_batch2", daily_limit_usd=0.0)
         _spend(db_session, batch, "1.5")
         _spend(db_session, batch, "2")
         body = self._apps(client).json()
@@ -374,7 +460,13 @@ class TestApps:
             "acts_for_users": False,
             "on_behalf": {"users": 0, "requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
         }
-        assert body["service_accounts"] == [
+        # Each has its id and its key masked: enough to recognise, not to use.
+        rows = body["service_accounts"]
+        assert [row.pop("id") for row in rows] == [batch2.id, batch.id]
+        for row, key in zip(rows, ("sk-app_batch2-secret", "sk-app_batch10-secret")):
+            masked = row.pop("api_key_masked")
+            assert masked not in ("", key) and masked.endswith(key[-4:]) and len(masked) < len(key)
+        assert rows == [
             {"username": "app_batch2", "daily_limit_usd": 0.0, "legacy_key": True,
              "month": {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "models": []},
              **nothing_for_users},
@@ -419,16 +511,21 @@ class TestApps:
         # /v1/apps was this endpoint's first name; nothing answers there now.
         assert client.get("/v1/apps", headers=auth_header()).status_code == 404
         body = self._apps(client).json()
-        assert set(body) == {"object", "month", "service_accounts"}
+        assert set(body) == {"object", "month", "service_accounts", "withheld"}
         for method in ("post", "put", "delete"):
             assert getattr(client, method)("/v1/service-accounts", headers=auth_header()).status_code == 405
 
     def test_an_apps_key_is_never_returned(self, client, db_session, test_user):
         # A leaked personal key must not open the app accounts behind it.
         self._app(db_session, test_user, "app_batch")
-        text = self._apps(client).text
-        assert "sk-app_batch-secret" not in text
-        assert "api_key" not in text
+        resp = self._apps(client)
+        assert "sk-app_batch-secret" not in resp.text
+        # Masked, it tells the owner which key it is and opens nothing.
+        [row] = resp.json()["service_accounts"]
+        assert {key for key in row if "key" in key} == {"api_key_masked", "legacy_key"}
+        assert row["api_key_masked"].endswith("cret") and len(row["api_key_masked"]) < len("sk-app_batch-secret")
+        # And who the application was used for is never told to a key.
+        assert "sent_for" not in resp.text and "top_users" not in resp.text
 
     def test_only_the_callers_own(self, client, db_session, test_user, admin_user):
         self._app(db_session, admin_user, "app_theirs")

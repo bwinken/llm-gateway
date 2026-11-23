@@ -7,18 +7,21 @@ A browser user signs in through oauth2-proxy and reads their key on the
 dashboard. A terminal tool cannot hold that cookie session, so it signs in
 with AuthCenter itself (AuthCenter's own CLI flow), gets the same access
 token the web UI gets, and trades it here, once, for the account's API key.
-From then on it uses the key like every other API client; the token is not
-used again and nothing else in the gateway accepts it from a client:
+From then on it uses the key like every other API client. This is the one
+route that gives a key for the token:
 
-- ``/v1/*``, ``/azure/*``, ``/aws/*`` look a bearer value up as an API key;
+- the model API (``/v1/*`` inference, ``/azure/*``, ``/aws/*``) looks a
+  bearer value up as an API key, and a token is a 401 there;
+- the account endpoints (``/v1/me``, ``/v1/usage`` ...) take the token as a
+  sign-in too (``deps.get_account_user``): what the dashboard shows, never
+  a key;
 - ``/admin`` and ``/dashboard`` sit behind oauth2-proxy, and nginx replaces
   ``Authorization`` with the token of the cookie session.
 
-Why its own prefix and not ``/v1``: ``/v1`` is the model API, authenticated
-by API key on every route (``TestEveryApiRouteIsChecked``). This is the one
-route authenticated by an SSO token, so it lives apart, in its own nginx
-``location /auth/`` (no oauth2-proxy in front: the client's own
-``Authorization`` header must arrive untouched).
+Why its own prefix and not ``/v1``: it hands out a credential, and nothing
+under ``/v1`` does. It lives apart, in its own nginx ``location /auth/``
+(no oauth2-proxy in front: the client's own ``Authorization`` header must
+arrive untouched).
 
 The token is validated exactly as the web UI validates it
 (``auth._decode_jwt``: RS256 with AuthCenter's public key, audience, issuer)
@@ -47,12 +50,22 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session
 
-from app.core import auth, deps
+from app.core import api_docs, auth, deps
 from app.core.logger import logger
 from app.models.schema import is_legacy_api_key
 from app.services import auth_throttle, ip_allowlist, metrics
 
 router = APIRouter(tags=["auth"])
+
+_ERRORS: dict[int | str, dict] = {
+    401: {"description": "No access token, or one that is expired, was not issued for this gateway, or is not "
+                         "a token at all (an API key sent here lands here too)."},
+    403: {"description": "The token lacks the `read` scope; the account is disabled (unless the token has the "
+                         "`admin` scope); the name is a service account's; or the address is one the API IP "
+                         "allowlist refuses."},
+    429: {"description": "This address sent too many different invalid credentials and is locked for a while "
+                         "(`Retry-After`, seconds)."},
+}
 _bearer = HTTPBearer(auto_error=False)
 
 # The scopes that let an account use the web UI at all (``get_web_user``
@@ -60,21 +73,48 @@ _bearer = HTTPBearer(auto_error=False)
 _SCOPES = frozenset({"read", "admin"})
 
 
-@router.post("/auth/api-key")
+@router.post(
+    "/auth/api-key", summary="Trade an SSO access token for the account's API key",
+    responses={**api_docs.answers(api_docs.ApiKeyForToken), **_ERRORS},
+)
 def api_key_for_token(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> JSONResponse:
-    """The API key of the account an AuthCenter access token belongs to.
+    """How a program that is not a browser signs in: it sends the access token it got from the SSO provider and gets its account's API key.
 
-    ``Authorization: Bearer <access token>``; no body. Replies
-    ``{"object": "api_key", "username", "api_key", "legacy_key"}``.
-    401 for a missing, expired or foreign token, 403 for a token without
-    the ``read`` scope, a disabled account (unless the token has the
-    ``admin`` scope) or an address the IP allowlist refuses, 429 while the
-    address is locked after too many bad credentials.
+    **Sign-in.** An SSO access token: `Authorization: Bearer <access token>`. Not an API key, and no
+    session cookie. No body.
 
-    A plain ``def``: it reads and may write the database and awaits nothing.
+    **Response**
+
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `object` | string | `api_key` |
+    | `username` | string | The account the token names |
+    | `api_key` | string | That account's API key, in full |
+    | `legacy_key` | bool | The key is of the older, weaker format: regenerate it on the dashboard |
+
+    **Limits and things to know**
+
+    - It returns the key the account already has and never issues a new one, so the person's other
+      machines keep working.
+    - A first sign-in creates the account, with the default daily limit, as a first visit to the
+      dashboard does.
+    - Call it once and keep the key: the key does not expire, the token does. The account endpoints
+      (`GET /v1/me`, ...) also take the token itself; the model API takes the key only.
+    - The token is checked as the web UI checks it: signed by the SSO provider, for this gateway, not
+      expired, with the `read` scope.
+    - HTTPS only, and never cached (`Cache-Control: no-store`).
+    - Every call that names an account is in the audit log, refusals included. The key is not.
+
+    **Errors**
+
+    | Status | When |
+    |---|---|
+    | 401 | No token, or one that does not verify |
+    | 403 | No `read` scope; a disabled account (unless the token has the `admin` scope); a service account's name; an address the IP allowlist refuses |
+    | 429 | Too many different invalid credentials from this address (`Retry-After`) |
     """
     token = credentials.credentials if credentials is not None else ""
     if not token:

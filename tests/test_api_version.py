@@ -70,6 +70,35 @@ class TestEndpoint:
         assert "/v1/version" in app.openapi()["paths"]
 
 
+class TestTheRelease:
+    """``gateway`` in the answer: the release number, written once."""
+
+    def test_it_is_the_version_in_pyproject(self):
+        import re
+        import tomllib
+        from pathlib import Path
+
+        with (Path(__file__).resolve().parent.parent / "pyproject.toml").open("rb") as f:
+            written = tomllib.load(f)["project"]["version"]
+        assert api_versions.GATEWAY_VERSION == written
+        assert re.fullmatch(r"\d+\.\d+\.\d+", written), written
+
+    def test_the_lock_file_was_refreshed_with_it(self):
+        """``uv sync --locked`` (CI, the image) refuses a lock file that
+        names another version of the project: a bump is pyproject.toml and
+        ``uv lock`` together."""
+        import re
+        from pathlib import Path
+
+        lock = (Path(__file__).resolve().parent.parent / "uv.lock").read_text(encoding="utf-8")
+        found = re.search(r'name = "llm-gateway"\nversion = "([^"]+)"', lock)
+        assert found and found.group(1) == api_versions.GATEWAY_VERSION
+
+    def test_a_missing_file_never_stops_the_start(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(api_versions, "_PYPROJECT", tmp_path / "nothing-here.toml")
+        assert api_versions._release() == "0.0.0"
+
+
 class TestPayload:
     """The shape for the days there is more than one version."""
 

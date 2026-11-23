@@ -114,8 +114,14 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
   "object": "account",
   "username": "alice",
   "display_name": "Alice",
-  "is_admin": false,
   "legacy_key": false,
+  "org_code": "RD1",
+  "api_key": {"masked": "sk-xxxxxxxx…xxxx", "created_at": "2026-09-02T10:15:00+08:00"},
+  "site": {
+    "title": "LLM Gateway", "api_base": "https://your-gateway/v1",
+    "links": {"docs": "https://wiki.example/llm-gateway"},
+    "setup_page": true, "installer": true
+  },
   "daily": {
     "limit_usd": 10.0, "used_usd": 3.25, "remaining_usd": 6.75,
     "requests": 42, "input_tokens": 120000, "output_tokens": 18000,
@@ -140,8 +146,10 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 - A request is refused only once `used_usd` reaches the limit, so the last request of the day can overshoot it slightly.
 - `enforced: false` means the gateway only logs overages instead of returning 429.
 - `cloud_budget_fallback: true` means a `/v1/*` request for a cloud model whose cap is spent is answered by an on-prem model instead of a 429.
-- `is_admin` is always `false`: an API key carries no admin right (administrators are recognized by their sign-in on the web UI). The field stays for clients built against it.
+- `is_admin` is not in the answer for an API key: a key carries no admin right and cannot say whether its holder is an administrator. It is there, `true` or `false`, only when you call with your SSO access token (below). Read it as absent = not known.
 - `legacy_key: true` means your key is of an older, weaker format; regenerate it on the dashboard when convenient. The key itself is never returned by any endpoint.
+- `api_key.masked` is enough to recognise your key (its start and its last four characters), not to use it; `created_at` is when it was issued. `org_code` is your department, absent when your sign-in gave none. `site` is what a tool shows around the figures: the site's `title`, the `api_base` to print in examples, the administrator's `links` (only the ones that are set) and whether the Setup page and the Windows installer are available.
+- A program can also call these account endpoints (`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices`, `/v1/settings`) with the SSO access token it signed in with, instead of the key: `Authorization: Bearer <access token>`. The answer is the same, with two additions: `is_admin` (`true` or `false`), and in `/v1/service-accounts` who each application was used for (`sent_for`). The token expires and the key does not, so most tools trade the token for the key once (*Signing in from a terminal tool*) and use the key. The model API (chat, messages, embeddings) takes the key only.
 - `concurrency.limit` is how many requests your key may have in flight at once. With `"mode": "off"` there is no limit and `limit` is left out.
 
 ## Model status
@@ -248,8 +256,8 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
   "object": "service_accounts",
   "month": "2026-10",
   "service_accounts": [
-    {"username": "billing-etl", "description": "Nightly billing export", "department": "FIN2",
-     "daily_limit_usd": 50.0, "legacy_key": false,
+    {"id": 41, "username": "billing-etl", "description": "Nightly billing export", "department": "FIN2",
+     "daily_limit_usd": 50.0, "legacy_key": false, "api_key_masked": "sk-xxxxxxxx…xxxx",
      "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5,
                "models": [
                  {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
@@ -257,16 +265,18 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
                  {"model": "gpt-5", "backend": "azure", "type": "llm",
                   "requests": 100, "input_tokens": 400000, "output_tokens": 40000, "cost_usd": 40.0}
                ]}}
-  ]
+  ],
+  "withheld": [{"username": "hr-chat", "department": "HR1"}]
 }
 ```
 
 - A service account is an account for a program (a batch job, a service) that an administrator assigned to you. They used to be called app accounts: older ones are named `app_...`, newer ones anything.
 - `service_accounts` lists the ones you own (empty when you own none), each with its own daily limit and its usage this month: the dashboard's *Service accounts* tab.
 - `description` is one line an administrator wrote to say what the account is, and `department` is the department it belongs to. Each is absent when there is none.
-- An account that belongs to another department than yours is not listed, here or on the dashboard, even though it is still assigned to you: the dashboard's *Service accounts* tab names it and says why. Ask an administrator if that is wrong.
+- An account that belongs to another department than yours is not listed, here or on the dashboard, even though it is still assigned to you: `withheld` names it with its department (an empty list when there is none), as the dashboard's *Service accounts* tab does. Ask an administrator if that is wrong.
 - `month.models` is that month by model: one row per model and backend, in the dashboard's order, adding up to the month's totals. Every backend the service account used is listed, whatever your own access.
-- A service account's API key is not included, and no endpoint returns a key. See or regenerate it on the dashboard's *Service accounts* tab.
+- A service account's API key is not included, and no endpoint returns a key: `api_key_masked` is enough to recognise it, not to use it. See or regenerate it on the dashboard's *Service accounts* tab. `id` is the account's number there.
+- Called with your SSO access token instead of your key, each account that sent requests for its users this month also has `sent_for` (how many `users`, and one row per user and backend with requests, tokens and cost; the ten users with the highest cost by name, the rest as one row per backend with `others`), and the answer has `top_users`. A key is not told this: a leaked key must not say who uses an application.
 - `acts_for_users` and `on_behalf` are about an application that sends requests for its users, below: whether an administrator turned that on for the account, and what it sent for them this month (for how many `users`). That usage is billed to those users, so it is no part of `month`.
 
 ### An application with users of its own (`X-On-Behalf-Of`)
@@ -284,7 +294,8 @@ curl https://your-gateway/v1/chat/completions \
 - **It only works once an administrator turned on *On behalf of users* for that service account.** Until then the header is ignored and the request is the service account's own. The dashboard's *Service accounts* tab says which it is, with a test to run.
 - The value is the user's gateway username (their sign-in name), one per request. Not an email address or a display name.
 - The request is then that user's: their daily limit and cloud cap, their cloud access, their bill and their dashboard. Nothing is charged to the service account.
-- With it on, every request needs the header. `GET /v1/models` (or `/models`) with it lists the models that user may use, the same list they get with their own key; `GET /v1/me` gives that user's remaining budget. The other account endpoints are refused to an application.
+- With it on, every model request needs the header. `GET /v1/models` (or `/models`) with it lists the models that user may use, the same list they get with their own key.
+- The header is for model requests only. The account endpoints (`/v1/me`, `/v1/status`, `/v1/usage`, ...) answer about the account the key belongs to: without the header they give the service account's own (a way to check the key works), with it they answer 403. An application cannot read a user's budget or anything else about them; the user sees that on their dashboard or with their own key, and a request for a user who is over their limit comes back as 429.
 - You may label a request with entries of your own, to look it up by later (which feature or module sent it, a ticket number): `-H "X-Gateway-Tags: module=invoice-ocr,ticket=4821"`. Comma-separated `key=value`, up to 16; a key is letters, digits and `_` (40 at most), a value up to 200 characters, percent-encoded when it is not plain ASCII (`team=%E8%B2%A1%E5%8B%99`). A malformed header is a 400. The labels are recorded with the request only: nothing is decided by them and they are not passed on to the model. With an SDK, send both headers through `default_headers` or the per-request `extra_headers`.
 - Refused: no header or more than one name (400); a username that has no account on the gateway, a disabled account or a service account (403; a person gets an account by opening the dashboard once); the user over their limit (429).
 - Your application is what vouches for the user: sign them in before you send their name, send it from your server, and keep the key there. Whoever holds the key can spend any user's budget.
@@ -299,6 +310,7 @@ curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
 {
   "object": "notices",
   "window_days": 15,
+  "quiet_days": 14,
   "notices": [
     {"id": "CC001", "title": "Auto mode needs a setting on this gateway",
      "message": "Claude Code is waiting for a server-side check this gateway does not provide.",
@@ -347,7 +359,7 @@ curl -X POST https://your-gateway/v1/notices/resolved -H "Authorization: Bearer 
 ```
 
 - `resolved` lists the notices that were open and are now cleared. An id with nothing open is left out and a second call answers an empty list; neither is an error. `400`: `ids` is not a list of ids.
-- The gateway cannot see your settings file, so it takes your word. It leaves you alone for at least two weeks after that; if it still sees the same problem then (a second machine, a patch that did not take), the notice comes back. A notice also goes away by itself once the gateway has not seen the problem for `window_days` days.
+- The gateway cannot see your settings file, so it takes your word. It leaves you alone for at least two weeks after that (`quiet_days` in `GET /v1/notices`); if it still sees the same problem then (a second machine, a patch that did not take), the notice comes back. A notice also goes away by itself once the gateway has not seen the problem for `window_days` days.
 - These calls are in the gateway's audit log, like the dashboard's button.
 
 ## Settings
@@ -449,7 +461,7 @@ curl https://your-gateway/v1/version
 ```json
 {
   "object": "version",
-  "gateway": "1.0.0",
+  "gateway": "0.1.0",
   "stable": "v1",
   "statuses": ["stable", "deprecated", "nightly"],
   "versions": [{"version": "v1", "status": "stable"}]

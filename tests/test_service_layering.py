@@ -102,10 +102,11 @@ def test_client_setup_reads_neither_the_rules_nor_their_mail():
     assert not imports & {"client_rules", "client_mail", "client_checks"}
 
 
-# ── The account's answers: one service, two routers ──
+# ── The account's answers: one service, one router, two ways of signing in ──
 
 ROUTERS = SERVICES.parent / "routers"
-ACCOUNT_ANSWERS = ("me", "status", "usage", "service_account_row", "notices")
+ACCOUNT_ANSWERS = ("me", "status", "usage", "service_accounts", "notices")
+SIGNED_IN_ANSWERS = ("me_signed_in", "service_accounts_signed_in")
 
 
 def _imports(path: Path) -> set[str]:
@@ -122,15 +123,19 @@ def _imports(path: Path) -> set[str]:
 
 
 def test_the_account_answers_know_no_router_and_no_request():
-    """``account_view`` builds what ``/v1/me`` ... ``/v1/notices`` and
-    ``/dashboard/api/*`` answer. It takes the user a route authenticated and
-    returns the body: no request, no response, no router."""
+    """``account_view`` builds what ``/v1/me`` ... ``/v1/notices`` answer.
+    It takes the user a route authenticated and returns the body: no
+    request, no response, no router."""
     imports = _imports(SERVICES / "account_view.py")
     assert "app.core.deps" in imports  # the walk does find imports
     assert not [name for name in imports if name.startswith(("fastapi", "starlette", "app.routers"))]
 
 
-def test_both_routers_call_the_service_and_neither_calls_the_other():
+def test_one_router_answers_both_sign_ins_from_the_service():
+    """The account endpoints are asked by API key and by SSO sign-in, and
+    one route serves both from ``account_view``. The dashboard package no
+    longer has a copy of them: a second route for the same answer is how
+    the two came to differ."""
     account = ROUTERS / "account_api.py"
     dashboard = sorted((ROUTERS / "dashboard").glob("*.py"))
     assert len(dashboard) >= 4
@@ -138,13 +143,14 @@ def test_both_routers_call_the_service_and_neither_calls_the_other():
     for module in dashboard:
         imports = _imports(module)
         assert "app.routers.account_api" not in imports and "app.routers.v1_api" not in imports, module.name
-    api = (ROUTERS / "dashboard" / "api.py").read_text(encoding="utf-8")
-    by_key = account.read_text(encoding="utf-8")
-    for name in ACCOUNT_ANSWERS:
-        assert f"account_view.{name}" in api, name
-    # By key the row is reached through the whole list.
-    for name in ("me", "status", "usage", "service_accounts", "notices"):
-        assert f"account_view.{name}" in by_key, name
+        assert "app.services.account_view" not in imports, module.name
+    source = account.read_text(encoding="utf-8")
+    for name in ACCOUNT_ANSWERS + SIGNED_IN_ANSWERS:
+        assert f"account_view.{name}(" in source or f"account_view.{name}," in source, name
+    # What only a signed-in person is shown is asked for behind the one
+    # test of how the caller signed in (tests/test_account_sign_in.py asks
+    # by key and gets none of it).
+    assert source.count("if signed_in_by_sso(user):") >= len(SIGNED_IN_ANSWERS)
 
 
 # ── /v1 is two things: the model API and the account endpoints ──
@@ -178,8 +184,11 @@ def test_the_model_api_and_the_account_endpoints_are_two_routers():
 
     for context in _routes(account_api):
         found = calls(context.dependant)
-        assert deps.get_current_user_unmetered in found, context.path
+        assert deps.get_account_user in found, context.path
         assert deps.get_current_user not in found, context.path
+    # Only an account endpoint takes the SSO sign-in: the model API is by key.
+    for context in _routes(v1_api):
+        assert deps.get_account_user not in calls(context.dependant), context.path
     # And the model API never answers without it.
     for context in _routes(v1_api):
         assert deps.get_current_user in calls(context.dependant), context.path

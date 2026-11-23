@@ -76,9 +76,10 @@ _AUDITED_READS = re.compile(
 _AUDITED_TOKEN_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/auth/api-key"),
 })
-# Authenticated by API key: the one thing a key may change about its account
-# outside the dashboard. The handler names the actor (``note_actor``), since
-# there is no token to read it from; recorded only when it did.
+# An account endpoint, authenticated by API key or by an SSO sign-in
+# (``deps.get_account_user``): the one thing a key may change about its
+# account outside the dashboard. The handler names the actor and the way it
+# signed in (``note_actor``); recorded only when it did.
 _AUDITED_KEY_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/v1/notices/resolved"),
 })
@@ -116,10 +117,12 @@ def note(**fields: Any) -> None:
         holder.update(fields)
 
 
-def note_actor(username: str) -> None:
-    """Name the account behind an API-key request (``_AUDITED_KEY_ROUTES``):
-    the middleware cannot read it from a token there."""
-    note(**{_ACTOR_NOTE: username, "via": "api_key"})
+def note_actor(username: str, via: str = "api_key") -> None:
+    """Name the account behind a request to an account endpoint
+    (``_AUDITED_KEY_ROUTES``), and how it identified itself (``via``:
+    ``api_key`` or ``sso``). The handler says it: such a route takes either,
+    and the middleware does not hand an API key to the token check."""
+    note(**{_ACTOR_NOTE: username, "via": via})
 
 
 def redact(value: Any, depth: int = 0) -> Any:

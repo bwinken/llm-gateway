@@ -153,11 +153,14 @@ class TestTheRequestIsTheUsers:
         assert resp.status_code == 200 and calls == ["azure"]
         assert [(r.backend, r.via_user_id) for r in _rows(test_user.id)] == [("azure", chat_app.id)]
 
-    def test_me_answers_as_the_user_even_over_budget(self, client, db_session, chat_app, alice):
+    def test_the_user_reads_their_budget_with_their_own_key(self, client, db_session, chat_app, alice):
+        """What the application sent for the user is on the user's budget,
+        and the user reads it themselves: the application cannot."""
         _sent_for(db_session, alice, chat_app, "10")
-        body = client.get("/v1/me", headers=_for("alice")).json()
+        body = client.get("/v1/me", headers=auth_header("sk-alice")).json()
         assert body["username"] == "alice"
         assert body["daily"]["limit_usd"] == 10.0 and body["daily"]["remaining_usd"] == 0.0
+        assert client.get("/v1/me", headers=_for("alice")).status_code == 403
 
     def test_the_key_use_is_the_service_accounts(self, client, db_session, chat_app, alice):
         from app.core import deps
@@ -421,26 +424,50 @@ class TestEveryRoute:
 # ── The account endpoints ──
 
 class TestAccountEndpoints:
-    READS = ("/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/settings")
+    """The header says whose model request this is. An account endpoint
+    answers about the account the key belongs to, and nobody else's."""
 
-    def test_what_an_application_needs_answers_for_the_user(self, client, chat_app, alice):
-        for path in ("/v1/me", "/v1/status", "/v1/models"):
-            assert client.get(path, headers=_for("alice")).status_code == 200, path
+    READS = ("/v1/me", "/me", "/v1/status", "/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/settings")
 
-    def test_the_account_holders_own_business_is_refused(self, client, chat_app, alice):
+    def test_an_application_cannot_read_a_users_account(self, client, db_session, chat_app, alice):
+        _sent_for(db_session, alice, chat_app, "3")
         for path in self.READS:
             resp = client.get(path, headers=_for("alice"))
             assert resp.status_code == 403 and HEADER in resp.json()["detail"], path
+            assert "alice" not in resp.text, path
         for path, body in (("/v1/notices/resolved", {}), ("/v1/events", {"event": "installed"})):
             assert client.post(path, json=body, headers=_for("alice")).status_code == 403, path
+
+    def test_whoever_it_names(self, client, chat_app, alice):
+        # Refused before the name is looked at: no account can be probed this way.
+        for name in ("alice", "nobody-here", "chat-app"):
+            assert client.get("/v1/me", headers=_for(name)).status_code == 403, name
+
+    def test_without_the_header_it_reads_its_own_account(self, client, db_session, chat_app, alice):
+        """One endpoint for a person and for a service account: each key
+        reads its own account. What it sent for its users is theirs, so it
+        is no part of the service account's own figures."""
+        _sent_for(db_session, alice, chat_app, "3")
+        body = client.get("/v1/me", headers=_for(None)).json()
+        assert body["username"] == "chat-app"
+        assert body["daily"]["limit_usd"] == 50.0 and body["daily"]["used_usd"] == 0.0
+        for path in self.READS:
+            assert client.get(path, headers=_for(None)).status_code == 200, path
 
     def test_the_user_reads_them_with_their_own_key(self, client, chat_app, alice):
         for path in self.READS:
             assert client.get(path, headers=auth_header("sk-alice")).status_code == 200, path
 
-    def test_they_need_the_header_too(self, client, chat_app):
-        # No user named: there is no account to answer about.
-        assert client.get("/v1/me", headers=_for(None)).status_code == 400
+    def test_a_service_account_that_does_not_act_for_users_is_as_before(self, client, db_session, alice):
+        # The header means nothing from any other key: it is not read.
+        _add(db_session, username="batch", api_key="sk-batch", is_service_account=True, concurrency_waived=True)
+        body = client.get("/v1/me", headers=_for("alice", key="sk-batch")).json()
+        assert body["username"] == "batch"
+        assert client.get("/v1/me", headers=_for("testuser", key="sk-alice")).json()["username"] == "alice"
+
+    def test_the_model_list_is_still_the_users(self, client, chat_app, alice):
+        # /v1/models is the model API: what the user's requests can name.
+        assert client.get("/v1/models", headers=_for("alice")).status_code == 200
 
 
 # ── The model list ──
@@ -460,8 +487,7 @@ class TestModels:
         # Exactly what each gets with their own key: nothing is per application.
         assert for_alice == _listed(client, auth_header("sk-alice"))
         assert for_testuser == _listed(client, auth_header())
-        for path in ("/models", "/v1/status"):
-            assert _listed(client, _for("alice"), path) == _listed(client, auth_header("sk-alice"), path), path
+        assert _listed(client, _for("alice"), "/models") == _listed(client, auth_header("sk-alice"), "/models")
 
     def test_what_an_admin_hides_is_hidden_for_everyone(self, client, chat_app, alice):
         """Which models are listed at all is one switch per model (Hidden,

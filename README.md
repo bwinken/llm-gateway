@@ -68,14 +68,16 @@ Grouped as `/docs` on a running gateway groups them (its tags). The API groups t
 
 ### `account`
 
-What the dashboard shows an account, as JSON, for programs that are not a browser: a status line, a terminal tool, a desktop app that sets clients up. Never billed, and they answer even when the budget is spent.
+What the dashboard shows an account, as JSON. Never billed, and they answer even when the budget is spent.
+
+Two kinds of client call the same routes with `Authorization: Bearer`: a program that is not a browser (a status line, a terminal tool, a desktop app that sets clients up), with the account's API key or the SSO access token it signed in with; and a frontend in a browser, with the person's SSO sign-in (the proxy in front trades the session cookie for the token). The answer is always about the caller's own account, and the same either way, with two exceptions only a sign-in is told: `is_admin`, and who a service account sent requests for. Nobody is given a key in full here.
 
 | Endpoint | What it is for |
 |---|---|
-| `GET /v1/me` | Access (on-prem / Azure / AWS) and today's budget: limit, spent, remaining |
+| `GET /v1/me` | Access (on-prem / Azure / AWS) and today's budget: limit, spent, remaining; the department, the key masked, the site's title and links |
 | `GET /v1/status` | The account's models: up or down, load, price, what a down one falls back to |
 | `GET /v1/usage` | Usage per day, and today and this month by model |
-| `GET /v1/service-accounts` | The service accounts the user owns, with this month's usage |
+| `GET /v1/service-accounts` | The service accounts the user owns, with this month's usage and each key masked |
 | `GET /v1/settings` | The recommended client settings for this account: per variable a default and the options to pick from |
 | `GET /v1/notices` | What is wrong with the account's client setup, and the settings that fix it; beside them (`model_changes`) the models being replaced for the account's tier and the renames to apply |
 | `POST /v1/notices/resolved` | "I've applied the fix": clears the notices, all or by id |
@@ -136,12 +138,11 @@ No key needed. Only `GET /v1/version` is listed in `/docs`.
 
 ### `web`
 
-The pages a user sees after signing in through SSO, and the dashboard's data as JSON.
+The pages a user sees after signing in through SSO, and what only a signed-in person may do. The dashboard's data as JSON is the `account` group above.
 
 | Endpoint | What it is for |
 |---|---|
 | `/dashboard` | Budget, usage, model status, the API key, client notices and their patch download, owned service accounts |
-| `GET /dashboard/api/me`, `status`, `usage`, `service-accounts`, `notices` | The same data as JSON, for a frontend of its own: what the `/v1` endpoint of the same name answers, plus what only a signed-in person sees |
 | `GET /dashboard/api/api-key`, `/dashboard/api/service-accounts/{id}/api-key` | A key in full (the person's own, or an owned service account's): one per call, in the audit log |
 | `/setup` | The Windows installer for Claude Code (can be turned off) |
 

@@ -154,7 +154,7 @@ The auth dependencies open their **own short-lived `Session(engine)`** and close
 | Function | Returns | Description |
 |---|---|---|
 | `get_current_user(request, credentials, x_api_key)` | `User` | Validates the API key (`Authorization: Bearer` or `x-api-key`; each candidate is tried when both are sent), applies the API IP allowlist (`ip_allowlist.check`) + checks the daily limit. Raises `AccountDisabledError` if `user.is_disabled` (no exception: an API key has no admin right), and clears `user.is_admin`, the retired stored flag |
-| `get_current_user_unmetered(request, credentials, x_api_key)` | `User` | Same auth (IP allowlist included) without the daily-limit check. Used by `GET /v1/me`, which must answer when the budget is spent |
+| `get_account_user(request, credentials, x_api_key)` | `User` | Auth for the account endpoints (`/v1/me`, `/v1/status`, `/v1/usage`, ...): the account's API key, handed to `_authenticate` like `get_current_user` (IP allowlist included) but without the daily-limit check, so these routes answer once the budget is spent, or the person's SSO sign-in (`_authenticate_sso`: the web UI's `_decode_jwt` and `_sync_user`, the `read` scope, admin by the token's scope, a write refused cross-site, no IP allowlist). The key comes first; only a bearer value that is no account's key and is shaped like a token is checked as one. `schema.signed_in_by_sso(user)` says which it was. The answer is about the credential's own account: `X-On-Behalf-Of` is not honoured here (`acts_for=False`), a service account that acts for its users is itself, and a request carrying the header is a 403 |
 | `require_azure_access(user)` | `User` | Wraps `get_current_user`; 403 if `not user.can_use_azure`, then `ensure_azure_budget`. Used by `/azure/v1/*` |
 | `require_bedrock_access(user)` | `User` | Same for `can_use_bedrock` + `ensure_bedrock_budget`. Used by `/aws/v1/*` |
 | `limited_current_user` / `limited_azure_access` / `limited_bedrock_access` | `User` (yield) | The three dependencies above wrapped by `_limited`, holding a concurrency lease until the response (stream included) has been sent. Inference endpoints only (chat / responses / messages) |
@@ -168,7 +168,7 @@ The auth dependencies open their **own short-lived `Session(engine)`** and close
 | `_key_use_due(user_id)` / `_record_key_use(user_id)` | `bool` / — | Stamp `users.api_key_last_used_at` at most once per `KEY_USE_RESOLUTION_S` (1 h) per user per worker, after the auth session has closed, with a conditional UPDATE. Never fails the request |
 | `get_today_usage(user)` | `dict` | Today's spend and tokens split by backend (`stats.get_user_daily_summary`); short-lived session |
 | `get_usage_history(user, days)` | `dict` | For `GET /v1/usage`: one row per local day for the last `days` days (`stats.get_daily_trends`) and today's and this month's rows per model and backend (`stats.get_model_breakdown`); short-lived session |
-| `get_owned_apps(user)` | `list[dict]` | For `GET /v1/service-accounts`: the service accounts the user owns with this month's usage (`stats.get_owned_apps_summary`), their API keys removed; short-lived session |
+| `get_owned_apps(user, *, sent_for=False)` | `dict` | For `GET /v1/service-accounts`: `accounts`, the service accounts the user owns with this month's usage (`stats.get_owned_apps_summary`), each API key replaced by `api_key_masked` before it leaves the function, and `withheld` (assigned accounts made for another department). With `sent_for`, also `flows`: who each account sent requests for (asked for an SSO sign-in only). Short-lived session |
 | `resolve_client_notices(user, ids)` | `list[str]` | For `POST /v1/notices/resolved`: resolves the caller's open notices, all (`ids` None) or the ones named, through `client_rules.resolve_all` / `resolve`; returns the ids resolved; raises on a broken store; short-lived session |
 | `record_client_event(user, values)` | `None` | For `POST /v1/events`: appends one event (`values` from `client_events.clean`); raises `client_events.TooManyEvents` past the hourly allowance; short-lived session |
 | `get_client_notices(user)` | `dict` | For `GET /v1/notices`: `notices` (`client_rules.notices_for`) and `combined` (`client_rules.combined_for`); a broken store reads as nothing open; short-lived session |
@@ -185,7 +185,7 @@ auth_throttle: address locked after too many distinct invalid keys → 429 (no l
 Own short-lived Session: SELECT * FROM users WHERE api_key = ? (each candidate)
        ↓  none → 401 (+ counted by auth_throttle); disabled (non-admin) → AccountDisabledError (403)
 IP allowlist → 403
-Check today's cost_usd vs daily_limit_usd → 429  (skipped by get_current_user_unmetered)
+Check today's cost_usd vs daily_limit_usd → 429  (skipped by get_account_user)
        ↓  session closed; api_key_last_used_at stamped (at most hourly)
 require_azure_access / require_bedrock_access: access flag → 403, cloud cap → 429
        ↓
@@ -307,6 +307,6 @@ This project has two independent authentication mechanisms for different use cas
 | **Method** | API key (`Authorization: Bearer` or `x-api-key`) | JWT (injected by oauth2-proxy) |
 | **Lookup** | DB `users.api_key` field | JWT `sub` claim → DB `users.username` |
 | **DB session** | Own short-lived session | `Depends(get_session)` |
-| **Limit check** | `daily_limit_usd` per request (not `get_current_user_unmetered`), cloud cap on cloud routes, concurrency on inference endpoints | None (Web UI is read-only) |
+| **Limit check** | `daily_limit_usd` per request (not `get_account_user`), cloud cap on cloud routes, concurrency on inference endpoints | None (Web UI is read-only) |
 | **Admin check** | None: an API key has no admin right (the stored `users.is_admin` is retired) | `"admin" in scopes` (JWT scope) |
 | **Auto-provision** | No (unknown key → 401) | Yes (first login auto-creates user) |

@@ -8,17 +8,18 @@ keep:
 ``page``     the page the gateway renders itself today (``GET /dashboard``
              and the two panels it swaps in). This is the part a separate
              frontend replaces.
-``api``      the same data as JSON (``/dashboard/api/*``): what that
-             frontend, or anything else signed in by SSO, reads.
+``api``      what only a signed-in person may call (``/dashboard/api/*``):
+             a key in full, and the page's own *Cost by Model* route. The
+             dashboard's data as JSON is not here: it is the account
+             endpoints (``/v1/me`` ...), which take the SSO sign-in too.
 ``actions``  what the account does and downloads: regenerate a key, report
              a notice as applied, the patch scripts. They answer JSON to a
              caller that asks for it, so they serve the page and a frontend
              alike.
 
-What any of them answers with is put together in the service layer: the
-page's data in ``app/services/dashboard_view.py``, and the answers the API
-shares with ``/v1/*`` in ``app/services/account_view.py``. The modules here
-authenticate and answer. They register their routes on ``router`` when imported, so the
+What the page shows is put together in the service layer
+(``app/services/dashboard_view.py``). The modules here authenticate and
+answer. They register their routes on ``router`` when imported, so the
 import below is what puts them there. The package exports ``router`` and
 nothing else: import a helper from the module that defines it, and patch a
 name in the module that looks it up.

@@ -132,11 +132,17 @@ class TestRefusals:
         resp = _exchange(client, sub="testuser", scopes=["admin"])
         assert resp.status_code == 200 and resp.json()["api_key"] == "sk-testkey123"
 
-    def test_the_token_opens_nothing_else(self, client, test_user):
-        # On the API a bearer value is an API key, and this is not one.
+    def test_the_token_opens_no_model_api(self, client, test_user):
+        # On the model API a bearer value is an API key, and this is not one.
         jwt_header = web_auth_header(sub="testuser", scopes=["admin"])
-        for path in ("/v1/me", "/v1/models", "/v1/usage", "/azure/v1/models", "/aws/v1/models"):
+        for path in ("/v1/models", "/models", "/azure/v1/models", "/aws/v1/models"):
             assert client.get(path, headers=jwt_header).status_code == 401, path
+        body = {"model": "test-llm", "messages": [{"role": "user", "content": "hi"}]}
+        for path in ("/v1/chat/completions", "/v1/messages", "/azure/v1/chat/completions", "/aws/v1/messages"):
+            assert client.post(path, headers=jwt_header, json=body).status_code == 401, path
+        # The account endpoints take the sign-in: what the dashboard shows,
+        # and never a key (tests/test_account_sign_in.py).
+        assert client.get("/v1/me", headers=jwt_header).status_code == 200
 
 
 class TestIpAllowlist:
@@ -259,7 +265,7 @@ class TestWiring:
             return {dependant.call} | {c for d in dependant.dependencies for c in calls(d)}
 
         used = calls(found[0].dependant)
-        assert deps.get_current_user not in used and deps.get_current_user_unmetered not in used
+        assert deps.get_current_user not in used and deps.get_account_user not in used
 
     def test_runs_off_the_event_loop(self):
         import inspect

@@ -71,7 +71,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | Regenerate service account key | `POST /dashboard/app/{id}/refresh-key` | 重新產生所屬服務帳號的 API key（僅 owner 可操作） |
 | Copy service account key | 按鈕 | 複製服務帳號的完整 API key |
 | Cost by Model 重新整理 | `GET /dashboard/api/model-breakdown?period=` | Cost by Model 卡片用的 JSON（`month` 或 `day`） |
-| 頁面資料的 JSON | `GET /dashboard/api/me` · `status` · `usage` · `service-accounts` · `notices` · `api-key` | 這個頁面本身不使用：給獨立的前端用（見 `docs/architecture.md` 的 *Dashboard*） |
+| 頁面資料的 JSON | `GET /v1/me` · `/v1/status` · `/v1/usage` · `/v1/service-accounts` · `/v1/notices`（用 SSO 登入）；完整的 key 是 `GET /dashboard/api/api-key` | 這個頁面本身不使用：給獨立的前端用（見 `docs/architecture.md` 的 *Dashboard*） |
 | 下載安裝腳本 | `GET /dashboard/install-claude-code.bat` | 個人化的 Claude Code 安裝腳本（由 `/setup` 連結） |
 | 下載設定 patch | `GET /dashboard/client-rules/all/patch.{bat,sh}` | 一個腳本處理帳號所有未處理項目（信件連結指向同一個 URL） |
 | I've applied it / everything | `POST /dashboard/client-rules/{id}/resolved` · `/all/resolved` | 隱藏通知；之後整頁重新載入 |

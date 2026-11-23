@@ -30,6 +30,8 @@
 
 全站都走 HTTPS。範例 nginx 設定（`deploy/llm-gateway-example.nginx.conf`）把所有 location 都放在 `:443` server；`:80` server 只做 **308** 轉址，保留原本的 method 與 body（301 會讓很多 client 把 POST 改成 GET）。API 路徑（`/v1/`、`/azure/`、`/aws/`、`= /me`）不經 oauth2-proxy，直接保留客戶端的 `Authorization: Bearer <api_key>` 轉發給 gateway。`/auth/` 也一樣不經 oauth2-proxy：terminal 工具把 AuthCenter 的 access token 送到 `POST /auth/api-key`，換回該帳號的 API key；在這個 location 出現之前就部署的 nginx 設定，要照範例補上 `location /auth/`，否則這些請求會被導到瀏覽器登入頁。登入 cookie 設為 `Secure`（`OAUTH2_PROXY_COOKIE_SECURE`，`docker-compose.yml` 預設 `true`），不會在明文 HTTP 上傳送。
 
+Dashboard 的獨立前端（不是 gateway 自己繪製的頁面，那個頁面不需要多做任何事）會從瀏覽器讀帳號端點（`/v1/me`、`/v1/usage` ...）。瀏覽器只有登入 cookie、沒有 token，所以要多一段 `location /dashboard/v1/`：先向 oauth2-proxy 確認登入，把 access token 放進 `Authorization`，再轉給 gateway 的 `/v1/`（`/dashboard/v1/me` 到 gateway 時是 `/v1/me`）。範例設定裡已經有這一段，預設是註解掉的；`location /v1/` 不要動，那是 API key 的入口，client 自己帶的 `Authorization` 必須原樣送到 gateway。
+
 - **Gateway**：user-level systemd service（Python/FastAPI，`127.0.0.1:8050`，2 個 worker）。週期性工作（用量彙總、異常掃描、選用的 usage log 保留期清理）在 gateway 內執行，不需要 timer
 - **PostgreSQL + oauth2-proxy**：Docker Compose（`deploy/docker-compose.yml`，兩者都只綁 `127.0.0.1`）
 - **Nginx**：system service，反向代理 + auth_request

@@ -1,213 +1,118 @@
 """
-The dashboard as data: ``/dashboard/api/*``, JSON for a frontend of its own
-(or anything else signed in by SSO).
+What is left of ``/dashboard/api/*``: the routes only a person signed in
+through the dashboard may call, and one that belongs to the page.
 
-``me``, ``status``, ``usage``, ``service-accounts`` and ``notices`` answer
-what the account endpoints of the same name answer by API key
-(``/v1/me`` ... ``/v1/notices``): both call the one function in
-``app/services/account_view.py``, so a client learns one shape and the two
-cannot disagree. On top of that each carries
-what only a signed-in person may see: whether they are an admin, the masked
-key, a service account's id and who it sent requests for.
+The dashboard's data (``me``, ``status``, ``usage``, ``service-accounts``,
+``notices``) is not here. Those five were routes of this module that
+answered what the account endpoints of the same name answer; they are the
+account endpoints now (``GET /v1/me`` ... ``/v1/notices``,
+``app/routers/account_api.py``), which take an SSO sign-in as well as an
+API key. A frontend reads them there.
 
-A key is never part of those. The two routes that show one
-(``api-key``, ``service-accounts/{id}/api-key``) do nothing else, are never
-cached and are in the audit log (``audit._AUDITED_READS``), like the admin's
-*View key*.
+What stays is what a key must never be able to do, kept under
+``/dashboard`` so the proxy's sign-in is in front of it as well as the
+gateway's own check:
+
+- ``api-key`` and ``service-accounts/{id}/api-key`` show a key in full.
+  They do nothing else, are never cached and are in the audit log
+  (``audit._AUDITED_READS``), like the admin's *View key*.
+- ``model-breakdown`` is the page's own *Cost by Model* card, and goes
+  when the page does.
 
 The same promise as the account endpoints: change by addition only, never
-a ``null`` (a key without a value is left out). The frontend is released
-apart from the gateway and asks ``GET /v1/version`` whether it still fits.
+a ``null`` (a key without a value is left out).
 """
 
 from __future__ import annotations
 
-from datetime import timezone
-
-from fastapi import Depends, HTTPException, Query, Request, Security
+from fastapi import Depends, HTTPException, Security
 from fastapi.responses import JSONResponse
-from starlette.concurrency import run_in_threadpool
 from sqlmodel import Session
 
+from app.core import api_docs
 from app.core.auth import get_web_user
-from app.core.config import APP_TITLE, get_site_links, setup_page_enabled
 from app.core.database import get_session
 from app.core.logger import logger
-from app.core.timeutil import LOCAL_TZ, local_month_start
-from app.models.schema import User, mask_api_key
+from app.models.schema import User
 from app.routers.dashboard.actions import owned_service_account
 from app.routers.dashboard.common import router
-from app.routers.web_ui import gateway_base
-from app.services import account_view, client_rules, dashboard_view, model_catalog
-from app.services.model_order import natural_key
-from app.services.stats import FLOW_TOP_USERS, get_on_behalf_users, get_owned_apps_summary, get_withheld_apps
+from app.services import dashboard_view
 
 _NO_STORE = {"Cache-Control": "no-store"}
 
 
-@router.get("/dashboard/api/me")
-async def me(
-    request: Request,
-    user: User = Security(get_web_user, scopes=["read"]),
-):
-    """Who is signed in and today's budget: everything ``GET /v1/me``
-    answers, plus what the dashboard's frame needs.
-
-    Added to ``/v1/me``:
-
-    - ``is_admin`` is true for an admin (the token's ``admin`` scope): show
-      the link to the admin panel. By API key it is always false.
-    - ``org_code``: the person's department, when their sign-in gave one.
-    - ``api_key``: ``masked`` (enough to recognise the key, not to use it)
-      and ``created_at``. The key itself is ``GET /dashboard/api/api-key``.
-    - ``site``: ``title``, the ``api_base`` to show in examples
-      (``https://host/v1``), the admin's ``links`` (only the ones that are
-      set), whether the Setup page is on (``setup_page``) and whether the
-      Windows installer can be downloaded (``installer``).
-    """
-    body = await run_in_threadpool(account_view.me, user)
-    body["is_admin"] = bool(user.is_admin)
-    if user.org_code:
-        body["org_code"] = user.org_code
-    key: dict[str, object] = {"masked": mask_api_key(user.api_key)}
-    if user.api_key_created_at is not None:
-        key["created_at"] = (
-            user.api_key_created_at.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).isoformat(timespec="seconds")
-        )
-    body["api_key"] = key
-    setup_page = setup_page_enabled()
-    body["site"] = {
-        "title": APP_TITLE,
-        "api_base": gateway_base(request),
-        "links": {name: url for name, url in get_site_links().items() if url},
-        "setup_page": setup_page,
-        "installer": setup_page and dashboard_view.installer_available(),
-    }
-    return body
-
-
-@router.get("/dashboard/api/status")
-async def status(user: User = Security(get_web_user, scopes=["read"])):
-    """The models the person can use and whether they are up: exactly what
-    ``GET /v1/status`` answers. An admin sees the cloud models whatever
-    their own cloud access, as on the dashboard page. No database read."""
-    return account_view.status(user)
-
-
-@router.get("/dashboard/api/usage")
-def usage(
-    days: int = Query(7, ge=1, le=account_view.USAGE_MAX_DAYS, description="How many days back, today included."),
-    user: User = Security(get_web_user, scopes=["read"]),
-):
-    """The person's usage per day, and today and this month by model and by
-    the way it came in: exactly what ``GET /v1/usage`` answers, the figures
-    behind the trend chart, *Cost by Model* and *Usage Flow*. Plain ``def``
-    (database read)."""
-    return account_view.usage(user, days)
-
-
-def _sent_for(flow: dict) -> dict:
-    """Who a service account sent requests for this month
-    (``stats.get_on_behalf_users``), as data: ``users`` counts all of them,
-    ``rows`` is one per user and backend for the ones named, then one per
-    backend for the rest (no ``user``; ``others`` says how many it stands
-    for)."""
-    rows = []
-    for row in flow["rows"]:
-        entry: dict[str, object] = {}
-        if row["user"]:
-            entry["user"] = row["user"]
-            if row["display_name"]:
-                entry["display_name"] = row["display_name"]
-        else:
-            entry["others"] = row.get("others", 0)
-        entry.update(
-            backend=model_catalog.BACKEND_NAMES.get(row["backend"], row["backend"]),
-            requests=row["requests"],
-            input_tokens=row["input_tokens"],
-            output_tokens=row["output_tokens"],
-            cost_usd=row["cost_usd"],
-        )
-        rows.append(entry)
-    return {"users": flow["users"], "rows": rows}
-
-
-@router.get("/dashboard/api/service-accounts")
-def service_accounts(
-    user: User = Security(get_web_user, scopes=["read"]),
-    session: Session = Depends(get_session),
-):
-    """The service accounts the person owns: every account as
-    ``GET /v1/service-accounts`` gives it, plus what only its signed-in
-    owner sees.
-
-    Added per account: its ``id`` (for the key routes), ``api_key_masked``,
-    and ``sent_for`` when it sent requests for its users this month
-    (``X-On-Behalf-Of``): how many ``users``, and ``rows`` of one user on
-    one backend, the ``top_users`` by cost by name and the rest as one row
-    per backend with ``others`` instead of ``user``.
-
-    ``withheld`` names the accounts assigned to the person that they may
-    not see now, each made for another ``department`` than theirs. An
-    account's key is ``GET /dashboard/api/service-accounts/{id}/api-key``.
-    Plain ``def`` (database read)."""
-    accounts = sorted(get_owned_apps_summary(session, user.id), key=lambda a: natural_key(a["username"]))
-    flows = get_on_behalf_users(session, [a["id"] for a in accounts if a["on_behalf"]["requests"]])
-    rows = []
-    for account in accounts:
-        row = {
-            "id": account["id"],
-            **account_view.service_account_row(account),
-            "api_key_masked": mask_api_key(account["api_key"]),
-        }
-        flow = flows.get(account["id"])
-        if flow:
-            row["sent_for"] = _sent_for(flow)
-        rows.append(row)
-    return {
-        "object": "service_accounts",
-        "month": local_month_start().strftime("%Y-%m"),
-        "service_accounts": rows,
-        "withheld": get_withheld_apps(session, user.id),
-        "top_users": FLOW_TOP_USERS,
-    }
-
-
-@router.get("/dashboard/api/notices")
-def notices(user: User = Security(get_web_user, scopes=["read"])):
-    """The person's open client-rule notices with their patch, and beside
-    them the model changes shown to them: exactly what ``GET /v1/notices``
-    answers, plus ``quiet_days`` (how long a notice reported as applied is
-    left alone).
-
-    Reporting as applied is ``POST /dashboard/client-rules/all/resolved``
-    or ``.../{id}/resolved`` for one notice, and
-    ``POST /dashboard/model-changes/{id}/applied`` for a model change, each
-    with the ``id`` given here. Plain ``def`` (database read)."""
-    body = account_view.notices(user)
-    body["quiet_days"] = client_rules.RESOLVED_QUIET_DAYS
-    return body
-
-
-@router.get("/dashboard/api/api-key")
+@router.get(
+    "/dashboard/api/api-key", summary="Show the caller's API key in full",
+    responses=api_docs.answers(api_docs.ApiKeyShown),
+)
 def own_api_key(user: User = Security(get_web_user, scopes=["read"])):
-    """The person's own API key, in full: what *My API Key* shows. One key
-    per call, never cached, and in the audit log."""
+    """The signed-in person's own API key, in full: what the dashboard's *My API Key* window shows.
+
+    **Sign-in.** SSO only: the session cookie, which the proxy in front turns into the access token. An API key is not accepted.
+
+    **Response**
+
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `object` | string | `api_key` |
+    | `username` | string | The account |
+    | `api_key` | string | The key, in full |
+
+    **Limits and things to know**
+
+    - One key per call, and nothing else in the answer.
+    - Never cached: `Cache-Control: no-store`.
+    - Every call is in the audit log (the key itself is not).
+    - The masked key, for showing which key it is without revealing it, is in `GET /v1/me`.
+
+    **Errors.** Only the group's (401, 403).
+    """
     logger.info("API key shown on the dashboard | user={}", user.username)
     return JSONResponse(
         {"object": "api_key", "username": user.username, "api_key": user.api_key}, headers=_NO_STORE,
     )
 
 
-@router.get("/dashboard/api/service-accounts/{app_id}/api-key")
+@router.get(
+    "/dashboard/api/service-accounts/{app_id}/api-key", summary="Show an owned service account's API key in full",
+    responses={
+        **api_docs.answers(api_docs.ApiKeyShown),
+        404: {"description": "No account with that id."},
+    },
+)
 def service_account_api_key(
     app_id: int,
     user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
 ):
-    """The API key of a service account the person owns, in full. Refused
-    (403) unless they are an owner and in the department it is for, like
-    regenerating it. Never cached, and in the audit log."""
+    """The API key of a service account the signed-in person owns, in full.
+
+    **Sign-in.** SSO only: the session cookie, which the proxy in front turns into the access token. An API key is not accepted.
+
+    **Path.** `app_id`: the account's `id`, as `GET /v1/service-accounts` gives it.
+
+    **Response**
+
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `object` | string | `api_key` |
+    | `username` | string | The service account |
+    | `api_key` | string | Its key, in full |
+
+    **Limits and things to know**
+
+    - Only for an owner an admin assigned, and only while they are in the department the account is
+      for: the same check as regenerating it.
+    - Never cached (`Cache-Control: no-store`), and every call is in the audit log with the account
+      it was for.
+
+    **Errors**
+
+    | Status | When |
+    |---|---|
+    | 403 | The caller does not own the account, or it is for another department than theirs |
+    | 404 | No account with that id |
+    """
     target = owned_service_account(session, user, app_id)
     logger.info("Service account key shown on the dashboard | account={} user={}", target.username, user.username)
     return JSONResponse(
@@ -215,17 +120,46 @@ def service_account_api_key(
     )
 
 
-@router.get("/dashboard/api/model-breakdown")
+@router.get(
+    "/dashboard/api/model-breakdown", summary="Cost by model, as the page draws it",
+    responses={400: {"description": "`period` is neither `month` nor `day`."}},
+)
 def model_breakdown_api(
     period: str = "month",
     user: User = Security(get_web_user, scopes=["read"]),
     session: Session = Depends(get_session),
 ):
-    """The page's *Cost by Model* card as it draws it: per backend a group
-    with its rows, each with its share of the period. Backs the page's
-    Month / Today toggle and refresh button. The same usage is in
-    ``GET /dashboard/api/usage`` (``month.models``, ``today.models``) without
-    the grouping; a frontend of its own reads that one."""
+    """The dashboard page's *Cost by Model* card: usage per backend and model, each with its share of the period.
+
+    **Sign-in.** SSO only: the session cookie, which the proxy in front turns into the access token. An API key is not accepted.
+
+    **Query**
+
+    | Name | Type | Default | Limits |
+    |---|---|---|---|
+    | `period` | string | `month` | `month` or `day` (the current Asia/Taipei month or day) |
+
+    **Response**
+
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `period` | string | As asked |
+    | `groups` | array | One per backend, each with its rows (a model, its tokens, cost and share) |
+    | `total_cost_usd` | number | The period's cost |
+
+    **Limits and things to know**
+
+    - The page's own route: it backs the card's Month / Today switch and goes when the page does. Its
+      shape follows the card, so it is no contract.
+    - The same usage without the grouping is in `GET /v1/usage` (`month.models`, `today.models`): build
+      against that one.
+
+    **Errors**
+
+    | Status | When |
+    |---|---|
+    | 400 | `period` is neither `month` nor `day` |
+    """
     if period not in ("month", "day"):
         raise HTTPException(status_code=400, detail="period must be 'month' or 'day'.")
     groups, total_cost = dashboard_view.model_breakdown(session, user, period=period)

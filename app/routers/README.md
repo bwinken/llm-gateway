@@ -46,7 +46,7 @@ graph LR
 
 ## `v1_api.py` — The Model API: Unified `/v1/*` Inference (OpenAI- and Anthropic-compatible)
 
-**Auth**: `deps.get_current_user` (API key + daily limit check). `chat/completions`, `responses` and `messages` use `deps.limited_current_user` (same check plus a concurrency slot); `/v1/me` uses `deps.get_current_user_unmetered` (no daily-limit 429).
+**Auth**: `deps.get_current_user` (API key + daily limit check). `chat/completions`, `responses` and `messages` use `deps.limited_current_user` (same check plus a concurrency slot); `/v1/me` is an account endpoint (below) and uses `deps.get_account_user` (no daily-limit 429).
 
 `v1_api.py` is the model API, the main public entry: every route here calls a model (or lists them for a client's picker). The account endpoints, which share the `/v1` prefix, are in `account_api.py` (next section).
 
@@ -122,7 +122,7 @@ When fallback occurs, the response includes an `X-Model-Fallback` header explain
 
 ## `account_api.py` — Account Endpoints
 
-**Auth**: `deps.get_current_user_unmetered` (API key, **without** the daily-limit check, so they answer once the budget is spent), or `deps.get_account_holder`, which also refuses a request a service account sends for a user.
+**Auth**: `deps.get_account_user`: the account's API key (checked like `get_current_user`, IP allowlist included, but **without** the daily-limit check, so they answer once the budget is spent), or the person's SSO sign-in (a browser; the web UI's token check and rules, a write refused cross-site, no IP allowlist). The answer is about the account the credential belongs to: `X-On-Behalf-Of` is for model requests and is refused here (403), and a service account that acts for its users reads its own account. Both get the same answer, with two exceptions only a sign-in is told: `is_admin` (true or false by the token's scope; absent by key), and in `/v1/service-accounts` who each account sent requests for (`sent_for`, with `top_users`). Neither is ever given a key in full: `/v1/me` has the caller's key masked, `/v1/service-accounts` each account's.
 
 What an account reads and reports about itself, as JSON, for a program that is not a browser (a terminal tool, a status line). These share the `/v1` prefix with the model API in `v1_api.py` and nothing else: they call no model, are never billed and take no concurrency slot. The five reads (`me`, `status`, `usage`, `service-accounts`, `notices`) have their body built in `app/services/account_view.py`, which the dashboard's `/dashboard/api/*` calls too. Additive changes only, never a `null`.
 
@@ -208,17 +208,12 @@ The dashboard is a package of its own, `app/routers/dashboard/`, being separated
 | `GET` | `/dashboard` | Dashboard page: today's budget, usage stats, trend charts, cost by model, server status, and for owners the *Service accounts* tab. After *I've applied it* or *I've switched* its script loads the page again: no route serves a part of it |
 | `GET` | `/setup` | Claude Code installer page (Windows). 404, like the installer download, with `SETUP_PAGE_ENABLED=false` (`web_ui.py`) |
 
-### The dashboard as JSON (`dashboard/api.py`)
+### What only a signed-in person may call (`dashboard/api.py`)
 
-For a frontend of its own, served from the gateway's own origin. The first five answer what the `/v1` endpoint of the same name answers (both call the one function in `app/services/account_view.py`) and add what only a signed-in person sees. Additive changes only, never a `null`.
+The dashboard's data is not here: a frontend of its own reads the account endpoints (`GET /v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices`), which take the person's SSO sign-in as well as an API key and show a signed-in person a little more (see *Account endpoints* above). What stays under `/dashboard/api` is what an API key must never be able to do. Additive changes only, never a `null`.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/dashboard/api/me` | `GET /v1/me`, plus `is_admin` (true by the token's scope), `org_code`, `api_key` (`masked`, `created_at`) and `site` (title, `api_base`, the admin's links, `setup_page`, `installer`) |
-| `GET` | `/dashboard/api/status` | `GET /v1/status` |
-| `GET` | `/dashboard/api/usage` | `GET /v1/usage` (`?days=`, 1 to 90) |
-| `GET` | `/dashboard/api/service-accounts` | `GET /v1/service-accounts`, plus per account `id`, `api_key_masked` and `sent_for` (who it sent requests for this month), and `withheld` |
-| `GET` | `/dashboard/api/notices` | `GET /v1/notices` (the model changes are its `model_changes` block), plus `quiet_days` |
 | `GET` | `/dashboard/api/api-key` | The caller's own key, in full. Never cached, in the audit log |
 | `GET` | `/dashboard/api/service-accounts/{app_id}/api-key` | An owned service account's key, in full: an owner in its department, else 403. Never cached, in the audit log |
 | `GET` | `/dashboard/api/model-breakdown` | Cost by Model card data as the page draws it (`?period=month` default, or `day`; else 400). Backs the page's Month/Today toggle and refresh button |

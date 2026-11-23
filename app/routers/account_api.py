@@ -1,229 +1,381 @@
 """
 The account endpoints: what an account reads and reports about itself, by
-API key.
+API key or by SSO sign-in.
 
 ``/v1`` is two different things that share a prefix, and they are kept in
 two modules so they are not mixed up:
 
 - ``v1_api.py``, the **model API**: inference. Billed, limited, routed to a
-  backend.
+  backend. API key only.
 - this one, the **account endpoints**: ``GET /v1/me`` (also ``/me``),
   ``/v1/status``, ``/v1/usage``, ``/v1/service-accounts``, ``/v1/notices``,
   ``/v1/settings``, and the two that write, ``POST /v1/notices/resolved``
-  and ``POST /v1/events``. What the dashboard shows an account, as JSON,
-  for a program that is not a browser (a terminal tool, a status line).
+  and ``POST /v1/events``. What the dashboard shows an account, as JSON.
   Never billed, never routed to a model; they answer once the budget is
   spent, since that is when people look.
 
-Every route here authenticates with ``get_current_user_unmetered`` (or
-``get_account_holder``, which also refuses a request a service account
-sends for a user), so it passes the IP allowlist like every API route.
-None returns an API key.
+Two kinds of client ask, and one route serves both
+(``deps.get_account_user``):
 
-The five reads the dashboard's own API answers too (``me``, ``status``,
-``usage``, ``service-accounts``, ``notices``) have their body built in
-``app/services/account_view.py``: a handler here authenticates and calls
-it. These answers are what programs outside this repository are built
-against: change them by addition only, and never return a ``null``.
+- a program that is not a browser (a terminal tool, a status line), with
+  the account's **API key**. It passes the IP allowlist like every API
+  route.
+- a browser, with the person's **SSO sign-in**: a frontend of its own for
+  the dashboard. The proxy in front trades the session cookie for the
+  access token, so it arrives as the same ``Authorization: Bearer`` header.
+  The web UI's rules apply: the token check and account of
+  ``get_web_user``, a write refused cross-site, no IP allowlist.
+
+Every route authenticates with ``get_account_user``, and answers about the
+account the credential belongs to, nobody else's: ``X-On-Behalf-Of`` (a
+service account sending model requests for its users) is refused here.
+Both sign-ins get the same answer, with two exceptions for a person signed
+in by SSO (``account_view.*_signed_in``): ``is_admin``, and who a service
+account sent requests for. None returns an API key in full, to either:
+showing and regenerating a key stays under ``/dashboard``, behind the
+proxy's sign-in.
+
+Each body is built in ``app/services/account_view.py``: a handler here
+authenticates and calls it. These answers are what programs outside this
+repository are built against: change them by addition only, and never
+return a ``null``.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
+from app.core.config import api_base_url
 from app.core.deps import (
-    get_account_holder,
-    get_current_user_unmetered,
+    get_account_user,
     record_client_event,
     resolve_client_notices,
 )
 from app.core.logger import logger
-from app.models.schema import User
-from app.services import account_view, audit, client_events, client_settings
+from app.models.schema import User, signed_in_by_sso
+from app.services import account_schema, account_view, audit, client_events, client_settings
+
+# What every route here can answer besides its own answer, said once: the
+# group's description in /docs carries the same three.
+_COMMON_ERRORS: dict[int | str, dict] = {
+    401: {"description": "No credential, or one the gateway does not know: an invalid API key, or an access "
+                         "token that is expired or was not issued for this gateway."},
+    403: {"description": "The account is disabled; the API key comes from an address the IP allowlist refuses; "
+                         "the request carries `X-On-Behalf-Of` (these routes answer about the credential's own "
+                         "account); the access token lacks the `read` scope; or a write signed in by SSO came "
+                         "from another site's page."},
+    429: {"description": "This address sent too many different invalid API keys and is locked for a while "
+                         "(`Retry-After`, seconds). Never the daily budget: these routes answer once it is spent."},
+}
 
 # One group of /docs: every route here is an account endpoint.
-router = APIRouter(tags=["account"])
+router = APIRouter(tags=["account"], responses=_COMMON_ERRORS)
 
 
-@router.get("/v1/me")
-@router.get("/me")
-async def account_info(user: User = Depends(get_current_user_unmetered)):
-    """The caller's own access and today's budget, for clients and scripts.
+def _answers(shape, description: str = "The answer.") -> dict:
+    """The 200 of a route, with its shape for ``openapi.json``
+    (``account_schema``). It describes the answer and does not filter it:
+    the handler returns the dict ``account_view`` built, as it is."""
+    return {200: {"model": shape, "description": description}}
 
-    Answers even once the daily limit is spent (no 429 at auth), since
-    "how much is left / when does it reset" is what a client asks then.
-    Every account has a finite limit, so every amount is a number (never
-    null, no "unlimited").
 
-    Per backend (``onprem`` = vLLM, ``azure``, ``aws`` = Bedrock):
-      - ``access``: may this key reach it (the account's Azure / AWS flag);
-      - ``used_usd``: today's spend there;
-      - ``remaining_usd``: what can still be spent there today — the tighter
-        of the cloud cap (azure / aws) and the overall daily limit (cloud
-        spend counts toward both), 0 without access.
+def _takes(model) -> dict:
+    """A request body's shape for ``openapi.json``. The handler still reads
+    the body as a plain object and validates it itself."""
+    return {"requestBody": {"content": {"application/json": {"schema": model.model_json_schema()}}}}
 
-    ``cloud`` appears only when the caller may use a cloud backend and has a
-    cloud cap (``effective_cloud_limit``: their own, else the gateway-wide
-    default): Azure + AWS spend today against it.
+# Every docstring below is the route's description in /docs and openapi.json,
+# and they are written to one plan, in this order, so a reader finds the same
+# thing in the same place: a first line that says what the route answers;
+# **Sign-in**; **Query** / **Body** (when it takes any); **Response** (a table,
+# one row per key); **Only for an SSO sign-in** (when something is); **Limits
+# and things to know** (ranges, how fresh a figure is, what is left out);
+# **Errors** (the route's own; 401, 403 and 429 are the group's, above).
+# The same answer as a schema is in ``account_schema``: change the two, and
+# the function in ``account_view`` that builds it, together.
 
-    Limits are those the gateway enforces; with ``ENFORCE_DAILY_LIMIT=false``
-    they are only logged (``daily.enforced`` = false).
 
-    ``legacy_key``: the key is of the older, weaker format and the dashboard
-    asks its holder to regenerate it. The key itself is never returned.
+@router.get("/v1/me", summary="Account and today's budget", responses=_answers(account_schema.Account))
+@router.get(
+    "/me", summary="Account and today's budget (alias of /v1/me)", responses=_answers(account_schema.Account),
+)
+async def account_info(request: Request, user: User = Depends(get_account_user)):
+    """Who the caller is, what they may reach, and how much of today's budget is left.
+
+    **Sign-in.** API key or SSO access token. Always the credential's own account.
+
+    **Response**
+
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `object` | string | `account` |
+    | `username`, `display_name` | string | The account |
+    | `org_code` | string | The person's department. Absent when their sign-in gave none |
+    | `legacy_key` | bool | The API key is of the older, weaker format: regenerate it on the dashboard |
+    | `api_key.masked` | string | The key's start and last four characters: enough to recognise it, not to use it |
+    | `api_key.created_at` | datetime | When the key was issued. Absent for a key older than this record |
+    | `daily.limit_usd`, `used_usd`, `remaining_usd` | number | Today's budget over every backend |
+    | `daily.requests`, `input_tokens`, `output_tokens` | integer | Today's totals |
+    | `daily.enforced` | bool | `false`: the gateway only logs an overage instead of answering 429 |
+    | `daily.timezone`, `resets_at`, `resets_in_seconds` | string, datetime, integer | When the day ends |
+    | `backends.onprem` / `azure` / `aws` | object | `access` (bool), `used_usd`, `remaining_usd` there today |
+    | `cloud` | object | `limit_usd`, `used_usd`, `remaining_usd` for Azure and AWS together. Absent without cloud access or without a cloud cap |
+    | `cloud_budget_fallback` | bool | `true`: a cloud model whose cap is spent is answered by an on-prem model instead of a 429 |
+    | `concurrency` | object | `mode` (`off` / `monitor` / `enforce`); with a limit also `limit` (on-prem requests in flight), `cloud_limit` (with cloud access) and `offpeak` (`start`, `end`, `weekends`, `active`) when off-peak hours are set |
+    | `site` | object | `title`, `api_base` (the URL to print in examples), `links` (the admin's, only the ones set), `setup_page`, `installer` (bool) |
+
+    **Only for an SSO sign-in**
+
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `is_admin` | bool | The access token has the `admin` scope. Absent by API key: a key carries no admin right and cannot say |
+
+    **Limits and things to know**
+
+    - Every amount is a number: there is no "unlimited". A limit of `0` is a $0 budget.
+    - A day is the `Asia/Taipei` calendar day.
+    - The `remaining_usd` of the backends share one budget and do not add up: each is the tighter of the
+      cloud cap (Azure / AWS) and the overall remainder, and `0` without access.
+    - A request is refused only once `used_usd` has reached the limit, so the day's last request can
+      overshoot it slightly.
+    - Answers when the budget is spent, and is never billed.
+    - No value is ever `null`: a key without a value is left out.
+
+    **Errors.** Only the group's (401, 403, 429).
     """
-    return await run_in_threadpool(account_view.me, user)
+    body = await run_in_threadpool(account_view.me, user)
+    body.update(account_view.me_holder(user, api_base_url(request)))
+    if signed_in_by_sso(user):
+        body.update(account_view.me_signed_in(user))
+    return body
 
 
-@router.get("/v1/status")
-async def model_status(user: User = Depends(get_current_user_unmetered)):
-    """The models this key can use and whether they are up, for clients and
-    scripts: what the dashboard's model tables show.
+@router.get("/v1/status", summary="Models and whether they are up", responses=_answers(account_schema.Status))
+async def model_status(user: User = Depends(get_account_user)):
+    """The models the account can see, each with its state, load and price: the dashboard's model tables.
 
-    ``models`` lists every model the account can see (hidden entries and
-    cloud backends without access left out), in the dashboard's order, each
-    with its billed prices per 1M tokens. On-prem models carry ``state``
-    ``up`` / ``down`` from the gateway's health loop, and ``running`` /
-    ``waiting`` request counts when the server reports them; cloud models
-    are ``unchecked`` (the gateway does not probe them). ``onprem`` sums
-    the on-prem ones up. A key is never omitted as null: it is left out.
+    **Sign-in.** API key or SSO access token. Always the credential's own account.
 
-    Like ``/v1/me`` it answers once the daily limit is spent. No database
-    read.
+    **Response**
+
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `object` | string | `status` |
+    | `onprem.total`, `onprem.up` | integer | How many on-prem models there are, and how many are up |
+    | `onprem.down` | array of string | The ids of the on-prem models that are down |
+    | `models` | array | One entry per model, on-prem first, then Azure, then AWS, in the dashboard's order |
+    | `models[].id` | string | The name to send as `model` |
+    | `models[].backend` | string | `onprem`, `azure` or `aws` |
+    | `models[].type` | string | `llm`, `vlm`, `embedding`, `reranker`, ... |
+    | `models[].state` | string | `up` / `down` (on-prem), `unchecked` (cloud: the gateway does not probe it) |
+    | `models[].falls_back_to` | string | On a `down` model: the model that answers in its place. Absent when none can |
+    | `models[].running`, `waiting` | integer | Requests the server is running and has queued. Absent when it does not report them |
+    | `models[].input_price_per_1m`, `output_price_per_1m` | number | The billed price per 1M tokens |
+    | `models[].display_name`, `context_window`, `max_output_tokens`, `supports_*`, `is_reasoning`, ... | various | What the admin declared for the model. Each absent when not declared |
+
+    **Limits and things to know**
+
+    - `state` and the load come from the gateway's health check, which runs every 30 seconds and marks a
+      server down after two failures in a row: a figure can be that old.
+    - A model the admin hid from the dashboard is not listed, and neither is a cloud backend the account
+      has no access to. A model that is not listed is still served when a request names it.
+    - Signed in by SSO with the `admin` scope, the cloud models are listed whatever the account's own access.
+    - No database read. Answers when the budget is spent, and is never billed.
+
+    **Errors.** Only the group's (401, 403, 429).
     """
     return account_view.status(user)
 
 
-@router.get("/v1/usage")
+@router.get("/v1/usage", summary="Usage per day, and by model", responses=_answers(account_schema.Usage))
 def usage_history(
     days: int = Query(7, ge=1, le=account_view.USAGE_MAX_DAYS, description="How many days back, today included."),
-    user: User = Depends(get_account_holder),
+    user: User = Depends(get_account_user),
 ):
-    """The caller's own usage: one row per day and this month by model,
-    the figures behind the dashboard's trend chart and Cost by Model card.
+    """The account's own usage: one row per day, and today and this month by model and by the way it came in.
 
-    ``days`` are Asia/Taipei calendar days, oldest first, today last and
-    still running; quiet days are present as zeros. ``month`` is the local
-    month so far, with one ``models`` row per model and backend in the
-    dashboard's order. Like the dashboard, the month leaves out a cloud
-    backend the account no longer has access to; the days count everything
-    (as the daily budget does). A row with ``overflow`` true is a cloud
-    model the gateway served in place of a congested on-prem one: it is
-    listed whatever cloud access the account has, and is on its bill.
+    **Sign-in.** API key or SSO access token. Always the credential's own account.
 
-    ``sources``, in ``today`` and in ``month``, is that same usage by the
-    way it came in: ``source`` ``own_key`` for requests sent with the
-    account's own key, and one ``service_account`` entry per application
-    that sent requests for the account after its user signed in to it
-    (``X-On-Behalf-Of``), named in ``service_account`` and, when an admin
-    described it, ``description``. Each has its totals and its own
-    ``models`` rows; together they add up to the period's totals. It is
-    part of the figures above, never on top of them. Other ``source``
-    values may be added later: skip one you do not know.
+    **Query**
 
-    Answers once the daily limit is spent. Plain ``def``: it reads the
-    database and awaits nothing.
+    | Name | Type | Default | Limits |
+    |---|---|---|---|
+    | `days` | integer | `7` | `1` to `90`. Today counts as one |
+
+    **Response**
+
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `object`, `timezone` | string | `usage`, `Asia/Taipei` |
+    | `days` | array | Oldest first, today last. `date`, `requests`, `input_tokens`, `output_tokens`, `cost_usd` |
+    | `today`, `month` | object | `date` / `month`, the period's `requests`, `input_tokens`, `output_tokens`, `cost_usd`, then `models` and `sources` |
+    | `models[]` | object | `model`, `backend`, `type`, `requests`, `input_tokens`, `output_tokens`, `cost_usd`, `overflow` |
+    | `models[].overflow` | bool | `true`: a cloud model the gateway served in place of a congested on-prem one. It is on the bill |
+    | `sources[]` | object | The same usage by the way it came in: `source`, its totals and its own `models` |
+    | `sources[].source` | string | `own_key`, or `service_account` (an application that sent requests for this account) |
+    | `sources[].service_account`, `description` | string | That application's name, and what an admin wrote about it. Absent for `own_key` / when not written |
+
+    **Limits and things to know**
+
+    - Days and the month are `Asia/Taipei` calendar days and months. Today is still running.
+    - A quiet day is present as zeros, so `days` always has exactly as many entries as asked for.
+    - `sources` is a split of the period's totals, never an amount beside them: its entries add up to them.
+    - `today` and `month` leave out a cloud backend the account no longer has access to, as the dashboard
+      does (`overflow` rows excepted); `days` counts everything, as the daily budget does.
+    - Skip a `source` value you do not know: others may be added.
+    - Answers when the budget is spent, and is never billed.
+
+    **Errors**
+
+    | Status | When |
+    |---|---|
+    | 422 | `days` is not an integer from 1 to 90 |
     """
     return account_view.usage(user, days)
 
 
-@router.get("/v1/service-accounts")
-def owned_service_accounts(user: User = Depends(get_account_holder)):
-    """The service accounts the caller owns (accounts for programs, assigned
-    by an admin), with each one's daily limit and this month's usage, in
-    total and per model: the dashboard's *Service accounts* tab.
+@router.get(
+    "/v1/service-accounts", summary="The service accounts the caller owns",
+    responses=_answers(account_schema.ServiceAccounts),
+)
+def owned_service_accounts(user: User = Depends(get_account_user)):
+    """The service accounts (accounts for programs) an admin assigned to the caller, with this month's usage.
 
-    ``month.models`` has one row per model and backend, in the dashboard's
-    order (as ``month.models`` of ``/v1/usage``), and adds up to the
-    month's totals. Nothing is left out of it: it is that account's bill,
-    whatever cloud access the caller has.
+    **Sign-in.** API key or SSO access token. Always the credential's own account.
 
-    ``description`` is one line an admin wrote to say what the account is,
-    ``department`` the department it is for; each key is absent when there
-    is none. An account made for another department than the caller's is
-    left out of the list, as on the dashboard, until an admin has looked.
+    **Response**
 
-    ``acts_for_users`` says the account sends requests for the people using
-    it (``X-On-Behalf-Of``); ``on_behalf`` is what it sent for them this
-    month and for how many ``users``. That usage is billed to those users,
-    so it is no part of ``month``.
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `object`, `month` | string | `service_accounts`, the month the figures are for (`2026-11`) |
+    | `service_accounts` | array | By name. Empty when the caller owns none |
+    | `[].id`, `username` | integer, string | The account |
+    | `[].description`, `department` | string | What an admin wrote about it, and the department it is for. Each absent when there is none |
+    | `[].daily_limit_usd` | number | Its own daily limit |
+    | `[].api_key_masked`, `legacy_key` | string, bool | Its key, masked, and whether it is of the older format |
+    | `[].month` | object | `requests`, `input_tokens`, `output_tokens`, `cost_usd`, and `models` (one row per model and backend, adding up to the totals) |
+    | `[].acts_for_users` | bool | It sends model requests for the people using it (`X-On-Behalf-Of`) |
+    | `[].on_behalf` | object | What it sent for them this month: `users`, `requests`, `input_tokens`, `output_tokens`, `cost_usd`. Billed to those users, so no part of `month` |
+    | `withheld` | array | Accounts assigned to the caller that are not shown now: `username`, `department` |
 
-    A service account's API key is **not** part of it, and no API-key
-    endpoint returns one: a leaked personal key must not open every service
-    account its holder owns. Showing and regenerating such a key stays on
-    the dashboard, behind SSO. ``legacy_key`` says its key is of the older
-    format.
+    **Only for an SSO sign-in**
 
-    Answers once the daily limit is spent. Plain ``def`` (database read).
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `[].sent_for` | object | Who it sent requests for this month: `users` (how many), and `rows` of one user on one backend with `requests`, tokens and `cost_usd`. Absent when it sent none |
+    | `top_users` | integer | How many users `sent_for` names (the ones with the highest cost); the rest are one row per backend with `others` instead of `user` |
+
+    **Limits and things to know**
+
+    - No key in full, to either sign-in: a leaked personal key must not open the service accounts behind
+      it. A key is shown and regenerated on the dashboard only.
+    - `sent_for` is not given to an API key: a leaked key must not say who uses an application.
+    - An account made for another department than the caller's is left out of `service_accounts` and
+      named in `withheld` until the departments match again.
+    - The figures are the current `Asia/Taipei` month. `month.models` lists every backend the service
+      account used, whatever the caller's own cloud access.
+    - Answers when the budget is spent, and is never billed.
+
+    **Errors.** Only the group's (401, 403, 429).
     """
+    if signed_in_by_sso(user):
+        return account_view.service_accounts_signed_in(user)
     return account_view.service_accounts(user)
 
 
-@router.get("/v1/notices")
-def client_notices(user: User = Depends(get_account_holder)):
-    """What the dashboard's notices panel tells the caller: the client
-    checks (``CC001``...) this account tripped in the last ``window_days``
-    days and has not reported as fixed.
+@router.get(
+    "/v1/notices", summary="Client notices and model changes", responses=_answers(account_schema.Notices),
+)
+def client_notices(user: User = Depends(get_account_user)):
+    """What the dashboard tells the caller about their client setup, and the models being replaced for them.
 
-    Each notice has the check's ``id``, the admin's ``title`` and
-    ``message``, when it was last seen and, when the fix is a setting, its
-    ``patch``. The top-level ``patch`` is the account's one patch for
-    everything open (what the dashboard offers as a download): ``covers``
-    lists the checks it fixes and ``manual`` those no setting can fix
-    (update Claude Code, ask for access). It is absent when nothing is
-    open. A patch only ever sets or removes variables in the ``env`` block
-    of settings.json, and never holds a key.
+    **Sign-in.** API key or SSO access token. Always the credential's own account.
 
-    ``model_changes`` is a block of its own beside them: the models an admin
-    is replacing (admin panel, *Model changes*) and is showing now, for this
-    account. It is a second category of notice, not a violation: nothing was
-    detected, the account is simply one the change is for. Nothing of it is
-    in ``notices`` or in the top-level ``patch``, its patch is renames and
-    never ``set`` / ``unset``, and ``POST /v1/notices/resolved`` does not
-    touch it. A client that reads only ``notices`` and ``patch`` sees what
-    it always saw.
+    **Response**
 
-    In it, ``changes`` lists each change being shown that concerns the
-    account's tier (its cloud access: none, Azure, AWS or both): its ``id``
-    (``MC3``), ``title`` and ``message``, the ``models`` to replace
-    (``{old: new}``, this tier's) and whether the account said it switched
-    on its dashboard (``applied``). ``retiring`` is every model name being
-    replaced for this account, and ``patch.models`` the one rename map for
-    all of it (a later change wins where two replace the same model). All
-    three are empty unless an admin has a change switched on that is for
-    the caller.
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `object` | string | `notices` |
+    | `window_days` | integer | A problem counts for this many days after it was last seen (15) |
+    | `quiet_days` | integer | A notice reported as applied is left alone for this many days (14) |
+    | `notices` | array | The open notices. Empty when nothing is open |
+    | `notices[].id` | string | The check, such as `CC001` |
+    | `notices[].title`, `message` | string | The admin's wording. `message` absent when empty |
+    | `notices[].last_seen_at` | datetime | When the gateway last saw the problem |
+    | `notices[].client_version` | string | The client version it was seen with. Absent when unknown |
+    | `notices[].patch` | object | Its fix: `set` (variable → value) and `unset` (names). Absent when no setting fixes it |
+    | `patch` | object | One fix for everything open: `set`, `unset`, `covers` (the ids it fixes), `manual` (the ids no setting can fix). Absent when nothing is open |
+    | `model_changes.changes` | array | The model changes shown to this account: `id` (`MC3`), `title`, `message`, `models` (old → new), `applied` |
+    | `model_changes.retiring` | array of string | Every model name being replaced for this account |
+    | `model_changes.patch.models` | object | One rename map for all of them (old → new) |
 
-    Applying ``patch.models``: replace the old name with the new one where
-    Claude Code's settings.json names a model (the ``model`` setting and
-    the ``env`` variables with ``MODEL`` in their name), only where the
-    value is exactly the old name; a bracket suffix (``old[1m]``) is kept.
-    Add nothing: a user who chose another model keeps it.
+    **Limits and things to know**
 
-    Read-only: reporting a notice as fixed is ``POST /v1/notices/resolved``.
-    Answers once the daily limit is spent. Plain ``def``.
+    - A patch only sets or removes variables in the `env` block of Claude Code's settings.json. It never
+      holds a key.
+    - The gateway records a problem at most once an hour per account, so a notice can appear up to an hour
+      after the request that caused it.
+    - `model_changes` is a second category, not a violation: nothing of it is in `notices` or in the
+      top-level `patch`, and `POST /v1/notices/resolved` does not touch it. Its three keys are always
+      there, and empty unless an admin is showing a change that is for this account's tier.
+    - Applying `model_changes.patch.models`: replace a name only where the value is exactly the old one
+      (the `model` setting, and the `env` variables with `MODEL` in their name), keep a bracket suffix
+      (`old[1m]`), and add nothing: a user who chose another model keeps it.
+    - Read-only. Answers when the budget is spent, and is never billed.
+
+    **Errors.** Only the group's (401, 403, 429).
     """
     return account_view.notices(user)
 
 
-@router.post("/v1/notices/resolved")
+@router.post(
+    "/v1/notices/resolved",
+    summary="Report notices as applied",
+    openapi_extra=_takes(account_schema.NoticesResolvedRequest),
+    responses={
+        **_answers(account_schema.NoticesResolved),
+        400: {"description": "`ids` is not a list of at most 50 notice ids of at most 20 characters each."},
+        503: {"description": "It could not be recorded now. Nothing was changed: try again later."},
+    },
+)
 def client_notices_resolved(
     body: dict | None = Body(default=None),
-    user: User = Depends(get_account_holder),
+    user: User = Depends(get_account_user),
 ):
-    """*I've applied it*, for a client that is not a browser: the caller's
-    open notices are marked as fixed, as the dashboard's button does.
+    """*I've applied it*: marks the caller's open notices as fixed, as the dashboard's button does.
 
-    Without a body (or without ``ids``) everything open is resolved; with
-    ``{"ids": ["CC001", ...]}`` only those. The answer lists what was open
-    and is now resolved (``resolved``, in the checks' order), so a repeated
-    call answers an empty list and an id with nothing open is not an error.
-    The gateway cannot see a settings file and takes the account's word
-    for two weeks (``client_rules.RESOLVED_QUIET_DAYS``): a notice comes
-    back only if its problem is still seen after that.
+    **Sign-in.** API key or SSO access token. Always the credential's own account.
 
-    The one write an API key has on its account, and in the audit log.
-    Plain ``def``.
+    **Body** (optional)
+
+    | Key | Type | Limits | Meaning |
+    |---|---|---|---|
+    | `ids` | array of string | At most 50, each at most 20 characters | The notices to resolve, such as `["CC001"]`. Without it (or without a body) everything open is resolved |
+
+    **Response**
+
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `object` | string | `notices.resolved` |
+    | `resolved` | array of string | The ids that were open and are now resolved, in the checks' order |
+
+    **Limits and things to know**
+
+    - An id with nothing open is not an error: it is left out of `resolved`, and a repeated call answers
+      an empty list.
+    - The gateway cannot see a settings file and takes the account's word for `quiet_days` (14): a notice
+      comes back only if its problem is still seen after that.
+    - It resolves client notices only, never a model change.
+    - Every call by an identified account is in the audit log, with how the caller signed in.
+    - Signed in by SSO, a call sent by another site's page is refused (403).
+
+    **Errors**
+
+    | Status | When |
+    |---|---|
+    | 400 | `ids` is not a list of at most 50 ids of at most 20 characters each |
+    | 503 | It could not be recorded now; nothing was changed |
     """
     ids = None
     if body is not None and body.get("ids") is not None:
@@ -233,43 +385,82 @@ def client_notices_resolved(
             or not all(isinstance(rule_id, str) and len(rule_id) <= 20 for rule_id in ids)
         ):
             raise HTTPException(status_code=400, detail="ids must be a list of notice ids, such as [\"CC001\"].")
-    audit.note_actor(user.username)
+    via = "sso" if signed_in_by_sso(user) else "api_key"
+    audit.note_actor(user.username, via=via)
     try:
         resolved = resolve_client_notices(user, ids)
     except Exception as exc:
         logger.warning("Client notices resolve failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
         raise HTTPException(status_code=503, detail="Could not record this now. Try again later.")
     audit.note(resolved=resolved)
-    logger.info("Client rules marked as fixed by API key | user={} rules={}", user.username, ",".join(resolved) or "-")
+    logger.info(
+        "Client rules marked as fixed | user={} via={} rules={}", user.username, via, ",".join(resolved) or "-",
+    )
     return {"object": "notices.resolved", "resolved": resolved}
 
 
-@router.post("/v1/events")
+@router.post(
+    "/v1/events",
+    summary="Report what a setup tool did",
+    openapi_extra=_takes(account_schema.ClientEventRequest),
+    responses={
+        **_answers(account_schema.EventRecorded),
+        400: {"description": "The event does not validate: the reply says which field."},
+        429: {"description": f"More than {client_events.MAX_PER_HOUR} events from this account in the last hour "
+                             "(`Retry-After: 3600`); or the address is locked after too many invalid API keys."},
+        503: {"description": "The event could not be kept now."},
+    },
+)
 def client_event(
     body: dict = Body(...),
-    user: User = Depends(get_account_holder),
+    user: User = Depends(get_account_user),
 ):
-    """What a setup tool did on its user's machine, for the admin's *Client
-    installs* list: which account installed, updated, removed or configured
-    what, in which version, on which operating system.
+    """What a setup tool installed, updated, removed or configured on its user's machine, for the admin's *Client installs* list.
 
-    One event per request: ``event`` (``installed`` / ``updated`` /
-    ``uninstalled`` / ``settings_applied``), the reporting ``tool`` and its
-    ``tool_version``, the ``component`` it is about (``claude-code``,
-    ``vscode``, a skill, an MCP server, ...) and ``os`` (``windows`` /
-    ``linux`` / ``macos``) are required; ``kind`` (``app``, the default, or
-    ``skill`` / ``mcp`` / ``plugin``, with the program it was added to in
-    ``client``),
-    ``component_version``, ``previous_version``, ``method``, ``os_version``,
-    ``arch``, ``hostname`` (the machine's name: what tells two machines of
-    one account apart), ``ok`` (false: the attempt failed) and ``message``
-    are optional. Keys the gateway does not know are ignored.
+    **Sign-in.** API key or SSO access token. Recorded under the credential's own account.
 
-    Telemetry and nothing else: it changes nothing about the account, and
-    nothing routes, limits or refuses by what was reported. A tool sends it
-    and carries on whatever the answer: 400 for an event that does not
-    validate, 429 past the hourly allowance, 503 when it could not be
-    kept. Never billed; answers once the daily limit is spent. Plain ``def``.
+    **Body.** One event per request.
+
+    | Key | Required | Limits | Meaning |
+    |---|---|---|---|
+    | `event` | yes | `installed`, `updated`, `uninstalled`, `settings_applied` | What happened |
+    | `tool`, `tool_version` | yes | Name: lower-case letters, digits, `.`, `_`, `-`, at most 40. Version: at most 40 | The reporting tool |
+    | `component` | yes | Lower-case letters, digits, `@ . _ / : + -`, at most 100 | What it is about: `claude-code`, `vscode`, `@scope/server-github`, ... |
+    | `os` | yes | `windows`, `linux`, `macos` | The operating system |
+    | `kind` | no | `app` (default), `skill`, `mcp`, `plugin` | What sort of thing `component` is |
+    | `client` | no | A name, at most 40 | The program a skill, MCP server or plugin was added to |
+    | `component_version`, `previous_version` | no | At most 40 each | The version now, and the one before an update |
+    | `method`, `arch` | no | A name, at most 40 each | How it was installed; the CPU architecture |
+    | `os_version` | no | At most 80 characters | Free text |
+    | `hostname` | no | Letters, digits, `.`, `_`, `-`, at most 100 | The machine's name: what tells two machines of one account apart |
+    | `ok` | no | `true` (default) or `false` | `false`: the attempt failed |
+    | `message` | no | At most 500 characters | Free text, such as the error |
+
+    **Response**
+
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `object` | string | `event` |
+    | `recorded` | bool | `true` |
+
+    **Limits and things to know**
+
+    - At most 300 events an hour per account.
+    - Keys the gateway does not know are ignored, so a newer tool can say more than an older gateway keeps.
+    - The caller's API key is refused in a name or a version, and taken out of `os_version` and `message`.
+      Text longer than its limit is cut, not refused.
+    - Without `hostname`, an account's machines of one operating system count as one.
+    - Telemetry and nothing else: it changes nothing about the account, and nothing routes, limits or
+      refuses by it. Send it and carry on whatever the answer.
+    - Answers when the budget is spent, and is never billed. Not in the audit log.
+
+    **Errors**
+
+    | Status | When |
+    |---|---|
+    | 400 | The event does not validate; `detail` says which field |
+    | 429 | More than 300 events in the last hour (`Retry-After: 3600`) |
+    | 503 | It could not be kept now |
     """
     try:
         values = client_events.clean(body, secret=user.api_key or "")
@@ -288,28 +479,39 @@ def client_event(
     return {"object": "event", "recorded": True}
 
 
-@router.get("/v1/settings")
-async def client_settings_fields(user: User = Depends(get_account_holder)):
-    """The client settings this account can be offered, for a tool that
-    sets a client up: apply every ``default``, or let the user pick.
+@router.get("/v1/settings", summary="Recommended client settings", responses=_answers(account_schema.Settings))
+async def client_settings_fields(user: User = Depends(get_account_user)):
+    """The client settings a tool can offer this account when it sets a client up: apply every `default`, or let the user pick.
 
-    A field is one variable of the ``env`` block of Claude Code's
-    settings.json (``client`` names the client): ``name``, a ``label`` and
-    a ``description`` to show, ``type`` (``model``: its options are models;
-    ``choice``: fixed values), ``default`` and ``options``. ``default`` is
-    never empty and is always the ``value`` of one of the ``options``; a
-    field with one option has nothing else to pick. An option has a
-    ``value`` and a ``label``, sometimes a ``description``, and a model
-    option its ``backend``.
+    **Sign-in.** API key or SSO access token. Always the credential's own account.
 
-    The fields are the admin's (``client_settings.json``, the admin panel's
-    *Client setup* card), and both ``default`` and ``options`` follow the
-    account's tier, its cloud access: none, Azure, AWS or both. A model the
-    account cannot use is never offered. What the account has set now is on
-    its machine; the gateway does not know it.
+    **Response**
 
-    Read-only and never a key. Answers once the daily limit is spent. No
-    database read.
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `object` | string | `settings` |
+    | `client` | string | The client the fields are for (`claude-code`) |
+    | `fields` | array | One entry per variable of the `env` block of the client's settings.json |
+    | `fields[].name` | string | The variable |
+    | `fields[].label`, `description` | string | What to show the user |
+    | `fields[].type` | string | `model` (its options are models) or `choice` (fixed values) |
+    | `fields[].default` | string | The value to apply. Never empty, and always the `value` of one of the `options` |
+    | `fields[].options` | array | `value`, `label`, sometimes `description`; a model option also has its `backend` |
+
+    **Limits and things to know**
+
+    - The fields are the admin's (the admin panel's *Client setup* card), so the list can be empty and
+      changes without a gateway release.
+    - `default` and `options` follow the account's cloud access (none, Azure, AWS or both). A model the
+      account cannot use is never offered.
+    - A field with one option has nothing else to pick.
+    - The gateway does not know what the machine has set now.
+    - It never contains a key, and the variables that hold the key are never fields.
+    - This is not the fix for a notice: `GET /v1/notices` gives that. A tool that wants both applies these
+      defaults first and the notices' patch on top.
+    - No database read. Answers when the budget is spent, and is never billed.
+
+    **Errors.** Only the group's (401, 403, 429).
     """
     return {
         "object": "settings",
