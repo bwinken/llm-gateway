@@ -364,7 +364,7 @@ class TestApps:
 
     def test_owned_apps_with_this_months_usage(self, client, db_session, test_user):
         batch = self._app(db_session, test_user, "app_batch10")
-        self._app(db_session, test_user, "app_batch2", daily_limit_usd=0.0)
+        batch2 = self._app(db_session, test_user, "app_batch2", daily_limit_usd=0.0)
         _spend(db_session, batch, "1.5")
         _spend(db_session, batch, "2")
         body = self._apps(client).json()
@@ -374,7 +374,13 @@ class TestApps:
             "acts_for_users": False,
             "on_behalf": {"users": 0, "requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
         }
-        assert body["service_accounts"] == [
+        # Each has its id and its key masked: enough to recognise, not to use.
+        rows = body["service_accounts"]
+        assert [row.pop("id") for row in rows] == [batch2.id, batch.id]
+        for row, key in zip(rows, ("sk-app_batch2-secret", "sk-app_batch10-secret")):
+            masked = row.pop("api_key_masked")
+            assert masked not in ("", key) and masked.endswith(key[-4:]) and len(masked) < len(key)
+        assert rows == [
             {"username": "app_batch2", "daily_limit_usd": 0.0, "legacy_key": True,
              "month": {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "models": []},
              **nothing_for_users},
@@ -419,16 +425,21 @@ class TestApps:
         # /v1/apps was this endpoint's first name; nothing answers there now.
         assert client.get("/v1/apps", headers=auth_header()).status_code == 404
         body = self._apps(client).json()
-        assert set(body) == {"object", "month", "service_accounts"}
+        assert set(body) == {"object", "month", "service_accounts", "withheld"}
         for method in ("post", "put", "delete"):
             assert getattr(client, method)("/v1/service-accounts", headers=auth_header()).status_code == 405
 
     def test_an_apps_key_is_never_returned(self, client, db_session, test_user):
         # A leaked personal key must not open the app accounts behind it.
         self._app(db_session, test_user, "app_batch")
-        text = self._apps(client).text
-        assert "sk-app_batch-secret" not in text
-        assert "api_key" not in text
+        resp = self._apps(client)
+        assert "sk-app_batch-secret" not in resp.text
+        # Masked, it tells the owner which key it is and opens nothing.
+        [row] = resp.json()["service_accounts"]
+        assert {key for key in row if "key" in key} == {"api_key_masked", "legacy_key"}
+        assert row["api_key_masked"].endswith("cret") and len(row["api_key_masked"]) < len("sk-app_batch-secret")
+        # And who the application was used for is never told to a key.
+        assert "sent_for" not in resp.text and "top_users" not in resp.text
 
     def test_only_the_callers_own(self, client, db_session, test_user, admin_user):
         self._app(db_session, admin_user, "app_theirs")

@@ -8,13 +8,20 @@ program with the account's API key, and by a browser with the person's SSO
 sign-in. One route serves both and calls the function here, which takes the
 ``User`` the route authenticated and returns the response body.
 
-A signed-in person is shown more than a key is, and that is decided here
-too, in the functions named ``*_signed_in``: whether they are an admin, the
-masked key, the site's links, a service account's id and who it sent
-requests for. The route calls them only for an SSO sign-in
-(``schema.signed_in_by_sso``); a key never gets them. One more difference
-comes from the sign-in itself: an admin by the token's scope sees the cloud
-models whatever their own access (``model_catalog.hidden_cloud_backends``).
+The account holder is shown the same either way, with two exceptions for a
+person signed in by SSO, both in the functions named ``*_signed_in``, which
+the route calls only for a sign-in (``schema.signed_in_by_sso``):
+``is_admin`` true for an admin (a key has no admin right, so by key it is
+always false), and who a service account sent requests for (``sent_for``:
+a leaked personal key must not say who uses an application). One more
+difference comes from the sign-in itself: an admin by the token's scope
+sees the cloud models whatever their own access
+(``model_catalog.hidden_cloud_backends``).
+
+``me_holder`` is what the holder of the account is told on top of the
+budget (department, masked key, the site): given to a key and to a sign-in,
+but not to an application that sends a request for the user
+(``X-On-Behalf-Of``), which gets what it needs to serve them and no more.
 
 What the programs outside this repository are built against is decided
 here: change an answer by addition only (never rename or remove a key, or
@@ -45,7 +52,6 @@ from app.core.deps import (
     get_client_notices,
     get_model_changes,
     get_owned_apps,
-    get_owned_apps_signed_in,
     get_today_usage,
     get_usage_history,
 )
@@ -164,18 +170,19 @@ def me(user: User) -> dict:
     }
 
 
-def me_signed_in(user: User, api_base: str) -> dict:
-    """What ``GET /v1/me`` adds for a person signed in by SSO: what the
-    dashboard's frame needs, and nothing a key may be told.
+def me_holder(user: User, api_base: str) -> dict:
+    """What ``GET /v1/me`` tells the holder of the account on top of the
+    budget: what a dashboard's or a tool's frame needs. For the account's
+    own key and for an SSO sign-in alike; not for an application that sends
+    the request for the user (the route leaves it out then).
 
-    ``is_admin`` (true by the token's ``admin`` scope; by key it is always
-    false), ``org_code`` (the department the sign-in gave, absent without
+    ``org_code`` (the department the person's sign-in gave, absent without
     one), ``api_key`` (``masked``, enough to recognise the key and not to
     use it, and ``created_at``) and ``site``: its ``title``, the
     ``api_base`` to show in examples, the admin's ``links`` (only the ones
     that are set), whether the Setup page is on (``setup_page``) and
     whether the Windows installer can be downloaded (``installer``)."""
-    extra: dict[str, object] = {"is_admin": bool(user.is_admin)}
+    extra: dict[str, object] = {}
     if user.org_code:
         extra["org_code"] = user.org_code
     key: dict[str, object] = {"masked": mask_api_key(user.api_key)}
@@ -193,6 +200,13 @@ def me_signed_in(user: User, api_base: str) -> dict:
         "installer": setup_page and dashboard_view.installer_available(),
     }
     return extra
+
+
+def me_signed_in(user: User) -> dict:
+    """What ``GET /v1/me`` says differently to a person signed in by SSO:
+    ``is_admin``, true for an admin by the token's ``admin`` scope. An API
+    key carries no admin right, so by key it is always false."""
+    return {"is_admin": bool(user.is_admin)}
 
 
 def status(user: User) -> dict:
@@ -296,10 +310,11 @@ def usage(user: User, days: int) -> dict:
 
 
 def service_account_row(account: dict) -> dict:
-    """One service account (a row of ``stats.get_owned_apps_summary``) as the
-    account endpoints give it: never a key. ``service_accounts_signed_in``
-    adds to it what only a signed-in owner may see."""
+    """One service account (a row of ``deps.get_owned_apps``) as the
+    account endpoints give it: its ``id`` (for the key routes on the
+    dashboard), its usage, and its key only masked."""
     return {
+        "id": account["id"],
         "username": account["username"],
         # What an admin wrote about it; absent when there is none.
         **({"description": account["description"]} if account.get("description") else {}),
@@ -325,18 +340,23 @@ def service_account_row(account: dict) -> dict:
             "output_tokens": account["on_behalf"]["output_tokens"],
             "cost_usd": _usd(account["on_behalf"]["cost"]),
         },
+        "api_key_masked": account["api_key_masked"],
     }
 
 
 def service_accounts(user: User) -> dict:
     """The service accounts ``user`` owns, by name in natural order, with
-    this month's usage: ``GET /v1/service-accounts``. Never a key
-    (``deps.get_owned_apps`` takes them out)."""
-    accounts = sorted(get_owned_apps(user), key=lambda account: natural_key(account["username"]))
+    this month's usage: ``GET /v1/service-accounts``. ``withheld`` names the
+    accounts assigned to the person that they may not see now, each made
+    for another ``department`` than theirs. Never a key in full
+    (``deps.get_owned_apps`` masks them)."""
+    found = get_owned_apps(user)
+    accounts = sorted(found["accounts"], key=lambda account: natural_key(account["username"]))
     return {
         "object": "service_accounts",
         "month": local_month_start().strftime("%Y-%m"),
         "service_accounts": [service_account_row(account) for account in accounts],
+        "withheld": found["withheld"],
     }
 
 
@@ -367,23 +387,16 @@ def sent_for(flow: dict) -> dict:
 
 
 def service_accounts_signed_in(user: User) -> dict:
-    """``GET /v1/service-accounts`` for an owner signed in by SSO: every
-    account as ``service_accounts`` gives it, plus what only its signed-in
-    owner sees. Per account its ``id`` (for the key routes on the
-    dashboard), ``api_key_masked``, and ``sent_for`` when it sent requests
-    for its users this month. ``withheld`` names the accounts assigned to
-    the person that they may not see now (made for another department), and
-    ``top_users`` is how many users ``sent_for`` names before it folds the
-    rest. Never a key in full, and never by API key: a leaked personal key
-    must not say who uses an application."""
-    found = get_owned_apps_signed_in(user)
+    """``GET /v1/service-accounts`` for an owner signed in by SSO:
+    ``service_accounts`` plus who each account was used for. Per account
+    ``sent_for`` when it sent requests for its users this month, and
+    ``top_users``, how many users ``sent_for`` names before it folds the
+    rest. Never by API key: a leaked personal key must not say who uses an
+    application."""
+    found = get_owned_apps(user, sent_for=True)
     rows = []
     for account in sorted(found["accounts"], key=lambda account: natural_key(account["username"])):
-        row = {
-            "id": account["id"],
-            **service_account_row(account),
-            "api_key_masked": mask_api_key(account["api_key"]),
-        }
+        row = service_account_row(account)
         flow = found["flows"].get(account["id"])
         if flow:
             row["sent_for"] = sent_for(flow)

@@ -172,12 +172,14 @@ def test_nothing_on_the_api_path_reads_the_column():
         "routers/v1_api.py": [],
         # The handler's description of the answer (shown in /docs), no code.
         "routers/account_api.py": [
-            "    frame needs: ``is_admin`` true for an admin (the token's ``admin``",
+            "for a person signed in by SSO (``account_view.*_signed_in``): ``is_admin``",
+            "    ``is_admin`` is true only for a person signed in by SSO whose token has",
         ],
         "services/account_view.py": [
+            "``is_admin`` true for an admin (a key has no admin right, so by key it is",
             '        "is_admin": False,',
-            "    ``is_admin`` (true by the token's ``admin`` scope; by key it is always",
-            '    extra: dict[str, object] = {"is_admin": bool(user.is_admin)}',
+            "    ``is_admin``, true for an admin by the token's ``admin`` scope. An API",
+            '    return {"is_admin": bool(user.is_admin)}',
         ],
         "routers/azure_api.py": [],
         "routers/aws_api.py": [],

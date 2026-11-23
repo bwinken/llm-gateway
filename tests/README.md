@@ -459,22 +459,39 @@ could not rely on it (no stable version or two, an unknown status, a
 deprecated version without its sunset date and successor).
 `TestOneDocsPage`: ReDoc and the OAuth2 redirect page stay off.
 
-### `test_dashboard_api.py` — `/dashboard/api/*`
+### `test_dashboard_api.py` — the dashboard as JSON
 
-The dashboard as JSON, signed in by SSO. `TestSignIn`: every dashboard
-route signs in by SSO and an API key is not one; `web_ui` keeps `/` and
-`/setup` only. `TestTheSameAsByKey`: `me`, `status`, `usage`,
-`service-accounts` and `notices` answer what the `/v1` endpoint of the same
-name answers. `TestWhatOnlyTheSignedInPersonSees`: the admin flag from the
-token, the masked key, the site block, a service account's id and who it
-sent requests for, accounts withheld for another department. `TestKeys`: no
+The dashboard's data, signed in by SSO: the account endpoints (`/v1/me`
+...), and what is left under `/dashboard/api`. `TestSignIn`: every
+dashboard route signs in by SSO and an API key is not one; the five reads
+that used to be under `/dashboard/api` are the account endpoints; `web_ui`
+keeps `/` and `/setup` only. `TestTheSameAsByKey`: `me`, `status`, `usage`,
+`service-accounts` and `notices` answer a sign-in what they answer a key.
+`TestWhatTheHolderIsTold`: the admin flag from the token, the masked key,
+the site block, a service account's id and who it sent requests for (a
+sign-in only), accounts withheld for another department. `TestKeys`: no
 data route holds a key; the two key routes are never cached, audited, and
 refused to anyone but an owner in the account's department.
 `TestTheActionsTakeWhatTheApiGives`: a notice and a model change are
 reported as applied by the id the API gives. `TestThePageAndTheApiAgree`:
-the view module knows no request and no template. That the two routers
-share one service (`account_view`) and neither imports the other is in
+the view module knows no request and no template. That one router answers
+both sign-ins from one service (`account_view`) is in
 `test_service_layering.py`.
+
+### `test_account_sign_in.py` — the account endpoints' two sign-ins
+
+How `deps.get_account_user` judges an API key and an SSO sign-in.
+`TestEitherSignIn`: every account endpoint answers both. `TestWhatAKeyIsNotShown`:
+the answer is the same either way but for the admin right and who an
+application was used for; an application acting for a user is not told the
+holder's part. `TestTheModelApiIsByKeyOnly`: a token is a 401 on inference,
+and only the account endpoints take it. `TestTheSignInIsTheWebUis`: scope,
+disabled accounts, no sign-in as a service account. `TestAKeyKeepsItsRules`:
+a key of any shape is still a key. `TestIpAllowlist`: the list refuses a
+key from an unlisted address, not a sign-in. `TestThrottle`: expired tokens
+never lock an address; a key beside a bad token is counted. `TestCrossSite`:
+a write by sign-in from another site is refused, a key's never.
+`TestAudit`: the row says how the caller signed in.
 
 ### `test_endpoint_inventory.py` — `docs/endpoints.md`
 

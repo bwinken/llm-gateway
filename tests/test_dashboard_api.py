@@ -175,22 +175,21 @@ class TestTheSameAsByKey:
         _spend(db_session, test_user, "2.00")
         body = _get(client, "me")
         by_key = _by_key(client, "me")
-        extra = {"api_key", "site"}
-        assert set(body) == set(by_key) | extra and not extra & set(by_key)
+        assert {"api_key", "site"} <= set(by_key)
         # The clock moves between the two calls; everything else is the same.
         body["daily"].pop("resets_in_seconds"), by_key["daily"].pop("resets_in_seconds")
-        assert {k: v for k, v in body.items() if k not in extra} == by_key
+        assert body == by_key
         assert body["daily"]["used_usd"] == 2.0
 
     def test_service_accounts_are_the_same_rows_and_more(self, client, db_session, hr_chat):
         _spend(db_session, hr_chat, "3.00")
         [row] = _get(client, "service-accounts")["service_accounts"]
         [by_key] = _by_key(client, "service-accounts")["service_accounts"]
-        assert {k: v for k, v in row.items() if k not in ("id", "api_key_masked")} == by_key
+        assert row == by_key and row["id"] == hr_chat.id
         assert row["month"]["cost_usd"] == 3.0 and row["description"] == "HR chat page"
 
 
-class TestWhatOnlyTheSignedInPersonSees:
+class TestWhatTheHolderIsTold:
     def test_an_admin_is_one_by_the_token(self, client, test_user):
         assert _get(client, "me")["is_admin"] is False
         body = client.get("/v1/me", headers=_sso(scopes=["admin"])).json()

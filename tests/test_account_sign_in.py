@@ -93,20 +93,72 @@ class TestEitherSignIn:
 
 
 class TestWhatAKeyIsNotShown:
-    """A signed-in person is shown more. A key gets none of it."""
+    """The holder of the account is told the same either way, with two
+    exceptions: only a sign-in can make an admin, and only a sign-in is
+    told who an application was used for."""
 
-    def test_me(self, client, test_user):
+    def test_me_is_the_same_but_for_the_admin_right(self, client, db_session, test_user):
+        test_user.org_code = "RD1"
+        db_session.add(test_user)
+        db_session.commit()
         by_key = client.get("/v1/me", headers=auth_header()).json()
         signed_in = client.get("/v1/me", headers=_sso(scopes=["admin"])).json()
         assert by_key["is_admin"] is False and signed_in["is_admin"] is True
-        assert {"api_key", "site"} <= set(signed_in)
-        assert not {"api_key", "site", "org_code"} & set(by_key)
+        assert set(by_key) == set(signed_in) and {"api_key", "site", "org_code"} <= set(by_key)
+        for body in (by_key, signed_in):
+            body.pop("is_admin"), body["daily"].pop("resets_in_seconds")
+        # An admin sees every cloud backend; nothing else differs.
+        by_key.pop("backends"), signed_in.pop("backends")
+        assert by_key == signed_in
 
-    def test_service_accounts(self, client, test_user):
-        by_key = client.get("/v1/service-accounts", headers=auth_header()).json()
+    def test_the_key_is_masked_and_the_department_is_left_out_without_one(self, client, test_user):
+        body = client.get("/v1/me", headers=auth_header()).json()
+        assert "org_code" not in body
+        assert body["api_key"]["masked"] not in ("", OWN_KEY) and body["api_key"]["masked"].endswith(OWN_KEY[-4:])
+        assert body["site"]["api_base"].endswith("/v1") and all(body["site"]["links"].values())
+
+    def test_who_an_application_was_used_for_is_told_to_a_sign_in_only(self, client, db_session, test_user):
+        from decimal import Decimal
+
+        from app.models.schema import AppOwner, UsageLog
+        from tests.conftest import earlier_today
+
+        app = _add(
+            db_session, username="hr-chat", api_key="sk-hr-chat-secret", is_service_account=True,
+            acts_for_users=True, concurrency_waived=True,
+        )
+        alice = _add(db_session, username="alice", api_key="sk-alice")
+        db_session.add(AppOwner(app_id=app.id, owner_id=test_user.id))
+        db_session.add(UsageLog(
+            user_id=alice.id, model="test-llm", model_type="llm", input_tokens=1000, output_tokens=500,
+            cost_usd=Decimal("1.5"), endpoint="/v1/chat/completions", backend="vllm", via_user_id=app.id,
+            created_at=earlier_today(),
+        ))
+        db_session.commit()
+        by_key = client.get("/v1/service-accounts", headers=auth_header())
         signed_in = client.get("/v1/service-accounts", headers=_sso()).json()
-        assert set(by_key) == {"object", "month", "service_accounts"}
-        assert set(signed_in) == set(by_key) | {"withheld", "top_users"}
+        assert set(by_key.json()) == {"object", "month", "service_accounts", "withheld"}
+        assert set(signed_in) == set(by_key.json()) | {"top_users"}
+        [row], [key_row] = signed_in["service_accounts"], by_key.json()["service_accounts"]
+        assert row["sent_for"]["rows"][0]["user"] == "alice"
+        # The same account otherwise, and by key nobody is named.
+        assert {k: v for k, v in row.items() if k != "sent_for"} == key_row
+        assert "sent_for" not in by_key.text and "alice" not in by_key.text
+        assert "sk-hr-chat-secret" not in by_key.text and key_row["api_key_masked"].endswith("cret")
+
+    def test_an_application_acting_for_a_user_is_not_told_the_holders_part(self, client, db_session, test_user):
+        """It gets what it needs to serve the user (the budget) and no
+        more: not the user's key, masked or not, nor their department."""
+        _add(
+            db_session, username="hr-chat", api_key="sk-hr-chat-secret", is_service_account=True,
+            acts_for_users=True, concurrency_waived=True,
+        )
+        test_user.org_code = "RD1"
+        db_session.add(test_user)
+        db_session.commit()
+        body = client.get("/v1/me", headers={**auth_header("sk-hr-chat-secret"), "X-On-Behalf-Of": "testuser"}).json()
+        assert body["username"] == "testuser" and "daily" in body
+        assert not {"api_key", "site", "org_code"} & set(body)
 
     @pytest.mark.parametrize("name", READS)
     def test_no_read_holds_the_key_in_full_either_way(self, client, test_user, name):
@@ -182,14 +234,17 @@ class TestAKeyKeepsItsRules:
         _add(db_session, username="oldtimer", api_key="legacy.key.value")
         resp = client.get("/v1/me", headers=auth_header("legacy.key.value"))
         assert resp.status_code == 200 and resp.json()["username"] == "oldtimer"
-        assert resp.json()["is_admin"] is False and "site" not in resp.json()
+        assert resp.json()["is_admin"] is False
+        assert client.get("/v1/service-accounts", headers=auth_header("legacy.key.value")).json().keys() \
+            == {"object", "month", "service_accounts", "withheld"}  # a key's answer, not a sign-in's
 
     def test_a_key_beside_a_foreign_token_still_gets_in(self, client, test_user):
         """A corporate proxy may put its own token in ``Authorization``
         while the client sends its key in ``x-api-key``."""
         headers = {"Authorization": f"Bearer {NOT_A_TOKEN}", "x-api-key": OWN_KEY}
-        body = client.get("/v1/me", headers=headers).json()
-        assert body["username"] == "testuser" and "site" not in body
+        assert client.get("/v1/me", headers=headers).json()["username"] == "testuser"
+        # Judged as the key it is: the answer a key gets, not a sign-in's.
+        assert "top_users" not in client.get("/v1/service-accounts", headers=headers).json()
 
     @pytest.mark.parametrize("name", HOLDER_ONLY)
     def test_an_application_acting_for_a_user_still_reads_only_what_it_needs(self, client, db_session, test_user, name):

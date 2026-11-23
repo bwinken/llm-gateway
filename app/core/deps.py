@@ -34,6 +34,7 @@ from app.models.schema import (
     UsageLog,
     User,
     mark_signed_in_by_sso,
+    mask_api_key,
     set_request_tags,
     set_via_service_account,
     via_service_account,
@@ -572,36 +573,36 @@ def get_usage_history(user: User, days: int) -> dict:
         }
 
 
-def get_owned_apps(user: User) -> list[dict]:
+def get_owned_apps(user: User, *, sent_for: bool = False) -> dict:
     """The service accounts ``user`` owns with this month's usage, in total
-    and per model (``stats.get_owned_apps_summary``), for ``GET /v1/service-accounts``.
-    Their API keys are taken out here: no API-key endpoint hands out a key. Short-lived
-    session; blocking."""
-    from app.services.stats import get_owned_apps_summary
+    and per model, for ``GET /v1/service-accounts``: ``accounts``
+    (``stats.get_owned_apps_summary``) and ``withheld`` (the ones assigned to
+    ``user`` that are for another department, ``stats.get_withheld_apps``:
+    name and department only).
 
-    with Session(engine) as session:
-        apps = get_owned_apps_summary(session, user.id)
-    return [{key: value for key, value in app.items() if key != "api_key"} for app in apps]
+    Their API keys are taken out here and ``api_key_masked`` put in their
+    place (``mask_api_key``): no account endpoint hands out a key, so the
+    key never leaves this function.
 
-
-def get_owned_apps_signed_in(user: User) -> dict:
-    """The service accounts ``user`` owns as their signed-in owner sees
-    them (``GET /v1/service-accounts`` by SSO, the dashboard's *Service
-    accounts* tab): ``accounts`` (``stats.get_owned_apps_summary``, each
-    with its id and its key, which the caller masks), ``flows`` (who each
-    one sent requests for this month, ``stats.get_on_behalf_users``, by
-    account id) and ``withheld`` (the ones assigned to ``user`` that are for
-    another department, ``stats.get_withheld_apps``). Never for an API key:
-    ``get_owned_apps`` is that one. Short-lived session; blocking."""
+    ``sent_for``: also ``flows``, who each account sent requests for this
+    month (``stats.get_on_behalf_users``, by account id). The caller asks
+    for it only for a person signed in by SSO: a leaked personal key must
+    not say who uses an application. Short-lived session; blocking."""
     from app.services.stats import get_on_behalf_users, get_owned_apps_summary, get_withheld_apps
 
     with Session(engine) as session:
-        accounts = get_owned_apps_summary(session, user.id)
-        return {
-            "accounts": accounts,
-            "flows": get_on_behalf_users(session, [a["id"] for a in accounts if a["on_behalf"]["requests"]]),
+        apps = get_owned_apps_summary(session, user.id)
+        found: dict = {
+            "accounts": [
+                {**{key: value for key, value in app.items() if key != "api_key"},
+                 "api_key_masked": mask_api_key(app["api_key"])}
+                for app in apps
+            ],
             "withheld": get_withheld_apps(session, user.id),
         }
+        if sent_for:
+            found["flows"] = get_on_behalf_users(session, [a["id"] for a in apps if a["on_behalf"]["requests"]])
+    return found
 
 
 def get_client_notices(user: User) -> dict:

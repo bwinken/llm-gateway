@@ -116,6 +116,13 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
   "display_name": "Alice",
   "is_admin": false,
   "legacy_key": false,
+  "org_code": "RD1",
+  "api_key": {"masked": "sk-xxxxxxxx…xxxx", "created_at": "2026-09-02T10:15:00+08:00"},
+  "site": {
+    "title": "LLM Gateway", "api_base": "https://your-gateway/v1",
+    "links": {"docs": "https://wiki.example/llm-gateway"},
+    "setup_page": true, "installer": true
+  },
   "daily": {
     "limit_usd": 10.0, "used_usd": 3.25, "remaining_usd": 6.75,
     "requests": 42, "input_tokens": 120000, "output_tokens": 18000,
@@ -140,8 +147,10 @@ curl https://your-gateway/v1/me -H "Authorization: Bearer sk-your-api-key"
 - 只有在 `used_usd` 已達上限時才會拒絕請求，所以當天最後一個請求可能會稍微超出上限。
 - `enforced: false` 代表超額時 gateway 只記 log，不會回 429。
 - `cloud_budget_fallback: true` 代表雲端每日上限用完時，`/v1/*` 的請求會改由地端模型回答，而不是回 429。
-- `is_admin` 固定是 `false`：API key 不帶管理員權限（管理員身分是在 Web UI 登入時認定的）。這個欄位是為了既有的 client 而保留。
+- 用 API key 呼叫時 `is_admin` 固定是 `false`：key 不帶管理員權限。只有改帶 SSO 的 access token（見下）、而且 token 有 admin scope 時才會是 `true`。
 - `legacy_key: true` 代表你的 key 是較舊、較弱的格式，方便時請到 dashboard 重新產生。任何端點都不會回傳 key 本身。
+- `api_key.masked` 足以認出是哪一把 key（開頭和最後四碼），但不能拿來用；`created_at` 是發出的時間。`org_code` 是你的部門，登入資料沒有部門時不會有這個 key。`site` 是工具在數字周圍要顯示的東西：站台的 `title`、範例裡要印的 `api_base`、管理員設定的 `links`（只有有設定的），以及 Setup 頁和 Windows 安裝檔是否可用。
+- 程式也可以改用登入時拿到的 SSO access token 來打這些帳號端點（`/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings`）：`Authorization: Bearer <access token>`。回應相同，只多兩件事：`is_admin` 可能是 `true`，以及 `/v1/service-accounts` 會說出每個應用程式替誰送過請求（`sent_for`）。token 會過期、key 不會，所以多數工具只用 token 換一次 key（見「從 terminal 工具登入」），之後都用 key。模型 API（chat、messages、embeddings）只收 key。
 - `concurrency.limit` 是你的 key 同時可以進行幾個請求。`"mode": "off"` 代表不限，此時不帶 `limit`。
 
 ## 模型狀態
@@ -248,8 +257,8 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
   "object": "service_accounts",
   "month": "2026-10",
   "service_accounts": [
-    {"username": "billing-etl", "description": "每晚的帳務匯出", "department": "FIN2",
-     "daily_limit_usd": 50.0, "legacy_key": false,
+    {"id": 41, "username": "billing-etl", "description": "每晚的帳務匯出", "department": "FIN2",
+     "daily_limit_usd": 50.0, "legacy_key": false, "api_key_masked": "sk-xxxxxxxx…xxxx",
      "month": {"requests": 1200, "input_tokens": 4100000, "output_tokens": 380000, "cost_usd": 61.5,
                "models": [
                  {"model": "qwen3-coder", "backend": "onprem", "type": "llm",
@@ -257,16 +266,18 @@ curl https://your-gateway/v1/service-accounts -H "Authorization: Bearer sk-your-
                  {"model": "gpt-5", "backend": "azure", "type": "llm",
                   "requests": 100, "input_tokens": 400000, "output_tokens": 40000, "cost_usd": 40.0}
                ]}}
-  ]
+  ],
+  "withheld": [{"username": "hr-chat", "department": "HR1"}]
 }
 ```
 
 - 服務帳號是給程式用的帳號（批次工作、服務），由管理員指派給你。它以前叫 app 帳號：舊的帳號名稱是 `app_...`，新的可以是任何名稱。
 - `service_accounts` 列出你名下的服務帳號（沒有的話是空陣列），各自有自己的每日上限和本月用量：就是 dashboard 的 *Service accounts* 分頁。
 - `description` 是管理員寫的一行說明，講這個帳號是什麼；`department` 是它所屬的部門。沒有設定時不會有對應的 key。
-- 所屬部門和你不同的服務帳號不會列出來（dashboard 也一樣），即使它仍然指派給你：dashboard 的 *Service accounts* 分頁會寫出是哪一個帳號以及原因。如果這不對，請找管理員。
+- 所屬部門和你不同的服務帳號不會列出來（dashboard 也一樣），即使它仍然指派給你：`withheld` 會列出它的名稱和部門（沒有的話是空陣列），和 dashboard 的 *Service accounts* 分頁一樣。如果這不對，請找管理員。
 - `month.models` 是當月依模型拆開的用量：每個模型和後端一列，順序和 dashboard 相同，加總等於當月合計。服務帳號用過的後端都會列出，和你自己的權限無關。
-- 不包含服務帳號的 API key，任何端點都不會回傳 key。要查看或重新產生，請到 dashboard 的 *Service accounts* 分頁。
+- 不包含服務帳號的 API key，任何端點都不會回傳 key：`api_key_masked` 足以認出是哪一把，但不能拿來用。要查看或重新產生，請到 dashboard 的 *Service accounts* 分頁。`id` 是這個帳號在那裡的編號。
+- 改帶 SSO access token（而不是 key）呼叫時，這個月替使用者送過請求的帳號會多一個 `sent_for`（`users` 是幾位使用者；每位使用者每個後端一列，有請求數、token 和費用；費用最高的十位列出名字，其餘合併成每個後端一列、以 `others` 表示人數），回應另有 `top_users`。用 key 不會拿到這些：外洩的 key 不應該說出誰在用某個應用程式。
 - `acts_for_users` 和 `on_behalf` 是給「替自己的使用者送請求」的應用用的（見下一節）：管理員是否為這個帳號開啟此功能，以及它本月替使用者送了多少（`users` 是幾位使用者）。這些用量記在使用者頭上，所以不在 `month` 裡。
 
 ### 有自己使用者的應用（`X-On-Behalf-Of`）

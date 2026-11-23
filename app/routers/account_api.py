@@ -28,11 +28,11 @@ Two kinds of client ask, and one route serves both
 
 Every route authenticates with ``get_account_user`` (or
 ``get_account_holder``, which also refuses a request a service account
-sends for a user). A signed-in person is shown a little more than a key
-(``account_view.*_signed_in``: the admin link, the masked key, who an
-application was used for). None returns an API key in full, to either:
-showing and regenerating a key stays under ``/dashboard``, behind the
-proxy's sign-in.
+sends for a user). Both sign-ins get the same answer, with two exceptions
+for a person signed in by SSO (``account_view.*_signed_in``): ``is_admin``
+true for an admin, and who a service account sent requests for. None
+returns an API key in full, to either: showing and regenerating a key stays
+under ``/dashboard``, behind the proxy's sign-in.
 
 Each body is built in ``app/services/account_view.py``: a handler here
 authenticates and calls it. These answers are what programs outside this
@@ -53,7 +53,7 @@ from app.core.deps import (
     resolve_client_notices,
 )
 from app.core.logger import logger
-from app.models.schema import User, signed_in_by_sso
+from app.models.schema import User, signed_in_by_sso, via_service_account
 from app.services import account_view, audit, client_events, client_settings
 
 # One group of /docs: every route here is an account endpoint.
@@ -87,17 +87,23 @@ async def account_info(request: Request, user: User = Depends(get_account_user))
     ``legacy_key``: the key is of the older, weaker format and the dashboard
     asks its holder to regenerate it. The key itself is never returned.
 
-    Signed in by SSO (a browser), the answer also has what the dashboard's
-    frame needs: ``is_admin`` true for an admin (the token's ``admin``
-    scope; by API key it is always false), ``org_code`` (the person's
-    department, when their sign-in gave one), ``api_key`` (``masked`` and
-    ``created_at``; the key in full is ``GET /dashboard/api/api-key``) and
-    ``site`` (``title``, the ``api_base`` to show in examples, the admin's
-    ``links``, ``setup_page``, ``installer``).
+    The holder of the account is also told what a dashboard's or a tool's
+    frame needs: ``org_code`` (the person's department, when their sign-in
+    gave one), ``api_key`` (``masked``, enough to recognise the key and not
+    to use it, and ``created_at``) and ``site`` (``title``, the ``api_base``
+    to show in examples, the admin's ``links``, ``setup_page``,
+    ``installer``). An application that sends the request for a user
+    (``X-On-Behalf-Of``) is not given these.
+
+    ``is_admin`` is true only for a person signed in by SSO whose token has
+    the ``admin`` scope. An API key carries no admin right: by key it is
+    always false.
     """
     body = await run_in_threadpool(account_view.me, user)
+    if via_service_account(user) is None:
+        body.update(account_view.me_holder(user, api_base_url(request)))
     if signed_in_by_sso(user):
-        body.update(account_view.me_signed_in(user, api_base_url(request)))
+        body.update(account_view.me_signed_in(user))
     return body
 
 
@@ -176,22 +182,23 @@ def owned_service_accounts(user: User = Depends(get_account_holder)):
     month and for how many ``users``. That usage is billed to those users,
     so it is no part of ``month``.
 
-    A service account's API key is **not** part of it, and no API-key
-    endpoint returns one: a leaked personal key must not open every service
-    account its holder owns. Showing and regenerating such a key stays on
-    the dashboard, behind SSO. ``legacy_key`` says its key is of the older
-    format.
+    Each account has its ``id`` and ``api_key_masked`` (enough to recognise
+    the key, not to use it). The key in full is **not** part of it, and no
+    account endpoint returns one: a leaked personal key must not open every
+    service account its holder owns. Showing and regenerating such a key
+    stays on the dashboard, behind SSO
+    (``GET /dashboard/api/service-accounts/{id}/api-key``). ``legacy_key``
+    says its key is of the older format.
 
-    Signed in by SSO (a browser), the owner is shown more, as on the
-    dashboard: per account its ``id`` (for the key routes,
-    ``GET /dashboard/api/service-accounts/{id}/api-key``),
-    ``api_key_masked``, and ``sent_for`` when it sent requests for its users
-    this month: how many ``users``, and ``rows`` of one user on one backend,
+    ``withheld`` names the accounts assigned to the caller that they may
+    not see now, each made for another ``department`` than theirs.
+
+    Signed in by SSO, the owner is also told who each account was used for,
+    as on the dashboard: ``sent_for`` when it sent requests for its users
+    this month (how many ``users``, and ``rows`` of one user on one backend,
     the ``top_users`` by cost by name and the rest as one row per backend
-    with ``others`` instead of ``user``. ``withheld`` names the accounts
-    assigned to the person that they may not see now, each made for another
-    ``department`` than theirs. None of that is given to an API key: a
-    leaked key must not say who uses an application.
+    with ``others`` instead of ``user``). That is not given to an API key:
+    a leaked key must not say who uses an application.
 
     Answers once the daily limit is spent. Plain ``def`` (database read).
     """

@@ -26,7 +26,7 @@ Gateway 目前註冊的每一條路由：誰在呼叫、用什麼驗證、要不
 | `GET /v1/model-changes` | 內容已經在 `GET /v1/notices` 的 `model_changes` 區塊裡，問一個地方就好。**還在讀這一條的工具會收到 404，要改讀 `/v1/notices`** |
 | `GET /dashboard/client-notices` | 只回傳通知面板的 HTML 片段，只有 dashboard 頁面在按下 *I've applied it* 後用它重畫。頁面改成整頁重新載入 |
 | `GET /dashboard/model-changes` | 同上，模型汰換面板的 HTML 片段（按下 *I've switched* 之後）。`/dashboard/model-changes/patch.{bat,sh}` 與 `.../applied` 不受影響 |
-| `GET /dashboard/api/me`、`status`、`usage`、`service-accounts`、`notices` | 和同名的帳號端點（`GET /v1/me` ...）回一樣的內容，只是登入方式不同。帳號端點現在兩種登入都收（API key 或 SSO），所以只留 `/v1` 那一條；登入者多看到的部分（`is_admin`、遮罩的 key、`site`、service account 的 `id` 與 `sent_for`）也搬過去，只給 SSO 登入。刪的時候還沒有任何頁面或前端在用這五條 |
+| `GET /dashboard/api/me`、`status`、`usage`、`service-accounts`、`notices` | 和同名的帳號端點（`GET /v1/me` ...）回一樣的內容，只是登入方式不同。帳號端點現在兩種登入都收（API key 或 SSO），所以只留 `/v1` 那一條；登入者原本多看到的部分也搬過去：遮罩的 key、`site`、service account 的 `id` 等兩種登入都給，只有 admin 的 `is_admin` 和 `sent_for` 只給 SSO 登入。刪的時候還沒有任何頁面或前端在用這五條 |
 
 ### 刪除候選（這次沒有刪）
 
@@ -98,7 +98,7 @@ Dashboard 的資料（`me`、`status`、`usage`、`service-accounts`、`notices`
 
 帳號查詢自己的資訊。兩種 client 打同一條路由：repo 以外的程式（terminal 工具、狀態列、設定 client 的桌面程式）帶帳號的 API key；瀏覽器（dashboard 的獨立前端）帶 SSO 登入，由前面的 proxy 把登入 cookie 換成 token 再轉進來（範例見 `deploy/llm-gateway-example.nginx.conf` 的 `/dashboard/v1/`）。只增不改，不能刪。
 
-SSO 登入的人多看到一些：`/v1/me` 多 `is_admin`（依 token 的 scope）、`org_code`、遮罩的 `api_key`、`site`；`/v1/service-accounts` 多每個帳號的 `id`、`api_key_masked`、`sent_for`，以及 `withheld`、`top_users`。這些不給 API key。兩種登入都拿不到完整的 key。
+兩種登入拿到的回應相同（`/v1/me` 都有 `org_code`、遮罩的 `api_key`、`site`；`/v1/service-accounts` 都有每個帳號的 `id`、`api_key_masked`，以及 `withheld`），只有兩件事只告訴 SSO 登入的人：admin 的 `is_admin` 為 true（key 不帶管理員權限），以及 `/v1/service-accounts` 的 `sent_for` 和 `top_users`（這個帳號替誰送過請求：外洩的個人 key 不應該說出誰在用某個應用程式）。兩種登入都拿不到完整的 key。
 
 路徑雖然也在 `/v1` 底下，但和下面的「模型 API」是兩回事：這裡不呼叫模型、不計費、額度用完照樣回應。程式上也分開，在 `app/routers/account_api.py`；模型 API 在 `app/routers/v1_api.py`。
 
