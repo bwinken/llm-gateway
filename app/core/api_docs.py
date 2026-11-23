@@ -111,3 +111,71 @@ class ModelList(TypedDict):
 
 class TokenCount(TypedDict):
     input_tokens: int
+
+
+# ── GET /v1/version ──
+
+class VersionEntry(TypedDict):
+    version: str
+    status: Annotated[str, Field(description="stable, deprecated or nightly. Treat one you do not know like nightly.")]
+    sunset: NotRequired[Annotated[str, Field(description="On a deprecated version: the last day it is served, YYYY-MM-DD.")]]
+    successor: NotRequired[Annotated[str, Field(description="On a deprecated version: the one to move to.")]]
+    note: NotRequired[str]
+
+
+class Versions(TypedDict):
+    object: Literal["version"]
+    gateway: Annotated[str, Field(description="The gateway's release, for a bug report. Never decide by it.")]
+    stable: Annotated[str, Field(description="The version to build against.")]
+    statuses: list[str]
+    versions: list[VersionEntry]
+
+
+# ── POST /auth/api-key, and what the dashboard answers a signed-in person ──
+
+class ApiKeyForToken(TypedDict):
+    object: Literal["api_key"]
+    username: str
+    api_key: Annotated[str, Field(description="The account's existing API key, in full.")]
+    legacy_key: Annotated[bool, Field(description="The key is of the older, weaker format: regenerate it on the dashboard.")]
+
+
+class ApiKeyShown(TypedDict):
+    object: Literal["api_key"]
+    username: Annotated[str, Field(description="The account the key belongs to.")]
+    api_key: Annotated[str, Field(description="The key, in full.")]
+
+
+class KeyRegenerated(TypedDict):
+    ok: Literal[True]
+    api_key: Annotated[str, Field(description="The new key, in full. The old one no longer works.")]
+
+
+class NoticeResolved(TypedDict):
+    ok: Literal[True]
+    rule_id: Annotated[str, Field(description="The notice that was resolved, such as CC001.")]
+
+
+class AllNoticesResolved(TypedDict):
+    ok: Literal[True]
+    resolved: Annotated[int, Field(description="How many notices were resolved.")]
+
+
+class ModelChangeApplied(TypedDict):
+    ok: Literal[True]
+    id: Annotated[int, Field(description="The model change's number (3 for MC3).")]
+
+
+# What every route under /dashboard can answer before its own answer. The
+# sign-in is the session cookie, which the proxy in front turns into the
+# access token; an API key is not one.
+DASHBOARD_ERRORS: dict[int | str, dict] = {
+    401: {"description": "Not signed in: no access token reached the gateway, or it is expired. An API key is "
+                         "not a sign-in here. (Behind the proxy a browser is sent to the sign-in page instead.)"},
+    403: {"description": "The token lacks the `read` scope; the account is disabled; the name is a service "
+                         "account's; or a write was sent by another site's page."},
+}
+
+SCRIPT_200 = {200: {"description": "The script, as a download (`Content-Disposition: attachment`).",
+                    "content": {"application/octet-stream": {}}}}
+PAGE_200 = {200: {"description": "The page, as HTML.", "content": {"text/html": {}}}}

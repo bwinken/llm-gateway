@@ -22,6 +22,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 from sqlmodel import Session
 
+from app.core import api_docs
 from app.models.schema import AppOwner, ClientViolation, UsageLog, User
 from app.services import account_schema as shapes
 from tests.conftest import auth_header, earlier_today, web_auth_header
@@ -176,6 +177,66 @@ class TestEveryAnswerFitsItsShape:
             recorded = client.post("/v1/events", headers=headers, json=EVENT)
             assert recorded.status_code == 200
             _fits(shapes.EventRecorded, recorded.json())
+
+
+class TestTheOtherAnswersOfTheGatewaysOwn:
+    """Outside the account endpoints the gateway has a few answers of its
+    own shape (``app/core/api_docs.py``): the model lists, a token count,
+    the versions, a key for a token, and what the dashboard's actions
+    answer. The same rule: the real answer is exactly its shape."""
+
+    @pytest.mark.parametrize("path", ["/v1/models", "/models", "/azure/v1/models", "/aws/v1/models"])
+    def test_the_model_lists(self, client, db_session, test_user, path):
+        test_user.can_use_azure = test_user.can_use_bedrock = True
+        db_session.add(test_user)
+        db_session.commit()
+        body = client.get(path, headers=auth_header()).json()
+        assert body["data"] and any("display_name" in entry for entry in client.get("/v1/models", headers=auth_header()).json()["data"])
+        _fits(api_docs.ModelList, body)
+
+    def test_the_versions(self, client):
+        _fits(api_docs.Versions, client.get("/v1/version").json())
+
+    def test_a_deprecated_version_fits_too(self):
+        from app.core import api_versions
+
+        versions = (
+            api_versions.ApiVersion("v1", api_versions.DEPRECATED, sunset="2027-06-30", successor="v2", note="Move."),
+            api_versions.ApiVersion("v2", api_versions.STABLE),
+        )
+        _fits(api_docs.Versions, api_versions.payload(versions))
+
+    def test_a_key_for_a_token(self, client, test_user):
+        resp = client.post("/auth/api-key", headers=web_auth_header(sub="testuser"))
+        assert resp.status_code == 200
+        _fits(api_docs.ApiKeyForToken, resp.json())
+
+    def test_what_the_dashboard_answers(self, client, busy_account, db_session):
+        from sqlmodel import select
+
+        sso = {**web_auth_header(sub="testuser"), "Accept": "application/json"}
+        hr_chat = db_session.exec(select(User).where(User.username == "hr-chat")).one()
+        _fits(api_docs.ApiKeyShown, client.get("/dashboard/api/api-key", headers=sso).json())
+        _fits(api_docs.ApiKeyShown, client.get(f"/dashboard/api/service-accounts/{hr_chat.id}/api-key", headers=sso).json())
+        change = client.get("/v1/notices", headers=sso).json()["model_changes"]["changes"][0]["id"]
+        _fits(api_docs.ModelChangeApplied, client.post(f"/dashboard/model-changes/{change}/applied", headers=sso).json())
+        _fits(api_docs.NoticeResolved, client.post("/dashboard/client-rules/CC001/resolved", headers=sso).json())
+        _fits(api_docs.AllNoticesResolved, client.post("/dashboard/client-rules/all/resolved", headers=sso).json())
+        _fits(api_docs.KeyRegenerated, client.post(f"/dashboard/app/{hr_chat.id}/refresh-key", headers=sso).json())
+        _fits(api_docs.KeyRegenerated, client.post("/dashboard/refresh-key", headers=sso).json())
+
+    def test_they_are_in_the_document(self, client):
+        spec = client.get("/openapi.json").json()
+        named = {
+            ("get", "/v1/models"): "ModelList", ("get", "/azure/v1/models"): "ModelList",
+            ("get", "/aws/v1/models"): "ModelList", ("get", "/v1/version"): "Versions",
+            ("post", "/auth/api-key"): "ApiKeyForToken", ("get", "/dashboard/api/api-key"): "ApiKeyShown",
+            ("post", "/dashboard/refresh-key"): "KeyRegenerated",
+            ("post", "/v1/messages/count_tokens"): "TokenCount",
+        }
+        for (method, path), name in named.items():
+            schema = spec["paths"][path][method]["responses"]["200"]["content"]["application/json"]["schema"]
+            assert schema == {"$ref": f"#/components/schemas/{name}"}, (method, path)
 
 
 class TestTheCheckItselfWorks:

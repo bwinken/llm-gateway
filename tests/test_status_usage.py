@@ -116,6 +116,49 @@ class TestDocsGroups:
                     assert operation["responses"][code]["description"], (where, code)
         assert seen == len(self.ACCOUNT) == 9
 
+    def test_every_route_outside_admin_is_described_to_the_plan(self, client):
+        """The model API, the cloud routes, the sign-in, the version and the
+        dashboard are read by the people who build against the gateway too.
+        Each has a title someone wrote and the plan's sections in order
+        (``app/core/api_docs.py``), and says what it can refuse."""
+        spec = client.get("/openapi.json").json()
+        sections = ["**Sign-in.**", "**Response", "**Limits and things to know**", "**Errors"]
+        groups: dict[str, int] = {}
+        for path, item in spec["paths"].items():
+            for method, operation in item.items():
+                (group,) = operation["tags"]
+                if group == "admin":
+                    continue
+                where = (method, path)
+                groups[group] = groups.get(group, 0) + 1
+                summary = operation["summary"]
+                handler_name = " ".join(word.capitalize() for word in operation["operationId"].split("_"))
+                assert not handler_name.startswith(summary), (where, summary)
+                text = operation.get("description", "")
+                assert text, where
+                found = [text.find(section) for section in sections]
+                assert all(at > 0 for at in found) and found == sorted(found), (where, found)
+                assert len(text.splitlines()[0]) < 200, where
+                if path != "/v1/version":
+                    refused = [code for code in operation["responses"] if code[0] in "45" and code != "422"]
+                    assert refused, where
+                    for code in refused:
+                        assert operation["responses"][code]["description"], (where, code)
+        assert groups == {"account": 9, "v1": 22, "azure": 10, "aws": 8, "auth": 1, "health": 1, "web": 15}
+
+    def test_the_model_api_says_what_any_of_its_routes_can_refuse(self, client):
+        paths = client.get("/openapi.json").json()["paths"]
+        for path in ("/v1/chat/completions", "/v1/embeddings", "/azure/v1/messages", "/aws/v1/chat/completions"):
+            assert {"400", "401", "403", "429", "502"} <= set(paths[path]["post"]["responses"]), path
+        # The routes that hold a slot say so, and the cloud routes say there is no on-prem stand-in.
+        assert "in flight" in paths["/v1/chat/completions"]["post"]["responses"]["429"]["description"]
+        assert "in flight" not in paths["/v1/embeddings"]["post"]["responses"]["429"]["description"]
+        assert "access" in paths["/azure/v1/chat/completions"]["post"]["responses"]["403"]["description"]
+        assert "X-Guardrail" in paths["/v1/messages"]["post"]["responses"]["400"]["description"]
+        # A body in someone else's format has no schema of the gateway's own.
+        ok = paths["/v1/chat/completions"]["post"]["responses"]["200"]
+        assert "OpenAI Chat Completions" in ok["description"]
+
     def test_a_route_lists_its_own_errors_and_limits(self, client):
         paths = client.get("/openapi.json").json()["paths"]
         assert {"400", "503"} <= set(paths["/v1/notices/resolved"]["post"]["responses"])
