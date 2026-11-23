@@ -439,7 +439,7 @@ async def _non_stream_chat(
         )
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-        _log_error(user, monitor_body or body, str(exc), 502, model, "/v1/chat/completions", model_type)
+        _log_error(user, monitor_body or body, exc, 502, model, "/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     extra_headers = _merge_failover_header(extra_headers, failover_note)
 
@@ -468,7 +468,7 @@ async def _stream_chat(
         )
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-        _log_error(user, monitor_body or body, str(exc), 502, model, "/v1/chat/completions", model_type)
+        _log_error(user, monitor_body or body, exc, 502, model, "/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     extra_headers = _merge_failover_header(extra_headers, failover_note)
     _warn_if_slow_headers(user, model, "/v1/chat/completions", "vllm")
@@ -555,7 +555,7 @@ async def vllm_forward_simple_request(
         )
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-        _log_error(user, body, str(exc), 502, resolved_alias, endpoint_label, model_type)
+        _log_error(user, body, exc, 502, resolved_alias, endpoint_label, model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     extra_headers = _merge_failover_header(extra_headers, failover_note)
 
@@ -638,7 +638,7 @@ async def _passthrough_non_stream(
         )
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-        _log_error(user, body_json, str(exc), 502, model, path_suffix, model_type)
+        _log_error(user, body_json, exc, 502, model, path_suffix, model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     extra_headers = _merge_failover_header(extra_headers, failover_note)
 
@@ -707,7 +707,7 @@ async def _forward_messages_native(
             return None
         except Exception as exc:
             logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-            _log_error(user, anthropic_body, str(exc), 502, model_alias, "/v1/messages", model_type)
+            _log_error(user, anthropic_body, exc, 502, model_alias, "/v1/messages", model_type)
             raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
         if resp.status_code in (404, 405):
             return None
@@ -754,7 +754,7 @@ async def _forward_messages_native(
         return None
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-        _log_error(user, anthropic_body, str(exc), 502, model_alias, "/v1/messages", model_type)
+        _log_error(user, anthropic_body, exc, 502, model_alias, "/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     _warn_if_slow_headers(user, model_alias, "/v1/messages", "vllm")
 
@@ -885,7 +885,7 @@ async def _non_stream_messages(
         )
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-        _log_error(user, monitor_body or body, str(exc), 502, model_alias, "/v1/messages", model_type)
+        _log_error(user, monitor_body or body, exc, 502, model_alias, "/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     extra_headers = _merge_failover_header(extra_headers, failover_note)
 
@@ -941,7 +941,7 @@ async def _stream_messages(
         )
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-        _log_error(user, monitor_body or body, str(exc), 502, model_alias, "/v1/messages", model_type)
+        _log_error(user, monitor_body or body, exc, 502, model_alias, "/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     extra_headers = _merge_failover_header(extra_headers, failover_note)
     _warn_if_slow_headers(user, model_alias, "/v1/messages", "vllm")
@@ -1493,7 +1493,7 @@ async def vllm_forward_systemone(
         )
     except Exception as exc:
         logger.error("systemone downstream error: {}: {}", type(exc).__name__, exc)
-        _log_error(user, body, str(exc), 502, resolved_alias, _SYSTEMONE_ENDPOINT, model_type)
+        _log_error(user, body, exc, 502, resolved_alias, _SYSTEMONE_ENDPOINT, model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     extra_headers = _merge_failover_header(extra_headers, failover_note)
 
@@ -1566,7 +1566,7 @@ async def _passthrough_stream(
         )
     except Exception as exc:
         logger.error("Downstream error: {}: {}", type(exc).__name__, exc)
-        _log_error(user, body_json, str(exc), 502, model, path_suffix, model_type)
+        _log_error(user, body_json, exc, 502, model, path_suffix, model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     extra_headers = _merge_failover_header(extra_headers, failover_note)
     _warn_if_slow_headers(user, model, path_suffix, "vllm")

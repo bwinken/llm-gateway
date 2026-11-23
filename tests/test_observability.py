@@ -201,6 +201,139 @@ class TestLogError:
             )
         rg.assert_not_called()
 
+    def _error(self, error, *, capture=False, input_payload=None, status=502):
+        from app.services import billing
+        from app.services import observability as obs
+
+        captured = {}
+        obs.set_request_meta(user_agent="claude-cli", path="/v1/messages")
+        if input_payload is not None:
+            obs.set_io_input(input_payload)
+        with patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.record_generation", lambda rec: captured.update(rec=rec)), \
+             patch("app.services.billing.capture_io_enabled", return_value=capture):
+            billing._log_error(
+                SimpleNamespace(id=7, username="bob", display_name="Bob"),
+                {"messages": []}, error, status, "qwen", "/v1/messages", "llm",
+            )
+        return captured["rec"]
+
+    def test_a_timeout_is_named(self):
+        """An httpx timeout has no message of its own: without its type the
+        generation said "502: " and nothing else."""
+        import httpx
+
+        assert str(httpx.ReadTimeout("")) == ""
+        assert self._error(httpx.ReadTimeout("")).error == "502: ReadTimeout"
+        assert self._error(httpx.ConnectTimeout("")).error == "502: ConnectTimeout"
+        assert self._error(httpx.PoolTimeout("")).error == "502: PoolTimeout"
+
+    def test_an_exception_with_a_message_keeps_both(self):
+        import httpx
+
+        rec = self._error(httpx.ConnectError("All connection attempts failed"))
+        assert rec.error == "502: ConnectError: All connection attempts failed"
+
+    def test_an_error_reply_is_recorded_as_its_text(self):
+        assert self._error('{"error": "bad request"}', status=400).error == '400: {"error": "bad request"}'
+
+    def test_the_text_is_bounded(self):
+        rec = self._error(RuntimeError("x" * 5000))
+        assert len(rec.error) <= len("502: ") + 500
+
+    def test_the_input_is_attached_when_capture_is_on(self):
+        """What was sent is what one looks for on a request that failed."""
+        messages = [{"role": "user", "content": "hello"}]
+        rec = self._error("boom", capture=True, input_payload=messages)
+        assert rec.input_payload == messages
+        assert rec.output_payload is None      # nothing came back
+
+    def test_no_input_without_capture(self):
+        rec = self._error("boom", capture=False, input_payload=[{"role": "user", "content": "hello"}])
+        assert rec.input_payload is None
+
+    def test_no_input_when_the_forwarder_stashed_none(self):
+        assert self._error("boom", capture=True).input_payload is None
+
+    def test_it_is_handed_off_the_event_loop(self):
+        # With the input attached the SDK encodes the whole prompt: like a
+        # successful request's generation, never on the loop.
+        from app.services import billing
+
+        handed = []
+        with patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing._submit_background", lambda fn, *args: handed.append((fn, args))):
+            billing._log_error(
+                SimpleNamespace(id=7, username="bob", display_name="Bob"),
+                {}, "boom", 502, "qwen", "/v1/messages", "llm",
+            )
+        [(fn, (rec,))] = handed
+        assert fn is billing.record_generation and rec.is_error is True
+
+    def test_it_reaches_langfuse_as_an_error_with_its_input(self):
+        import httpx
+
+        messages = [{"role": "user", "content": "hello"}]
+        rec = self._error(httpx.ReadTimeout(""), capture=True, input_payload=messages)
+        client = MagicMock()
+        with patch("app.services.observability.get_langfuse", return_value=client), \
+             patch("langfuse.propagate_attributes", lambda **kw: contextlib.nullcontext()):
+            record_generation(rec)
+        kwargs = client.start_observation.call_args.kwargs
+        assert kwargs["level"] == "ERROR" and kwargs["status_message"] == "502: ReadTimeout"
+        assert kwargs["input"] == messages and kwargs["output"] is None
+        assert kwargs["name"] == "/v1/messages"
+
+
+class TestATimedOutRequestEndToEnd:
+    """A request whose downstream times out, through the real path: the
+    middleware, auth, the proxy and ``_log_error``."""
+
+    def _call(self, client, side_effect, *, capture: bool):
+        from fastapi.testclient import TestClient
+
+        from app.services.observability import RequestMetaMiddleware
+        from tests.conftest import auth_header
+
+        captured = []
+        messages = [{"role": "user", "content": "what the user asked"}]
+        with patch.object(client.__httpx_mock__, "post", side_effect=side_effect), \
+             patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.record_generation", captured.append), \
+             patch("app.services.vllm_proxy.capture_io_enabled", return_value=capture), \
+             patch("app.services.billing.capture_io_enabled", return_value=capture), \
+             TestClient(RequestMetaMiddleware(client.app)) as tc:
+            resp = tc.post("/v1/chat/completions", json={"model": "test-llm", "messages": messages},
+                           headers=auth_header())
+        assert captured, "no generation recorded"
+        return resp, captured[-1], messages
+
+    def test_the_generation_names_the_timeout_and_carries_the_input(self, client, test_user):
+        import httpx
+
+        resp, rec, messages = self._call(client, httpx.ReadTimeout(""), capture=True)
+        assert resp.status_code == 502
+        assert rec.is_error is True and rec.error == "502: ReadTimeout"
+        assert rec.input_payload == messages and rec.output_payload is None
+        # The client is still told the type only, never the downstream's text.
+        assert "ReadTimeout" in resp.text and "mock-" not in resp.text
+
+    def test_without_capture_it_carries_no_content(self, client, test_user):
+        import httpx
+
+        _, rec, _ = self._call(client, httpx.ReadTimeout(""), capture=False)
+        assert rec.error == "502: ReadTimeout" and rec.input_payload is None
+
+    def test_a_failed_request_is_still_not_billed(self, client, db_session, test_user):
+        import httpx
+        from sqlmodel import select
+
+        from app.models.schema import UsageLog
+
+        self._call(client, httpx.ReadTimeout(""), capture=True)
+        db_session.expire_all()
+        assert db_session.exec(select(UsageLog)).all() == []
+
 
 class TestRecordGeneration:
     """The two critical safety properties: no-op when unconfigured, never raises."""

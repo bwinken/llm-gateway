@@ -263,7 +263,7 @@ LANGFUSE_SAMPLE_RATE   # float 0.0–1.0, default 1.0 — fraction of requests r
 
 Status: Phase 2 I/O capture wired for all conversational paths on both backends (vLLM + Azure), stream + non-stream. All gated on `LANGFUSE_CAPTURE_IO` (default off).
 
-**Failed requests** (downstream connection error / non-200) are also recorded — `_log_error` (wrapping the former `log_monitor_error` calls) emits a generation with `level=ERROR`, the upstream status + message in `statusMessage`, and a `request_error=true` categorical score (chart error rate per model/endpoint/user). No `usage_logs` row is written for failures.
+**Failed requests** (downstream connection error / non-200) are also recorded — `_log_error` (wrapping the former `log_monitor_error` calls) emits a generation with `level=ERROR`, the upstream status + message in `statusMessage`, and a `request_error=true` categorical score (chart error rate per model/endpoint/user). An exception is recorded with its type (`502: ReadTimeout`): a timeout has no message of its own. With `LANGFUSE_CAPTURE_IO` on it also carries the request's input, so a request that failed or timed out before the downstream answered shows what was sent; there is no output. No `usage_logs` row is written for failures. A client that disconnects in the middle of a stream is a different case and leaves no generation at all (see *Observability* in `architecture.md`).
 
 ## Plan (phases)
 

@@ -583,7 +583,7 @@ async def _non_stream_chat(
         resp, err_text = await _send_converse(client, url, body, route, stream=False)
     except Exception as exc:
         logger.error("Bedrock downstream error | user={} model={} endpoint=/aws/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
-        _log_error(user, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, exc, 502, alias,
                           "/aws/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
 
@@ -623,7 +623,7 @@ async def _stream_chat(
         resp, err_text = await _send_converse(client, url, body, route, stream=True)
     except Exception as exc:
         logger.error("Bedrock stream connect error | user={} model={} endpoint=/aws/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
-        _log_error(user, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, exc, 502, alias,
                           "/aws/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     _warn_if_slow_headers(user, alias, "/aws/v1/chat/completions", "bedrock")
@@ -793,7 +793,7 @@ async def _non_stream_messages(
         resp, err_text = await _send_converse(client, url, body, route, stream=False)
     except Exception as exc:
         logger.error("Bedrock messages downstream error | user={} model={} endpoint=/aws/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
-        _log_error(user, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, exc, 502, alias,
                           "/aws/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
 
@@ -835,7 +835,7 @@ async def _stream_messages(
         resp, err_text = await _send_converse(client, url, body, route, stream=True)
     except Exception as exc:
         logger.error("Bedrock messages stream connect error | user={} model={} endpoint=/aws/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
-        _log_error(user, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, exc, 502, alias,
                           "/aws/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     _warn_if_slow_headers(user, alias, "/aws/v1/messages", "bedrock")
@@ -1132,7 +1132,7 @@ async def _non_stream_messages_native(
         )
     except Exception as exc:
         logger.error("Bedrock native messages downstream error | user={} model={} endpoint=/aws/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
-        _log_error(user, monitor_body, str(exc), 502, alias, "/aws/v1/messages", model_type)
+        _log_error(user, monitor_body, exc, 502, alias, "/aws/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
 
     if resp.status_code != 200:
@@ -1189,7 +1189,7 @@ async def _stream_messages_native(
         resp = await client.send(req, stream=True)
     except Exception as exc:
         logger.error("Bedrock native messages stream connect error | user={} model={} endpoint=/aws/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
-        _log_error(user, monitor_body, str(exc), 502, alias, "/aws/v1/messages", model_type)
+        _log_error(user, monitor_body, exc, 502, alias, "/aws/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     _warn_if_slow_headers(user, alias, "/aws/v1/messages", "bedrock")
 
