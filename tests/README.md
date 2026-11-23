@@ -505,6 +505,17 @@ never lock an address; a key beside a bad token is counted. `TestCrossSite`:
 a write by sign-in from another site is refused, a key's never.
 `TestAudit`: the row says how the caller signed in.
 
+### `test_tag_release.py` — CI tags a merge with its version
+
+`scripts/tag_release.sh`, run for real against a throwaway repository and
+a bare remote. `TestTagging`: a merge is tagged `v<version>` (annotated)
+and the tag pushed; the same commit again does nothing; a merge that did
+not raise the version gets no tag and moves none; the next version gets
+its own; a dry run changes nothing; a version that is not three numbers is
+refused; the version itself is never changed. `TestTheJob`: only a merge
+to `main` that passed the tests is tagged, only that job may write, and a
+push to `main` is never superseded.
+
 ### `test_endpoint_inventory.py` — `docs/endpoints.md`
 
 The inventory lists exactly the routes the real app registers, each once
