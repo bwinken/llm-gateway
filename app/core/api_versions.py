@@ -29,11 +29,30 @@ Delete an entry in the change that removes its routes, never earlier.
 
 from __future__ import annotations
 
+import tomllib
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
-# The gateway's own release, shown in /docs too (``app.main``).
-GATEWAY_VERSION = "1.0.0"
+# The one place the release number is written: ``version`` in pyproject.toml.
+_PYPROJECT = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+
+
+def _release() -> str:
+    """The gateway's release: ``[project].version`` of pyproject.toml, which
+    sits beside ``app/`` on a host and in the image alike. A file that is
+    missing or cannot be read never stops the start: the release is then
+    ``0.0.0`` (nothing decides by it; it is for people and bug reports)."""
+    try:
+        with _PYPROJECT.open("rb") as f:
+            return str(tomllib.load(f)["project"]["version"])
+    except Exception:
+        return "0.0.0"
+
+
+# The gateway's own release, shown in /docs too (``app.main``). Every pull
+# request raises it (pyproject.toml, then ``uv lock``): see CLAUDE.md.
+GATEWAY_VERSION = _release()
 
 STABLE = "stable"
 DEPRECATED = "deprecated"

@@ -237,7 +237,7 @@ A frontend or a terminal tool is built against one version of the API and is rel
 ```json
 {
   "object": "version",
-  "gateway": "1.0.0",
+  "gateway": "0.1.0",
   "stable": "v1",
   "statuses": ["stable", "deprecated", "nightly"],
   "versions": [{"version": "v1", "status": "stable"}]
@@ -251,7 +251,7 @@ A frontend or a terminal tool is built against one version of the API and is rel
 | `nightly` | Served for trying out; it may change or go without notice |
 | not listed | Not served: the client is too old, or too new, for this gateway |
 
-A version may also carry a `note`. `gateway` is the gateway's own release (also the version `/docs` shows), for a bug report: a client never compares it to decide what is supported.
+A version may also carry a `note`. `gateway` is the gateway's own release (also the version `/docs` shows), for a bug report: a client never compares it to decide what is supported. It is written in one place, `version` in `pyproject.toml`, which `api_versions.GATEWAY_VERSION` reads at import (`0.0.0` if the file cannot be read: nothing decides by it). Every pull request raises it: the last number for a fix or a change nobody outside sees, the middle one for a change in behaviour or an addition to an API, then `uv lock`, because the lock file names the project's version and CI installs with `--locked`. There is no second counter for additions to `v1`: a client finds out whether a key is there by looking for it (an absent value is an absent key), and whether `v1` is still served from `versions` (`TestTheRelease`).
 
 **The list is code** (`app/core/api_versions.py`: `VERSIONS`), not an admin setting: a status is a promise about the code in the repository, so it changes in the commit that changes the code. `check()` runs at import and refuses a list a client could not rely on (no stable version or two, an unknown status, a deprecated version without its sunset date and successor), so a wrong edit stops the start. `v1` is everything the gateway serves today: `/v1/*`, `/azure/v1/*`, `/aws/v1/*`, `/auth/api-key` and `/dashboard/api/*`. (Five routes left `v1` on the owner's word before any frontend was built against them: `GET /dashboard/api/me`, `status`, `usage`, `service-accounts` and `notices`, merged into the account endpoints of the same name.)
 

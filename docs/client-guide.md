@@ -461,7 +461,7 @@ curl https://your-gateway/v1/version
 ```json
 {
   "object": "version",
-  "gateway": "1.0.0",
+  "gateway": "0.1.0",
   "stable": "v1",
   "statuses": ["stable", "deprecated", "nightly"],
   "versions": [{"version": "v1", "status": "stable"}]
