@@ -12,6 +12,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import contextlib
+
+import pytest
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -590,6 +592,109 @@ class TestClientNameEndToEnd:
         assert rec.x_title == "Invoice Bot"
 
 
+class TestTheEndpointThatWasCalled:
+    """The generation is named after the path the client called, as it
+    arrived: which endpoints are really used is read off Langfuse. The route
+    that served it stays in the metadata."""
+
+    OK = {
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+    }
+
+    def _call(self, client, path: str, body: dict, downstream):
+        from fastapi.testclient import TestClient
+
+        from app.services.observability import RequestMetaMiddleware
+        from tests.conftest import auth_header
+
+        captured = []
+        app = RequestMetaMiddleware(client.app)
+        with patch.object(client.__httpx_mock__, "post", return_value=downstream), \
+             patch("app.services.billing.get_langfuse", return_value=MagicMock()), \
+             patch("app.services.billing.record_generation", captured.append), \
+             TestClient(app) as tc:
+            resp = tc.post(path, json=body, headers=auth_header())
+        assert captured, "no generation recorded"
+        return resp, captured[-1]
+
+    def _emitted(self, rec) -> tuple[dict, dict]:
+        """(the generation's kwargs, the trace's attributes) as sent to Langfuse."""
+        client, trace = MagicMock(), {}
+
+        def _propagate(**kw):
+            trace.update(kw)
+            return contextlib.nullcontext()
+
+        with patch("app.services.observability.get_langfuse", return_value=client), \
+             patch("langfuse.propagate_attributes", _propagate):
+            record_generation(rec)
+        return client.start_observation.call_args.kwargs, trace
+
+    @pytest.mark.parametrize("path", ["/v1/chat/completions", "/chat/completions"])
+    def test_the_path_is_recorded_as_it_arrived(self, client, test_user, path):
+        from tests.conftest import make_httpx_response
+
+        body = {"model": "test-llm", "messages": [{"role": "user", "content": "hi"}]}
+        resp, rec = self._call(client, path, body, make_httpx_response(200, self.OK))
+        assert resp.status_code == 200, resp.text
+        assert rec.request_path == path
+        # The route that served it is one, whichever way it was called.
+        assert rec.endpoint == "/v1/chat/completions"
+        generation, trace = self._emitted(rec)
+        assert generation["name"] == path and trace["trace_name"] == path
+        assert generation["metadata"]["endpoint"] == "/v1/chat/completions"
+
+    def test_a_cloud_model_called_through_v1_is_named_v1(self, client, test_user):
+        # The Azure proxy serves it; what the client called is /v1.
+        azure_reply = MagicMock(status_code=200, text="")
+        azure_reply.json.return_value = {
+            "id": "resp_test", "status": "completed",
+            "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+        body = {"model": "azure-gpt-4", "messages": [{"role": "user", "content": "hi"}]}
+        resp, rec = self._call(client, "/v1/chat/completions", body, azure_reply)
+        assert resp.status_code == 200, resp.text
+        assert rec.backend == "azure" and rec.endpoint == "/azure/v1/chat/completions"
+        assert rec.request_path == "/v1/chat/completions"
+        generation, _ = self._emitted(rec)
+        assert generation["name"] == "/v1/chat/completions"
+        assert generation["metadata"]["endpoint"] == "/azure/v1/chat/completions"
+
+    def test_a_failed_request_is_named_the_same_way(self, client, test_user):
+        from tests.conftest import make_httpx_response
+
+        body = {"model": "test-llm", "messages": [{"role": "user", "content": "hi"}]}
+        resp, rec = self._call(client, "/chat/completions", body, make_httpx_response(400, {"error": {"message": "bad"}}))
+        assert resp.status_code == 400 and rec.is_error is True
+        assert rec.request_path == "/chat/completions"
+        assert self._emitted(rec)[0]["name"] == "/chat/completions"
+
+    def test_outside_a_request_the_name_is_the_route(self):
+        generation, trace = self._emitted(_make_record(endpoint="/v1/messages"))
+        assert generation["name"] == "/v1/messages" and trace["trace_name"] == "/v1/messages"
+
+    def test_the_client_label_still_follows_the_route(self):
+        # No User-Agent: the family comes from the route, which has its /v1
+        # whatever the client called.
+        rec = _make_record(endpoint="/v1/messages", request_path="/messages", user_agent=None)
+        assert self._emitted(rec)[0]["version"] == "anthropic-sdk"
+
+    def test_only_langfuse_gets_the_path(self, client, db_session, test_user):
+        # The usage record and the Prometheus label keep the route: reports
+        # and usage_daily are keyed by it.
+        from sqlmodel import select
+
+        from app.models.schema import UsageLog
+        from tests.conftest import make_httpx_response
+
+        body = {"model": "test-llm", "messages": [{"role": "user", "content": "hi"}]}
+        self._call(client, "/chat/completions", body, make_httpx_response(200, self.OK))
+        db_session.expire_all()
+        assert [row.endpoint for row in db_session.exec(select(UsageLog)).all()] == ["/v1/chat/completions"]
+
+
 class TestRequestMetaMiddleware:
     """Header capture MUST live in the pure-ASGI middleware: a contextvar set
     in the sync get_current_user dependency runs in a threadpool copy and is
@@ -628,6 +733,7 @@ class TestRequestMetaMiddleware:
         assert seen.get("x_app") == "cli"
         assert seen.get("x_title") == "Review Agent"
         assert seen.get("session_id") == "sess-123"
+        assert seen.get("path") is None  # this scope has none
 
     def test_non_http_scope_is_passthrough(self):
         import asyncio

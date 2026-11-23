@@ -26,7 +26,11 @@ Gateway 目前註冊的每一條路由：誰在呼叫、用什麼驗證、要不
 
 ### 刪除候選（這次沒有刪）
 
-這三組在 repo 裡找不到呼叫者，但 repo 看不到正式環境的流量。要刪之前先查 nginx access log，確認一段時間（建議 30 天）內沒有請求：
+這三組在 repo 裡找不到呼叫者，但 repo 看不到正式環境的流量。要刪之前先確認一段時間（建議 30 天）內沒有請求，有兩個地方可以查。
+
+**Langfuse（前兩組）**：generation 的 `name` 是 client 實際打的路徑，沒有改寫過（`/chat/completions` 不會變成 `/v1/chat/completions`）。在 Langfuse 用 `name` 分組，就看得到每一條路徑的請求數、token 和費用，也看得到是誰（`userId`）、用什麼工具（`version`）在打。限制：只有送到後端的請求才會記錄（`/v1/models`、帳號端點、`/admin` 不會）；`LANGFUSE_SAMPLE_RATE` 小於 1 時是抽樣，沒出現不代表沒人用；這項改動上線前的紀錄，`name` 還是改寫過的路由。
+
+**nginx access log（三組都能查，而且是完整的）**：
 
 ```bash
 # 根目錄、沒有 /v1 前綴的別名

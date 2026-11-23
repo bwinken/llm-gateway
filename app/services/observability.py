@@ -38,9 +38,13 @@ def set_request_meta(
     x_app: str | None = None,
     session_id: str | None = None,
     x_title: str | None = None,
+    path: str | None = None,
 ) -> None:
     _request_meta.set(
         {
+            # The path the client called, as it arrived (``/chat/completions``
+            # stays without its ``/v1``): the generation's name in Langfuse.
+            "path": path,
             "user_agent": user_agent,
             "x_app": x_app,
             "x_title": x_title,
@@ -258,8 +262,8 @@ def get_request_meta() -> dict:
 
 class RequestMetaMiddleware:
     """Pure-ASGI middleware that stashes request headers (User-Agent, x-app,
-    x-title, x-session-id) into the request-meta contextvar for the
-    observability hook.
+    x-title, x-session-id) and the path the client called into the
+    request-meta contextvar for the observability hook.
 
     Must be pure ASGI (NOT BaseHTTPMiddleware) and NOT a sync FastAPI
     dependency: a contextvar written in a sync dependency runs in a threadpool
@@ -285,6 +289,7 @@ class RequestMetaMiddleware:
                 x_app=headers.get("x-app"),
                 session_id=headers.get("x-session-id"),
                 x_title=headers.get("x-title"),
+                path=scope.get("path"),
             )
         await self.app(scope, receive, send)
 
@@ -594,7 +599,7 @@ class GenerationRecord:
     """
     username: str            # -> Langfuse userId (human-readable handle)
     user_id: str             # immutable anchor -> metadata.user_id
-    endpoint: str            # -> generation `name` (groupable dimension)
+    endpoint: str            # the route that served it, with its /v1 -> metadata.endpoint
     backend: str             # "vllm" | "azure"  -> tag
     model_alias: str         # user-facing alias -> `model`
     real_model: str          # downstream model/deployment -> metadata
@@ -608,6 +613,10 @@ class GenerationRecord:
     req_shape: dict | None = None       # {msgs, asst, asst_thinking, asst_empty}
     latency_ms: float | None = None
     timing: dict | None = None          # request_timing(): phase durations
+    # The path the client called, as it arrived -> generation `name` and the
+    # trace's name (the groupable dimension). None outside a request: the
+    # name is then `endpoint`.
+    request_path: str | None = None
     user_agent: str | None = None
     x_app: str | None = None
     x_title: str | None = None          # the name the client gives itself (X-Title)
@@ -779,6 +788,14 @@ def record_generation(rec: GenerationRecord) -> None:
         from langfuse import propagate_attributes
 
         client_label = classify_client(rec.user_agent, rec.endpoint, rec.x_app, rec.x_title)
+        # What a report groups requests by is the path the client really
+        # called: /chat/completions and /v1/chat/completions stay apart, and
+        # a /v1/messages request served by Azure is /v1/messages, not the
+        # /azure/v1/messages of the proxy that served it. That one is
+        # `endpoint`, kept in the metadata (with the `backend:` tag beside
+        # it). Only a path that matched a route gets this far, and none of
+        # those routes has a parameter, so the set of names is the routes'.
+        name = rec.request_path or rec.endpoint
         rec.guardrail = resolve_guardrail(rec.guardrail)
         # The client label goes out three times, because each place answers
         # a different question and none answers all of them:
@@ -844,11 +861,11 @@ def record_generation(rec: GenerationRecord) -> None:
             user_id=rec.username,
             session_id=rec.session_id,
             tags=tags,
-            trace_name=rec.endpoint,
+            trace_name=name,
             metadata=trace_metadata(rec),
         ):
             gen = client.start_observation(
-                name=rec.endpoint,
+                name=name,
                 as_type="generation",
                 model=rec.model_alias,
                 # Nothing of the gateway is versioned per request, so the
