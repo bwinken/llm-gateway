@@ -158,6 +158,8 @@ What the holder of the account is told on top of the budget is for both (`accoun
 
 In `/docs` they are one group, `account` (see *OpenAPI groups* under [Runtime patterns](#runtime-patterns-http-clients-health-loop-logging-export)).
 
+**How they are described.** A handler's docstring is the route's description in `/docs` and `openapi.json`, and all eight are written to one plan so a tool's author finds the same thing in the same place: a first line that says what the route answers; **Sign-in**; **Query** / **Body** with the limits of each field; **Response** as a table, one row per key, saying when a key is absent; **Only for an SSO sign-in**; **Limits and things to know** (ranges, how old a figure can be, what is left out, what is counted or audited); **Errors**. Each has a written `summary`, and the statuses it can answer are in the document: 401, 403 and 429 once for the group (`account_api._COMMON_ERRORS`), a route's own (400, 429 for the hourly allowance, 503) on the route. What the document does not have yet is the shape of the answers as a schema: the handlers return plain dicts, so `openapi.json` shows no response model and a client cannot be generated from it; that needs Pydantic response models, kept from dropping keys or adding `null`s.
+
 `tests/test_account_info.py`, `tests/test_status_usage.py`, `tests/test_client_events.py`, `tests/test_account_sign_in.py`.
 
 ### Settings fields (`/v1/settings`)

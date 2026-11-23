@@ -160,32 +160,32 @@ def test_nothing_on_the_api_path_reads_the_column():
     set from the token's scope for the one request, exactly as
     ``get_web_user`` sets it (``deps._authenticate_sso``), and
     ``account_view.me_signed_in`` reports that: still never the column."""
+    import ast
     from pathlib import Path
+
+    def code_lines(path: Path) -> list[str]:
+        """The module's code that mentions the flag, one statement a line:
+        comments and docstrings (what /docs shows for a route) are prose,
+        and rewording them must not fail this test."""
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) \
+                    and ast.get_docstring(node, clean=False) is not None:
+                node.body = node.body[1:] or [ast.Pass()]
+        return [line.strip() for line in ast.unparse(tree).splitlines() if "is_admin" in line]
 
     app = Path(__file__).resolve().parent.parent / "app"
     allowed = {
         "core/deps.py": [
-            "    user.is_admin = False",
-            '    user.is_admin = "admin" in scopes',
-            "    if user.is_disabled and not user.is_admin:",
+            "user.is_admin = False",
+            "user.is_admin = 'admin' in scopes",
+            "if user.is_disabled and (not user.is_admin):",
         ],
         "routers/v1_api.py": [],
-        # The handler's description of the answer (shown in /docs), no code.
-        "routers/account_api.py": [
-            "in by SSO (``account_view.*_signed_in``): ``is_admin``, and who a service",
-            "    ``is_admin`` is there only for a person signed in by SSO: true or false",
-        ],
-        "services/account_view.py": [
-            "route calls only for a sign-in (``schema.signed_in_by_sso``): ``is_admin``,",
-                    '    """What ``GET /v1/me`` adds for a person signed in by SSO: ``is_admin``,',
-            '    return {"is_admin": bool(user.is_admin)}',
-        ],
+        "routers/account_api.py": [],
+        "services/account_view.py": ["return {'is_admin': bool(user.is_admin)}"],
         "routers/azure_api.py": [],
         "routers/aws_api.py": [],
     }
     for name, expected in allowed.items():
-        lines = [
-            line for line in (app / name).read_text().splitlines()
-            if "is_admin" in line and not line.lstrip().startswith("#")
-        ]
-        assert lines == expected, name
+        assert code_lines(app / name) == expected, name

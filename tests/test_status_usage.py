@@ -88,6 +88,49 @@ class TestDocsGroups:
         for key, tags in operations.items():
             assert len(tags) == 1 and tags[0] in known, (key, tags)
 
+    def test_every_account_endpoint_is_described_to_one_plan(self, client):
+        """What /docs and openapi.json say about an account endpoint is what
+        a tool's author reads. Each has a title and the same sections in the
+        same order, so the limits and the errors are always in one place."""
+        spec = client.get("/openapi.json").json()
+        sections = ["**Sign-in.**", "**Response**", "**Limits and things to know**", "**Errors"]
+        seen = 0
+        for path in self.ACCOUNT:
+            for method, operation in spec["paths"][path].items():
+                seen += 1
+                where = (method, path)
+                # A title someone wrote, not the handler's name turned into words.
+                assert operation["summary"] and operation["summary"][0].isupper(), where
+                assert " " in operation["summary"], where
+                text = operation["description"]
+                first = text.splitlines()[0]
+                assert first.endswith(".") and len(first) < 200, where
+                found = [text.find(section) for section in sections]
+                assert all(at > 0 for at in found) and found == sorted(found), (where, found)
+                # A table per answer, and it parses as one: a header row and its rule.
+                response = text[text.index("**Response**"):]
+                assert "| Key | Type | Meaning |\n|---|---|---|\n| `object`" in response, where
+                # What every one of them can answer is in the document too.
+                assert {"200", "401", "403", "429"} <= set(operation["responses"]), where
+                for code in ("401", "403", "429"):
+                    assert operation["responses"][code]["description"], (where, code)
+        assert seen == len(self.ACCOUNT) == 9
+
+    def test_a_route_lists_its_own_errors_and_limits(self, client):
+        paths = client.get("/openapi.json").json()["paths"]
+        assert {"400", "503"} <= set(paths["/v1/notices/resolved"]["post"]["responses"])
+        assert {"400", "503"} <= set(paths["/v1/events"]["post"]["responses"])
+        events = paths["/v1/events"]["post"]
+        assert "300 events" in events["responses"]["429"]["description"]
+        assert "At most 300 events an hour" in events["description"]
+        # The numbers a description states are the code's.
+        from app.services import account_view, client_events, client_rules
+
+        assert client_events.MAX_PER_HOUR == 300 and account_view.USAGE_MAX_DAYS == 90
+        assert "`1` to `90`" in paths["/v1/usage"]["get"]["description"]
+        notices = paths["/v1/notices"]["get"]["description"]
+        assert f"({client_rules.WINDOW_DAYS})" in notices and f"({client_rules.RESOLVED_QUIET_DAYS})" in notices
+
     def test_the_account_endpoints_are_one_group(self, client):
         operations = self._operations(client)
         account = sorted({path for (_, path), tags in operations.items() if tags == ["account"]})
