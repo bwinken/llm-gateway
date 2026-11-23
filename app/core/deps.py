@@ -602,7 +602,7 @@ def get_client_notices(user: User) -> dict:
 
 def get_model_changes(user: User) -> list[dict]:
     """What the dashboard's model-change panel shows ``user``, for
-    ``GET /v1/model-changes``: ``model_changes.for_account``, the changes
+    the ``model_changes`` block of ``GET /v1/notices``: ``model_changes.for_account``, the changes
     being shown now that have renames for this account. Like the panel it
     never fails the caller: a broken store reads as no change. Short-lived
     session; blocking."""

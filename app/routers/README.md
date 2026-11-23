@@ -12,14 +12,16 @@ graph LR
     Client -->|Bearer API key| azure_api
     Client -->|Bearer API key| aws_api
     Browser["Browser"] -->|JWT via oauth2-proxy| web_ui
+    Browser -->|JWT via oauth2-proxy| dashboard
     Browser -->|JWT via oauth2-proxy| admin
 
     subgraph routers
         v1_api["v1_api.py<br/>/v1/*<br/>(unified: vLLM default + Azure / Bedrock dispatch)"]
         azure_api["azure_api.py<br/>/azure/v1/*<br/>(Azure-only)"]
         aws_api["aws_api.py<br/>/aws/v1/*<br/>(Bedrock-only)"]
-        web_ui["web_ui.py<br/>/ • /dashboard • /setup"]
-        health_api["health_api.py<br/>/healthz • /readyz<br/>(no auth)"]
+        web_ui["web_ui.py<br/>/ • /setup"]
+        dashboard["dashboard/<br/>/dashboard • /dashboard/api/*"]
+        health_api["health_api.py<br/>/healthz • /readyz • /v1/version<br/>(no auth)"]
         auth_api["auth_api.py<br/>POST /auth/api-key<br/>(AuthCenter token → API key)"]
         admin["admin/<br/>/admin"]
     end
@@ -29,7 +31,9 @@ graph LR
     v1_api -->|alias ∈ BEDROCK_MODELS + can_use_bedrock| bedrock_proxy["services/bedrock_proxy.py"]
     azure_api --> azure_proxy
     aws_api --> bedrock_proxy
-    web_ui --> stats["services/stats.py"]
+    dashboard --> dashboard_view["services/dashboard_view.py"]
+    web_ui --> dashboard_view
+    dashboard_view --> stats["services/stats.py"]
     admin --> stats
     admin --> config["core/config.py"]
 ```
@@ -173,26 +177,50 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 
 ---
 
-## `web_ui.py` — User Dashboard
+## `dashboard/` and `web_ui.py` — User Dashboard and the Other Pages
 
 **Auth**: `auth.get_web_user` (JWT scope must include `read` or `admin`). Its POSTs are refused cross-site (403, `CrossSiteRequestGuard`) and recorded in `audit_log` (`AuditMiddleware`).
 
-### Endpoints
+The dashboard is a package of its own, `app/routers/dashboard/`, being separated into a frontend of its own, backend first. Its data is put together in `app/services/dashboard_view.py`; the modules authenticate and answer. `web_ui.py` keeps the welcome and Setup pages.
+
+### Pages (`dashboard/page.py`, `web_ui.py`)
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/` | Welcome page: API guide, available models, quick start |
-| `GET` | `/dashboard` | Dashboard page: today's budget, usage stats, trend charts, cost by model, server status, and for owners the *Service accounts* tab |
-| `GET` | `/dashboard/api/model-breakdown` | Cost by Model card data as JSON (`?period=month` default, or `day`; else 400). Backs the Month/Today toggle and refresh button |
+| `GET` | `/` | Welcome page: API guide, available models, quick start (`web_ui.py`) |
+| `GET` | `/dashboard` | Dashboard page: today's budget, usage stats, trend charts, cost by model, server status, and for owners the *Service accounts* tab. After *I've applied it* or *I've switched* its script loads the page again: no route serves a part of it |
+| `GET` | `/setup` | Claude Code installer page (Windows). 404, like the installer download, with `SETUP_PAGE_ENABLED=false` (`web_ui.py`) |
+
+### The dashboard as JSON (`dashboard/api.py`)
+
+For a frontend of its own, served from the gateway's own origin. The first five answer what the `/v1` endpoint of the same name answers, by calling its function, and add what only a signed-in person sees. Additive changes only, never a `null`.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/dashboard/api/me` | `GET /v1/me`, plus `is_admin` (true by the token's scope), `org_code`, `api_key` (`masked`, `created_at`) and `site` (title, `api_base`, the admin's links, `setup_page`, `installer`) |
+| `GET` | `/dashboard/api/status` | `GET /v1/status` |
+| `GET` | `/dashboard/api/usage` | `GET /v1/usage` (`?days=`, 1 to 90) |
+| `GET` | `/dashboard/api/service-accounts` | `GET /v1/service-accounts`, plus per account `id`, `api_key_masked` and `sent_for` (who it sent requests for this month), and `withheld` |
+| `GET` | `/dashboard/api/notices` | `GET /v1/notices` (the model changes are its `model_changes` block), plus `quiet_days` |
+| `GET` | `/dashboard/api/api-key` | The caller's own key, in full. Never cached, in the audit log |
+| `GET` | `/dashboard/api/service-accounts/{app_id}/api-key` | An owned service account's key, in full: an owner in its department, else 403. Never cached, in the audit log |
+| `GET` | `/dashboard/api/model-breakdown` | Cost by Model card data as the page draws it (`?period=month` default, or `day`; else 400). Backs the page's Month/Today toggle and refresh button |
+
+### Actions and downloads (`dashboard/actions.py`)
+
+JSON for a caller that sends `Accept: application/json`; a plain form submit is redirected to `/dashboard`.
+
+| Method | Path | Description |
+|---|---|---|
 | `POST` | `/dashboard/refresh-key` | Regenerate own API key (`schema.issue_api_key`: 256-bit key, resets its issue / last-use dates), returns JSON `{ok, api_key}` |
-| `POST` | `/dashboard/app/{app_id}/refresh-key` | Regenerate owned service account's API key (must be owner, else 403) |
-| `GET` | `/dashboard/install-claude-code.bat` | Windows Claude Code installer download, `setup/install-claude-code.bat` with `__USER_API_KEY__` replaced by the caller's key and line endings normalized to CRLF (404 when the template is absent) |
-| `GET` | `/dashboard/client-notices` | The dashboard's client-rule notices panel alone (`_client_notices.html`; empty when nothing is open). The page swaps it in after *I've applied it* |
-| `GET` | `/dashboard/client-rules/all/patch.{bat,sh}` | The account's one settings patch: everything it has open, merged (`client_rules.combined_for`). There is no download per check. 404 when there is nothing to apply (a browser is redirected to `/dashboard`: mail links here) |
-| `POST` | `/dashboard/client-rules/{rule_id}/resolved` | *I've applied it*: hide this notice for at least two weeks; it returns only if the gateway still sees the problem after that. JSON with `Accept: application/json` |
+| `POST` | `/dashboard/app/{app_id}/refresh-key` | Regenerate owned service account's API key (an owner in its department, else 403) |
+| `POST` | `/dashboard/client-rules/{rule_id}/resolved` | *I've applied it*: hide this notice for at least two weeks; it returns only if the gateway still sees the problem after that |
 | `POST` | `/dashboard/client-rules/all/resolved` | *I've applied everything*: the same for every open notice |
-| `GET` | `/dashboard/api-key/patch.{bat,sh}` | The caller's own key as a settings patch: sets `ANTHROPIC_AUTH_TOKEN`, removes `ANTHROPIC_API_KEY` (`client_patch.key_env`). What to run after regenerating. `Cache-Control: no-store`, recorded in the audit log |
-| `GET` | `/setup` | Claude Code installer page (Windows). 404, like the installer download, with `SETUP_PAGE_ENABLED=false` |
+| `POST` | `/dashboard/model-changes/{change_id}/applied` | *I've switched*: folds the change and stops its mail. The change by its number or as the API shows it (`MC3`) |
+| `GET` | `/dashboard/client-rules/all/patch.{bat,sh}` | The account's one settings patch: everything it has open, merged (`client_rules.combined_for`). There is no download per check. 404 when there is nothing to apply (a browser is sent to `/dashboard`) |
+| `GET` | `/dashboard/model-changes/patch.{bat,sh}` | The account's model-change script: renames only |
+| `GET` | `/dashboard/api-key/patch.{bat,sh}` | The caller's own key as a settings patch: sets `ANTHROPIC_AUTH_TOKEN`, removes `ANTHROPIC_API_KEY` (`client_patch.key_env`). What to run after regenerating the key. In the audit log |
+| `GET` | `/dashboard/install-claude-code.bat` | Windows Claude Code installer download, `setup/install-claude-code.bat` with `__USER_API_KEY__` replaced by the caller's key and line endings normalized to CRLF (404 when the template is absent) |
 
 ### Dashboard Data Sources
 
@@ -201,8 +229,8 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 | Budget / Today | `get_user_daily_summary()` + `effective_cloud_limit()` | Today's requests, cost per backend, daily limit and cloud cap usage |
 | Stats Cards | `get_user_monthly_summary()` | Current month requests, cost, tokens |
 | Usage Trend | `get_daily_trends()` | Daily requests/cost for last 30 days |
-| Cost by Model | `get_model_breakdown()` via `_build_model_breakdown()` | Per-model cost grouped by backend; cloud backends the user may not use are left out, except peak-overflow rows, which are marked `overflow` (`model_catalog.visible_usage_rows`) |
-| Service accounts tab | `get_owned_apps_summary()` via `_owned_service_accounts()` | Owned service accounts: key, daily limit, this month's totals and usage per model with each model's share |
+| Cost by Model | `get_model_breakdown()` via `dashboard_view.model_breakdown()` | Per-model cost grouped by backend; cloud backends the user may not use are left out, except peak-overflow rows, which are marked `overflow` (`model_catalog.visible_usage_rows`) |
+| Service accounts tab | `get_owned_apps_summary()` via `dashboard_view.owned_service_accounts()` | Owned service accounts: key, daily limit, this month's totals and usage per model with each model's share |
 | System Status | `MODEL_ROUTING` + `is_alive()` | Server health grouped by type; Azure / Bedrock model lists only for users with access |
 
 ---
@@ -321,6 +349,7 @@ not learn by watching the service respond at all.
 |---|---|---|---|
 | `GET` | `/healthz` | Liveness. Zero I/O — answers as long as the process is up and the event loop is turning. | always `200` |
 | `GET` | `/readyz` | Readiness. Round-trips `SELECT 1` against the database; reports the vLLM health-cache counts as information. | `200` / `503` |
+| `GET` | `/v1/version` | The API versions this gateway serves and the status of each (`stable` / `deprecated` / `nightly`; `app/core/api_versions.py`): what a frontend or a tool released apart from the gateway asks first. No database read. | always `200` |
 
 `/readyz` gates on the **database only**. The vLLM health cache is reported
 but never fails the probe: it is filled by a background loop that has not
@@ -329,8 +358,8 @@ itself unready), and a fleet-wide downstream outage would pull every
 Gateway instance out of the load balancer at once — turning a degraded
 service into a total one.
 
-Both routes are `include_in_schema=False`, so they stay out of the OpenAPI
-document.
+The two probes are `include_in_schema=False`, so they stay out of the OpenAPI
+document; `/v1/version` is in it.
 
 ---
 

@@ -56,7 +56,7 @@ NOTHING_OPEN = {
     "model_changes": {"changes": [], "retiring": [], "patch": {"models": {}}},
 }
 
-PATHS = ["/v1/status", "/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/settings", "/v1/model-changes"]
+PATHS = ["/v1/status", "/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/settings"]
 
 
 class TestDocsGroups:

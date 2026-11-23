@@ -1,6 +1,6 @@
 # Endpoint 盤點
 
-Gateway 目前註冊的每一條路由：誰在呼叫、用什麼驗證、要不要留。日期：2026-11-23，共 **150** 條（另有 `/static` 靜態檔掛載，不算在內）。
+Gateway 目前註冊的每一條路由：誰在呼叫、用什麼驗證、要不要留。日期：2026-11-23，共 **147** 條（另有 `/static` 靜態檔掛載，不算在內）。
 
 這份清單和程式是對齊的：`tests/test_endpoint_inventory.py` 會比對這裡每一列和實際註冊的路由，新增或刪除路由而沒改這份文件，測試會失敗。
 
@@ -10,12 +10,12 @@ Gateway 目前註冊的每一條路由：誰在呼叫、用什麼驗證、要不
 
 | 類別 | 條數 | 處理 |
 |---|---|---|
-| 已刪除 | 2 | `GET /redoc`、`GET /docs/oauth2-redirect` |
+| 已刪除 | 5 | `GET /redoc`、`GET /docs/oauth2-redirect`、`GET /v1/model-changes`、`GET /dashboard/client-notices`、`GET /dashboard/model-changes` |
 | 新增 | 8 | `GET /v1/version`，以及 dashboard 的 JSON API 七條（前後端分離需要） |
 | 保留，但值得之後再看（見「刪除候選」） | 25 | 頁面沒在用、可能有外部呼叫者：先保留，看 access log 再決定 |
 | 保留 | 其餘 | 有頁面、文件或 client 在用 |
 
-**判斷「不必要」的標準**：頁面沒有呼叫，**而且**外部也不可能有人呼叫。只符合前一半的不刪：使用者或腳本可能直接打 API。照這個標準，確定可以刪的只有兩條重複的文件頁。
+**判斷「不必要」的標準**：頁面沒有呼叫，**而且**外部也不可能有人呼叫。只符合前一半的不刪：使用者或腳本可能直接打 API。照這個標準，確定可以刪的是兩條重複的文件頁，和兩條只回傳 HTML 片段、只有現有頁面在用的路由。`GET /v1/model-changes` 是另一種情況：內容已經在 `GET /v1/notices` 裡，由 owner 決定拿掉。
 
 ### 已刪除
 
@@ -23,6 +23,9 @@ Gateway 目前註冊的每一條路由：誰在呼叫、用什麼驗證、要不
 |---|---|
 | `GET /redoc` | 和 `/docs` 是同一份 OpenAPI 的第二種呈現，沒有文件或頁面連到它 |
 | `GET /docs/oauth2-redirect` | Swagger UI 的 OAuth2 登入流程用的轉址頁；gateway 的 `/docs` 沒有這個流程 |
+| `GET /v1/model-changes` | 內容已經在 `GET /v1/notices` 的 `model_changes` 區塊裡，問一個地方就好。**還在讀這一條的工具會收到 404，要改讀 `/v1/notices`** |
+| `GET /dashboard/client-notices` | 只回傳通知面板的 HTML 片段，只有 dashboard 頁面在按下 *I've applied it* 後用它重畫。頁面改成整頁重新載入 |
+| `GET /dashboard/model-changes` | 同上，模型汰換面板的 HTML 片段（按下 *I've switched* 之後）。`/dashboard/model-changes/patch.{bat,sh}` 與 `.../applied` 不受影響 |
 
 ### 刪除候選（這次沒有刪）
 
@@ -103,7 +106,6 @@ grep -cE '"(GET|POST|PATCH) /admin/(users(/[0-9]+)?|api/anomalies|api/audit-log)
 | `GET /v1/usage` | `v1_api.usage_history` |
 | `GET /v1/service-accounts` | `v1_api.owned_service_accounts` |
 | `GET /v1/notices` | `v1_api.client_notices` |
-| `GET /v1/model-changes` | `v1_api.model_changes_for_account` |
 | `POST /v1/notices/resolved` | `v1_api.client_notices_resolved` |
 | `POST /v1/events` | `v1_api.client_event` |
 | `GET /v1/settings` | `v1_api.client_settings_fields` |
@@ -191,13 +193,11 @@ SDK、Claude Code 與其他 client 呼叫的推論 API。全部保留。
 
 ### Dashboard 頁面
 
-`GET /dashboard` 和它的 script 換上去的兩個 HTML 片段。獨立前端上線後，這三條可以刪。
+`GET /dashboard`，整頁由 gateway 繪製。獨立前端上線後可以刪，`/dashboard/api/model-breakdown` 也可以跟著刪（只有這個頁面在用）。
 
 | 端點 | Handler |
 |---|---|
 | `GET /dashboard` | `dashboard.page.dashboard` |
-| `GET /dashboard/client-notices` | `dashboard.page.client_notices_panel` |
-| `GET /dashboard/model-changes` | `dashboard.page.model_changes_panel` |
 
 ### 其他頁面
 

@@ -834,13 +834,29 @@ def client_notices(user: User = Depends(get_account_holder)):
     of settings.json, and never holds a key.
 
     ``model_changes`` is a block of its own beside them: the models an admin
-    is replacing, for this account, exactly as ``GET /v1/model-changes``
-    gives them (``changes``, ``retiring``, ``patch.models``; all three empty
-    when no change is shown to the caller). It is a second category of
-    notice, not a violation: nothing of it is in ``notices`` or in the
-    top-level ``patch``, its patch is renames and never ``set`` / ``unset``,
-    and ``POST /v1/notices/resolved`` does not touch it. A client that
-    reads only ``notices`` and ``patch`` sees what it always saw.
+    is replacing (admin panel, *Model changes*) and is showing now, for this
+    account. It is a second category of notice, not a violation: nothing was
+    detected, the account is simply one the change is for. Nothing of it is
+    in ``notices`` or in the top-level ``patch``, its patch is renames and
+    never ``set`` / ``unset``, and ``POST /v1/notices/resolved`` does not
+    touch it. A client that reads only ``notices`` and ``patch`` sees what
+    it always saw.
+
+    In it, ``changes`` lists each change being shown that concerns the
+    account's tier (its cloud access: none, Azure, AWS or both): its ``id``
+    (``MC3``), ``title`` and ``message``, the ``models`` to replace
+    (``{old: new}``, this tier's) and whether the account said it switched
+    on its dashboard (``applied``). ``retiring`` is every model name being
+    replaced for this account, and ``patch.models`` the one rename map for
+    all of it (a later change wins where two replace the same model). All
+    three are empty unless an admin has a change switched on that is for
+    the caller.
+
+    Applying ``patch.models``: replace the old name with the new one where
+    Claude Code's settings.json names a model (the ``model`` setting and
+    the ``env`` variables with ``MODEL`` in their name), only where the
+    value is exactly the old name; a bracket suffix (``old[1m]``) is kept.
+    Add nothing: a user who chose another model keeps it.
 
     Read-only: reporting a notice as fixed is ``POST /v1/notices/resolved``.
     Answers once the daily limit is spent. Plain ``def``.
@@ -873,8 +889,8 @@ def client_notices(user: User = Depends(get_account_holder)):
 
 def _model_changes_block(user: User) -> dict:
     """The models being replaced for ``user``, as data: what
-    ``GET /v1/model-changes`` answers and what ``GET /v1/notices`` carries
-    under ``model_changes``. One function, so the two cannot disagree."""
+    ``GET /v1/notices`` carries under ``model_changes``. (It used to be an
+    endpoint of its own too, ``GET /v1/model-changes``; that one is gone.)"""
     renames: dict[str, str] = {}
     changes = []
     for change in get_model_changes(user):
@@ -886,39 +902,6 @@ def _model_changes_block(user: User) -> dict:
         changes.append(entry)
         renames.update(change["renames"])
     return {"changes": changes, "retiring": list(renames), "patch": {"models": renames}}
-
-
-@router.get("/v1/model-changes", tags=["account"])
-def model_changes_for_account(user: User = Depends(get_account_holder)):
-    """The models that are being replaced, for this account: what an admin
-    announced (admin panel, *Model changes*) and is showing now. Its own
-    flow, apart from the violations in ``notices`` of ``GET /v1/notices``
-    (which carries this same answer under ``model_changes``, for a client
-    that asks once): nothing was detected, the account is simply one the
-    change is for.
-
-    ``changes`` lists each change being shown that concerns the account's
-    tier (its cloud access: none, Azure, AWS or both): its ``id``
-    (``MC3``), ``title`` and ``message``, the ``models`` to replace
-    (``{old: new}``, this tier's) and whether the account said it
-    switched on its dashboard (``applied``). ``retiring`` is every model name being replaced for
-    this account, and ``patch.models`` the one rename map for all of it
-    (a later change wins where two replace the same model).
-
-    Applying the patch: replace the old name with the new one where
-    Claude Code's settings.json names a model (the ``model`` setting and
-    the ``env`` variables with ``MODEL`` in their name), only where the
-    value is exactly the old name; a bracket suffix (``old[1m]``) is
-    kept. Add nothing: a user who chose another model keeps it.
-
-    Values are returned only while an admin has a change switched on.
-    Before one is announced, once it is switched off and for an account no
-    change is for, all three are empty.
-
-    Read-only and never a key. Answers once the daily limit is spent.
-    Plain ``def``.
-    """
-    return {"object": "model_changes", **_model_changes_block(user)}
 
 
 @router.post("/v1/notices/resolved", tags=["account"])

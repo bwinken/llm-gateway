@@ -74,7 +74,7 @@ The budget hero stays at the top; the lower half is split into two tabs (**Model
 | The page's data as JSON | `GET /dashboard/api/me` · `status` · `usage` · `service-accounts` · `notices` · `api-key` | Not used by this page: for a frontend of its own (see *Dashboard* in `docs/architecture.md`) |
 | Download installer | `GET /dashboard/install-claude-code.bat` | Personalized Claude Code installer (linked from `/setup`) |
 | Download settings patch | `GET /dashboard/client-rules/all/patch.{bat,sh}` | One script for everything the account has open (the mail links to the same URL) |
-| I've applied it / everything | `POST /dashboard/client-rules/{id}/resolved` · `/all/resolved` | Hides the notice(s); the panel is then re-rendered from `GET /dashboard/client-notices` |
+| I've applied it / everything | `POST /dashboard/client-rules/{id}/resolved` · `/all/resolved` | Hides the notice(s); the page then loads again |
 | Download key patch | `GET /dashboard/api-key/patch.{bat,sh}` | From the key modal: sets `ANTHROPIC_AUTH_TOKEN` to the current key and removes `ANTHROPIC_API_KEY`. The modal points at it after *Regenerate* |
 
 ---
@@ -222,7 +222,7 @@ Included by `admin.html` (`on_admin_page = true`: Overview / Users / Clients / S
 
 | File | Used by | What it is |
 |---|---|---|
-| `_client_notices.html` | `dashboard.html`; alone from `GET /dashboard/client-notices` | The *Action needed* panel. Change the notices here, not in `dashboard.html` |
+| `_client_notices.html` | `dashboard.html` | The *Action needed* panel. Change the notices here, not in `dashboard.html` |
 | `_admin_user_table.html` | `admin.html`; alone from `GET /admin/user-table` | The Users / Apps tables with one row macro: change a column here, not in two copies |
 | `_admin_macros.html` | `admin.html`, `_admin_user_table.html` | Jinja macros shared by the admin page and its partials |
 

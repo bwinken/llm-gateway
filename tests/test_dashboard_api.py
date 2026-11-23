@@ -351,7 +351,7 @@ class TestThePageAndTheApiAgree:
         from app.routers.dashboard import actions, api, page
 
         for fn in (
-            page.dashboard, page.client_notices_panel, page.model_changes_panel,
+            page.dashboard,
             api.usage, api.service_accounts, api.notices, api.model_breakdown_api, api.service_account_api_key,
             actions.refresh_own_key, actions.refresh_owned_app_key, actions.client_rules_resolved_all,
         ):

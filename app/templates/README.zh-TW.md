@@ -74,7 +74,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | 頁面資料的 JSON | `GET /dashboard/api/me` · `status` · `usage` · `service-accounts` · `notices` · `api-key` | 這個頁面本身不使用：給獨立的前端用（見 `docs/architecture.md` 的 *Dashboard*） |
 | 下載安裝腳本 | `GET /dashboard/install-claude-code.bat` | 個人化的 Claude Code 安裝腳本（由 `/setup` 連結） |
 | 下載設定 patch | `GET /dashboard/client-rules/all/patch.{bat,sh}` | 一個腳本處理帳號所有未處理項目（信件連結指向同一個 URL） |
-| I've applied it / everything | `POST /dashboard/client-rules/{id}/resolved` · `/all/resolved` | 隱藏通知；之後面板由 `GET /dashboard/client-notices` 重新繪製 |
+| I've applied it / everything | `POST /dashboard/client-rules/{id}/resolved` · `/all/resolved` | 隱藏通知；之後整頁重新載入 |
 | 下載 key patch | `GET /dashboard/api-key/patch.{bat,sh}` | 從 key 視窗下載：把 `ANTHROPIC_AUTH_TOKEN` 設成目前的 key 並移除 `ANTHROPIC_API_KEY`。*Regenerate* 之後視窗會提示執行它 |
 
 ---
@@ -222,7 +222,7 @@ Admin 在 auth 階段免檢查停用旗標，因此這頁永遠不會擋到 admi
 
 | 檔案 | 使用處 | 內容 |
 |---|---|---|
-| `_client_notices.html` | `dashboard.html`；`GET /dashboard/client-notices` 單獨回傳 | *Action needed* 面板。通知要改這裡，不是改 `dashboard.html` |
+| `_client_notices.html` | `dashboard.html` | *Action needed* 面板。通知要改這裡，不是改 `dashboard.html` |
 | `_admin_user_table.html` | `admin.html`；`GET /admin/user-table` 單獨回傳 | Users / Apps 表格，共用一個 row macro：欄位改這裡，不要改兩份 |
 | `_admin_macros.html` | `admin.html`、`_admin_user_table.html` | 管理頁與其片段共用的 Jinja macro |
 

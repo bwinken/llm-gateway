@@ -26,7 +26,7 @@ script that does the edit:
 - **Its own flow.** A change is not a violation: nothing was detected. It
   is not among the notices (``GET /v1/notices``), its script is not the
   notices' patch, and "I've applied it" there does not touch it. By API key
-  it is ``GET /v1/model-changes``.
+  it is the ``model_changes`` block of ``GET /v1/notices``.
 - **Mail** goes out only when an admin asks (``request_mail``), to the
   accounts the change is for that have not said they switched, through the
   client-rule mail job and its pace (``client_mail.send_due``). This module

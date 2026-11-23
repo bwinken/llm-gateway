@@ -421,7 +421,7 @@ class TestEveryRoute:
 # ── The account endpoints ──
 
 class TestAccountEndpoints:
-    READS = ("/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/model-changes", "/v1/settings")
+    READS = ("/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/settings")
 
     def test_what_an_application_needs_answers_for_the_user(self, client, chat_app, alice):
         for path in ("/v1/me", "/v1/status", "/v1/models"):
