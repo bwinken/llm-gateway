@@ -185,22 +185,22 @@ class TestConcurrency:
 
     def test_enforced_limit_reported(self, client, test_user):
         # "limit" is the local one; cloud requests are counted apart
-        with patch("app.routers.v1_api.get_concurrency_settings", return_value=("enforce", 4)):
+        with patch("app.services.account_view.get_concurrency_settings", return_value=("enforce", 4)):
             assert _me(client)["concurrency"] == {"mode": "enforce", "limit": 4, "cloud_limit": 10}
 
     def test_cloud_limit_only_with_cloud_access(self, client, db_session, test_user):
         _update(db_session, test_user, can_use_azure=False, can_use_bedrock=False)
-        with patch("app.routers.v1_api.get_concurrency_settings", return_value=("enforce", 4)):
+        with patch("app.services.account_view.get_concurrency_settings", return_value=("enforce", 4)):
             assert _me(client)["concurrency"] == {"mode": "enforce", "limit": 4}
 
     def test_offpeak_hours_reported_when_set(self, client, test_user):
         hours = {"start": "22:00", "end": "08:00", "weekends": True}
-        with patch("app.routers.v1_api.get_concurrency_settings", return_value=("enforce", 4)), \
-             patch("app.routers.v1_api.get_concurrency_offpeak", return_value=hours), \
+        with patch("app.services.account_view.get_concurrency_settings", return_value=("enforce", 4)), \
+             patch("app.services.account_view.get_concurrency_offpeak", return_value=hours), \
              patch("app.services.concurrency.in_offpeak", return_value=True):
             assert _me(client)["concurrency"]["offpeak"] == {**hours, "active": True}
 
     def test_waived_user_reports_off(self, client, db_session, test_user):
         _update(db_session, test_user, concurrency_waived=True)
-        with patch("app.routers.v1_api.get_concurrency_settings", return_value=("enforce", 4)):
+        with patch("app.services.account_view.get_concurrency_settings", return_value=("enforce", 4)):
             assert _me(client)["concurrency"] == {"mode": "off"}

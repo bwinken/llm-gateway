@@ -162,7 +162,7 @@ class TestReport:
     def test_a_broken_store_is_told_without_its_text(self, client, test_user):
         from unittest.mock import patch
 
-        with patch("app.routers.v1_api.record_client_event", side_effect=RuntimeError("no such table: client_events")):
+        with patch("app.routers.account_api.record_client_event", side_effect=RuntimeError("no such table: client_events")):
             resp = client.post(PATH, json=_event(), headers=auth_header())
         assert resp.status_code == 503 and "client_events" not in resp.text
 
@@ -207,9 +207,9 @@ class TestTheAccountIsUntouched:
     def test_runs_off_the_event_loop_and_opens_no_session_of_its_own(self):
         import inspect
 
-        from app.routers import v1_api
+        from app.routers import account_api
 
-        assert not inspect.iscoroutinefunction(v1_api.client_event)
+        assert not inspect.iscoroutinefunction(account_api.client_event)
         assert not hasattr(client_events, "engine")
 
 

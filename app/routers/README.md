@@ -9,17 +9,21 @@ Defines FastAPI routes: the unified `/v1/*` public API, the Azure-only `/azure/v
 ```mermaid
 graph LR
     Client["Client App<br/>(SDK / curl)"] -->|Bearer API key| v1_api
+    Client -->|Bearer API key| account_api
     Client -->|Bearer API key| azure_api
     Client -->|Bearer API key| aws_api
     Browser["Browser"] -->|JWT via oauth2-proxy| web_ui
+    Browser -->|JWT via oauth2-proxy| dashboard
     Browser -->|JWT via oauth2-proxy| admin
 
     subgraph routers
-        v1_api["v1_api.py<br/>/v1/*<br/>(unified: vLLM default + Azure / Bedrock dispatch)"]
+        v1_api["v1_api.py<br/>/v1/* model API<br/>(unified: vLLM default + Azure / Bedrock dispatch)"]
+        account_api["account_api.py<br/>/v1/me • /v1/status • /v1/usage ...<br/>(account endpoints: no model, never billed)"]
         azure_api["azure_api.py<br/>/azure/v1/*<br/>(Azure-only)"]
         aws_api["aws_api.py<br/>/aws/v1/*<br/>(Bedrock-only)"]
-        web_ui["web_ui.py<br/>/ • /dashboard • /setup"]
-        health_api["health_api.py<br/>/healthz • /readyz<br/>(no auth)"]
+        web_ui["web_ui.py<br/>/ • /setup"]
+        dashboard["dashboard/<br/>/dashboard • /dashboard/api/*"]
+        health_api["health_api.py<br/>/healthz • /readyz • /v1/version<br/>(no auth)"]
         auth_api["auth_api.py<br/>POST /auth/api-key<br/>(AuthCenter token → API key)"]
         admin["admin/<br/>/admin"]
     end
@@ -29,18 +33,24 @@ graph LR
     v1_api -->|alias ∈ BEDROCK_MODELS + can_use_bedrock| bedrock_proxy["services/bedrock_proxy.py"]
     azure_api --> azure_proxy
     aws_api --> bedrock_proxy
-    web_ui --> stats["services/stats.py"]
+    dashboard --> dashboard_view["services/dashboard_view.py"]
+    account_api --> account_view["services/account_view.py"]
+    dashboard --> account_view
+    web_ui --> dashboard_view
+    dashboard_view --> stats["services/stats.py"]
     admin --> stats
     admin --> config["core/config.py"]
 ```
 
 ---
 
-## `v1_api.py` — Unified `/v1/*` API (OpenAI- and Anthropic-compatible)
+## `v1_api.py` — The Model API: Unified `/v1/*` Inference (OpenAI- and Anthropic-compatible)
 
 **Auth**: `deps.get_current_user` (API key + daily limit check). `chat/completions`, `responses` and `messages` use `deps.limited_current_user` (same check plus a concurrency slot); `/v1/me` uses `deps.get_current_user_unmetered` (no daily-limit 429).
 
-`v1_api.py` is the main public entry. It serves the vLLM backend by default, and dispatches to a cloud backend when the requested `model` alias is configured there and the caller may use it (the account's `can_use_azure` / `can_use_bedrock` flag):
+`v1_api.py` is the model API, the main public entry: every route here calls a model (or lists them for a client's picker). The account endpoints, which share the `/v1` prefix, are in `account_api.py` (next section).
+
+It serves the vLLM backend by default, and dispatches to a cloud backend when the requested `model` alias is configured there and the caller may use it (the account's `can_use_azure` / `can_use_bedrock` flag):
 
 - **Azure**: alias under `[azure_models.*]` + `can_use_azure` → chat / responses / messages / count_tokens.
 - **Bedrock**: alias under `[bedrock_models.*]` + `can_use_bedrock` → chat / messages / count_tokens.
@@ -52,14 +62,6 @@ One base URL surfaces every backend to clients like Claude Code's model picker. 
 | Method | Path(s) | Description | Proxy Method | Allowed Types |
 |---|---|---|---|---|
 | `GET` | `/v1/models`, `/models` | List models (LLM/VLM only, `hidden` entries left out). Azure aliases merged in for users with `can_use_azure`, Bedrock aliases for `can_use_bedrock` | Direct response | `llm`, `vlm` |
-| `GET` | `/v1/me`, `/me` | Caller's access (on-prem / Azure / AWS) and today's budget per backend. Auth skips the daily-limit 429 so it answers when the budget is spent | Direct response | — |
-| `GET` | `/v1/status` | The models the caller can see with `state` (`up` / `down` on-prem, `unchecked` cloud), load and billed prices (`model_catalog.visible_models`). Unmetered auth; no DB read | Direct response | — |
-| `GET` | `/v1/usage` | The caller's usage per local day (`?days=`, 1 to 90, default 7), and today and this month by model, through `usage_rollup.aggregate`. Unmetered auth; plain `def` | Direct response | — |
-| `GET` | `/v1/service-accounts` | The service accounts the caller owns with their daily limit and this month's usage, in total and per model (`stats.get_owned_apps_summary`), never their keys. Unmetered auth; plain `def` | Direct response | — |
-| `GET` | `/v1/notices` | The caller's open client-rule notices and their patches as `{set, unset}` (`client_rules.notices_for` / `combined_for`). Unmetered auth; plain `def` | Direct response | — |
-| `POST` | `/v1/notices/resolved` | *I've applied it* by API key: resolves the caller's open notices, all or the `ids` named, through the dashboard's `client_rules.resolve` / `resolve_all` (`deps.resolve_client_notices`). The one account write a key has; in the audit log (`audit._AUDITED_KEY_ROUTES`). Unmetered auth; plain `def` | Direct response | — |
-| `POST` | `/v1/events` | What a setup tool did on the caller's machine: installed / updated / uninstalled / settings applied, for which component (`kind`, `client`), version, OS and hostname (`client_events.clean` → `deps.record_client_event`). Telemetry for the admin's *Client installs* card; 300 an hour per account. Unmetered auth; plain `def` | Direct response | — |
-| `GET` | `/v1/settings` | The client settings a tool can offer the caller when it sets a client up: per variable a description, a `default` and its `options`, by tier (the account's cloud access), from the admin's `client_settings.json` (`client_settings.fields_for`). Read-only; unmetered auth; no DB read | Direct response | — |
 | `POST` | `/v1/chat/completions`, `/chat/completions` | Chat completion generation | `vllm_forward_chat_completions` (vLLM) / `azure_forward_chat_completions` (Azure) / `bedrock_forward_chat_completions` (Bedrock) | `llm`, `vlm` |
 | `POST` | `/v1/responses`, `/responses` | Responses API (no Bedrock dispatch: a Bedrock alias falls back to vLLM) | `vllm_forward_responses` (vLLM) / `azure_forward_responses` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`, `/embeddings` | Text embeddings | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
@@ -118,6 +120,25 @@ When fallback occurs, the response includes an `X-Model-Fallback` header explain
 
 ---
 
+## `account_api.py` — Account Endpoints
+
+**Auth**: `deps.get_current_user_unmetered` (API key, **without** the daily-limit check, so they answer once the budget is spent), or `deps.get_account_holder`, which also refuses a request a service account sends for a user.
+
+What an account reads and reports about itself, as JSON, for a program that is not a browser (a terminal tool, a status line). These share the `/v1` prefix with the model API in `v1_api.py` and nothing else: they call no model, are never billed and take no concurrency slot. The five reads (`me`, `status`, `usage`, `service-accounts`, `notices`) have their body built in `app/services/account_view.py`, which the dashboard's `/dashboard/api/*` calls too. Additive changes only, never a `null`.
+
+| Method | Path(s) | Description |
+|---|---|---|
+| `GET` | `/v1/me`, `/me` | Caller's access (on-prem / Azure / AWS) and today's budget per backend. Auth skips the daily-limit 429 so it answers when the budget is spent |
+| `GET` | `/v1/status` | The models the caller can see with `state` (`up` / `down` on-prem, `unchecked` cloud), load and billed prices (`model_catalog.visible_models`). Unmetered auth; no DB read |
+| `GET` | `/v1/usage` | The caller's usage per local day (`?days=`, 1 to 90, default 7), and today and this month by model, through `usage_rollup.aggregate`. Unmetered auth; plain `def` |
+| `GET` | `/v1/service-accounts` | The service accounts the caller owns with their daily limit and this month's usage, in total and per model (`stats.get_owned_apps_summary`), never their keys. Unmetered auth; plain `def` |
+| `GET` | `/v1/notices` | The caller's open client-rule notices and their patches as `{set, unset}` (`client_rules.notices_for` / `combined_for`). Unmetered auth; plain `def` |
+| `POST` | `/v1/notices/resolved` | *I've applied it* by API key: resolves the caller's open notices, all or the `ids` named, through the dashboard's `client_rules.resolve` / `resolve_all` (`deps.resolve_client_notices`). The one account write a key has; in the audit log (`audit._AUDITED_KEY_ROUTES`). Unmetered auth; plain `def` |
+| `POST` | `/v1/events` | What a setup tool did on the caller's machine: installed / updated / uninstalled / settings applied, for which component (`kind`, `client`), version, OS and hostname (`client_events.clean` → `deps.record_client_event`). Telemetry for the admin's *Client installs* card; 300 an hour per account. Unmetered auth; plain `def` |
+| `GET` | `/v1/settings` | The client settings a tool can offer the caller when it sets a client up: per variable a description, a `default` and its `options`, by tier (the account's cloud access), from the admin's `client_settings.json` (`client_settings.fields_for`). Read-only; unmetered auth; no DB read |
+
+---
+
 ## `azure_api.py` — Azure OpenAI Compatibility
 
 **Auth**: `deps.require_azure_access` (wraps `get_current_user`, additionally checks `user.can_use_azure` and the daily cloud cap) — same gateway API key + daily limit as `/v1/*`, plus a per-user Azure access flag. `chat/completions`, `responses` and `messages` go through `deps.limited_azure_access` (same checks plus a concurrency slot).
@@ -173,26 +194,50 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 
 ---
 
-## `web_ui.py` — User Dashboard
+## `dashboard/` and `web_ui.py` — User Dashboard and the Other Pages
 
 **Auth**: `auth.get_web_user` (JWT scope must include `read` or `admin`). Its POSTs are refused cross-site (403, `CrossSiteRequestGuard`) and recorded in `audit_log` (`AuditMiddleware`).
 
-### Endpoints
+The dashboard is a package of its own, `app/routers/dashboard/`, being separated into a frontend of its own, backend first. Its data is put together in `app/services/dashboard_view.py`; the modules authenticate and answer. `web_ui.py` keeps the welcome and Setup pages.
+
+### Pages (`dashboard/page.py`, `web_ui.py`)
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/` | Welcome page: API guide, available models, quick start |
-| `GET` | `/dashboard` | Dashboard page: today's budget, usage stats, trend charts, cost by model, server status, and for owners the *Service accounts* tab |
-| `GET` | `/dashboard/api/model-breakdown` | Cost by Model card data as JSON (`?period=month` default, or `day`; else 400). Backs the Month/Today toggle and refresh button |
+| `GET` | `/` | Welcome page: API guide, available models, quick start (`web_ui.py`) |
+| `GET` | `/dashboard` | Dashboard page: today's budget, usage stats, trend charts, cost by model, server status, and for owners the *Service accounts* tab. After *I've applied it* or *I've switched* its script loads the page again: no route serves a part of it |
+| `GET` | `/setup` | Claude Code installer page (Windows). 404, like the installer download, with `SETUP_PAGE_ENABLED=false` (`web_ui.py`) |
+
+### The dashboard as JSON (`dashboard/api.py`)
+
+For a frontend of its own, served from the gateway's own origin. The first five answer what the `/v1` endpoint of the same name answers (both call the one function in `app/services/account_view.py`) and add what only a signed-in person sees. Additive changes only, never a `null`.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/dashboard/api/me` | `GET /v1/me`, plus `is_admin` (true by the token's scope), `org_code`, `api_key` (`masked`, `created_at`) and `site` (title, `api_base`, the admin's links, `setup_page`, `installer`) |
+| `GET` | `/dashboard/api/status` | `GET /v1/status` |
+| `GET` | `/dashboard/api/usage` | `GET /v1/usage` (`?days=`, 1 to 90) |
+| `GET` | `/dashboard/api/service-accounts` | `GET /v1/service-accounts`, plus per account `id`, `api_key_masked` and `sent_for` (who it sent requests for this month), and `withheld` |
+| `GET` | `/dashboard/api/notices` | `GET /v1/notices` (the model changes are its `model_changes` block), plus `quiet_days` |
+| `GET` | `/dashboard/api/api-key` | The caller's own key, in full. Never cached, in the audit log |
+| `GET` | `/dashboard/api/service-accounts/{app_id}/api-key` | An owned service account's key, in full: an owner in its department, else 403. Never cached, in the audit log |
+| `GET` | `/dashboard/api/model-breakdown` | Cost by Model card data as the page draws it (`?period=month` default, or `day`; else 400). Backs the page's Month/Today toggle and refresh button |
+
+### Actions and downloads (`dashboard/actions.py`)
+
+JSON for a caller that sends `Accept: application/json`; a plain form submit is redirected to `/dashboard`.
+
+| Method | Path | Description |
+|---|---|---|
 | `POST` | `/dashboard/refresh-key` | Regenerate own API key (`schema.issue_api_key`: 256-bit key, resets its issue / last-use dates), returns JSON `{ok, api_key}` |
-| `POST` | `/dashboard/app/{app_id}/refresh-key` | Regenerate owned service account's API key (must be owner, else 403) |
-| `GET` | `/dashboard/install-claude-code.bat` | Windows Claude Code installer download, `setup/install-claude-code.bat` with `__USER_API_KEY__` replaced by the caller's key and line endings normalized to CRLF (404 when the template is absent) |
-| `GET` | `/dashboard/client-notices` | The dashboard's client-rule notices panel alone (`_client_notices.html`; empty when nothing is open). The page swaps it in after *I've applied it* |
-| `GET` | `/dashboard/client-rules/all/patch.{bat,sh}` | The account's one settings patch: everything it has open, merged (`client_rules.combined_for`). There is no download per check. 404 when there is nothing to apply (a browser is redirected to `/dashboard`: mail links here) |
-| `POST` | `/dashboard/client-rules/{rule_id}/resolved` | *I've applied it*: hide this notice for at least two weeks; it returns only if the gateway still sees the problem after that. JSON with `Accept: application/json` |
+| `POST` | `/dashboard/app/{app_id}/refresh-key` | Regenerate owned service account's API key (an owner in its department, else 403) |
+| `POST` | `/dashboard/client-rules/{rule_id}/resolved` | *I've applied it*: hide this notice for at least two weeks; it returns only if the gateway still sees the problem after that |
 | `POST` | `/dashboard/client-rules/all/resolved` | *I've applied everything*: the same for every open notice |
-| `GET` | `/dashboard/api-key/patch.{bat,sh}` | The caller's own key as a settings patch: sets `ANTHROPIC_AUTH_TOKEN`, removes `ANTHROPIC_API_KEY` (`client_patch.key_env`). What to run after regenerating. `Cache-Control: no-store`, recorded in the audit log |
-| `GET` | `/setup` | Claude Code installer page (Windows). 404, like the installer download, with `SETUP_PAGE_ENABLED=false` |
+| `POST` | `/dashboard/model-changes/{change_id}/applied` | *I've switched*: folds the change and stops its mail. The change by its number or as the API shows it (`MC3`) |
+| `GET` | `/dashboard/client-rules/all/patch.{bat,sh}` | The account's one settings patch: everything it has open, merged (`client_rules.combined_for`). There is no download per check. 404 when there is nothing to apply (a browser is sent to `/dashboard`) |
+| `GET` | `/dashboard/model-changes/patch.{bat,sh}` | The account's model-change script: renames only |
+| `GET` | `/dashboard/api-key/patch.{bat,sh}` | The caller's own key as a settings patch: sets `ANTHROPIC_AUTH_TOKEN`, removes `ANTHROPIC_API_KEY` (`client_patch.key_env`). What to run after regenerating the key. In the audit log |
+| `GET` | `/dashboard/install-claude-code.bat` | Windows Claude Code installer download, `setup/install-claude-code.bat` with `__USER_API_KEY__` replaced by the caller's key and line endings normalized to CRLF (404 when the template is absent) |
 
 ### Dashboard Data Sources
 
@@ -201,8 +246,8 @@ There is intentionally **no** `/aws/v1/embeddings` and **no** `/aws/v1/responses
 | Budget / Today | `get_user_daily_summary()` + `effective_cloud_limit()` | Today's requests, cost per backend, daily limit and cloud cap usage |
 | Stats Cards | `get_user_monthly_summary()` | Current month requests, cost, tokens |
 | Usage Trend | `get_daily_trends()` | Daily requests/cost for last 30 days |
-| Cost by Model | `get_model_breakdown()` via `_build_model_breakdown()` | Per-model cost grouped by backend; cloud backends the user may not use are left out, except peak-overflow rows, which are marked `overflow` (`model_catalog.visible_usage_rows`) |
-| Service accounts tab | `get_owned_apps_summary()` via `_owned_service_accounts()` | Owned service accounts: key, daily limit, this month's totals and usage per model with each model's share |
+| Cost by Model | `get_model_breakdown()` via `dashboard_view.model_breakdown()` | Per-model cost grouped by backend; cloud backends the user may not use are left out, except peak-overflow rows, which are marked `overflow` (`model_catalog.visible_usage_rows`) |
+| Service accounts tab | `get_owned_apps_summary()` via `dashboard_view.owned_service_accounts()` | Owned service accounts: key, daily limit, this month's totals and usage per model with each model's share |
 | System Status | `MODEL_ROUTING` + `is_alive()` | Server health grouped by type; Azure / Bedrock model lists only for users with access |
 
 ---
@@ -321,6 +366,7 @@ not learn by watching the service respond at all.
 |---|---|---|---|
 | `GET` | `/healthz` | Liveness. Zero I/O — answers as long as the process is up and the event loop is turning. | always `200` |
 | `GET` | `/readyz` | Readiness. Round-trips `SELECT 1` against the database; reports the vLLM health-cache counts as information. | `200` / `503` |
+| `GET` | `/v1/version` | The API versions this gateway serves and the status of each (`stable` / `deprecated` / `nightly`; `app/core/api_versions.py`): what a frontend or a tool released apart from the gateway asks first. No database read. | always `200` |
 
 `/readyz` gates on the **database only**. The vLLM health cache is reported
 but never fails the probe: it is filled by a background loop that has not
@@ -329,8 +375,8 @@ itself unready), and a fleet-wide downstream outage would pull every
 Gateway instance out of the load balancer at once — turning a degraded
 service into a total one.
 
-Both routes are `include_in_schema=False`, so they stay out of the OpenAPI
-document.
+The two probes are `include_in_schema=False`, so they stay out of the OpenAPI
+document; `/v1/version` is in it.
 
 ---
 

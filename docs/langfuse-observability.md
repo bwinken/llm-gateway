@@ -95,7 +95,8 @@ the `empty_turn_warning` / `summarize_request_shape` helpers in `anthropic_adapt
 @dataclass
 class GenerationRecord:
     user: User
-    endpoint: str            # "/v1/messages"  -> Langfuse generation `name` (groupable)
+    endpoint: str            # "/v1/messages": the route that served it -> metadata.endpoint
+    request_path: str | None # the path the client called -> Langfuse generation `name` (groupable)
     backend: str             # "vllm" | "azure"
     user_agent: str | None   # raw User-Agent header -> metadata (calibration only)
     client: str              # derived: X-Title, a known tool, else the User-Agent's product -> categorical Score + tag
@@ -155,7 +156,8 @@ that can actually analyse it — confirmed against Langfuse Metrics API v2:
 | `display_name` (IdP-synced) | `metadata.display_name` | readable label; mutable — never the identity key |
 | `x-session-id` header (if present) | `sessionId` | conversation drill-down |
 | model **alias** | `model` (`providedModelName`) | primary group-by dimension for cost/usage |
-| **endpoint** | generation **`name`** | **groupable** dimension → per-endpoint (per-surface) statistics |
+| **the path the client called**, as it arrived (`/chat/completions` stays without its `/v1`; a `/v1/messages` request served by Azure is `/v1/messages`) | generation **`name`** and the trace's name | **groupable** dimension → which endpoints are really called, with requests, tokens and cost per path |
+| **endpoint** (the route that served it, always with its `/v1`: `/azure/v1/messages` for that same request) | `metadata.endpoint` | filter; with the `backend:` tag it says who served the path |
 | **client** (derived: the `X-Title` the client sends, else a known tool such as claude-code / roo-code / codex-cli, else the User-Agent's own product such as openai-python / curl; an endpoint family only without a User-Agent) | generation **`version`** + **categorical Score `client`** + **tag `client:<label>`** | **statisticable** — the observations view groups tokens, cost and latency by `version`; the `scores-categorical` view gives request distribution per software + day/month trend; the tag filters the Tracing list |
 | raw `User-Agent` header | `metadata.user_agent` | calibration / lookup only — **NOT** for statistics |
 | `real_model` / deployment | `metadata.real_model` | reference only |
@@ -261,7 +263,7 @@ LANGFUSE_SAMPLE_RATE   # float 0.0–1.0, default 1.0 — fraction of requests r
 
 Status: Phase 2 I/O capture wired for all conversational paths on both backends (vLLM + Azure), stream + non-stream. All gated on `LANGFUSE_CAPTURE_IO` (default off).
 
-**Failed requests** (downstream connection error / non-200) are also recorded — `_log_error` (wrapping the former `log_monitor_error` calls) emits a generation with `level=ERROR`, the upstream status + message in `statusMessage`, and a `request_error=true` categorical score (chart error rate per model/endpoint/user). No `usage_logs` row is written for failures.
+**Failed requests** (downstream connection error / non-200) are also recorded — `_log_error` (wrapping the former `log_monitor_error` calls) emits a generation with `level=ERROR`, the upstream status + message in `statusMessage`, and a `request_error=true` categorical score (chart error rate per model/endpoint/user). An exception is recorded with its type (`502: ReadTimeout`): a timeout has no message of its own. With `LANGFUSE_CAPTURE_IO` on it also carries the request's input, so a request that failed or timed out before the downstream answered shows what was sent; there is no output. No `usage_logs` row is written for failures. A client that disconnects in the middle of a stream is a different case and leaves no generation at all (see *Observability* in `architecture.md`).
 
 ## Plan (phases)
 

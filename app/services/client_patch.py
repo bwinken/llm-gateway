@@ -578,7 +578,7 @@ def render_patch_bat(name: str, env: dict[str, str | None], renames: dict[str, s
         .replace("__TITLE__", _bat_text(APP_TITLE))
         .replace("__NAME__", _bat_text(name))
     )
-    # cmd.exe misreads LF-only files; see web_ui.personalized_claude_installer.
+    # cmd.exe misreads LF-only files; see dashboard.actions.personalized_claude_installer.
     return script.replace("\r\n", "\n").replace("\n", "\r\n")
 
 

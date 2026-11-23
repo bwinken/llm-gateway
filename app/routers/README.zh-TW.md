@@ -9,17 +9,21 @@
 ```mermaid
 graph LR
     Client["Client App<br/>(SDK / curl)"] -->|Bearer API key| v1_api
+    Client -->|Bearer API key| account_api
     Client -->|Bearer API key| azure_api
     Client -->|Bearer API key| aws_api
     Browser["Browser"] -->|JWT via oauth2-proxy| web_ui
+    Browser -->|JWT via oauth2-proxy| dashboard
     Browser -->|JWT via oauth2-proxy| admin
 
     subgraph routers
-        v1_api["v1_api.py<br/>/v1/*<br/>(unified: vLLM default + Azure / Bedrock dispatch)"]
+        v1_api["v1_api.py<br/>/v1/* 模型 API<br/>(unified: vLLM default + Azure / Bedrock dispatch)"]
+        account_api["account_api.py<br/>/v1/me • /v1/status • /v1/usage ...<br/>(帳號端點：不呼叫模型、不計費)"]
         azure_api["azure_api.py<br/>/azure/v1/*<br/>(Azure-only)"]
         aws_api["aws_api.py<br/>/aws/v1/*<br/>(Bedrock-only)"]
-        web_ui["web_ui.py<br/>/ • /dashboard • /setup"]
-        health_api["health_api.py<br/>/healthz • /readyz<br/>(免認證)"]
+        web_ui["web_ui.py<br/>/ • /setup"]
+        dashboard["dashboard/<br/>/dashboard • /dashboard/api/*"]
+        health_api["health_api.py<br/>/healthz • /readyz • /v1/version<br/>(免認證)"]
         admin["admin/<br/>/admin"]
     end
 
@@ -28,18 +32,24 @@ graph LR
     v1_api -->|alias ∈ BEDROCK_MODELS + can_use_bedrock| bedrock_proxy["services/bedrock_proxy.py"]
     azure_api --> azure_proxy
     aws_api --> bedrock_proxy
-    web_ui --> stats["services/stats.py"]
+    dashboard --> dashboard_view["services/dashboard_view.py"]
+    account_api --> account_view["services/account_view.py"]
+    dashboard --> account_view
+    web_ui --> dashboard_view
+    dashboard_view --> stats["services/stats.py"]
     admin --> stats
     admin --> config["core/config.py"]
 ```
 
 ---
 
-## `v1_api.py` — 統一 `/v1/*` API（OpenAI 與 Anthropic 相容）
+## `v1_api.py` — 模型 API：統一的 `/v1/*` 推論（OpenAI 與 Anthropic 相容）
 
 **認證**：`deps.get_current_user`（API key + daily limit 檢查）。`chat/completions`、`responses`、`messages` 改用 `deps.limited_current_user`（相同檢查，另外佔一個並行名額）；`/v1/me` 用 `deps.get_current_user_unmetered`（不做每日額度 429）。
 
-`v1_api.py` 是主要的公開入口。預設走 vLLM 後端；當請求的 `model` alias 設定在雲端後端、且 caller 有權使用時（看帳號的 `can_use_azure` / `can_use_bedrock` 旗標），會 dispatch 到該雲端後端：
+`v1_api.py` 是模型 API，也是主要的公開入口：這裡每一條路由都會呼叫模型（或列出模型給 client 的選單）。同樣在 `/v1` 底下的帳號端點在 `account_api.py`（下一節）。
+
+預設走 vLLM 後端；當請求的 `model` alias 設定在雲端後端、且 caller 有權使用時（看帳號的 `can_use_azure` / `can_use_bedrock` 旗標），會 dispatch 到該雲端後端：
 
 - **Azure**：alias 在 `[azure_models.*]` + `can_use_azure` → chat / responses / messages / count_tokens。
 - **Bedrock**：alias 在 `[bedrock_models.*]` + `can_use_bedrock` → chat / messages / count_tokens。
@@ -51,14 +61,6 @@ graph LR
 | 方法 | 路徑 | 說明 | Proxy 方式 | 允許類型 |
 |---|---|---|---|---|
 | `GET` | `/v1/models`、`/models` | 列出模型(僅 LLM/VLM,`hidden` 的不列)。有 `can_use_azure` 的使用者會多看到 Azure 別名,有 `can_use_bedrock` 的會多看到 Bedrock 別名 | 直接回傳 | `llm`, `vlm` |
-| `GET` | `/v1/me`、`/me` | 呼叫者的權限(地端 / Azure / AWS)與各後端今日額度。驗證時不做每日額度 429，額度用完也能查 | 直接回傳 | — |
-| `GET` | `/v1/status` | 呼叫者看得到的模型與 `state`(地端 `up` / `down`,雲端 `unchecked`)、負載、計費價格(`model_catalog.visible_models`)。驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
-| `GET` | `/v1/usage` | 呼叫者每個本地日的用量(`?days=`,1 到 90,預設 7)以及今天、本月各模型用量,經 `usage_rollup.aggregate` 讀取。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `GET` | `/v1/service-accounts` | 呼叫者名下的服務帳號、每日上限與本月用量(合計與各模型)(`stats.get_owned_apps_summary`),不含 key。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `GET` | `/v1/notices` | 呼叫者尚未處理的 client 通知,以及以 `{set, unset}` 表示的 patch(`client_rules.notices_for` / `combined_for`)。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `POST` | `/v1/notices/resolved` | 以 API key 回報 *I've applied it*:把呼叫者未處理的通知標為已修正,全部或 `ids` 指定的,走 dashboard 的 `client_rules.resolve` / `resolve_all`(`deps.resolve_client_notices`)。API key 對帳號唯一的寫入;會記入稽核紀錄(`audit._AUDITED_KEY_ROUTES`)。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `POST` | `/v1/events` | 安裝工具在呼叫者機器上做了什麼:安裝 / 更新 / 移除 / 套用設定,對象是哪個 component(`kind`、`client`)、版本、OS 與 hostname(`client_events.clean` → `deps.record_client_event`)。供 admin 的 *Client installs* 卡片使用的回報;每帳號每小時 300 筆。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `GET` | `/v1/settings` | 工具幫呼叫者設定 client 時可以提供的設定:每個變數的說明、`default` 與 `options`,依 tier(帳號的雲端權限)而不同,來自 admin 的 `client_settings.json`(`client_settings.fields_for`)。唯讀;驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
 | `POST` | `/v1/chat/completions`、`/chat/completions` | Chat 對話生成 | `vllm_forward_chat_completions`(vLLM) / `azure_forward_chat_completions`(Azure) / `bedrock_forward_chat_completions`(Bedrock) | `llm`, `vlm` |
 | `POST` | `/v1/responses`、`/responses` | Responses API(沒有 Bedrock dispatch:Bedrock alias 會 fallback 到 vLLM) | `vllm_forward_responses`(vLLM) / `azure_forward_responses`(Azure) | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`、`/embeddings` | 文字向量嵌入 | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
@@ -117,6 +119,25 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 ---
 
+## `account_api.py` — 帳號端點
+
+**認證**：`deps.get_current_user_unmetered`（API key，**不做** daily limit 檢查，所以額度用完照樣回應），或 `deps.get_account_holder`（另外會拒絕服務帳號代替使用者送出的請求）。
+
+帳號查詢與回報自己的資訊，以 JSON 回傳，給不是瀏覽器的程式用（terminal 工具、狀態列）。它們和 `v1_api.py` 的模型 API 只是共用 `/v1` 前綴，其他都不同：不呼叫模型、不計費、不佔併發名額。五條讀取（`me`、`status`、`usage`、`service-accounts`、`notices`）的內容由 `app/services/account_view.py` 組裝，dashboard 的 `/dashboard/api/*` 也呼叫它。只增不改，不回傳 `null`。
+
+| 方法 | 路徑 | 說明 |
+|---|---|---|
+| `GET` | `/v1/me`、`/me` | 呼叫者的權限(地端 / Azure / AWS)與各後端今日額度。驗證時不做每日額度 429，額度用完也能查 |
+| `GET` | `/v1/status` | 呼叫者看得到的模型與 `state`(地端 `up` / `down`,雲端 `unchecked`)、負載、計費價格(`model_catalog.visible_models`)。驗證時不做每日額度 429;不讀資料庫 |
+| `GET` | `/v1/usage` | 呼叫者每個本地日的用量(`?days=`,1 到 90,預設 7)以及今天、本月各模型用量,經 `usage_rollup.aggregate` 讀取。驗證時不做每日額度 429;一般 `def` |
+| `GET` | `/v1/service-accounts` | 呼叫者名下的服務帳號、每日上限與本月用量(合計與各模型)(`stats.get_owned_apps_summary`),不含 key。驗證時不做每日額度 429;一般 `def` |
+| `GET` | `/v1/notices` | 呼叫者尚未處理的 client 通知,以及以 `{set, unset}` 表示的 patch(`client_rules.notices_for` / `combined_for`)。驗證時不做每日額度 429;一般 `def` |
+| `POST` | `/v1/notices/resolved` | 以 API key 回報 *I've applied it*:把呼叫者未處理的通知標為已修正,全部或 `ids` 指定的,走 dashboard 的 `client_rules.resolve` / `resolve_all`(`deps.resolve_client_notices`)。API key 對帳號唯一的寫入;會記入稽核紀錄(`audit._AUDITED_KEY_ROUTES`)。驗證時不做每日額度 429;一般 `def` |
+| `POST` | `/v1/events` | 安裝工具在呼叫者機器上做了什麼:安裝 / 更新 / 移除 / 套用設定,對象是哪個 component(`kind`、`client`)、版本、OS 與 hostname(`client_events.clean` → `deps.record_client_event`)。供 admin 的 *Client installs* 卡片使用的回報;每帳號每小時 300 筆。驗證時不做每日額度 429;一般 `def` |
+| `GET` | `/v1/settings` | 工具幫呼叫者設定 client 時可以提供的設定:每個變數的說明、`default` 與 `options`,依 tier(帳號的雲端權限)而不同,來自 admin 的 `client_settings.json`(`client_settings.fields_for`)。唯讀;驗證時不做每日額度 429;不讀資料庫 |
+
+---
+
 ## `azure_api.py` — Azure OpenAI 相容
 
 **認證**：`deps.require_azure_access`（包裝 `get_current_user`，額外檢查 `user.can_use_azure` 與每日雲端上限）— 與 `/v1/*` 共用同一把 gateway API key 與 daily limit，另外多了使用者層級的 Azure 存取旗標。`chat/completions`、`responses`、`messages` 改走 `deps.limited_azure_access`（相同檢查，另外佔一個並行名額）。
@@ -172,26 +193,50 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 
 ---
 
-## `web_ui.py` — 使用者 Dashboard
+## `dashboard/` 與 `web_ui.py` — 使用者 Dashboard 與其他頁面
 
 **認證**：`auth.get_web_user`（JWT scope 需含 `read` 或 `admin`）。這裡的 POST 若來自其他網站會被拒絕（403，`CrossSiteRequestGuard`），並記入 `audit_log`（`AuditMiddleware`）。
 
-### 端點
+Dashboard 是獨立的 package：`app/routers/dashboard/`，正在分階段拆成獨立的前端，先做後端。資料由 `app/services/dashboard_view.py` 組裝，這裡的模組只負責驗證與回應。`web_ui.py` 只剩歡迎頁和 Setup 頁。
+
+### 頁面（`dashboard/page.py`、`web_ui.py`）
 
 | 方法 | 路徑 | 說明 |
 |---|---|---|
-| `GET` | `/` | Welcome 首頁：API 使用指南、可用模型、快速上手 |
-| `GET` | `/dashboard` | Dashboard 頁面：今日額度、用量統計、趨勢圖、各模型費用、伺服器狀態、服務帳號 |
-| `GET` | `/dashboard/api/model-breakdown` | Cost by Model 卡片的 JSON 資料（`?period=month` 為預設，或 `day`；其他值回 400）。供 Month/Today 切換與重新整理按鈕使用 |
-| `POST` | `/dashboard/refresh-key` | 重新產生自己的 API key（`schema.issue_api_key`：256 bits 的 key，並重設發放／最後使用時間），回傳 JSON `{ok, api_key}` |
-| `POST` | `/dashboard/app/{app_id}/refresh-key` | 重新產生所屬服務帳號的 API key（需為 owner，否則 403） |
+| `GET` | `/` | 歡迎頁：API 指南、可用模型、快速上手（`web_ui.py`） |
+| `GET` | `/dashboard` | Dashboard 頁面：今日額度、用量統計、趨勢圖、各模型費用、伺服器狀態，以及給 owner 的 *Service accounts* 分頁。按下 *I've applied it* 或 *I've switched* 之後，頁面的 script 會整頁重新載入：沒有只回傳頁面一部分的路由 |
+| `GET` | `/setup` | Claude Code 安裝頁（Windows）。`SETUP_PAGE_ENABLED=false` 時和安裝檔下載一樣回 404（`web_ui.py`） |
+
+### Dashboard 的 JSON（`dashboard/api.py`）
+
+給獨立的前端用，前端要和 gateway 同源。前五條的內容就是同名 `/v1` 端點的回應（兩邊都呼叫 `app/services/account_view.py` 裡的同一個函式），再加上只有登入者能看的部分。只增不改，不回傳 `null`。
+
+| 方法 | 路徑 | 說明 |
+|---|---|---|
+| `GET` | `/dashboard/api/me` | `GET /v1/me`，加上 `is_admin`（依 token 的 scope）、`org_code`、`api_key`（`masked`、`created_at`）與 `site`（標題、`api_base`、管理員設定的連結、`setup_page`、`installer`） |
+| `GET` | `/dashboard/api/status` | `GET /v1/status` |
+| `GET` | `/dashboard/api/usage` | `GET /v1/usage`（`?days=`，1 到 90） |
+| `GET` | `/dashboard/api/service-accounts` | `GET /v1/service-accounts`，每個帳號加上 `id`、`api_key_masked` 與 `sent_for`（這個月替誰送過請求），另有 `withheld` |
+| `GET` | `/dashboard/api/notices` | `GET /v1/notices`（模型汰換在它的 `model_changes` 區塊），加上 `quiet_days` |
+| `GET` | `/dashboard/api/api-key` | 呼叫者自己的完整 key。不快取，會記在稽核紀錄 |
+| `GET` | `/dashboard/api/service-accounts/{app_id}/api-key` | 名下服務帳號的完整 key：必須是 owner 且在該帳號的部門，否則 403。不快取，會記在稽核紀錄 |
+| `GET` | `/dashboard/api/model-breakdown` | 頁面的 Cost by Model 卡片資料（`?period=month` 預設，或 `day`；其他回 400）。供頁面的 Month/Today 切換與重新整理按鈕使用 |
+
+### 動作與下載（`dashboard/actions.py`）
+
+帶 `Accept: application/json` 就回 JSON；一般表單送出則轉回 `/dashboard`。
+
+| 方法 | 路徑 | 說明 |
+|---|---|---|
+| `POST` | `/dashboard/refresh-key` | 重新產生自己的 API key（`schema.issue_api_key`：256-bit key，重設發行與最後使用時間），回傳 JSON `{ok, api_key}` |
+| `POST` | `/dashboard/app/{app_id}/refresh-key` | 重新產生名下服務帳號的 API key（必須是 owner 且在該帳號的部門，否則 403） |
+| `POST` | `/dashboard/client-rules/{rule_id}/resolved` | *I've applied it*：這則通知至少隱藏兩週；之後 gateway 仍看到問題才會再出現 |
+| `POST` | `/dashboard/client-rules/all/resolved` | *I've applied everything*：所有未處理的通知一起處理 |
+| `POST` | `/dashboard/model-changes/{change_id}/applied` | *I've switched*：收合這則模型汰換並停止寄信。可用編號或 API 顯示的 id（`MC3`） |
+| `GET` | `/dashboard/client-rules/all/patch.{bat,sh}` | 帳號唯一的設定 patch：所有未處理項目合併成一份（`client_rules.combined_for`）。沒有每個 check 各自的下載。沒有可套用的項目時回 404（瀏覽器會被導回 `/dashboard`） |
+| `GET` | `/dashboard/model-changes/patch.{bat,sh}` | 帳號的模型汰換腳本：只有改名 |
+| `GET` | `/dashboard/api-key/patch.{bat,sh}` | 把呼叫者自己的 key 做成設定 patch：設定 `ANTHROPIC_AUTH_TOKEN`、移除 `ANTHROPIC_API_KEY`（`client_patch.key_env`）。重新產生 key 之後執行。會記在稽核紀錄 |
 | `GET` | `/dashboard/install-claude-code.bat` | 下載 Windows Claude Code 安裝檔：`setup/install-claude-code.bat` 中的 `__USER_API_KEY__` 換成呼叫者的 key，換行統一為 CRLF（範本不存在時回 404） |
-| `GET` | `/dashboard/client-notices` | 只回 dashboard 的 client rule 通知面板（`_client_notices.html`；沒有未處理項目時為空）。按下 *I've applied it* 後頁面會換上這一段 |
-| `GET` | `/dashboard/client-rules/all/patch.{bat,sh}` | 帳號唯一的設定 patch：所有未處理項目合併成一份（`client_rules.combined_for`），沒有各 check 自己的下載。沒有可套用的內容時回 404（瀏覽器會被導回 `/dashboard`：信件連結指向這裡） |
-| `POST` | `/dashboard/client-rules/{rule_id}/resolved` | *I've applied it*：隱藏這則通知，直到 gateway 再次看到同樣問題。帶 `Accept: application/json` 時回 JSON |
-| `POST` | `/dashboard/client-rules/all/resolved` | *I've applied everything*：對所有未處理通知做同樣的事 |
-| `GET` | `/dashboard/api-key/patch.{bat,sh}` | 把呼叫者自己的 key 做成設定 patch：設定 `ANTHROPIC_AUTH_TOKEN`、移除 `ANTHROPIC_API_KEY`（`client_patch.key_env`）。Regenerate 之後執行。`Cache-Control: no-store`，會記入 audit log |
-| `GET` | `/setup` | Claude Code 安裝說明頁 |
 
 ### Dashboard 資料來源
 
@@ -200,7 +245,7 @@ Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
 | Budget / Today | `get_user_daily_summary()` + `effective_cloud_limit()` | 今日 requests、各後端費用、每日額度與雲端上限使用率 |
 | Stats Cards | `get_user_monthly_summary()` | 當月 requests、cost、tokens |
 | Usage Trend | `get_daily_trends()` | 近 30 天的每日 requests / cost |
-| Cost by Model | `get_model_breakdown()`（經 `_build_model_breakdown()`） | 依後端分組的各模型費用；使用者無權使用的雲端後端不顯示，但尖峰溢流的用量會列出並標示 `overflow`（`model_catalog.visible_usage_rows`） |
+| Cost by Model | `get_model_breakdown()`（經 `dashboard_view.model_breakdown()`） | 依後端分組的各模型費用；使用者無權使用的雲端後端不顯示，但尖峰溢流的用量會列出並標示 `overflow`（`model_catalog.visible_usage_rows`） |
 | Service accounts tab | `get_owned_apps_summary()` | 所屬服務帳號的月用量 |
 | System Status | `MODEL_ROUTING` + `is_alive()` | 依類型分組的伺服器健康狀態；Azure / Bedrock 模型清單只顯示給有權限的使用者 |
 
@@ -318,12 +363,13 @@ API key 或 SSO session。這兩個端點也不會洩漏任何「服務有回應
 |---|---|---|---|
 | `GET` | `/healthz` | Liveness。零 I/O — 只要 process 活著、event loop 還在轉就會回應。 | 永遠 `200` |
 | `GET` | `/readyz` | Readiness。對資料庫跑一次 `SELECT 1`；另附上 vLLM 健康快取統計供閱讀。 | `200` / `503` |
+| `GET` | `/v1/version` | 這台 gateway 支援的 API 版本與各自的狀態（`stable` / `deprecated` / `nightly`；`app/core/api_versions.py`）：和 gateway 分開發佈的前端或工具第一件事就是問這支。不讀資料庫。 | 永遠 `200` |
 
 `/readyz` **只以資料庫為判準**。vLLM 健康快取會回報但不會讓探針失敗：它由背景迴圈
 填入，開機後約 30 秒內還是空的（剛啟動的 worker 會把自己判成 not ready）；而下游
 全域故障時，這樣會一次把所有 Gateway 實例踢出負載平衡 —— 把「降級」變成「全斷」。
 
-兩條路由都設 `include_in_schema=False`，不會出現在 OpenAPI 文件裡。
+兩條探針都設 `include_in_schema=False`，不會出現在 OpenAPI 文件裡；`/v1/version` 則會。
 
 ---
 

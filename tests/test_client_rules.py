@@ -739,8 +739,6 @@ class TestQuietAfterApplied:
         _violation(db_session, AUTO, "testuser")
         body = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
         assert "Hides this notice for at least 14 days" in body
-        panel = client.get("/dashboard/client-notices", headers=web_auth_header(sub=test_user.username)).text
-        assert "for at least 14 days" in panel
 
 
 class TestFromSetup:
@@ -1661,19 +1659,25 @@ class TestEverythingAtOnce:
         assert b"fixes for CC001, CC002" in client.get(
             "/dashboard/client-rules/all/patch.sh", headers=web_auth_header(sub=test_user.username)).content
 
-    def test_the_panel_alone_follows_what_is_still_open(self, client, db_session, test_user):
-        """What the page swaps in after "I've applied it"."""
+    def test_the_panel_follows_what_is_still_open(self, client, db_session, test_user):
+        """What the page shows when it loads again after "I've applied it"."""
         self._two(db_session)
         headers = web_auth_header(sub=test_user.username)
-        panel = client.get("/dashboard/client-notices", headers=headers).text
-        assert panel.lstrip().startswith("<div") and "<html" not in panel
-        assert 'id="clientNotice-CC001"' in panel and 'id="clientNotice-CC002"' in panel
+        page = client.get("/dashboard", headers=headers).text
+        assert 'id="clientNotice-CC001"' in page and 'id="clientNotice-CC002"' in page
         client.post("/dashboard/client-rules/CC001/resolved", headers={**headers, "Accept": "application/json"})
-        panel = client.get("/dashboard/client-notices", headers=headers).text
-        assert 'id="clientNotice-CC001"' not in panel and 'id="clientNotice-CC002"' in panel
+        page = client.get("/dashboard", headers=headers).text
+        assert 'id="clientNotice-CC001"' not in page and 'id="clientNotice-CC002"' in page
         assert self._script_env(client, test_user, "sh") == {"ANTHROPIC_BASE_URL": "https://gw.example.test"}
         client.post("/dashboard/client-rules/CC002/resolved", headers={**headers, "Accept": "application/json"})
-        assert client.get("/dashboard/client-notices", headers=headers).text.strip() == ""
+        assert 'id="clientNotices"' not in client.get("/dashboard", headers=headers).text
+
+    def test_no_route_serves_a_part_of_the_page(self, client, test_user):
+        # The page loads again after a click; the panels are not routes.
+        headers = web_auth_header(sub=test_user.username)
+        assert client.get("/dashboard/client-notices", headers=headers).status_code == 404
+        # /dashboard/model-changes/patch.sh is the script; the panel alone is gone.
+        assert client.get("/dashboard/model-changes", headers=headers).status_code == 404
 
     def test_without_any_patch_there_is_still_one_button(self, client, db_session, test_user):
         _configure(db_session, AUTO, patch="")

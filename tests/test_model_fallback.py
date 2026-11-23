@@ -55,7 +55,7 @@ class TestRouterAndPagesAgree:
         down = TEST_MODEL_ROUTING["test-llm"]["base_url"]
         alive = lambda url: url != down  # noqa: E731
         with (
-            patch("app.routers.web_ui.is_alive", side_effect=alive),
+            patch("app.services.dashboard_view.is_alive", side_effect=alive),
             patch("app.services.model_catalog.is_alive", side_effect=alive),
         ):
             page = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text

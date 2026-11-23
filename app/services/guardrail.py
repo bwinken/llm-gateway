@@ -463,6 +463,7 @@ def _record_blocked(
         error=reason,
         blocked=True,
         latency_ms=request_latency_ms(),
+        request_path=meta.get("path"),
         user_agent=meta.get("user_agent"),
         x_app=meta.get("x_app"),
         x_title=meta.get("x_title"),

@@ -137,8 +137,8 @@ class CrossSiteRequestGuard:
 # origin into a page that shows API keys. The pages still carry inline
 # <script> blocks and onclick= handlers, hence 'unsafe-inline'; dropping it
 # needs those moved into files first. data: images are the favicon and the
-# weekly report preview's charts. FastAPI's own /docs and /redoc load their
-# viewer from a CDN and are left without the header.
+# weekly report preview's charts. FastAPI's own /docs loads its viewer from a
+# CDN and is left without the header.
 CONTENT_SECURITY_POLICY = "; ".join((
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline'",
@@ -151,7 +151,7 @@ CONTENT_SECURITY_POLICY = "; ".join((
     "form-action 'self'",
     "frame-ancestors 'none'",
 ))
-_CSP_EXEMPT_PATHS = ("/docs", "/redoc")
+_CSP_EXEMPT_PATHS = ("/docs",)
 
 
 class ContentSecurityPolicy:

@@ -15,6 +15,9 @@ no user data, no downstream URLs.
     /metrics  Prometheus exposition (app/services/metrics.py), only when
               METRICS_ENABLED; 404 otherwise. Aggregates, no user names —
               but keep it off the public listener (see the nginx example).
+    /v1/version  the API versions this gateway serves and the status of
+              each (app/core/api_versions.py). No key: a frontend or a tool
+              asks before it signs in whether it still fits this gateway.
 
 `/readyz` gates on the database only. The vLLM health cache is reported for
 operators to look at but never fails the probe, for two reasons: it is
@@ -32,6 +35,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
+from app.core import api_versions
 from app.core.config import APP_TITLE
 from app.core.database import engine
 from app.core.logger import logger
@@ -89,3 +93,30 @@ def prometheus_metrics() -> Response:
         return Response(status_code=404)
     body, content_type = rendered
     return Response(content=body, media_type=content_type)
+
+
+@router.get("/v1/version")
+async def api_version() -> dict:
+    """The API versions this gateway serves, for a frontend or a tool that
+    is released apart from it: is the version I was built against still
+    served here?
+
+    ``versions`` lists every version served, each with its ``status``:
+
+    - ``stable``: served, and changed by addition only. ``stable`` at the
+      top names it: the version to build against.
+    - ``deprecated``: still served until ``sunset`` (a date, the last day);
+      move to ``successor``.
+    - ``nightly``: served for trying out; it may change or go without
+      notice.
+
+    A version that is not listed is not served. ``statuses`` is every
+    status there is now; another may be added later, and a client treats
+    one it does not know like ``nightly``. ``gateway`` is the gateway's own
+    release, for a bug report: never compare it to decide what is
+    supported.
+
+    No API key and no sign-in, so it can be the first call a client makes;
+    it says nothing about accounts, models or settings. No database read.
+    """
+    return api_versions.payload()

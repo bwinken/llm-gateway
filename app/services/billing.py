@@ -222,6 +222,7 @@ def _emit_observation(
         empty_turn=empty_turn,
         latency_ms=request_latency_ms(),
         timing=timing,
+        request_path=meta.get("path"),
         user_agent=meta.get("user_agent"),
         x_app=meta.get("x_app"),
         x_title=meta.get("x_title"),
@@ -249,6 +250,18 @@ def _emit_observation(
     _submit_background(record_generation, rec)
 
 
+def _error_text(error: Any) -> str:
+    """What a failed request's Langfuse generation says went wrong: an
+    exception as ``Type: message`` (``Type`` alone when it has no message,
+    as an httpx timeout does not), anything else as its text. Bounded."""
+    if isinstance(error, BaseException):
+        message = str(error)
+        text = f"{type(error).__name__}: {message}" if message else type(error).__name__
+    else:
+        text = str(error)
+    return text[:500]
+
+
 def _log_error(
     user: User,
     body: Any,
@@ -260,6 +273,15 @@ def _log_error(
 ) -> None:
     """Record a FAILED request as a Langfuse generation (level=ERROR +
     statusMessage + request_error score).
+
+    ``error`` is the exception the downstream call raised, or the text of
+    its error reply. An exception is recorded with its type
+    (``502: ReadTimeout``): an httpx timeout's own message is empty, so
+    without the type a timeout could not be told from anything else.
+
+    With I/O capture on (``LANGFUSE_CAPTURE_IO``) the generation carries the
+    request's input, like a successful one: what was sent is what one wants
+    to see for a request that failed or timed out. There is no output.
 
     Does NOT write `usage_logs` — a failed call is not billable. No-op for
     Langfuse when unconfigured; never raises. Called at every downstream
@@ -276,7 +298,10 @@ def _log_error(
         if get_langfuse() is None:
             return
         meta = get_request_meta()
-        record_generation(GenerationRecord(
+        # The input the forwarder stashed for this request (the endpoint's
+        # own shape), only when capture is on: the same rule as a success.
+        input_payload = meta.get("input_payload") if capture_io_enabled() else None
+        rec = GenerationRecord(
             username=user.username,
             user_id=str(user.id),
             endpoint=endpoint,
@@ -287,10 +312,12 @@ def _log_error(
             usage={"input": 0, "output": 0},
             cost={"input": 0.0, "output": 0.0, "total": 0.0},
             output_tokens=0,
-            error=f"{status_code}: {str(error)[:500]}",
+            error=f"{status_code}: {_error_text(error)}",
             is_error=True,
+            input_payload=input_payload,
             latency_ms=request_latency_ms(),
             timing=request_timing(),
+            request_path=meta.get("path"),
             user_agent=meta.get("user_agent"),
             x_app=meta.get("x_app"),
             x_title=meta.get("x_title"),
@@ -299,7 +326,10 @@ def _log_error(
             service_account=getattr(via_service_account(user), "username", None),
             request_tags=request_tags(user),
             guardrail=meta.get("guardrail"),
-        ))
+        )
+        # Off the event loop, like a successful request's generation: with
+        # the input attached the SDK JSON-encodes the whole prompt.
+        _submit_background(record_generation, rec)
     except Exception as exc:  # never let the error-hook break error handling
         logger.warning("observability error-hook failed: {}", exc)
 

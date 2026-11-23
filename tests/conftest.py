@@ -375,7 +375,7 @@ def _build_test_app() -> FastAPI:
         patch("app.core.config.BEDROCK_MODELS", TEST_BEDROCK_MODELS),
         patch("app.core.config.BEDROCK_FALLBACK_MAP", TEST_BEDROCK_FALLBACK_MAP),
     ):
-        from app.routers import admin, auth_api, aws_api, azure_api, health_api, v1_api, web_ui
+        from app.routers import account_api, admin, auth_api, aws_api, azure_api, dashboard, health_api, v1_api, web_ui
 
     test_app = FastAPI(lifespan=_noop_lifespan)
 
@@ -393,8 +393,10 @@ def _build_test_app() -> FastAPI:
 
     test_app.include_router(health_api.router)
     test_app.include_router(web_ui.router)
+    test_app.include_router(dashboard.router)
     test_app.include_router(auth_api.router)
     test_app.include_router(v1_api.router)
+    test_app.include_router(account_api.router)
     test_app.include_router(azure_api.router)
     test_app.include_router(aws_api.router)
     test_app.include_router(admin.router)

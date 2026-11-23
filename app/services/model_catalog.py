@@ -1,6 +1,6 @@
 """The models an account can see, with what each costs and whether it is up.
 
-Shared by the dashboard (``web_ui``) and the account endpoints
+Shared by the dashboard (``dashboard_view``) and the account endpoints
 (``GET /v1/status``, ``GET /v1/usage``) so both show the same models, at the
 same prices, in the same order (``model_order``).
 """

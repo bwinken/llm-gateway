@@ -56,7 +56,7 @@ NOTHING_OPEN = {
     "model_changes": {"changes": [], "retiring": [], "patch": {"models": {}}},
 }
 
-PATHS = ["/v1/status", "/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/settings", "/v1/model-changes"]
+PATHS = ["/v1/status", "/v1/usage", "/v1/service-accounts", "/v1/notices", "/v1/settings"]
 
 
 class TestDocsGroups:
@@ -322,9 +322,9 @@ class TestUsage:
         # in the threadpool and a slow query cannot stall the streams.
         import inspect
 
-        from app.routers import v1_api
+        from app.routers import account_api
 
-        assert not inspect.iscoroutinefunction(v1_api.usage_history)
+        assert not inspect.iscoroutinefunction(account_api.usage_history)
 
 
 class TestMe:
@@ -439,10 +439,10 @@ class TestApps:
     def test_runs_off_the_event_loop(self):
         import inspect
 
-        from app.routers import v1_api
+        from app.routers import account_api
 
-        assert not inspect.iscoroutinefunction(v1_api.owned_service_accounts)
-        assert not inspect.iscoroutinefunction(v1_api.client_notices)
+        assert not inspect.iscoroutinefunction(account_api.owned_service_accounts)
+        assert not inspect.iscoroutinefunction(account_api.client_notices)
 
 
 AUTO = "CC001"      # on by default, fixed by a setting
@@ -658,7 +658,7 @@ class TestNoticesResolved:
 
     def test_a_broken_store_is_told(self, client, test_user):
         with patch("app.core.deps.resolve_client_notices", side_effect=RuntimeError("no table")), \
-                patch("app.routers.v1_api.resolve_client_notices", side_effect=RuntimeError("no table")):
+                patch("app.routers.account_api.resolve_client_notices", side_effect=RuntimeError("no table")):
             resp = self._resolve(client)
         assert resp.status_code == 503 and "no table" not in resp.text
 
@@ -670,9 +670,9 @@ class TestNoticesResolved:
     def test_runs_off_the_event_loop(self):
         import inspect
 
-        from app.routers import v1_api
+        from app.routers import account_api
 
-        assert not inspect.iscoroutinefunction(v1_api.client_notices_resolved)
+        assert not inspect.iscoroutinefunction(account_api.client_notices_resolved)
 
 
 MODEL_FIELDS = ["ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_AUTO_MODE_MODEL"]

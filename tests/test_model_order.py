@@ -56,15 +56,15 @@ class TestKeys:
 
 
 def _order_patch(vllm=(), azure=(), bedrock=()):
-    return patch("app.routers.web_ui.get_display_order_snapshot",
+    return patch("app.services.dashboard_view.get_display_order_snapshot",
                  return_value={"vllm": list(vllm), "azure": list(azure), "bedrock": list(bedrock)})
 
 
 class TestDashboardTables:
     def _dashboard(self, client, user, routing, alive=lambda url: True, order=()):
         with (
-            patch("app.routers.web_ui.get_model_routing_snapshot", return_value=routing),
-            patch("app.routers.web_ui.is_alive", side_effect=alive),
+            patch("app.services.dashboard_view.get_model_routing_snapshot", return_value=routing),
+            patch("app.services.dashboard_view.is_alive", side_effect=alive),
             _order_patch(vllm=order),
         ):
             return client.get("/dashboard", headers=web_auth_header(sub=user.username)).text
@@ -97,7 +97,7 @@ class TestDashboardTables:
 
     def test_welcome_page_uses_the_same_order(self, client, test_user):
         routing = {n: _route(host=n) for n in ("qwen3-32b", "qwen3-8b")}
-        with patch("app.routers.web_ui.get_model_routing_snapshot", return_value=routing):
+        with patch("app.services.dashboard_view.get_model_routing_snapshot", return_value=routing):
             body = client.get("/", headers=web_auth_header(sub=test_user.username)).text
         assert body.index("qwen3-8b") < body.index("qwen3-32b")
 
@@ -118,7 +118,7 @@ class TestCostByModelFollowsTheTables:
         self._spend(db_session, test_user, "qwen3-8b", 1.0)
         self._spend(db_session, test_user, "qwen3-32b", 0.5)
         with (
-            patch("app.routers.web_ui.get_model_routing_snapshot", return_value=routing),
+            patch("app.services.dashboard_view.get_model_routing_snapshot", return_value=routing),
             _order_patch(vllm=["qwen3-32b", "qwen3-8b"]),
         ):
             resp = client.get("/dashboard/api/model-breakdown", headers=web_auth_header(sub=test_user.username))
@@ -132,7 +132,7 @@ class TestCostByModelFollowsTheTables:
         self._spend(db_session, test_user, "qwen3-8b", 1.0)
         self._spend(db_session, test_user, "retired-model", 7.0)  # no longer configured
 
-        with patch("app.routers.web_ui.get_model_routing_snapshot", return_value=routing):
+        with patch("app.services.dashboard_view.get_model_routing_snapshot", return_value=routing):
             resp = client.get("/dashboard/api/model-breakdown", headers=web_auth_header(sub=test_user.username))
             page = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
         rows = [r["model"] for r in resp.json()["groups"][0]["rows"]]

@@ -77,9 +77,8 @@ What the dashboard shows an account, as JSON, for programs that are not a browse
 | `GET /v1/usage` | Usage per day, and today and this month by model |
 | `GET /v1/service-accounts` | The service accounts the user owns, with this month's usage |
 | `GET /v1/settings` | The recommended client settings for this account: per variable a default and the options to pick from |
-| `GET /v1/notices` | What is wrong with the account's client setup, and the settings that fix it |
+| `GET /v1/notices` | What is wrong with the account's client setup, and the settings that fix it; beside them (`model_changes`) the models being replaced for the account's tier and the renames to apply |
 | `POST /v1/notices/resolved` | "I've applied the fix": clears the notices, all or by id |
-| `GET /v1/model-changes` | The models being replaced for this account's tier, and the renames to apply; empty unless an announcement is switched on |
 | `POST /v1/events` | A setup tool reports what it installed, updated or removed, in which version, on which OS and machine |
 
 ### `v1`
@@ -126,21 +125,24 @@ AWS Bedrock only, for accounts with AWS access.
 
 ### `health`
 
-No key needed, and not listed in `/docs`.
+No key needed. Only `GET /v1/version` is listed in `/docs`.
 
 | Endpoint | What it is for |
 |---|---|
+| `GET /v1/version` | The API versions this gateway serves, each `stable`, `deprecated` (with its last day) or `nightly`: what a frontend or a tool released apart from the gateway asks first |
 | `GET /healthz` | Liveness: the process answers |
 | `GET /readyz` | Readiness: the database is reachable (what a load balancer checks) |
 | `GET /metrics` | Prometheus metrics, when `METRICS_ENABLED` is set |
 
 ### `web`
 
-The pages a user sees after signing in through SSO.
+The pages a user sees after signing in through SSO, and the dashboard's data as JSON.
 
 | Endpoint | What it is for |
 |---|---|
 | `/dashboard` | Budget, usage, model status, the API key, client notices and their patch download, owned service accounts |
+| `GET /dashboard/api/me`, `status`, `usage`, `service-accounts`, `notices` | The same data as JSON, for a frontend of its own: what the `/v1` endpoint of the same name answers, plus what only a signed-in person sees |
+| `GET /dashboard/api/api-key`, `/dashboard/api/service-accounts/{id}/api-key` | A key in full (the person's own, or an owned service account's): one per call, in the audit log |
 | `/setup` | The Windows installer for Claude Code (can be turned off) |
 
 ### `admin`
@@ -221,7 +223,7 @@ Everything the gateway does, where it is switched on, and what it needs in `.env
 | An API key, a dashboard and usage figures per user; SSO sign-in to the web UI | Always on | `AUTH_BASE_URL`, `AUTH_CENTER_APP_ID`, `AUTH_CENTER_PUBLIC_KEY_PATH` |
 | Sign-in for terminal tools (`POST /auth/api-key`: an AuthCenter token for the account's key) | Always on (needs its nginx location) | the same `AUTH_*` |
 | Service accounts for programs, with owners who see them on their dashboard | **Admin → Users** | – |
-| Account endpoints for tools: `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` (and `POST /v1/notices/resolved` to report a fix), `/v1/model-changes`, `/v1/settings` | Always on | – |
+| Account endpoints for tools: `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` (and `POST /v1/notices/resolved` to report a fix), `/v1/settings` | Always on | – |
 | Client setup offered to tools (`/v1/settings`) | **Admin → Clients → Client setup** | – |
 | Install reports from setup tools (`POST /v1/events`): who installed which tool, skill or MCP server, in which version, on which OS | Always on; read in **Admin → Clients → Client installs** | – |
 | Setup page and Windows installer for Claude Code | On by default | `SETUP_PAGE_ENABLED=false` turns it off |
@@ -370,6 +372,7 @@ CI runs both on every pull request, plus a dependency audit and a secret scan. [
 |---|---|
 | [Client Guide](docs/client-guide.md) | Connecting clients, endpoints, error handling |
 | [Architecture](docs/architecture.md) | How every subsystem behaves, in detail |
+| [Endpoint inventory](docs/endpoints.md) | Every route: who calls it, whether it stays (zh-TW) |
 | [Deployment](deploy/README.md) | Production setup, backups, upgrades |
 | [Langfuse](docs/langfuse-observability.md) | Observability design |
 | [Web page assets](docs/frontend-build.md) | Rebuilding the stylesheet after a template change (zh-TW, step by step) |

@@ -44,15 +44,15 @@ class TestBudgetState:
         (10, 25, "over"),
     ])
     def test_bands(self, limit, spent, state):
-        from app.routers.web_ui import _budget_state
-        assert _budget_state(limit, spent) == state
+        from app.services.dashboard_view import budget_state
+        assert budget_state(limit, spent) == state
 
     @pytest.mark.parametrize("seconds, text", [
         (0, "0m"), (59, "0m"), (60, "1m"), (3599, "59m"), (3600, "1h 00m"), (4 * 3600 + 7 * 60 + 30, "4h 07m"),
     ])
     def test_format_duration(self, seconds, text):
-        from app.routers.web_ui import _format_duration
-        assert _format_duration(seconds) == text
+        from app.services.dashboard_view import format_duration
+        assert format_duration(seconds) == text
 
 
 class TestServerStatus:
@@ -134,8 +134,8 @@ class TestPages:
     def test_dashboard_status_chips(self, client, test_user):
         metrics = {"http://mock-llm:8000/v1": {"running": 4, "waiting": 12}}
         with (
-            patch("app.routers.web_ui.is_alive", side_effect=lambda url: url != "http://mock-vlm:8001/v1"),
-            patch("app.routers.web_ui.get_metrics", side_effect=lambda url: metrics.get(url)),
+            patch("app.services.dashboard_view.is_alive", side_effect=lambda url: url != "http://mock-vlm:8001/v1"),
+            patch("app.services.dashboard_view.get_metrics", side_effect=lambda url: metrics.get(url)),
         ):
             body = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
         assert "1 queueing" in body
@@ -241,7 +241,7 @@ class TestTabs:
         assert "<details" not in strip and "<summary" not in strip
 
     def test_dashboard_tabs(self, client, test_user):
-        with patch("app.routers.web_ui.is_alive", side_effect=lambda url: url != "http://mock-vlm:8001/v1"):
+        with patch("app.services.dashboard_view.is_alive", side_effect=lambda url: url != "http://mock-vlm:8001/v1"):
             body = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
         assert 'data-tab="models"' in body and 'data-tab="usage"' in body
         assert body.count('data-panel="models"') == 2  # model tables + folded API examples

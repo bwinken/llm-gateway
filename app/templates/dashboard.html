@@ -1665,69 +1665,46 @@ result = client.system_one(
 </script>
 <script>gwTabs('dashTabs', 'dashTab');</script>
 <script>
-/* "I've applied it" on a client-rule notice: post it, then take the panel
-   again from the server (GET /dashboard/client-notices), so the one patch
-   and what it covers match what is still open. Delegated from the document,
-   because the panel element is replaced. */
+/* "I've applied it" on a client-rule notice and "I've switched" on a model
+   change: post it, then load the page again, so the panels, the one patch
+   and what it covers are what the server has now. The message is shown
+   after the reload. */
 (function() {
+    var FLASH = 'dashFlash';
+    function reloadWith(message) {
+        try { sessionStorage.setItem(FLASH, message); } catch (e) {}
+        window.location.reload();
+    }
+    document.addEventListener('DOMContentLoaded', function() {
+        var message = null;
+        try { message = sessionStorage.getItem(FLASH); sessionStorage.removeItem(FLASH); } catch (e) {}
+        if (message) gwToast(message, 'ok');
+    });
     function post(form) {
         return fetch(form.getAttribute('action'), { method: 'POST', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
             .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
     }
-    function repaint() {
-        var panel = document.getElementById('clientNotices');
-        if (!panel) return;
-        return fetch('/dashboard/client-notices', { headers: { 'Accept': 'text/html' }, credentials: 'same-origin' })
-            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-            .then(function(html) {
-                if (html.trim()) panel.outerHTML = html; else panel.remove();
-            })
-            .catch(function() { window.location.reload(); });
-    }
     document.addEventListener('submit', function(e) {
         var form = e.target;
-        var all = form.hasAttribute && form.hasAttribute('data-client-resolved-all');
-        if (!all && !(form.hasAttribute && form.hasAttribute('data-client-resolved'))) return;
+        if (!form.hasAttribute) return;
+        var message;
+        if (form.hasAttribute('data-client-resolved-all')) {
+            message = 'All marked as done. A notice returns only if the gateway still sees its problem after {{ client_quiet_days }} days.';
+        } else if (form.hasAttribute('data-client-resolved')) {
+            message = 'Marked as done. The notice returns only if the gateway still sees the problem after {{ client_quiet_days }} days.';
+        } else if (form.hasAttribute('data-model-change-applied')) {
+            message = 'Marked as done. The notice and its script stay here for your other machines.';
+        } else {
+            return;
+        }
         e.preventDefault();
         var btn = form.querySelector('button');
         btn.disabled = true;
         post(form)
-            .then(function() {
-                if (all) {
-                    document.getElementById('clientNotices').remove();
-                    gwToast('All marked as done. A notice returns only if the gateway still sees its problem after {{ client_quiet_days }} days.', 'ok');
-                    return;
-                }
-                gwToast('Marked as done. The notice returns only if the gateway still sees the problem after {{ client_quiet_days }} days.', 'ok');
-                return repaint();
-            })
+            .then(function() { reloadWith(message); })
             .catch(function(err) { btn.disabled = false; gwToast('Could not save that — ' + err.message, 'error'); });
     });
 })();
-
-/* "I've switched" on a model change: post it, then take the panel again from
-   the server (GET /dashboard/model-changes): the change stays, folded. */
-document.addEventListener('submit', function(e) {
-    var form = e.target;
-    if (!(form.hasAttribute && form.hasAttribute('data-model-change-applied'))) return;
-    e.preventDefault();
-    var btn = form.querySelector('button');
-    btn.disabled = true;
-    fetch(form.getAttribute('action'), { method: 'POST', headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
-        .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-        .then(function() {
-            gwToast('Marked as done. The notice and its script stay here for your other machines.', 'ok');
-            return fetch('/dashboard/model-changes', { headers: { 'Accept': 'text/html' }, credentials: 'same-origin' })
-                .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-                .then(function(html) {
-                    var panel = document.getElementById('modelChanges');
-                    if (!panel) return;
-                    if (html.trim()) panel.outerHTML = html; else panel.remove();
-                })
-                .catch(function() { window.location.reload(); });
-        })
-        .catch(function(err) { btn.disabled = false; gwToast('Could not save that — ' + err.message, 'error'); });
-});
 </script>
 
 {# ── API Key Modal ── #}

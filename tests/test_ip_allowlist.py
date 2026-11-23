@@ -208,7 +208,7 @@ class TestEveryApiRouteIsChecked:
         """The allowlist runs inside deps._authenticate. An API route that
         authenticated some other way would silently skip it."""
         from app.core import deps
-        from app.routers import aws_api, azure_api, v1_api
+        from app.routers import account_api, aws_api, azure_api, v1_api
 
         checked = {deps.get_current_user, deps.get_current_user_unmetered}
 
@@ -217,13 +217,13 @@ class TestEveryApiRouteIsChecked:
 
         routes = [
             route
-            for router in (v1_api.router, azure_api.router, aws_api.router)
+            for router in (v1_api.router, account_api.router, azure_api.router, aws_api.router)
             for route in router.routes
         ]
         missing = [(route.path, sorted(route.methods)) for route in routes if not walk(route.dependant)]
         assert missing == []
         # Guard against a vacuous pass if FastAPI ever stops listing them here.
-        assert {"/v1/chat/completions", "/azure/v1/messages", "/aws/v1/messages"} <= {r.path for r in routes}
+        assert {"/v1/chat/completions", "/v1/me", "/v1/notices", "/azure/v1/messages", "/aws/v1/messages"} <= {r.path for r in routes}
 
 
 class TestApiCheck:

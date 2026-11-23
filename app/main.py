@@ -3,7 +3,7 @@ FastAPI application entry point.
 
 Lifespan: DB init, global httpx client, background health checks.
 Middleware: CORS + cross-site request guard (app/core/browser_security.py).
-Router mounting: health_api, web_ui, v1_api, azure_api, aws_api, admin.
+Router mounting: health_api, web_ui, dashboard, auth_api, v1_api, account_api, azure_api, aws_api, admin.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
 
+from app.core.api_versions import GATEWAY_VERSION
 from app.core.auth import AccountDisabledError
 from app.core.browser_security import add_browser_security
 from app.core.config import APP_TITLE, get_site_links, setup_page_enabled
@@ -23,7 +24,7 @@ from app.core.database import init_db
 from app.core.logger import logger
 from app.core.server_state import close_client, init_client
 from app.core import static_assets
-from app.routers import admin, auth_api, aws_api, azure_api, health_api, v1_api, web_ui
+from app.routers import account_api, admin, auth_api, aws_api, azure_api, dashboard, health_api, v1_api, web_ui
 from app.services import metrics
 from app.services.health import health_check_loop
 
@@ -116,28 +117,35 @@ async def lifespan(app: FastAPI):
     logger.info("{} shut down.", APP_TITLE)
 
 
-# The groups of /docs, in the order shown. Every route carries exactly one
-# (its router's, or its own in v1_api, where two groups share a router).
+# The groups of /docs, in the order shown. Every route carries exactly one,
+# its router's: the account endpoints (account_api) and the model API
+# (v1_api) share the /v1 prefix but are two routers and two groups.
 OPENAPI_TAGS = [
     {"name": "account", "description": "What an account can read and report about itself, by API key: budget, "
-     "models, usage, service accounts, client notices, model changes, client settings, and what a setup tool installed. "
+     "models, usage, service accounts, client notices (with the model changes), client settings, and what a setup tool installed. "
      "Never billed; what a terminal tool or a desktop window is built against."},
     {"name": "v1", "description": "The unified inference API (OpenAI- and Anthropic-compatible): on-prem models, "
      "plus the Azure and AWS models the account may use. Also served without the /v1 prefix."},
     {"name": "azure", "description": "Azure OpenAI only (`/azure/v1`). Needs Azure access."},
     {"name": "aws", "description": "AWS Bedrock only (`/aws/v1`). Needs AWS access."},
     {"name": "auth", "description": "Sign-in for a terminal tool: an SSO token for the account's API key."},
-    {"name": "health", "description": "Liveness, readiness and metrics."},
-    {"name": "web", "description": "The dashboard and setup pages (SSO)."},
+    {"name": "health", "description": "Liveness, readiness and metrics, and the API versions the gateway serves "
+     "(`GET /v1/version`: no key, the first call of a frontend or a tool released apart from the gateway)."},
+    {"name": "web", "description": "The dashboard (its page, and `/dashboard/api/*`: the same data as JSON for a "
+     "frontend of its own), the welcome and setup pages (SSO)."},
     {"name": "admin", "description": "The admin pages and their API (SSO, admin scope)."},
 ]
 
 app = FastAPI(
     title=APP_TITLE,
-    version="1.0.0",
+    version=GATEWAY_VERSION,
     description="High-performance API gateway for LLM/VLM/Embedding servers.",
     lifespan=lifespan,
     openapi_tags=OPENAPI_TAGS,
+    # One docs page (/docs). ReDoc showed the same schema a second way, and
+    # the OAuth2 redirect page serves a login flow the gateway does not have.
+    redoc_url=None,
+    swagger_ui_oauth2_redirect_url=None,
 )
 
 # --- Middleware ---
@@ -191,8 +199,10 @@ async def account_disabled_handler(request: Request, exc: AccountDisabledError):
 # --- Routers ---
 app.include_router(health_api.router)
 app.include_router(web_ui.router)
+app.include_router(dashboard.router)
 app.include_router(auth_api.router)
 app.include_router(v1_api.router)
+app.include_router(account_api.router)
 app.include_router(azure_api.router)
 app.include_router(aws_api.router)
 app.include_router(admin.router)

@@ -555,7 +555,7 @@ async def _non_stream_chat(
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Azure downstream error | user={} model={} endpoint=/azure/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
-        _log_error(user, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, exc, 502, alias,
                           "/azure/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
 
@@ -597,7 +597,7 @@ async def _stream_chat(
         resp = await client.send(req, stream=True)
     except Exception as exc:
         logger.error("Azure stream connect error | user={} model={} endpoint=/azure/v1/chat/completions error={}: {}", user.username, alias, type(exc).__name__, exc)
-        _log_error(user, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, exc, 502, alias,
                           "/azure/v1/chat/completions", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     _warn_if_slow_headers(user, alias, "/azure/v1/chat/completions", "azure")
@@ -789,7 +789,7 @@ async def _non_stream_messages(
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Azure messages downstream error | user={} model={} endpoint=/azure/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
-        _log_error(user, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, exc, 502, alias,
                           "/azure/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
 
@@ -832,7 +832,7 @@ async def _stream_messages(
         resp = await client.send(req, stream=True)
     except Exception as exc:
         logger.error("Azure messages stream connect error | user={} model={} endpoint=/azure/v1/messages error={}: {}", user.username, alias, type(exc).__name__, exc)
-        _log_error(user, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, exc, 502, alias,
                           "/azure/v1/messages", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     _warn_if_slow_headers(user, alias, "/azure/v1/messages", "azure")
@@ -1095,7 +1095,7 @@ async def _non_stream_responses(
         resp = await client.post(url, json=body, headers=headers, timeout=_NON_STREAM_TIMEOUT)
     except Exception as exc:
         logger.error("Azure responses downstream error | user={} model={} endpoint=/azure/v1/responses error={}: {}", user.username, alias, type(exc).__name__, exc)
-        _log_error(user, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, exc, 502, alias,
                           "/azure/v1/responses", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
 
@@ -1133,7 +1133,7 @@ async def _stream_responses(
         resp = await client.send(req, stream=True)
     except Exception as exc:
         logger.error("Azure responses stream connect error | user={} model={} endpoint=/azure/v1/responses error={}: {}", user.username, alias, type(exc).__name__, exc)
-        _log_error(user, monitor_body, str(exc), 502, alias,
+        _log_error(user, monitor_body, exc, 502, alias,
                           "/azure/v1/responses", model_type)
         raise HTTPException(status_code=502, detail=downstream_error_detail(exc))
     _warn_if_slow_headers(user, alias, "/azure/v1/responses", "azure")

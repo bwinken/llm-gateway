@@ -38,7 +38,7 @@ disabled.html        → Rendered by AccountDisabledError handler when a disable
 
 ## `/dashboard` — User Dashboard
 
-**File**: `dashboard.html` ← `web_ui.py`
+**File**: `dashboard.html` ← `dashboard/page.py` (data: `services/dashboard_view.py`; the same data as JSON: `/dashboard/api/*`)
 **Permission**: JWT scope includes `read` or `admin`
 
 The budget hero stays at the top; the lower half is split into two tabs (**Models**, the default, and **Usage**) by `gwTabs('dashTabs', 'dashTab')` (see [`base.html`](#basehtml--base-layout)). The Models tab shows a "N down" / "N queueing" count; the Usage tab shows this month's cost.
@@ -71,9 +71,10 @@ The budget hero stays at the top; the lower half is split into two tabs (**Model
 | Regenerate service account key | `POST /dashboard/app/{id}/refresh-key` | Regenerate owned service account's API key (owner only) |
 | Copy service account key | Button | Copy service account's full API key |
 | Cost by Model refresh | `GET /dashboard/api/model-breakdown?period=` | JSON for the Cost by Model card (`month` or `day`) |
+| The page's data as JSON | `GET /dashboard/api/me` · `status` · `usage` · `service-accounts` · `notices` · `api-key` | Not used by this page: for a frontend of its own (see *Dashboard* in `docs/architecture.md`) |
 | Download installer | `GET /dashboard/install-claude-code.bat` | Personalized Claude Code installer (linked from `/setup`) |
 | Download settings patch | `GET /dashboard/client-rules/all/patch.{bat,sh}` | One script for everything the account has open (the mail links to the same URL) |
-| I've applied it / everything | `POST /dashboard/client-rules/{id}/resolved` · `/all/resolved` | Hides the notice(s); the panel is then re-rendered from `GET /dashboard/client-notices` |
+| I've applied it / everything | `POST /dashboard/client-rules/{id}/resolved` · `/all/resolved` | Hides the notice(s); the page then loads again |
 | Download key patch | `GET /dashboard/api-key/patch.{bat,sh}` | From the key modal: sets `ANTHROPIC_AUTH_TOKEN` to the current key and removes `ANTHROPIC_API_KEY`. The modal points at it after *Regenerate* |
 
 ---
@@ -221,7 +222,7 @@ Included by `admin.html` (`on_admin_page = true`: Overview / Users / Clients / S
 
 | File | Used by | What it is |
 |---|---|---|
-| `_client_notices.html` | `dashboard.html`; alone from `GET /dashboard/client-notices` | The *Action needed* panel. Change the notices here, not in `dashboard.html` |
+| `_client_notices.html` | `dashboard.html` | The *Action needed* panel. Change the notices here, not in `dashboard.html` |
 | `_admin_user_table.html` | `admin.html`; alone from `GET /admin/user-table` | The Users / Apps tables with one row macro: change a column here, not in two copies |
 | `_admin_macros.html` | `admin.html`, `_admin_user_table.html` | Jinja macros shared by the admin page and its partials |
 

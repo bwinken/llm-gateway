@@ -153,13 +153,16 @@ class TestAuthCenterDecides:
 def test_nothing_on_the_api_path_reads_the_column():
     """A guard against the exemption coming back: the modules an API-key
     request runs through do not mention ``is_admin`` except where
-    ``deps._authenticate`` clears it and ``/v1/me`` reports false."""
+    ``deps._authenticate`` clears it and ``/v1/me`` reports false (its body
+    is built in ``account_view``)."""
     from pathlib import Path
 
     app = Path(__file__).resolve().parent.parent / "app"
     allowed = {
         "core/deps.py": ["    user.is_admin = False"],
-        "routers/v1_api.py": ['        "is_admin": False,'],
+        "routers/v1_api.py": [],
+        "routers/account_api.py": [],
+        "services/account_view.py": ['        "is_admin": False,'],
         "routers/azure_api.py": [],
         "routers/aws_api.py": [],
     }

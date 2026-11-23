@@ -330,7 +330,7 @@ curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
 - `notices` is what the dashboard's notices panel shows you: the problems the gateway saw in your client's requests during the last `window_days` days that you have not reported as fixed. It is empty when there is nothing to do.
 - A notice's `patch` is its fix, when the fix is a setting: variables to `set` in the `env` block of `~/.claude/settings.json` and variables to remove from it (`unset`). A notice without `patch` needs something else (update Claude Code, ask for access).
 - The top-level `patch` is the one to apply: everything open, merged, with the settings every account should have. `covers` lists the notices it fixes, `manual` those it cannot. It is absent when nothing is open. A patch never holds a key.
-- `model_changes` is a second kind of notice, in a block of its own: the models an admin is replacing, for your account. `retiring` lists the model names that are going away and `patch.models` what to rename each to; `changes` gives the announcements one by one (`applied` is whether you pressed *I've switched* on the dashboard). To apply it, replace the old name with the new one where `~/.claude/settings.json` names a model (the `model` setting and the `env` variables with `MODEL` in their name), only where the value is exactly the old name, keeping a bracket suffix (`old[1m]`), and add nothing. All three are empty when no model is being replaced. It is not a problem with your client: nothing of it is in `notices` or in the top-level `patch`, and `POST /v1/notices/resolved` does not touch it. `GET /v1/model-changes` answers the same three keys alone.
+- `model_changes` is a second kind of notice, in a block of its own: the models an admin is replacing, for your account. `retiring` lists the model names that are going away and `patch.models` what to rename each to; `changes` gives the announcements one by one (`applied` is whether you pressed *I've switched* on the dashboard). To apply it, replace the old name with the new one where `~/.claude/settings.json` names a model (the `model` setting and the `env` variables with `MODEL` in their name), only where the value is exactly the old name, keeping a bracket suffix (`old[1m]`), and add nothing. All three are empty when no model is being replaced. It is not a problem with your client: nothing of it is in `notices` or in the top-level `patch`, and `POST /v1/notices/resolved` does not touch it.
 - After applying a fix, say so: press *I've applied it* on the dashboard, or from a program:
 
 ```bash
@@ -437,6 +437,33 @@ A skill, an MCP server or a plugin says what it was added to:
 - Never put a key in an event. Your own key is taken out of `message` and `os_version`, and an event with it anywhere else is refused.
 
 `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` and `/v1/settings` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows, and what a tool needs to set a client up. `POST /v1/notices/resolved` and `POST /v1/events` are the two a tool writes with. All of them answer when your budget is spent, none is billed, and none returns an API key: a key is only ever handed out for a sign-in (next section, or the dashboard).
+
+## API versions
+
+A program that is released apart from the gateway (a frontend, a terminal tool) asks this first, before it signs in. No key:
+
+```bash
+curl https://your-gateway/v1/version
+```
+
+```json
+{
+  "object": "version",
+  "gateway": "1.0.0",
+  "stable": "v1",
+  "statuses": ["stable", "deprecated", "nightly"],
+  "versions": [{"version": "v1", "status": "stable"}]
+}
+```
+
+Look your own version up in `versions`:
+
+- `stable`: served, and changed by addition only. `stable` at the top names it: the version to build against.
+- `deprecated`: still served until `sunset` (a date, the last day); move to `successor`. Tell your user to update.
+- `nightly`: served for trying out. It may change or go without notice, so release nothing built against it.
+- Not in the list: this gateway does not serve it. Stop and say so, rather than call an API that is gone.
+
+Treat a status you do not know like `nightly`. `gateway` is the gateway's own release number, for a bug report: never decide from it what is supported. Today `v1` is everything described in this guide.
 
 ## Signing in from a terminal tool
 

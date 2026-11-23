@@ -632,7 +632,7 @@ def set_model_change_shown(
     session: Session = Depends(get_session),
 ):
     """The announcement's switch (``enabled=on|off``). On: it is on the
-    dashboard of every account it is for, in ``GET /v1/model-changes``, and
+    dashboard of every account it is for, in ``GET /v1/notices``, and
     can be mailed. Off: it leaves all three at once and whoever is still
     waiting for its mail is not mailed. It can be switched on again; who
     said they switched and who was mailed is kept."""

@@ -9,7 +9,7 @@ settings, and can be mailed about it through the paced mail job.
 
 It is its own flow, apart from the client-rule notices: nothing was detected,
 so a change is not a violation. Its own panel, its own script, its own
-endpoint (``GET /v1/model-changes``).
+block of ``GET /v1/notices`` (``model_changes``).
 """
 
 from __future__ import annotations
@@ -404,7 +404,6 @@ class TestDashboard:
         _change(db_session, renames="", renames_azure="azure-old -> azure-gpt-4")
         body = client.get("/dashboard", headers=web_auth_header(sub=local.username)).text
         assert 'id="modelChanges"' not in body
-        assert client.get("/dashboard/model-changes", headers=web_auth_header(sub=local.username)).text.strip() == ""
 
     def test_its_script_carries_the_renames_of_the_accounts_tier(self, client, db_session, test_user):
         local = _person(db_session, "local")
@@ -426,7 +425,7 @@ class TestDashboard:
         change = _change(db_session)
         headers = web_auth_header(sub=test_user.username)
         assert client_rules.notices_for(db_session, test_user) == []
-        assert client.get("/dashboard/client-notices", headers=headers).text.strip() == ""
+        assert 'id="clientNotices"' not in client.get("/dashboard", headers=headers).text
         assert client.get("/dashboard/client-rules/all/patch.sh", headers=headers).status_code == 404
         db_session.add(ClientViolation(rule_id="CC001", username=test_user.username, first_seen_at=_now(), last_seen_at=_now()))
         db_session.commit()
@@ -455,7 +454,9 @@ class TestDashboard:
         headers = {**web_auth_header(sub=test_user.username), "Accept": "application/json"}
         resp = client.post(f"/dashboard/model-changes/{change.id}/applied", headers=headers)
         assert resp.json() == {"ok": True, "id": change.id}
-        panel = client.get("/dashboard/model-changes", headers=web_auth_header(sub=test_user.username)).text
+        page = client.get("/dashboard", headers=web_auth_header(sub=test_user.username)).text
+        panel = page[page.index('id="modelChanges"'):]
+        panel = panel[:panel.index("<script")]               # the panel, up to the next script of the page
         assert "data-model-change-done" in panel and "data-model-change-applied" not in panel
         assert "/dashboard/model-changes/patch.bat" in panel       # folded, with the script still there
         assert client.get("/dashboard/model-changes/patch.bat", headers=headers).status_code == 200
@@ -776,16 +777,17 @@ class TestMail:
 
 
 class TestEndpoint:
-    """``GET /v1/model-changes``: the dashboard's model-change panel for a client
-    that is not a browser. Which models are being replaced, and the renames
-    for the caller's tier."""
+    """The ``model_changes`` block of ``GET /v1/notices``: the dashboard's
+    model-change panel for a client that is not a browser. Which models are
+    being replaced, and the renames for the caller's tier. (It was an
+    endpoint of its own too, ``GET /v1/model-changes``; that one is gone.)"""
 
     def _get(self, client, key: str = "sk-testkey123") -> dict:
-        resp = client.get("/v1/model-changes", headers=auth_header(key))
+        resp = client.get("/v1/notices", headers=auth_header(key))
         assert resp.status_code == 200, resp.text
-        return resp.json()
+        return resp.json()["model_changes"]
 
-    EMPTY = {"object": "model_changes", "changes": [], "retiring": [], "patch": {"models": {}}}
+    EMPTY = {"changes": [], "retiring": [], "patch": {"models": {}}}
 
     def test_values_only_while_a_change_is_switched_on(self, client, db_session, test_user):
         assert self._get(client) == self.EMPTY                       # before any change
@@ -805,7 +807,6 @@ class TestEndpoint:
         )
         local = self._get(client, "sk-local")
         assert local == {
-            "object": "model_changes",
             "changes": [{
                 "id": f"MC{change.id}", "title": change.title, "message": change.message,
                 "models": {"old-llm": "test-llm"}, "applied": False,
@@ -843,12 +844,15 @@ class TestEndpoint:
 
     def test_it_reads_and_never_shows_a_key(self, client, db_session, test_user):
         change = _change(db_session)
-        assert test_user.api_key not in client.get("/v1/model-changes", headers=auth_header()).text
-        for method in ("post", "put", "patch", "delete"):
-            assert getattr(client, method)("/v1/model-changes", headers=auth_header()).status_code == 405
-        assert client.get("/model-changes", headers=auth_header()).status_code == 404     # only under /v1
-        assert client.get("/v1/model-changes").status_code == 401
-        assert _states(db_session, change) == {}
+        assert test_user.api_key not in client.get("/v1/notices", headers=auth_header()).text
+        assert self._get(client)["retiring"] == ["old-llm"]
+        assert _states(db_session, change) == {}             # reading marks nothing as applied
+
+    def test_the_endpoint_of_its_own_is_gone(self, client, db_session, test_user):
+        # One place to ask: the block in /v1/notices.
+        _change(db_session)
+        assert client.get("/v1/model-changes", headers=auth_header()).status_code == 404
+        assert client.get("/model-changes", headers=auth_header()).status_code == 404
 
     def test_it_answers_once_the_budget_is_spent(self, client, db_session, test_user):
         _change(db_session)
@@ -858,16 +862,14 @@ class TestEndpoint:
         assert self._get(client)["retiring"] == ["old-llm"]
 
     def test_the_notices_endpoint_carries_it_as_a_block_of_its_own(self, client, db_session, test_user):
-        """``GET /v1/notices`` gives the model changes under ``model_changes``,
-        the same answer as ``GET /v1/model-changes``, and nothing of them
-        anywhere else: a client that reads ``notices`` and ``patch`` only
-        sees what it saw before a change was announced."""
+        """``GET /v1/notices`` gives the model changes under ``model_changes``
+        and nothing of them anywhere else: a client that reads ``notices``
+        and ``patch`` only sees what it saw before a change was announced."""
         before = client.get("/v1/notices", headers=auth_header()).json()
         assert before["model_changes"] == {"changes": [], "retiring": [], "patch": {"models": {}}}
         _change(db_session)
         body = client.get("/v1/notices", headers=auth_header()).json()
-        own = self._get(client)
-        assert body["model_changes"] == {key: own[key] for key in ("changes", "retiring", "patch")}
+        assert set(body["model_changes"]) == {"changes", "retiring", "patch"}
         assert body["model_changes"]["retiring"] == ["old-llm"]
         # The violations' part is untouched: no entry, no patch, the same keys as before.
         assert body["notices"] == [] and "patch" not in body

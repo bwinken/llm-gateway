@@ -330,7 +330,7 @@ curl https://your-gateway/v1/notices -H "Authorization: Bearer sk-your-api-key"
 - `notices` 就是 dashboard 通知區塊顯示的內容：最近 `window_days` 天內 gateway 在你的 client 請求裡看到、而你還沒回報已修正的問題。沒有待辦時是空陣列。
 - 通知的 `patch` 是它的修正方式（前提是能靠設定修正）：要在 `~/.claude/settings.json` 的 `env` 區塊裡設定的變數（`set`），和要從裡面移除的變數（`unset`）。沒有 `patch` 的通知要用別的方式處理（更新 Claude Code、申請權限）。
 - 最上層的 `patch` 是實際要套用的那一份：把所有未處理的項目合併，再加上每個帳號都該有的設定。`covers` 是它能修正的通知，`manual` 是它修不了的。沒有待辦時不會出現。patch 裡不會有 key。
-- `model_changes` 是另一類通知，放在自己的區塊裡：管理員正在汰換的模型，依你的帳號列出。`retiring` 是即將下架的模型名稱，`patch.models` 是每個要改成什麼；`changes` 逐一列出公告（`applied` 表示你是否已在 dashboard 按過 *I've switched*）。套用方式：在 `~/.claude/settings.json` 裡指定模型的地方（`model` 設定，以及 `env` 裡名稱含 `MODEL` 的變數），只在值完全等於舊名稱時換成新名稱，保留中括號後綴（`old[1m]`），不新增任何設定。沒有模型在汰換時三者都是空的。這不是你的 client 有問題：它不會出現在 `notices` 或最上層的 `patch` 裡，`POST /v1/notices/resolved` 也不會動到它。`GET /v1/model-changes` 單獨回傳同樣的三個欄位。
+- `model_changes` 是另一類通知，放在自己的區塊裡：管理員正在汰換的模型，依你的帳號列出。`retiring` 是即將下架的模型名稱，`patch.models` 是每個要改成什麼；`changes` 逐一列出公告（`applied` 表示你是否已在 dashboard 按過 *I've switched*）。套用方式：在 `~/.claude/settings.json` 裡指定模型的地方（`model` 設定，以及 `env` 裡名稱含 `MODEL` 的變數），只在值完全等於舊名稱時換成新名稱，保留中括號後綴（`old[1m]`），不新增任何設定。沒有模型在汰換時三者都是空的。這不是你的 client 有問題：它不會出現在 `notices` 或最上層的 `patch` 裡，`POST /v1/notices/resolved` 也不會動到它。
 - 套用修正後要回報：在 dashboard 按 *I've applied it*，或由程式呼叫：
 
 ```bash
@@ -437,6 +437,33 @@ skill、MCP server 或 plugin 要說明它是裝進哪個程式的：
 - 事件裡不要放 key。你自己的 key 出現在 `message` 和 `os_version` 時會被拿掉，出現在其他欄位則整筆被拒絕。
 
 狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings`，合起來就是 dashboard 上看得到的資訊，加上工具設定 client 所需要的資料。`POST /v1/notices/resolved` 和 `POST /v1/events` 則是工具用來回報的兩支。它們在額度用完時一樣可以用，都不計費，也都不會回傳 API key：key 只會在登入之後交出（見下一節，或 dashboard）。
+
+## API 版本
+
+和 gateway 分開發佈的程式（前端、terminal 工具）在登入之前先問這一支。不需要 key：
+
+```bash
+curl https://your-gateway/v1/version
+```
+
+```json
+{
+  "object": "version",
+  "gateway": "1.0.0",
+  "stable": "v1",
+  "statuses": ["stable", "deprecated", "nightly"],
+  "versions": [{"version": "v1", "status": "stable"}]
+}
+```
+
+在 `versions` 裡找自己的版本：
+
+- `stable`：正常提供，之後只會新增、不會改動既有的欄位。最上面的 `stable` 就是它：要開發就對這個版本。
+- `deprecated`：還在提供，到 `sunset`（日期，最後一天）為止；請改用 `successor`。這時該提醒使用者更新。
+- `nightly`：提供試用，可能隨時改動或拿掉，正式發佈的東西不要對它開發。
+- 清單裡沒有：這台 gateway 不提供這個版本。請停下來告訴使用者，不要去呼叫已經不存在的 API。
+
+遇到不認得的狀態，當成 `nightly` 處理。`gateway` 是 gateway 自己的發佈版號，回報問題時用：不要拿它判斷支援什麼。目前 `v1` 就是這份文件描述的全部。
 
 ## 從 terminal 工具登入
 

@@ -1,5 +1,19 @@
 """
-Unified ``/v1/*`` public API surface.
+The model API: unified ``/v1/*`` inference.
+
+``/v1`` is two different things that share a prefix, and they are kept in
+two modules so they are not mixed up:
+
+- this one, the **model API**: what an SDK or a coding tool calls to use a
+  model (chat completions, responses, messages, embeddings, rerank, the
+  token counters, and ``/v1/models``, the list its model picker reads).
+  Billed, counted against the budget, limited, routed to a backend.
+- ``account_api.py``, the **account endpoints**: what an account reads and
+  reports about itself (``/v1/me``, ``/v1/status``, ``/v1/usage``, ...).
+  Never billed, never routed to a model.
+
+Nothing of the second kind belongs here: a route that does not call a model
+(or list them for a client's picker) goes in ``account_api.py``.
 
 Routes the OpenAI-compatible and Anthropic-compatible endpoints. Defaults
 to the vLLM backend (via ``vllm_proxy``); chat / responses / messages /
@@ -28,9 +42,7 @@ misconfiguration that previously surfaced as a silent 404.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import (
@@ -38,37 +50,16 @@ from app.core.config import (
     get_azure_models_snapshot,
     get_bedrock_models_snapshot,
     get_cloud_budget_fallback,
-    get_concurrency_cloud_limit,
-    get_concurrency_offpeak,
-    get_concurrency_settings,
     get_model_routing_snapshot,
     listed_in_api,
 )
 from app.core.deps import (
-    _enforce_daily_limit,
     check_cloud_budget,
-    effective_cloud_limit,
-    get_client_notices,
-    get_model_changes,
-    record_client_event,
-    resolve_client_notices,
-    get_account_holder,
     get_current_user,
-    get_current_user_unmetered,
-    get_owned_apps,
-    get_today_usage,
-    get_usage_history,
     limited,
 )
 from app.core.logger import logger
-from app.core.timeutil import (
-    LOCAL_TZ,
-    local_month_start,
-    local_today,
-    next_local_midnight,
-    seconds_until_local_midnight,
-)
-from app.models.schema import User, is_legacy_api_key
+from app.models.schema import User
 from app.services.azure_proxy import (
     azure_forward_chat_completions,
     azure_forward_count_tokens,
@@ -76,17 +67,11 @@ from app.services.azure_proxy import (
     azure_forward_responses,
 )
 from app.services import (
-    audit,
     billing,
-    client_events,
     client_rules,
-    client_settings,
-    concurrency,
     guardrail,
-    model_catalog,
     overflow,
 )
-from app.services.model_order import natural_key
 from app.services.bedrock_proxy import (
     bedrock_forward_chat_completions,
     bedrock_forward_count_tokens,
@@ -104,7 +89,7 @@ from app.services.vllm_proxy import (
     vllm_forward_tokenize,
 )
 
-router = APIRouter()
+router = APIRouter(tags=["v1"])
 
 
 async def _peek_model_alias(request: Request) -> str:
@@ -387,8 +372,8 @@ _TYPE_CAPABILITIES: dict[str, str] = {
 }
 
 
-@router.get("/v1/models", tags=["v1"])
-@router.get("/models", tags=["v1"])
+@router.get("/v1/models")
+@router.get("/models")
 async def list_models(user: User = Depends(get_current_user)):
     """List chat-capable models available to this user.
 
@@ -468,568 +453,8 @@ async def list_models(user: User = Depends(get_current_user)):
     return {"object": "list", "data": models}
 
 
-def _usd(value: float) -> float:
-    """Round to the precision ``usage_logs.cost_usd`` stores (Numeric(12, 6))."""
-    return round(value, 6)
-
-
-def _remaining(limit: float, used: float) -> float:
-    return _usd(max(0.0, limit - used))
-
-
-@router.get("/v1/me", tags=["account"])
-@router.get("/me", tags=["account"])
-async def account_info(user: User = Depends(get_current_user_unmetered)):
-    """The caller's own access and today's budget, for clients and scripts.
-
-    Answers even once the daily limit is spent (no 429 at auth), since
-    "how much is left / when does it reset" is what a client asks then.
-    Every account has a finite limit, so every amount is a number (never
-    null, no "unlimited").
-
-    Per backend (``onprem`` = vLLM, ``azure``, ``aws`` = Bedrock):
-      - ``access``: may this key reach it (the account's Azure / AWS flag);
-      - ``used_usd``: today's spend there;
-      - ``remaining_usd``: what can still be spent there today — the tighter
-        of the cloud cap (azure / aws) and the overall daily limit (cloud
-        spend counts toward both), 0 without access.
-
-    ``cloud`` appears only when the caller may use a cloud backend and has a
-    cloud cap (``effective_cloud_limit``: their own, else the gateway-wide
-    default): Azure + AWS spend today against it.
-
-    Limits are those the gateway enforces; with ``ENFORCE_DAILY_LIMIT=false``
-    they are only logged (``daily.enforced`` = false).
-
-    ``legacy_key``: the key is of the older, weaker format and the dashboard
-    asks its holder to regenerate it. The key itself is never returned.
-    """
-    today = await run_in_threadpool(get_today_usage, user)
-
-    daily_limit = max(0.0, user.daily_limit_usd)
-    daily_remaining = _remaining(daily_limit, today["total_cost_usd"])
-
-    azure_access = user.can_use_azure
-    bedrock_access = user.can_use_bedrock
-    # The cap only means something to a user who may reach a cloud backend.
-    cloud_limit = effective_cloud_limit(user) if (azure_access or bedrock_access) else None
-    cloud_used = today["azure_cost_usd"] + today["bedrock_cost_usd"]
-    cloud_remaining = (
-        daily_remaining if cloud_limit is None
-        else min(daily_remaining, _remaining(cloud_limit, cloud_used))
-    )
-
-    def _backend(access: bool, used: float, remaining: float) -> dict:
-        return {
-            "access": access,
-            "used_usd": _usd(used),
-            "remaining_usd": remaining if access else 0.0,
-        }
-
-    mode, limit = get_concurrency_settings()
-    concurrency_applies = mode != "off" and not user.concurrency_waived
-    local_now = datetime.now(LOCAL_TZ)
-    offpeak = get_concurrency_offpeak()
-
-    return {
-        "object": "account",
-        "username": user.username,
-        "display_name": user.display_name,
-        # Kept for clients built against it; always false. An API key has no
-        # admin right: that is the AuthCenter token's scope, on the web UI.
-        "is_admin": False,
-        "legacy_key": is_legacy_api_key(user.api_key),
-        "daily": {
-            "limit_usd": daily_limit,
-            "used_usd": _usd(today["total_cost_usd"]),
-            "remaining_usd": daily_remaining,
-            "requests": today["total_requests"],
-            "input_tokens": today["total_input_tokens"],
-            "output_tokens": today["total_output_tokens"],
-            "enforced": _enforce_daily_limit(),
-            "timezone": str(LOCAL_TZ),
-            "resets_at": next_local_midnight(local_now).isoformat(),
-            "resets_in_seconds": seconds_until_local_midnight(),
-        },
-        "backends": {
-            "onprem": _backend(True, today["vllm_cost_usd"], daily_remaining),
-            "azure": _backend(
-                azure_access,
-                today["azure_cost_usd"],
-                cloud_remaining,
-            ),
-            "aws": _backend(
-                bedrock_access,
-                today["bedrock_cost_usd"],
-                cloud_remaining,
-            ),
-        },
-        **({"cloud": {
-            "limit_usd": cloud_limit,
-            "used_usd": _usd(cloud_used),
-            "remaining_usd": cloud_remaining,
-        }} if cloud_limit is not None else {}),
-        "cloud_budget_fallback": get_cloud_budget_fallback(),
-        # "limit" is for local (on-prem) requests; cloud requests are counted
-        # apart, against "cloud_limit" (only shown with cloud access).
-        "concurrency": (
-            {
-                "mode": mode,
-                "limit": limit,
-                **({"cloud_limit": get_concurrency_cloud_limit()}
-                   if azure_access or bedrock_access else {}),
-                # Off-peak hours lift "limit" (local only); shown only when set.
-                **({"offpeak": {
-                    "start": offpeak["start"],
-                    "end": offpeak["end"],
-                    "weekends": offpeak["weekends"],
-                    "active": concurrency.in_offpeak(offpeak, local_now),
-                }} if offpeak["start"] or offpeak["weekends"] else {}),
-            } if concurrency_applies else {"mode": "off"}
-        ),
-    }
-
-
-@router.get("/v1/status", tags=["account"])
-async def model_status(user: User = Depends(get_current_user_unmetered)):
-    """The models this key can use and whether they are up, for clients and
-    scripts: what the dashboard's model tables show.
-
-    ``models`` lists every model the account can see (hidden entries and
-    cloud backends without access left out), in the dashboard's order, each
-    with its billed prices per 1M tokens. On-prem models carry ``state``
-    ``up`` / ``down`` from the gateway's health loop, and ``running`` /
-    ``waiting`` request counts when the server reports them; cloud models
-    are ``unchecked`` (the gateway does not probe them). ``onprem`` sums
-    the on-prem ones up. A key is never omitted as null: it is left out.
-
-    Like ``/v1/me`` it answers once the daily limit is spent. No database
-    read.
-    """
-    models = model_catalog.visible_models(user)
-    onprem = [m for m in models if m["backend"] == "onprem"]
-    return {
-        "object": "status",
-        "onprem": {
-            "total": len(onprem),
-            "up": sum(1 for m in onprem if m["state"] == "up"),
-            "down": [m["id"] for m in onprem if m["state"] == "down"],
-        },
-        "models": models,
-    }
-
-
-USAGE_MAX_DAYS = 90
-
-
-def _model_usage_row(row: dict) -> dict:
-    """One model's usage as the account endpoints give it: the backend under
-    its client-facing name (``onprem`` / ``azure`` / ``aws``)."""
-    out = {
-        "model": row["model"],
-        "backend": model_catalog.BACKEND_NAMES.get(row["backend"], row["backend"]),
-        "type": row["type"],
-        "requests": row["requests"],
-        "input_tokens": row["input_tokens"],
-        "output_tokens": row["output_tokens"],
-        "cost_usd": row["cost_usd"],
-    }
-    if "overflow" in row:
-        # The account's own usage (``/v1/usage``). True: it asked for an
-        # on-prem model and the gateway served it from this cloud model
-        # while on-prem was congested. Service accounts are never moved, so
-        # their rows have no such key.
-        out["overflow"] = bool(row["overflow"])
-    return out
-
-
-def _usage_source(source: dict) -> dict:
-    """One way an account's usage came in (``stats.get_usage_sources``) as
-    ``/v1/usage`` gives it: its own key, or a service account that sent
-    requests for it, with the totals and the models they went to."""
-    out = {"source": source["source"]}
-    for key in ("service_account", "description"):
-        if source.get(key):
-            out[key] = source[key]
-    out.update(
-        requests=source["requests"],
-        input_tokens=source["input_tokens"],
-        output_tokens=source["output_tokens"],
-        cost_usd=_usd(source["cost_usd"]),
-        models=[_model_usage_row(r) for r in source["models"]],
-    )
-    return out
-
-
-@router.get("/v1/usage", tags=["account"])
-def usage_history(
-    days: int = Query(7, ge=1, le=USAGE_MAX_DAYS, description="How many days back, today included."),
-    user: User = Depends(get_account_holder),
-):
-    """The caller's own usage: one row per day and this month by model,
-    the figures behind the dashboard's trend chart and Cost by Model card.
-
-    ``days`` are Asia/Taipei calendar days, oldest first, today last and
-    still running; quiet days are present as zeros. ``month`` is the local
-    month so far, with one ``models`` row per model and backend in the
-    dashboard's order. Like the dashboard, the month leaves out a cloud
-    backend the account no longer has access to; the days count everything
-    (as the daily budget does). A row with ``overflow`` true is a cloud
-    model the gateway served in place of a congested on-prem one: it is
-    listed whatever cloud access the account has, and is on its bill.
-
-    ``sources``, in ``today`` and in ``month``, is that same usage by the
-    way it came in: ``source`` ``own_key`` for requests sent with the
-    account's own key, and one ``service_account`` entry per application
-    that sent requests for the account after its user signed in to it
-    (``X-On-Behalf-Of``), named in ``service_account`` and, when an admin
-    described it, ``description``. Each has its totals and its own
-    ``models`` rows; together they add up to the period's totals. It is
-    part of the figures above, never on top of them. Other ``source``
-    values may be added later: skip one you do not know.
-
-    Answers once the daily limit is spent. Plain ``def``: it reads the
-    database and awaits nothing.
-    """
-    history = get_usage_history(user, days)
-    catalog = model_catalog.current_catalog_keys()
-
-    def by_model(rows: list[dict], sources: list[dict]) -> dict:
-        """Totals and one row per model and backend, in the dashboard's
-        order, without the cloud backends the account may not use; then
-        the same usage by the way it came in."""
-        rows = model_catalog.sort_usage_rows(model_catalog.visible_usage_rows(rows, user), catalog)
-        return {
-            "requests": sum(r["requests"] for r in rows),
-            "input_tokens": sum(r["input_tokens"] for r in rows),
-            "output_tokens": sum(r["output_tokens"] for r in rows),
-            "cost_usd": _usd(sum(r["cost_usd"] for r in rows)),
-            "models": [_model_usage_row(r) for r in rows],
-            "sources": [_usage_source(s) for s in sources],
-        }
-
-    return {
-        "object": "usage",
-        "timezone": str(LOCAL_TZ),
-        "days": [
-            {
-                "date": day["date"],
-                "requests": day["reqs"],
-                "input_tokens": day["input_tokens"],
-                "output_tokens": day["output_tokens"],
-                "cost_usd": day["cost"],
-            }
-            for day in history["days"]
-        ],
-        "today": {
-            "date": local_today().isoformat(),
-            **by_model(history["today_models"], history["today_sources"]),
-        },
-        "month": {
-            "month": local_month_start().strftime("%Y-%m"),
-            **by_model(history["models"], history["sources"]),
-        },
-    }
-
-
-def _owned_service_account_rows(user: User) -> list[dict]:
-    """The service accounts ``user`` owns, by name in natural order, as the
-    account endpoints give them: never a key."""
-    accounts = sorted(get_owned_apps(user), key=lambda account: natural_key(account["username"]))
-    return [
-        {
-            "username": account["username"],
-            # What an admin wrote about it; absent when there is none.
-            **({"description": account["description"]} if account.get("description") else {}),
-            # The department it is for (its owners must be in it); absent when it has none.
-            **({"department": account["department"]} if account.get("department") else {}),
-            "daily_limit_usd": max(0.0, float(account["daily_limit_usd"])),
-            "legacy_key": account["legacy_key"],
-            "month": {
-                "requests": account["monthly_reqs"],
-                "input_tokens": account["monthly_input"],
-                "output_tokens": account["monthly_output"],
-                "cost_usd": _usd(account["monthly_cost"]),
-                "models": [_model_usage_row(r) for r in account["models"]],
-            },
-            # A service account that sends requests for its users
-            # (X-On-Behalf-Of): what it sent for them this month. Billed to
-            # those users, so no part of "month" above.
-            "acts_for_users": account["acts_for_users"],
-            "on_behalf": {
-                "users": account["on_behalf"]["users"],
-                "requests": account["on_behalf"]["requests"],
-                "input_tokens": account["on_behalf"]["input_tokens"],
-                "output_tokens": account["on_behalf"]["output_tokens"],
-                "cost_usd": _usd(account["on_behalf"]["cost"]),
-            },
-        }
-        for account in accounts
-    ]
-
-
-@router.get("/v1/service-accounts", tags=["account"])
-def owned_service_accounts(user: User = Depends(get_account_holder)):
-    """The service accounts the caller owns (accounts for programs, assigned
-    by an admin), with each one's daily limit and this month's usage, in
-    total and per model: the dashboard's *Service accounts* tab.
-
-    ``month.models`` has one row per model and backend, in the dashboard's
-    order (as ``month.models`` of ``/v1/usage``), and adds up to the
-    month's totals. Nothing is left out of it: it is that account's bill,
-    whatever cloud access the caller has.
-
-    ``description`` is one line an admin wrote to say what the account is,
-    ``department`` the department it is for; each key is absent when there
-    is none. An account made for another department than the caller's is
-    left out of the list, as on the dashboard, until an admin has looked.
-
-    ``acts_for_users`` says the account sends requests for the people using
-    it (``X-On-Behalf-Of``); ``on_behalf`` is what it sent for them this
-    month and for how many ``users``. That usage is billed to those users,
-    so it is no part of ``month``.
-
-    A service account's API key is **not** part of it, and no API-key
-    endpoint returns one: a leaked personal key must not open every service
-    account its holder owns. Showing and regenerating such a key stays on
-    the dashboard, behind SSO. ``legacy_key`` says its key is of the older
-    format.
-
-    Answers once the daily limit is spent. Plain ``def`` (database read).
-    """
-    return {
-        "object": "service_accounts",
-        "month": local_month_start().strftime("%Y-%m"),
-        "service_accounts": _owned_service_account_rows(user),
-    }
-
-
-def _patch(env: dict[str, str | None]) -> dict:
-    """A settings patch as data: the variables to set in the ``env`` block
-    of Claude Code's settings.json and the ones to take out of it."""
-    return {
-        "set": {name: value for name, value in env.items() if value is not None},
-        "unset": [name for name, value in env.items() if value is None],
-    }
-
-
-@router.get("/v1/notices", tags=["account"])
-def client_notices(user: User = Depends(get_account_holder)):
-    """What the dashboard's notices panel tells the caller: the client
-    checks (``CC001``...) this account tripped in the last ``window_days``
-    days and has not reported as fixed.
-
-    Each notice has the check's ``id``, the admin's ``title`` and
-    ``message``, when it was last seen and, when the fix is a setting, its
-    ``patch``. The top-level ``patch`` is the account's one patch for
-    everything open (what the dashboard offers as a download): ``covers``
-    lists the checks it fixes and ``manual`` those no setting can fix
-    (update Claude Code, ask for access). It is absent when nothing is
-    open. A patch only ever sets or removes variables in the ``env`` block
-    of settings.json, and never holds a key.
-
-    ``model_changes`` is a block of its own beside them: the models an admin
-    is replacing, for this account, exactly as ``GET /v1/model-changes``
-    gives them (``changes``, ``retiring``, ``patch.models``; all three empty
-    when no change is shown to the caller). It is a second category of
-    notice, not a violation: nothing of it is in ``notices`` or in the
-    top-level ``patch``, its patch is renames and never ``set`` / ``unset``,
-    and ``POST /v1/notices/resolved`` does not touch it. A client that
-    reads only ``notices`` and ``patch`` sees what it always saw.
-
-    Read-only: reporting a notice as fixed is ``POST /v1/notices/resolved``.
-    Answers once the daily limit is spent. Plain ``def``.
-    """
-    found = get_client_notices(user)
-    notices = []
-    for notice in found["notices"]:
-        entry: dict[str, object] = {"id": notice["rule_id"], "title": notice["title"]}
-        if notice["message"]:
-            entry["message"] = notice["message"]
-        entry["last_seen_at"] = (
-            notice["seen_at"].replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ).isoformat(timespec="seconds")
-        )
-        if notice["client_version"]:
-            entry["client_version"] = notice["client_version"]
-        if notice["env"]:
-            entry["patch"] = _patch(notice["env"])
-        notices.append(entry)
-    body: dict[str, object] = {
-        "object": "notices",
-        "window_days": client_rules.WINDOW_DAYS,
-        "notices": notices,
-    }
-    combined = found["combined"]
-    if combined:
-        body["patch"] = {**_patch(combined["env"]), "covers": combined["covered"], "manual": combined["manual"]}
-    body["model_changes"] = _model_changes_block(user)
-    return body
-
-
-def _model_changes_block(user: User) -> dict:
-    """The models being replaced for ``user``, as data: what
-    ``GET /v1/model-changes`` answers and what ``GET /v1/notices`` carries
-    under ``model_changes``. One function, so the two cannot disagree."""
-    renames: dict[str, str] = {}
-    changes = []
-    for change in get_model_changes(user):
-        entry: dict[str, object] = {"id": change["ref"], "title": change["title"]}
-        if change["message"]:
-            entry["message"] = change["message"]
-        entry["models"] = change["renames"]
-        entry["applied"] = change["applied"]
-        changes.append(entry)
-        renames.update(change["renames"])
-    return {"changes": changes, "retiring": list(renames), "patch": {"models": renames}}
-
-
-@router.get("/v1/model-changes", tags=["account"])
-def model_changes_for_account(user: User = Depends(get_account_holder)):
-    """The models that are being replaced, for this account: what an admin
-    announced (admin panel, *Model changes*) and is showing now. Its own
-    flow, apart from the violations in ``notices`` of ``GET /v1/notices``
-    (which carries this same answer under ``model_changes``, for a client
-    that asks once): nothing was detected, the account is simply one the
-    change is for.
-
-    ``changes`` lists each change being shown that concerns the account's
-    tier (its cloud access: none, Azure, AWS or both): its ``id``
-    (``MC3``), ``title`` and ``message``, the ``models`` to replace
-    (``{old: new}``, this tier's) and whether the account said it
-    switched on its dashboard (``applied``). ``retiring`` is every model name being replaced for
-    this account, and ``patch.models`` the one rename map for all of it
-    (a later change wins where two replace the same model).
-
-    Applying the patch: replace the old name with the new one where
-    Claude Code's settings.json names a model (the ``model`` setting and
-    the ``env`` variables with ``MODEL`` in their name), only where the
-    value is exactly the old name; a bracket suffix (``old[1m]``) is
-    kept. Add nothing: a user who chose another model keeps it.
-
-    Values are returned only while an admin has a change switched on.
-    Before one is announced, once it is switched off and for an account no
-    change is for, all three are empty.
-
-    Read-only and never a key. Answers once the daily limit is spent.
-    Plain ``def``.
-    """
-    return {"object": "model_changes", **_model_changes_block(user)}
-
-
-@router.post("/v1/notices/resolved", tags=["account"])
-def client_notices_resolved(
-    body: dict | None = Body(default=None),
-    user: User = Depends(get_account_holder),
-):
-    """*I've applied it*, for a client that is not a browser: the caller's
-    open notices are marked as fixed, as the dashboard's button does.
-
-    Without a body (or without ``ids``) everything open is resolved; with
-    ``{"ids": ["CC001", ...]}`` only those. The answer lists what was open
-    and is now resolved (``resolved``, in the checks' order), so a repeated
-    call answers an empty list and an id with nothing open is not an error.
-    The gateway cannot see a settings file and takes the account's word
-    for two weeks (``client_rules.RESOLVED_QUIET_DAYS``): a notice comes
-    back only if its problem is still seen after that.
-
-    The one write an API key has on its account, and in the audit log.
-    Plain ``def``.
-    """
-    ids = None
-    if body is not None and body.get("ids") is not None:
-        ids = body["ids"]
-        if (
-            not isinstance(ids, list) or len(ids) > 50
-            or not all(isinstance(rule_id, str) and len(rule_id) <= 20 for rule_id in ids)
-        ):
-            raise HTTPException(status_code=400, detail="ids must be a list of notice ids, such as [\"CC001\"].")
-    audit.note_actor(user.username)
-    try:
-        resolved = resolve_client_notices(user, ids)
-    except Exception as exc:
-        logger.warning("Client notices resolve failed | user={} error={}: {}", user.username, type(exc).__name__, exc)
-        raise HTTPException(status_code=503, detail="Could not record this now. Try again later.")
-    audit.note(resolved=resolved)
-    logger.info("Client rules marked as fixed by API key | user={} rules={}", user.username, ",".join(resolved) or "-")
-    return {"object": "notices.resolved", "resolved": resolved}
-
-
-@router.post("/v1/events", tags=["account"])
-def client_event(
-    body: dict = Body(...),
-    user: User = Depends(get_account_holder),
-):
-    """What a setup tool did on its user's machine, for the admin's *Client
-    installs* list: which account installed, updated, removed or configured
-    what, in which version, on which operating system.
-
-    One event per request: ``event`` (``installed`` / ``updated`` /
-    ``uninstalled`` / ``settings_applied``), the reporting ``tool`` and its
-    ``tool_version``, the ``component`` it is about (``claude-code``,
-    ``vscode``, a skill, an MCP server, ...) and ``os`` (``windows`` /
-    ``linux`` / ``macos``) are required; ``kind`` (``app``, the default, or
-    ``skill`` / ``mcp`` / ``plugin``, with the program it was added to in
-    ``client``),
-    ``component_version``, ``previous_version``, ``method``, ``os_version``,
-    ``arch``, ``hostname`` (the machine's name: what tells two machines of
-    one account apart), ``ok`` (false: the attempt failed) and ``message``
-    are optional. Keys the gateway does not know are ignored.
-
-    Telemetry and nothing else: it changes nothing about the account, and
-    nothing routes, limits or refuses by what was reported. A tool sends it
-    and carries on whatever the answer: 400 for an event that does not
-    validate, 429 past the hourly allowance, 503 when it could not be
-    kept. Never billed; answers once the daily limit is spent. Plain ``def``.
-    """
-    try:
-        values = client_events.clean(body, secret=user.api_key or "")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    try:
-        record_client_event(user, values)
-    except client_events.TooManyEvents:
-        raise HTTPException(
-            status_code=429, headers={"Retry-After": "3600"},
-            detail=f"At most {client_events.MAX_PER_HOUR} events an hour per account.",
-        )
-    except Exception as exc:
-        logger.warning("Client event not recorded | user={} error={}: {}", user.username, type(exc).__name__, exc)
-        raise HTTPException(status_code=503, detail="Could not record this now.")
-    return {"object": "event", "recorded": True}
-
-
-@router.get("/v1/settings", tags=["account"])
-async def client_settings_fields(user: User = Depends(get_account_holder)):
-    """The client settings this account can be offered, for a tool that
-    sets a client up: apply every ``default``, or let the user pick.
-
-    A field is one variable of the ``env`` block of Claude Code's
-    settings.json (``client`` names the client): ``name``, a ``label`` and
-    a ``description`` to show, ``type`` (``model``: its options are models;
-    ``choice``: fixed values), ``default`` and ``options``. ``default`` is
-    never empty and is always the ``value`` of one of the ``options``; a
-    field with one option has nothing else to pick. An option has a
-    ``value`` and a ``label``, sometimes a ``description``, and a model
-    option its ``backend``.
-
-    The fields are the admin's (``client_settings.json``, the admin panel's
-    *Client setup* card), and both ``default`` and ``options`` follow the
-    account's tier, its cloud access: none, Azure, AWS or both. A model the
-    account cannot use is never offered. What the account has set now is on
-    its machine; the gateway does not know it.
-
-    Read-only and never a key. Answers once the daily limit is spent. No
-    database read.
-    """
-    return {
-        "object": "settings",
-        "client": client_settings.CLIENT,
-        "fields": client_settings.fields_for(user),
-    }
-
-
-@router.post("/v1/chat/completions", tags=["v1"])
-@router.post("/chat/completions", tags=["v1"])
+@router.post("/v1/chat/completions")
+@router.post("/chat/completions")
 async def chat_completions(request: Request, user: User = Depends(limited_v1_user)):
     alias = await _peek_model_alias(request)
     budget_fallback: str | None = None
@@ -1303,8 +728,8 @@ _RENDER_OPENAPI: dict[str, object] = {
 }
 
 
-@router.post("/v1/chat/completions/render", tags=["v1"], openapi_extra=_RENDER_OPENAPI)
-@router.post("/chat/completions/render", tags=["v1"], openapi_extra=_RENDER_OPENAPI)
+@router.post("/v1/chat/completions/render", openapi_extra=_RENDER_OPENAPI)
+@router.post("/chat/completions/render", openapi_extra=_RENDER_OPENAPI)
 async def chat_completions_render(
     request: Request,
     decode: bool = Query(
@@ -1378,8 +803,8 @@ print(resp.json()["decoded_prompt"])
     )
 
 
-@router.post("/v1/responses", tags=["v1"])
-@router.post("/responses", tags=["v1"])
+@router.post("/v1/responses")
+@router.post("/responses")
 async def responses(request: Request, user: User = Depends(limited_v1_responses_user)):
     """OpenAI Responses API endpoint.
 
@@ -1413,8 +838,8 @@ async def responses(request: Request, user: User = Depends(limited_v1_responses_
     return response
 
 
-@router.post("/v1/messages", tags=["v1"])
-@router.post("/messages", tags=["v1"])
+@router.post("/v1/messages")
+@router.post("/messages")
 async def messages(request: Request, user: User = Depends(limited_v1_user)):
     """Anthropic Messages API compatibility endpoint.
 
@@ -1461,8 +886,8 @@ async def messages(request: Request, user: User = Depends(limited_v1_user)):
     return response
 
 
-@router.post("/v1/messages/count_tokens", tags=["v1"])
-@router.post("/messages/count_tokens", tags=["v1"])
+@router.post("/v1/messages/count_tokens")
+@router.post("/messages/count_tokens")
 async def messages_count_tokens(
     request: Request, user: User = Depends(get_current_user)
 ):
@@ -1503,8 +928,8 @@ async def messages_count_tokens(
     return response
 
 
-@router.post("/v1/tokenize", tags=["v1"])
-@router.post("/tokenize", tags=["v1"])
+@router.post("/v1/tokenize")
+@router.post("/tokenize")
 async def tokenize(request: Request, user: User = Depends(get_current_user)):
     """vLLM-native ``/tokenize`` pass-through.
 
@@ -1517,8 +942,8 @@ async def tokenize(request: Request, user: User = Depends(get_current_user)):
     )
 
 
-@router.post("/v1/embeddings", tags=["v1"])
-@router.post("/embeddings", tags=["v1"])
+@router.post("/v1/embeddings")
+@router.post("/embeddings")
 async def embeddings(request: Request, user: User = Depends(get_current_user)):
     return await vllm_forward_simple_request(
         request,
@@ -1529,10 +954,10 @@ async def embeddings(request: Request, user: User = Depends(get_current_user)):
     )
 
 
-@router.post("/v1/rerank", tags=["v1"])
-@router.post("/v1/score", tags=["v1"])
-@router.post("/rerank", tags=["v1"])
-@router.post("/score", tags=["v1"])
+@router.post("/v1/rerank")
+@router.post("/v1/score")
+@router.post("/rerank")
+@router.post("/score")
 async def rerank(request: Request, user: User = Depends(get_current_user)):
     return await vllm_forward_simple_request(
         request,
@@ -1543,8 +968,8 @@ async def rerank(request: Request, user: User = Depends(get_current_user)):
     )
 
 
-@router.post("/v1/systemone", tags=["v1"])
-@router.post("/systemone", tags=["v1"])
+@router.post("/v1/systemone")
+@router.post("/systemone")
 async def systemone(request: Request, user: User = Depends(get_current_user)):
     """System One typed decisions, in TypeSafe's ``/v1/systemone`` wire format.
 
