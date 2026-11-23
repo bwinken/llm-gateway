@@ -9,6 +9,7 @@
 ```mermaid
 graph LR
     Client["Client App<br/>(SDK / curl)"] -->|Bearer API key| v1_api
+    Client -->|Bearer API key| account_api
     Client -->|Bearer API key| azure_api
     Client -->|Bearer API key| aws_api
     Browser["Browser"] -->|JWT via oauth2-proxy| web_ui
@@ -16,7 +17,8 @@ graph LR
     Browser -->|JWT via oauth2-proxy| admin
 
     subgraph routers
-        v1_api["v1_api.py<br/>/v1/*<br/>(unified: vLLM default + Azure / Bedrock dispatch)"]
+        v1_api["v1_api.py<br/>/v1/* 模型 API<br/>(unified: vLLM default + Azure / Bedrock dispatch)"]
+        account_api["account_api.py<br/>/v1/me • /v1/status • /v1/usage ...<br/>(帳號端點：不呼叫模型、不計費)"]
         azure_api["azure_api.py<br/>/azure/v1/*<br/>(Azure-only)"]
         aws_api["aws_api.py<br/>/aws/v1/*<br/>(Bedrock-only)"]
         web_ui["web_ui.py<br/>/ • /setup"]
@@ -31,6 +33,8 @@ graph LR
     azure_api --> azure_proxy
     aws_api --> bedrock_proxy
     dashboard --> dashboard_view["services/dashboard_view.py"]
+    account_api --> account_view["services/account_view.py"]
+    dashboard --> account_view
     web_ui --> dashboard_view
     dashboard_view --> stats["services/stats.py"]
     admin --> stats
@@ -39,11 +43,13 @@ graph LR
 
 ---
 
-## `v1_api.py` — 統一 `/v1/*` API（OpenAI 與 Anthropic 相容）
+## `v1_api.py` — 模型 API：統一的 `/v1/*` 推論（OpenAI 與 Anthropic 相容）
 
 **認證**：`deps.get_current_user`（API key + daily limit 檢查）。`chat/completions`、`responses`、`messages` 改用 `deps.limited_current_user`（相同檢查，另外佔一個並行名額）；`/v1/me` 用 `deps.get_current_user_unmetered`（不做每日額度 429）。
 
-`v1_api.py` 是主要的公開入口。預設走 vLLM 後端；當請求的 `model` alias 設定在雲端後端、且 caller 有權使用時（看帳號的 `can_use_azure` / `can_use_bedrock` 旗標），會 dispatch 到該雲端後端：
+`v1_api.py` 是模型 API，也是主要的公開入口：這裡每一條路由都會呼叫模型（或列出模型給 client 的選單）。同樣在 `/v1` 底下的帳號端點在 `account_api.py`（下一節）。
+
+預設走 vLLM 後端；當請求的 `model` alias 設定在雲端後端、且 caller 有權使用時（看帳號的 `can_use_azure` / `can_use_bedrock` 旗標），會 dispatch 到該雲端後端：
 
 - **Azure**：alias 在 `[azure_models.*]` + `can_use_azure` → chat / responses / messages / count_tokens。
 - **Bedrock**：alias 在 `[bedrock_models.*]` + `can_use_bedrock` → chat / messages / count_tokens。
@@ -55,14 +61,6 @@ graph LR
 | 方法 | 路徑 | 說明 | Proxy 方式 | 允許類型 |
 |---|---|---|---|---|
 | `GET` | `/v1/models`、`/models` | 列出模型(僅 LLM/VLM,`hidden` 的不列)。有 `can_use_azure` 的使用者會多看到 Azure 別名,有 `can_use_bedrock` 的會多看到 Bedrock 別名 | 直接回傳 | `llm`, `vlm` |
-| `GET` | `/v1/me`、`/me` | 呼叫者的權限(地端 / Azure / AWS)與各後端今日額度。驗證時不做每日額度 429，額度用完也能查 | 直接回傳 | — |
-| `GET` | `/v1/status` | 呼叫者看得到的模型與 `state`(地端 `up` / `down`,雲端 `unchecked`)、負載、計費價格(`model_catalog.visible_models`)。驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
-| `GET` | `/v1/usage` | 呼叫者每個本地日的用量(`?days=`,1 到 90,預設 7)以及今天、本月各模型用量,經 `usage_rollup.aggregate` 讀取。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `GET` | `/v1/service-accounts` | 呼叫者名下的服務帳號、每日上限與本月用量(合計與各模型)(`stats.get_owned_apps_summary`),不含 key。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `GET` | `/v1/notices` | 呼叫者尚未處理的 client 通知,以及以 `{set, unset}` 表示的 patch(`client_rules.notices_for` / `combined_for`)。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `POST` | `/v1/notices/resolved` | 以 API key 回報 *I've applied it*:把呼叫者未處理的通知標為已修正,全部或 `ids` 指定的,走 dashboard 的 `client_rules.resolve` / `resolve_all`(`deps.resolve_client_notices`)。API key 對帳號唯一的寫入;會記入稽核紀錄(`audit._AUDITED_KEY_ROUTES`)。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `POST` | `/v1/events` | 安裝工具在呼叫者機器上做了什麼:安裝 / 更新 / 移除 / 套用設定,對象是哪個 component(`kind`、`client`)、版本、OS 與 hostname(`client_events.clean` → `deps.record_client_event`)。供 admin 的 *Client installs* 卡片使用的回報;每帳號每小時 300 筆。驗證時不做每日額度 429;一般 `def` | 直接回傳 | — |
-| `GET` | `/v1/settings` | 工具幫呼叫者設定 client 時可以提供的設定:每個變數的說明、`default` 與 `options`,依 tier(帳號的雲端權限)而不同,來自 admin 的 `client_settings.json`(`client_settings.fields_for`)。唯讀;驗證時不做每日額度 429;不讀資料庫 | 直接回傳 | — |
 | `POST` | `/v1/chat/completions`、`/chat/completions` | Chat 對話生成 | `vllm_forward_chat_completions`(vLLM) / `azure_forward_chat_completions`(Azure) / `bedrock_forward_chat_completions`(Bedrock) | `llm`, `vlm` |
 | `POST` | `/v1/responses`、`/responses` | Responses API(沒有 Bedrock dispatch:Bedrock alias 會 fallback 到 vLLM) | `vllm_forward_responses`(vLLM) / `azure_forward_responses`(Azure) | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`、`/embeddings` | 文字向量嵌入 | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
@@ -118,6 +116,25 @@ alias 在 AZURE_MODELS / BEDROCK_MODELS 但無權限          → vLLM 路徑(�
 ```
 
 Fallback 發生時，回應會帶 `X-Model-Fallback` header 說明原因。
+
+---
+
+## `account_api.py` — 帳號端點
+
+**認證**：`deps.get_current_user_unmetered`（API key，**不做** daily limit 檢查，所以額度用完照樣回應），或 `deps.get_account_holder`（另外會拒絕服務帳號代替使用者送出的請求）。
+
+帳號查詢與回報自己的資訊，以 JSON 回傳，給不是瀏覽器的程式用（terminal 工具、狀態列）。它們和 `v1_api.py` 的模型 API 只是共用 `/v1` 前綴，其他都不同：不呼叫模型、不計費、不佔併發名額。五條讀取（`me`、`status`、`usage`、`service-accounts`、`notices`）的內容由 `app/services/account_view.py` 組裝，dashboard 的 `/dashboard/api/*` 也呼叫它。只增不改，不回傳 `null`。
+
+| 方法 | 路徑 | 說明 |
+|---|---|---|
+| `GET` | `/v1/me`、`/me` | 呼叫者的權限(地端 / Azure / AWS)與各後端今日額度。驗證時不做每日額度 429，額度用完也能查 |
+| `GET` | `/v1/status` | 呼叫者看得到的模型與 `state`(地端 `up` / `down`,雲端 `unchecked`)、負載、計費價格(`model_catalog.visible_models`)。驗證時不做每日額度 429;不讀資料庫 |
+| `GET` | `/v1/usage` | 呼叫者每個本地日的用量(`?days=`,1 到 90,預設 7)以及今天、本月各模型用量,經 `usage_rollup.aggregate` 讀取。驗證時不做每日額度 429;一般 `def` |
+| `GET` | `/v1/service-accounts` | 呼叫者名下的服務帳號、每日上限與本月用量(合計與各模型)(`stats.get_owned_apps_summary`),不含 key。驗證時不做每日額度 429;一般 `def` |
+| `GET` | `/v1/notices` | 呼叫者尚未處理的 client 通知,以及以 `{set, unset}` 表示的 patch(`client_rules.notices_for` / `combined_for`)。驗證時不做每日額度 429;一般 `def` |
+| `POST` | `/v1/notices/resolved` | 以 API key 回報 *I've applied it*:把呼叫者未處理的通知標為已修正,全部或 `ids` 指定的,走 dashboard 的 `client_rules.resolve` / `resolve_all`(`deps.resolve_client_notices`)。API key 對帳號唯一的寫入;會記入稽核紀錄(`audit._AUDITED_KEY_ROUTES`)。驗證時不做每日額度 429;一般 `def` |
+| `POST` | `/v1/events` | 安裝工具在呼叫者機器上做了什麼:安裝 / 更新 / 移除 / 套用設定,對象是哪個 component(`kind`、`client`)、版本、OS 與 hostname(`client_events.clean` → `deps.record_client_event`)。供 admin 的 *Client installs* 卡片使用的回報;每帳號每小時 300 筆。驗證時不做每日額度 429;一般 `def` |
+| `GET` | `/v1/settings` | 工具幫呼叫者設定 client 時可以提供的設定:每個變數的說明、`default` 與 `options`,依 tier(帳號的雲端權限)而不同,來自 admin 的 `client_settings.json`(`client_settings.fields_for`)。唯讀;驗證時不做每日額度 429;不讀資料庫 |
 
 ---
 

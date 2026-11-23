@@ -9,6 +9,7 @@ Defines FastAPI routes: the unified `/v1/*` public API, the Azure-only `/azure/v
 ```mermaid
 graph LR
     Client["Client App<br/>(SDK / curl)"] -->|Bearer API key| v1_api
+    Client -->|Bearer API key| account_api
     Client -->|Bearer API key| azure_api
     Client -->|Bearer API key| aws_api
     Browser["Browser"] -->|JWT via oauth2-proxy| web_ui
@@ -16,7 +17,8 @@ graph LR
     Browser -->|JWT via oauth2-proxy| admin
 
     subgraph routers
-        v1_api["v1_api.py<br/>/v1/*<br/>(unified: vLLM default + Azure / Bedrock dispatch)"]
+        v1_api["v1_api.py<br/>/v1/* model API<br/>(unified: vLLM default + Azure / Bedrock dispatch)"]
+        account_api["account_api.py<br/>/v1/me • /v1/status • /v1/usage ...<br/>(account endpoints: no model, never billed)"]
         azure_api["azure_api.py<br/>/azure/v1/*<br/>(Azure-only)"]
         aws_api["aws_api.py<br/>/aws/v1/*<br/>(Bedrock-only)"]
         web_ui["web_ui.py<br/>/ • /setup"]
@@ -32,6 +34,8 @@ graph LR
     azure_api --> azure_proxy
     aws_api --> bedrock_proxy
     dashboard --> dashboard_view["services/dashboard_view.py"]
+    account_api --> account_view["services/account_view.py"]
+    dashboard --> account_view
     web_ui --> dashboard_view
     dashboard_view --> stats["services/stats.py"]
     admin --> stats
@@ -40,11 +44,13 @@ graph LR
 
 ---
 
-## `v1_api.py` — Unified `/v1/*` API (OpenAI- and Anthropic-compatible)
+## `v1_api.py` — The Model API: Unified `/v1/*` Inference (OpenAI- and Anthropic-compatible)
 
 **Auth**: `deps.get_current_user` (API key + daily limit check). `chat/completions`, `responses` and `messages` use `deps.limited_current_user` (same check plus a concurrency slot); `/v1/me` uses `deps.get_current_user_unmetered` (no daily-limit 429).
 
-`v1_api.py` is the main public entry. It serves the vLLM backend by default, and dispatches to a cloud backend when the requested `model` alias is configured there and the caller may use it (the account's `can_use_azure` / `can_use_bedrock` flag):
+`v1_api.py` is the model API, the main public entry: every route here calls a model (or lists them for a client's picker). The account endpoints, which share the `/v1` prefix, are in `account_api.py` (next section).
+
+It serves the vLLM backend by default, and dispatches to a cloud backend when the requested `model` alias is configured there and the caller may use it (the account's `can_use_azure` / `can_use_bedrock` flag):
 
 - **Azure**: alias under `[azure_models.*]` + `can_use_azure` → chat / responses / messages / count_tokens.
 - **Bedrock**: alias under `[bedrock_models.*]` + `can_use_bedrock` → chat / messages / count_tokens.
@@ -56,14 +62,6 @@ One base URL surfaces every backend to clients like Claude Code's model picker. 
 | Method | Path(s) | Description | Proxy Method | Allowed Types |
 |---|---|---|---|---|
 | `GET` | `/v1/models`, `/models` | List models (LLM/VLM only, `hidden` entries left out). Azure aliases merged in for users with `can_use_azure`, Bedrock aliases for `can_use_bedrock` | Direct response | `llm`, `vlm` |
-| `GET` | `/v1/me`, `/me` | Caller's access (on-prem / Azure / AWS) and today's budget per backend. Auth skips the daily-limit 429 so it answers when the budget is spent | Direct response | — |
-| `GET` | `/v1/status` | The models the caller can see with `state` (`up` / `down` on-prem, `unchecked` cloud), load and billed prices (`model_catalog.visible_models`). Unmetered auth; no DB read | Direct response | — |
-| `GET` | `/v1/usage` | The caller's usage per local day (`?days=`, 1 to 90, default 7), and today and this month by model, through `usage_rollup.aggregate`. Unmetered auth; plain `def` | Direct response | — |
-| `GET` | `/v1/service-accounts` | The service accounts the caller owns with their daily limit and this month's usage, in total and per model (`stats.get_owned_apps_summary`), never their keys. Unmetered auth; plain `def` | Direct response | — |
-| `GET` | `/v1/notices` | The caller's open client-rule notices and their patches as `{set, unset}` (`client_rules.notices_for` / `combined_for`). Unmetered auth; plain `def` | Direct response | — |
-| `POST` | `/v1/notices/resolved` | *I've applied it* by API key: resolves the caller's open notices, all or the `ids` named, through the dashboard's `client_rules.resolve` / `resolve_all` (`deps.resolve_client_notices`). The one account write a key has; in the audit log (`audit._AUDITED_KEY_ROUTES`). Unmetered auth; plain `def` | Direct response | — |
-| `POST` | `/v1/events` | What a setup tool did on the caller's machine: installed / updated / uninstalled / settings applied, for which component (`kind`, `client`), version, OS and hostname (`client_events.clean` → `deps.record_client_event`). Telemetry for the admin's *Client installs* card; 300 an hour per account. Unmetered auth; plain `def` | Direct response | — |
-| `GET` | `/v1/settings` | The client settings a tool can offer the caller when it sets a client up: per variable a description, a `default` and its `options`, by tier (the account's cloud access), from the admin's `client_settings.json` (`client_settings.fields_for`). Read-only; unmetered auth; no DB read | Direct response | — |
 | `POST` | `/v1/chat/completions`, `/chat/completions` | Chat completion generation | `vllm_forward_chat_completions` (vLLM) / `azure_forward_chat_completions` (Azure) / `bedrock_forward_chat_completions` (Bedrock) | `llm`, `vlm` |
 | `POST` | `/v1/responses`, `/responses` | Responses API (no Bedrock dispatch: a Bedrock alias falls back to vLLM) | `vllm_forward_responses` (vLLM) / `azure_forward_responses` (Azure) | `llm`, `vlm` |
 | `POST` | `/v1/embeddings`, `/embeddings` | Text embeddings | `vllm_forward_simple_request` | `embedding`, `vision_embedding` |
@@ -119,6 +117,25 @@ All vLLM proxy methods share `_resolve_model()` for health-aware routing:
 ```
 
 When fallback occurs, the response includes an `X-Model-Fallback` header explaining the reason.
+
+---
+
+## `account_api.py` — Account Endpoints
+
+**Auth**: `deps.get_current_user_unmetered` (API key, **without** the daily-limit check, so they answer once the budget is spent), or `deps.get_account_holder`, which also refuses a request a service account sends for a user.
+
+What an account reads and reports about itself, as JSON, for a program that is not a browser (a terminal tool, a status line). These share the `/v1` prefix with the model API in `v1_api.py` and nothing else: they call no model, are never billed and take no concurrency slot. The five reads (`me`, `status`, `usage`, `service-accounts`, `notices`) have their body built in `app/services/account_view.py`, which the dashboard's `/dashboard/api/*` calls too. Additive changes only, never a `null`.
+
+| Method | Path(s) | Description |
+|---|---|---|
+| `GET` | `/v1/me`, `/me` | Caller's access (on-prem / Azure / AWS) and today's budget per backend. Auth skips the daily-limit 429 so it answers when the budget is spent |
+| `GET` | `/v1/status` | The models the caller can see with `state` (`up` / `down` on-prem, `unchecked` cloud), load and billed prices (`model_catalog.visible_models`). Unmetered auth; no DB read |
+| `GET` | `/v1/usage` | The caller's usage per local day (`?days=`, 1 to 90, default 7), and today and this month by model, through `usage_rollup.aggregate`. Unmetered auth; plain `def` |
+| `GET` | `/v1/service-accounts` | The service accounts the caller owns with their daily limit and this month's usage, in total and per model (`stats.get_owned_apps_summary`), never their keys. Unmetered auth; plain `def` |
+| `GET` | `/v1/notices` | The caller's open client-rule notices and their patches as `{set, unset}` (`client_rules.notices_for` / `combined_for`). Unmetered auth; plain `def` |
+| `POST` | `/v1/notices/resolved` | *I've applied it* by API key: resolves the caller's open notices, all or the `ids` named, through the dashboard's `client_rules.resolve` / `resolve_all` (`deps.resolve_client_notices`). The one account write a key has; in the audit log (`audit._AUDITED_KEY_ROUTES`). Unmetered auth; plain `def` |
+| `POST` | `/v1/events` | What a setup tool did on the caller's machine: installed / updated / uninstalled / settings applied, for which component (`kind`, `client`), version, OS and hostname (`client_events.clean` → `deps.record_client_event`). Telemetry for the admin's *Client installs* card; 300 an hour per account. Unmetered auth; plain `def` |
+| `GET` | `/v1/settings` | The client settings a tool can offer the caller when it sets a client up: per variable a description, a `default` and its `options`, by tier (the account's cloud access), from the admin's `client_settings.json` (`client_settings.fields_for`). Read-only; unmetered auth; no DB read |
 
 ---
 

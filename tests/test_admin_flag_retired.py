@@ -161,6 +161,7 @@ def test_nothing_on_the_api_path_reads_the_column():
     allowed = {
         "core/deps.py": ["    user.is_admin = False"],
         "routers/v1_api.py": [],
+        "routers/account_api.py": [],
         "services/account_view.py": ['        "is_admin": False,'],
         "routers/azure_api.py": [],
         "routers/aws_api.py": [],

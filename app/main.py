@@ -3,7 +3,7 @@ FastAPI application entry point.
 
 Lifespan: DB init, global httpx client, background health checks.
 Middleware: CORS + cross-site request guard (app/core/browser_security.py).
-Router mounting: health_api, web_ui, dashboard, auth_api, v1_api, azure_api, aws_api, admin.
+Router mounting: health_api, web_ui, dashboard, auth_api, v1_api, account_api, azure_api, aws_api, admin.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from app.core.database import init_db
 from app.core.logger import logger
 from app.core.server_state import close_client, init_client
 from app.core import static_assets
-from app.routers import admin, auth_api, aws_api, azure_api, dashboard, health_api, v1_api, web_ui
+from app.routers import account_api, admin, auth_api, aws_api, azure_api, dashboard, health_api, v1_api, web_ui
 from app.services import metrics
 from app.services.health import health_check_loop
 
@@ -117,8 +117,9 @@ async def lifespan(app: FastAPI):
     logger.info("{} shut down.", APP_TITLE)
 
 
-# The groups of /docs, in the order shown. Every route carries exactly one
-# (its router's, or its own in v1_api, where two groups share a router).
+# The groups of /docs, in the order shown. Every route carries exactly one,
+# its router's: the account endpoints (account_api) and the model API
+# (v1_api) share the /v1 prefix but are two routers and two groups.
 OPENAPI_TAGS = [
     {"name": "account", "description": "What an account can read and report about itself, by API key: budget, "
      "models, usage, service accounts, client notices (with the model changes), client settings, and what a setup tool installed. "
@@ -201,6 +202,7 @@ app.include_router(web_ui.router)
 app.include_router(dashboard.router)
 app.include_router(auth_api.router)
 app.include_router(v1_api.router)
+app.include_router(account_api.router)
 app.include_router(azure_api.router)
 app.include_router(aws_api.router)
 app.include_router(admin.router)

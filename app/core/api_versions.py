@@ -17,8 +17,9 @@ still served:
 The list is code, like the client checks: a version's status is a promise
 about the code in this repository, so it changes in the commit that changes
 the code, never by an admin setting. ``v1`` is everything the gateway serves
-today: ``/v1/*``, ``/azure/v1/*``, ``/aws/v1/*``, ``/auth/api-key`` and the
-dashboard's ``/dashboard/api/*``.
+today: the model API (``/v1/*`` inference, ``/azure/v1/*``, ``/aws/v1/*``),
+the account endpoints (``/v1/me``, ``/v1/status``, ...), ``/auth/api-key``
+and the dashboard's ``/dashboard/api/*``.
 
 Adding a version: append it as ``nightly`` while it is being built, make it
 ``stable`` when it is released, and in that same change mark the one before

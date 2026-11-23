@@ -96,19 +96,21 @@ grep -cE '"(GET|POST|PATCH) /admin/(users(/[0-9]+)?|api/anomalies|api/audit-log)
 
 ### 帳號端點（API key）
 
-給 repo 以外的程式用（terminal 工具、狀態列、設定 client 的桌面程式）。只增不改，不能刪。
+給 repo 以外的程式用（terminal 工具、狀態列、設定 client 的桌面程式）：帳號查詢自己的資訊。只增不改，不能刪。
+
+路徑雖然也在 `/v1` 底下，但和下面的「模型 API」是兩回事：這裡不呼叫模型、不計費、額度用完照樣回應。程式上也分開，在 `app/routers/account_api.py`；模型 API 在 `app/routers/v1_api.py`。
 
 | 端點 | Handler |
 |---|---|
-| `GET /me` | `v1_api.account_info` |
-| `GET /v1/me` | `v1_api.account_info` |
-| `GET /v1/status` | `v1_api.model_status` |
-| `GET /v1/usage` | `v1_api.usage_history` |
-| `GET /v1/service-accounts` | `v1_api.owned_service_accounts` |
-| `GET /v1/notices` | `v1_api.client_notices` |
-| `POST /v1/notices/resolved` | `v1_api.client_notices_resolved` |
-| `POST /v1/events` | `v1_api.client_event` |
-| `GET /v1/settings` | `v1_api.client_settings_fields` |
+| `GET /me` | `account_api.account_info` |
+| `GET /v1/me` | `account_api.account_info` |
+| `GET /v1/status` | `account_api.model_status` |
+| `GET /v1/usage` | `account_api.usage_history` |
+| `GET /v1/service-accounts` | `account_api.owned_service_accounts` |
+| `GET /v1/notices` | `account_api.client_notices` |
+| `POST /v1/notices/resolved` | `account_api.client_notices_resolved` |
+| `POST /v1/events` | `account_api.client_event` |
+| `GET /v1/settings` | `account_api.client_settings_fields` |
 
 ### 登入（SSO token）
 
@@ -118,7 +120,7 @@ grep -cE '"(GET|POST|PATCH) /admin/(users(/[0-9]+)?|api/anomalies|api/audit-log)
 
 ## 模型 API（API key）
 
-SDK、Claude Code 與其他 client 呼叫的推論 API。全部保留。
+SDK、Claude Code 與其他 client 呼叫的推論 API：會送到後端模型、會計費、受額度與併發限制。全部保留。在 `app/routers/v1_api.py`。
 
 ### `/v1`
 
