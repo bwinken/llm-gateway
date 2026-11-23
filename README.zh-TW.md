@@ -68,14 +68,16 @@ ANTHROPIC_BASE_URL=https://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key cla
 
 ### `account`
 
-把 dashboard 顯示給帳號看的內容以 JSON 提供給不是瀏覽器的程式：狀態列、terminal 工具、幫使用者設定 client 的桌面程式。不計費，額度用完時一樣會回應。
+把 dashboard 顯示給帳號看的內容以 JSON 提供。不計費，額度用完時一樣會回應。
+
+兩種 client 用 `Authorization: Bearer` 打同一批路由：不是瀏覽器的程式（狀態列、terminal 工具、幫使用者設定 client 的桌面程式），帶帳號的 API key 或登入時拿到的 SSO access token；以及瀏覽器裡的前端，帶使用者的 SSO 登入（由前面的 proxy 把登入 cookie 換成 token）。回應一律只關於呼叫者自己的帳號，兩種登入拿到的內容相同，只有兩件事只告訴 SSO 登入的人：`is_admin`，以及服務帳號替誰送過請求。這裡不會給任何人完整的 key。
 
 | 端點 | 用途 |
 |---|---|
-| `GET /v1/me` | 權限（地端 / Azure / AWS）和今日額度：上限、已用、剩餘 |
+| `GET /v1/me` | 權限（地端 / Azure / AWS）和今日額度：上限、已用、剩餘；部門、遮罩的 key、站台的標題與連結 |
 | `GET /v1/status` | 這個帳號的模型：是否正常、負載、價格、掛掉時由哪個模型代替 |
 | `GET /v1/usage` | 每天的用量，以及今天和本月各模型的用量 |
-| `GET /v1/service-accounts` | 使用者名下的服務帳號和本月用量 |
+| `GET /v1/service-accounts` | 使用者名下的服務帳號、本月用量，以及各自遮罩的 key |
 | `GET /v1/settings` | 對這個帳號建議的 client 設定：每個變數的預設值和可選的值 |
 | `GET /v1/notices` | 這個帳號的 client 設定有什麼問題，以及能修正它的設定 |
 | `POST /v1/notices/resolved` | 「我已經套用修正」：清掉通知，全部或指定 id |
@@ -136,12 +138,11 @@ ANTHROPIC_BASE_URL=https://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key cla
 
 ### `web`
 
-使用者透過 SSO 登入後看到的頁面，以及 dashboard 資料的 JSON。
+使用者透過 SSO 登入後看到的頁面，以及只有登入者能做的事。dashboard 資料的 JSON 就是上面的 `account` 群組。
 
 | 端點 | 用途 |
 |---|---|
 | `/dashboard` | 額度、用量、模型狀態、API key、client 通知與 patch 下載、名下的服務帳號 |
-| `GET /v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices` | 同一份資料的 JSON。同一條路由給兩種 client：帶帳號 API key 的工具，以及瀏覽器裡帶 SSO 登入的獨立前端（登入者會多看到一些） |
 | `GET /dashboard/api/api-key`、`/dashboard/api/service-accounts/{id}/api-key` | 完整的 key（自己的，或名下服務帳號的）：一次一把，會記在稽核紀錄 |
 | `/setup` | Claude Code 的 Windows 安裝檔（可以關閉） |
 
