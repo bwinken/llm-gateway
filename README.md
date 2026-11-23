@@ -126,21 +126,24 @@ AWS Bedrock only, for accounts with AWS access.
 
 ### `health`
 
-No key needed, and not listed in `/docs`.
+No key needed. Only `GET /v1/version` is listed in `/docs`.
 
 | Endpoint | What it is for |
 |---|---|
+| `GET /v1/version` | The API versions this gateway serves, each `stable`, `deprecated` (with its last day) or `nightly`: what a frontend or a tool released apart from the gateway asks first |
 | `GET /healthz` | Liveness: the process answers |
 | `GET /readyz` | Readiness: the database is reachable (what a load balancer checks) |
 | `GET /metrics` | Prometheus metrics, when `METRICS_ENABLED` is set |
 
 ### `web`
 
-The pages a user sees after signing in through SSO.
+The pages a user sees after signing in through SSO, and the dashboard's data as JSON.
 
 | Endpoint | What it is for |
 |---|---|
 | `/dashboard` | Budget, usage, model status, the API key, client notices and their patch download, owned service accounts |
+| `GET /dashboard/api/me`, `status`, `usage`, `service-accounts`, `notices` | The same data as JSON, for a frontend of its own: what the `/v1` endpoint of the same name answers, plus what only a signed-in person sees |
+| `GET /dashboard/api/api-key`, `/dashboard/api/service-accounts/{id}/api-key` | A key in full (the person's own, or an owned service account's): one per call, in the audit log |
 | `/setup` | The Windows installer for Claude Code (can be turned off) |
 
 ### `admin`
@@ -370,6 +373,7 @@ CI runs both on every pull request, plus a dependency audit and a secret scan. [
 |---|---|
 | [Client Guide](docs/client-guide.md) | Connecting clients, endpoints, error handling |
 | [Architecture](docs/architecture.md) | How every subsystem behaves, in detail |
+| [Endpoint inventory](docs/endpoints.md) | Every route: who calls it, whether it stays (zh-TW) |
 | [Deployment](deploy/README.md) | Production setup, backups, upgrades |
 | [Langfuse](docs/langfuse-observability.md) | Observability design |
 | [Web page assets](docs/frontend-build.md) | Rebuilding the stylesheet after a template change (zh-TW, step by step) |

@@ -448,6 +448,37 @@ flag granting nothing. `TestOverBudget` pins that it still answers once the budg
 and `x-api-key`; `TestConcurrency` the reported concurrency mode. Every
 response is checked for `null`s (`_no_nulls`).
 
+### `test_api_version.py` — `GET /v1/version`
+
+The API versions the gateway serves and the status of each. `TestEndpoint`:
+it answers without a key or a sign-in, says nothing about the site, has no
+alias without `/v1` and is in one group of `/docs`. `TestPayload`: the shape
+once there is a deprecated and a nightly version. `TestTheListIsChecked`:
+the list in `app/core/api_versions.py` is refused at import when a client
+could not rely on it (no stable version or two, an unknown status, a
+deprecated version without its sunset date and successor).
+`TestOneDocsPage`: ReDoc and the OAuth2 redirect page stay off.
+
+### `test_dashboard_api.py` — `/dashboard/api/*`
+
+The dashboard as JSON, signed in by SSO. `TestSignIn`: every dashboard
+route signs in by SSO and an API key is not one; `web_ui` keeps `/` and
+`/setup` only. `TestTheSameAsByKey`: `me`, `status`, `usage`,
+`service-accounts` and `notices` answer what the `/v1` endpoint of the same
+name answers. `TestWhatOnlyTheSignedInPersonSees`: the admin flag from the
+token, the masked key, the site block, a service account's id and who it
+sent requests for, accounts withheld for another department. `TestKeys`: no
+data route holds a key; the two key routes are never cached, audited, and
+refused to anyone but an owner in the account's department.
+`TestTheActionsTakeWhatTheApiGives`: a notice and a model change are
+reported as applied by the id the API gives. `TestThePageAndTheApiAgree`:
+the view module knows no request and no template.
+
+### `test_endpoint_inventory.py` — `docs/endpoints.md`
+
+The inventory lists exactly the routes the real app registers, each once
+and under the handler that serves it, and its total is right.
+
 ### `test_status_usage.py` — `GET /v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices`, `/v1/settings`
 
 What the dashboard shows an account, by API key. `TestAuth`: each needs a

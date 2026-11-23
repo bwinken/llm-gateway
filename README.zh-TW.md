@@ -125,21 +125,24 @@ ANTHROPIC_BASE_URL=https://your-gateway ANTHROPIC_AUTH_TOKEN=sk-your-api-key cla
 
 ### `health`
 
-不需要 key，也不會列在 `/docs`。
+不需要 key。只有 `GET /v1/version` 會列在 `/docs`。
 
 | 端點 | 用途 |
 |---|---|
+| `GET /v1/version` | 這台 gateway 支援的 API 版本，每個版本是 `stable`、`deprecated`（附最後一天）或 `nightly`：和 gateway 分開發佈的前端或工具，第一件事就是問這支 |
 | `GET /healthz` | 存活：程序有回應 |
 | `GET /readyz` | 就緒：連得到資料庫（load balancer 檢查的就是這支） |
 | `GET /metrics` | Prometheus 指標，設了 `METRICS_ENABLED` 才有 |
 
 ### `web`
 
-使用者透過 SSO 登入後看到的頁面。
+使用者透過 SSO 登入後看到的頁面，以及 dashboard 資料的 JSON。
 
 | 端點 | 用途 |
 |---|---|
 | `/dashboard` | 額度、用量、模型狀態、API key、client 通知與 patch 下載、名下的服務帳號 |
+| `GET /dashboard/api/me`、`status`、`usage`、`service-accounts`、`notices` | 同一份資料的 JSON，給獨立的前端用：內容就是同名 `/v1` 端點的回應，再加上只有登入者能看的部分 |
+| `GET /dashboard/api/api-key`、`/dashboard/api/service-accounts/{id}/api-key` | 完整的 key（自己的，或名下服務帳號的）：一次一把，會記在稽核紀錄 |
 | `/setup` | Claude Code 的 Windows 安裝檔（可以關閉） |
 
 ### `admin`
@@ -369,6 +372,7 @@ CI 會在每個 pull request 跑這兩項，另外還有相依套件稽核與金
 |---|---|
 | [Client 指南](docs/client-guide.zh-TW.md) | 連接 client、端點、錯誤處理 |
 | [架構](docs/architecture.md) | 每個子系統的詳細行為 |
+| [Endpoint 盤點](docs/endpoints.md) | 每一條路由：誰在呼叫、要不要留 |
 | [部署](deploy/README.zh-TW.md) | 正式環境設定、備份、升級 |
 | [Langfuse](docs/langfuse-observability.md) | 可觀測性設計 |
 | [網頁前端檔案](docs/frontend-build.md) | 改了模板之後怎麼重新產生樣式表，一步一步說明 |

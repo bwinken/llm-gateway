@@ -38,7 +38,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 
 ## `/dashboard` — 使用者 Dashboard
 
-**檔案**：`dashboard.html` ← `web_ui.py`
+**檔案**：`dashboard.html` ← `dashboard/page.py`（資料：`services/dashboard_view.py`；同一份資料的 JSON：`/dashboard/api/*`）
 **權限**：JWT scope 含 `read` 或 `admin`
 
 預算主卡固定在上方；下半部由 `gwTabs('dashTabs', 'dashTab')` 切成兩個分頁（**Models** 為預設，另一個是 **Usage**，見 [`base.html`](#basehtml--base-layout)）。Models 分頁標籤顯示「N down」/「N queueing」，Usage 分頁標籤顯示本月費用。
@@ -71,6 +71,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 | Regenerate service account key | `POST /dashboard/app/{id}/refresh-key` | 重新產生所屬服務帳號的 API key（僅 owner 可操作） |
 | Copy service account key | 按鈕 | 複製服務帳號的完整 API key |
 | Cost by Model 重新整理 | `GET /dashboard/api/model-breakdown?period=` | Cost by Model 卡片用的 JSON（`month` 或 `day`） |
+| 頁面資料的 JSON | `GET /dashboard/api/me` · `status` · `usage` · `service-accounts` · `notices` · `api-key` | 這個頁面本身不使用：給獨立的前端用（見 `docs/architecture.md` 的 *Dashboard*） |
 | 下載安裝腳本 | `GET /dashboard/install-claude-code.bat` | 個人化的 Claude Code 安裝腳本（由 `/setup` 連結） |
 | 下載設定 patch | `GET /dashboard/client-rules/all/patch.{bat,sh}` | 一個腳本處理帳號所有未處理項目（信件連結指向同一個 URL） |
 | I've applied it / everything | `POST /dashboard/client-rules/{id}/resolved` · `/all/resolved` | 隱藏通知；之後面板由 `GET /dashboard/client-notices` 重新繪製 |

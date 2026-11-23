@@ -438,6 +438,33 @@ A skill, an MCP server or a plugin says what it was added to:
 
 `/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices` and `/v1/settings` are what a status line, a terminal tool or a script should read: together they carry what the dashboard shows, and what a tool needs to set a client up. `POST /v1/notices/resolved` and `POST /v1/events` are the two a tool writes with. All of them answer when your budget is spent, none is billed, and none returns an API key: a key is only ever handed out for a sign-in (next section, or the dashboard).
 
+## API versions
+
+A program that is released apart from the gateway (a frontend, a terminal tool) asks this first, before it signs in. No key:
+
+```bash
+curl https://your-gateway/v1/version
+```
+
+```json
+{
+  "object": "version",
+  "gateway": "1.0.0",
+  "stable": "v1",
+  "statuses": ["stable", "deprecated", "nightly"],
+  "versions": [{"version": "v1", "status": "stable"}]
+}
+```
+
+Look your own version up in `versions`:
+
+- `stable`: served, and changed by addition only. `stable` at the top names it: the version to build against.
+- `deprecated`: still served until `sunset` (a date, the last day); move to `successor`. Tell your user to update.
+- `nightly`: served for trying out. It may change or go without notice, so release nothing built against it.
+- Not in the list: this gateway does not serve it. Stop and say so, rather than call an API that is gone.
+
+Treat a status you do not know like `nightly`. `gateway` is the gateway's own release number, for a bug report: never decide from it what is supported. Today `v1` is everything described in this guide.
+
 ## Signing in from a terminal tool
 
 A program that is not a browser (a terminal tool, a TUI) can get your API key without you copying it from the dashboard:

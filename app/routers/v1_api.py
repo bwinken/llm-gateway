@@ -732,40 +732,45 @@ def usage_history(
     }
 
 
+def service_account_row(account: dict) -> dict:
+    """One service account (a row of ``stats.get_owned_apps_summary``) as the
+    account endpoints give it: never a key. Shared with the dashboard's own
+    API (``/dashboard/api/service-accounts``), which adds what only a
+    signed-in owner may see."""
+    return {
+        "username": account["username"],
+        # What an admin wrote about it; absent when there is none.
+        **({"description": account["description"]} if account.get("description") else {}),
+        # The department it is for (its owners must be in it); absent when it has none.
+        **({"department": account["department"]} if account.get("department") else {}),
+        "daily_limit_usd": max(0.0, float(account["daily_limit_usd"])),
+        "legacy_key": account["legacy_key"],
+        "month": {
+            "requests": account["monthly_reqs"],
+            "input_tokens": account["monthly_input"],
+            "output_tokens": account["monthly_output"],
+            "cost_usd": _usd(account["monthly_cost"]),
+            "models": [_model_usage_row(r) for r in account["models"]],
+        },
+        # A service account that sends requests for its users
+        # (X-On-Behalf-Of): what it sent for them this month. Billed to
+        # those users, so no part of "month" above.
+        "acts_for_users": account["acts_for_users"],
+        "on_behalf": {
+            "users": account["on_behalf"]["users"],
+            "requests": account["on_behalf"]["requests"],
+            "input_tokens": account["on_behalf"]["input_tokens"],
+            "output_tokens": account["on_behalf"]["output_tokens"],
+            "cost_usd": _usd(account["on_behalf"]["cost"]),
+        },
+    }
+
+
 def _owned_service_account_rows(user: User) -> list[dict]:
     """The service accounts ``user`` owns, by name in natural order, as the
     account endpoints give them: never a key."""
     accounts = sorted(get_owned_apps(user), key=lambda account: natural_key(account["username"]))
-    return [
-        {
-            "username": account["username"],
-            # What an admin wrote about it; absent when there is none.
-            **({"description": account["description"]} if account.get("description") else {}),
-            # The department it is for (its owners must be in it); absent when it has none.
-            **({"department": account["department"]} if account.get("department") else {}),
-            "daily_limit_usd": max(0.0, float(account["daily_limit_usd"])),
-            "legacy_key": account["legacy_key"],
-            "month": {
-                "requests": account["monthly_reqs"],
-                "input_tokens": account["monthly_input"],
-                "output_tokens": account["monthly_output"],
-                "cost_usd": _usd(account["monthly_cost"]),
-                "models": [_model_usage_row(r) for r in account["models"]],
-            },
-            # A service account that sends requests for its users
-            # (X-On-Behalf-Of): what it sent for them this month. Billed to
-            # those users, so no part of "month" above.
-            "acts_for_users": account["acts_for_users"],
-            "on_behalf": {
-                "users": account["on_behalf"]["users"],
-                "requests": account["on_behalf"]["requests"],
-                "input_tokens": account["on_behalf"]["input_tokens"],
-                "output_tokens": account["on_behalf"]["output_tokens"],
-                "cost_usd": _usd(account["on_behalf"]["cost"]),
-            },
-        }
-        for account in accounts
-    ]
+    return [service_account_row(account) for account in accounts]
 
 
 @router.get("/v1/service-accounts", tags=["account"])

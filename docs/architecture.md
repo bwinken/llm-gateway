@@ -4,7 +4,7 @@ How each subsystem behaves, and why. [CLAUDE.md](../CLAUDE.md) is the short map 
 
 ## Contents
 
-- **Request path**: [Request flow](#request-flow) · [Unified `/v1/*` dispatch](#unified-v1-dispatch) · [Authentication](#authentication) · [Service accounts](#service-accounts) · [Acting for a user (`X-On-Behalf-Of`)](#acting-for-a-user-x-on-behalf-of) · [Account endpoints (`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices`, `/v1/settings`)](#account-endpoints-v1me-v1status-v1usage-v1service-accounts-v1notices-v1settings)
+- **Request path**: [Request flow](#request-flow) · [Unified `/v1/*` dispatch](#unified-v1-dispatch) · [Authentication](#authentication) · [Service accounts](#service-accounts) · [Acting for a user (`X-On-Behalf-Of`)](#acting-for-a-user-x-on-behalf-of) · [Account endpoints (`/v1/me`, `/v1/status`, `/v1/usage`, `/v1/service-accounts`, `/v1/notices`, `/v1/settings`)](#account-endpoints-v1me-v1status-v1usage-v1service-accounts-v1notices-v1settings) · [Dashboard (`app/routers/dashboard`)](#dashboard-approutersdashboard) · [API versions (`GET /v1/version`)](#api-versions-get-v1version)
 - **Backends**: [vLLM proxy (`app/services/vllm_proxy.py`)](#vllm-proxy-appservicesvllm_proxypy) · [Azure OpenAI proxy (`app/services/azure_proxy.py`)](#azure-openai-proxy-appservicesazure_proxypy) · [AWS Bedrock proxy (`app/services/bedrock_proxy.py`)](#aws-bedrock-proxy-appservicesbedrock_proxypy) · [Rate-limit fallback (`app/services/rate_limit_fallback.py`)](#rate-limit-fallback-appservicesrate_limit_fallbackpy)
 - **Protocol translation**: [Anthropic Messages API (`app/services/anthropic_adapter.py`)](#anthropic-messages-api-appservicesanthropic_adapterpy) · [Client rules (`app/services/client_checks.py`, `client_rules.py`, `mailer.py`)](#client-rules-appservicesclient_checkspy-client_rulespy-mailerpy) · [Model changes (`app/services/model_changes.py`)](#model-changes-appservicesmodel_changespy) · [Client events (`app/services/client_events.py`)](#client-events-appservicesclient_eventspy) · [Responses adapter (`app/services/responses_adapter.py`)](#responses-adapter-appservicesresponses_adapterpy) · [Reasoning-effort compatibility (`app/services/reasoning_effort.py`)](#reasoning-effort-compatibility-appservicesreasoning_effortpy)
 - **Content policy**: [Guardrail (`app/services/guardrail.py`)](#guardrail-appservicesguardrailpy) · [API IP allowlist (`app/services/ip_allowlist.py`)](#api-ip-allowlist-appservicesip_allowlistpy)
@@ -86,7 +86,7 @@ An account for a program rather than a person (a batch job, a service): made by 
 - **What the column decides** (always through `user.is_service_account`, `schema.service_account_clause()` in SQL, or `schema.service_account_names(session)` for code that holds usernames only): the admin's Users and Service accounts tables and their counts; DAU, the leaderboards, the department table and the users CSV (people only); the anomaly scan's `off_hours` and `burst_rate` rules (people only: a program runs at night and at machine speed by design; `cost_spike` and `behavior_shift` cover service accounts too, since a leaked service key shows as a spend spike); client-rule reminders and mail (never a service account: nobody reads them); the guardrail scope.
 - **Assigning owners.** An owner is an existing person, and only a service account has any: an owner sees the account's API key, so a person's account must never be assigned, and a service account has no dashboard to see one on. The admin picks owners with the **owner picker** (`data-owner-picker` in `admin.html`), in the create form and in each row of the Service accounts table: typing part of a username, display name or department asks `GET /admin/api/owner-search?q=` (people only, names starting with the text first, 8 at most) and shows the matches with the matched part marked; one is chosen from the menu (click, or arrows and Enter), so free text never becomes an owner. Chosen people are chips; Backspace or a chip's × removes one. In a table row every change is saved at once (`POST /admin/users/{id}/owner`, which replaces the owners and answers with them; on a refusal the row goes back to what is saved). The create form sends them with the account (`owner_usernames`) and refuses to submit while unpicked text is left in the box. The server checks whatever the page does: `admin.users._owners` (names) and `_owners_by_id` (the JSON API's `owner_ids`) 400 on an unknown account or a service account, `_service_account_or_400` on a target that is a person, all before anything is created or deleted.
 - **How long an assignment lasts.** Until an admin takes it away, or one of its two accounts is deleted. The rename touched none: assignments are rows of `app_owners`, which migration `b2f7c9a41e68` does not read or write. The checks above apply to owners being *added*; someone who already owns the account is never refused (`_current_owner_ids`), so editing a list cannot drop an assignment made before the rules existed. `delete_user` removes the rows where the deleted account is the owner (that person's assignments end; the service accounts, their keys and their other owners stay) and the rows where it is the service account. A person who signs in again under a deleted name gets a new account that owns nothing.
-- **Owners** (`app_owners`, many-to-many, set by an admin) see their service accounts on the dashboard's **Service accounts** tab, a tab of its own that only exists for people who own one (`web_ui._owned_service_accounts`): per account its key (copy, regenerate), daily limit, this month's totals and this month's usage per model with each model's share. The figures are `stats.get_owned_apps_summary`, one `usage_rollup.aggregate` read grouped by account, model and backend for all of the owner's accounts; `GET /v1/service-accounts` serves the same rows. Nothing is hidden by the owner's own cloud access: it is the service account's bill.
+- **Owners** (`app_owners`, many-to-many, set by an admin) see their service accounts on the dashboard's **Service accounts** tab, a tab of its own that only exists for people who own one (`dashboard_view.owned_service_accounts`): per account its key (copy, regenerate), daily limit, this month's totals and this month's usage per model with each model's share. The figures are `stats.get_owned_apps_summary`, one `usage_rollup.aggregate` read grouped by account, model and backend for all of the owner's accounts; `GET /v1/service-accounts` serves the same rows. Nothing is hidden by the owner's own cloud access: it is the service account's bill.
 
 `tests/test_service_accounts.py`, `tests/test_app_ownership.py`.
 
@@ -132,7 +132,7 @@ All of them authenticate with `get_current_user_unmetered`: they answer once the
 
 **A contract for other programs.** Clients outside this repository are built against these responses, so they change by addition only: a key is not renamed, removed or given another meaning, and an enum value (`state`, `backend`) is not respelled. No response carries a `null`: an absent value is an absent key, so a client never has to tell "unknown" from "zero". Backend names are the client-facing ones everywhere (`onprem` / `azure` / `aws`; `model_catalog.BACKEND_NAMES` maps them from `usage_logs.backend`). The shapes, with examples, are in `docs/client-guide.md` (*Checking your quota*, *Model status*, *Usage history*, *Service accounts*, *Notices*, *Settings*).
 
-`model_catalog` is shared with the dashboard (`web_ui` imports its price, order and hidden-backend helpers), so the API and the page show the same models, at the same prices, in the same order.
+`model_catalog` is shared with the dashboard (`dashboard_view` imports its price, order and hidden-backend helpers), so the API and the page show the same models, at the same prices, in the same order.
 
 In `/docs` they are one group, `account` (see *OpenAPI groups* under [Runtime patterns](#runtime-patterns-http-clients-health-loop-logging-export)).
 
@@ -173,6 +173,72 @@ A terminal tool that sets Claude Code up for its user either applies the suggest
 The file is cached per worker and re-read when its mtime or size changes (one `stat` per request), so an edit by hand, or a save handled by another worker, applies at the next request. A file that cannot be read or does not validate changes nothing: the last good fields stay in force, a warning is logged, and the admin card shows the error. `save` replaces the file atomically (temp file in the same directory, then `os.replace`), like `save_config`, which is why the container mounts the directory. The file is per host, as `config.toml` is. No database read. What the account has set now is on its machine and the gateway does not know it; applying a value is the client's business too: the gateway serves the data and ships no script for it.
 
 `tests/test_status_usage.py::TestSettings`, `TestClientSetupAdmin`.
+
+## Dashboard (`app/routers/dashboard`)
+
+What a signed-in person sees of their own account. It is being separated into a frontend of its own, in steps; this is the first one: the backend half is on its own, and everything the page shows is also served as JSON.
+
+**Three layers.**
+
+- `app/services/dashboard_view.py` puts the data together: a function takes a database session and the signed-in `User` and returns plain dicts and lists (`page_context`, `model_breakdown`, `usage_flow`, `owned_service_accounts`, `client_notices`, `shown_model_changes`, `welcome_models`). It knows no request, no template and no response (`test_the_view_knows_no_request_and_no_template`).
+- `app/routers/dashboard/` is one router, SSO on every route (`get_web_user`, scope `read`), everything under `/dashboard`. `page.py` is the page the gateway renders itself (`GET /dashboard` and the two panels its script swaps in): the part a separate frontend replaces. `api.py` is the same data as JSON. `actions.py` is what the account does and downloads; its writes answer JSON to a caller that sends `Accept: application/json`, so the page's script and a frontend use the same routes.
+- `app/routers/web_ui.py` keeps the other two pages (`/`, `/setup`) and the template environment `page.py` renders with.
+
+**The JSON API** (`/dashboard/api/*`). Five reads answer what the account endpoint of the same name answers by API key, by calling the same function, so a client learns one shape and the two cannot disagree (`TestTheSameAsByKey`); each adds what only a signed-in person may see.
+
+| Route | The same as | Added for the signed-in person |
+|---|---|---|
+| `GET /dashboard/api/me` | `GET /v1/me` | `is_admin` true for an admin by the token's scope (by key it is always false), `org_code`, `api_key` (`masked`, `created_at`), `site` (`title`, `api_base`, the admin's `links` that are set, `setup_page`, `installer`) |
+| `GET /dashboard/api/status` | `GET /v1/status` | Nothing. An admin sees the cloud models whatever their own access, as on the page (`model_catalog.hidden_cloud_backends`) |
+| `GET /dashboard/api/usage?days=N` | `GET /v1/usage` | Nothing |
+| `GET /dashboard/api/service-accounts` | `GET /v1/service-accounts` | Per account `id`, `api_key_masked` and, when it sent requests for its users this month, `sent_for` (`stats.get_on_behalf_users`: `users`, and `rows` of one user on one backend, the rest folded into one row per backend with `others`); `withheld` (assigned accounts made for another department: name and department only); `top_users` |
+| `GET /dashboard/api/notices` | `GET /v1/notices` | `quiet_days` |
+| `GET /dashboard/api/api-key` | | The person's own key, in full |
+| `GET /dashboard/api/service-accounts/{id}/api-key` | | A service account's key, for an owner in its department (`actions.owned_service_account`, the check regenerating it goes through) |
+| `GET /dashboard/api/model-breakdown?period=` | | The page's *Cost by Model* card as it draws it (groups with shares). A frontend of its own reads `usage` instead |
+
+`sent_for` is here and not in `/v1/service-accounts` on purpose: a leaked personal key must not say who uses an application.
+
+**Keys.** None of the five reads holds a key (`test_no_data_route_holds_a_key`). The two routes that show one do nothing else, answer `Cache-Control: no-store`, and are in the audit log (`audit._AUDITED_READS`), like the admin's *View key*. The page the gateway renders still carries the keys in its HTML, as it always did; that goes away with the page.
+
+**Writes and downloads** (`actions.py`) are the ones the page always had: `POST /dashboard/refresh-key`, `POST /dashboard/app/{id}/refresh-key`, `POST /dashboard/client-rules/all/resolved` and `.../{rule_id}/resolved`, `POST /dashboard/model-changes/{change_id}/applied` (the change by its number or as the API shows it, `MC3`), and the scripts (`/dashboard/client-rules/all/patch.{bat,sh}`, `/dashboard/model-changes/patch.{bat,sh}`, `/dashboard/api-key/patch.{bat,sh}`, `/dashboard/install-claude-code.bat`). All under `/dashboard`, so the cross-site guard and the audit log cover them.
+
+**A contract, like the account endpoints.** The frontend lives in its own repository and is released apart from the gateway: `/dashboard/api/*` changes by addition only and never carries a `null`, and the frontend asks `GET /v1/version` whether the version it was built against is still served.
+
+**Where the frontend must be served from.** The same origin as the gateway (nginx serves its files and proxies `/dashboard/api/`). The sign-in is the oauth2-proxy cookie, and CORS never allows credentials (see [Authentication](#authentication)), so a page on another origin cannot read these routes. That is deliberate: don't open CORS for it.
+
+`tests/test_dashboard_api.py`; the page's own tests are `tests/test_page_highlights.py`, `tests/test_dashboard_models.py`, `tests/test_model_breakdown.py`.
+
+## API versions (`GET /v1/version`)
+
+A frontend or a terminal tool is built against one version of the API and is released apart from the gateway. It asks here first whether that version is still served. No key and no sign-in (it is asked before either exists), no database read, and nothing about accounts, models or settings in the answer.
+
+```json
+{
+  "object": "version",
+  "gateway": "1.0.0",
+  "stable": "v1",
+  "statuses": ["stable", "deprecated", "nightly"],
+  "versions": [{"version": "v1", "status": "stable"}]
+}
+```
+
+| `status` | What it promises |
+|---|---|
+| `stable` | Served, and changed by addition only. Exactly one version is stable; `stable` at the top names it: the one to build against |
+| `deprecated` | Still served until `sunset` (the last day, `YYYY-MM-DD`); move to `successor`. Both keys are there for a deprecated version and for no other |
+| `nightly` | Served for trying out; it may change or go without notice |
+| not listed | Not served: the client is too old, or too new, for this gateway |
+
+A version may also carry a `note`. `gateway` is the gateway's own release (also the version `/docs` shows), for a bug report: a client never compares it to decide what is supported.
+
+**The list is code** (`app/core/api_versions.py`: `VERSIONS`), not an admin setting: a status is a promise about the code in the repository, so it changes in the commit that changes the code. `check()` runs at import and refuses a list a client could not rely on (no stable version or two, an unknown status, a deprecated version without its sunset date and successor), so a wrong edit stops the start. `v1` is everything the gateway serves today: `/v1/*`, `/azure/v1/*`, `/aws/v1/*`, `/auth/api-key` and `/dashboard/api/*`.
+
+**Adding a version.** Append it as `nightly` while it is being built; make it `stable` when it is released and, in that same change, mark the one before it `deprecated` with its `sunset` and `successor`; delete an entry in the change that removes its routes.
+
+**Why it is public and where it lives.** It is the one route under `/v1` without a key. It is in `health_api.py` with the other unauthenticated routes, not in `v1_api.py`, where every route authenticates (and so passes the IP allowlist). The nginx example's `location /v1/` already reaches it.
+
+`tests/test_api_version.py`.
 
 <!-- Backends -->
 
@@ -566,7 +632,7 @@ The gateway runs its periodic work itself; nothing is installed in systemd or cr
 
 ## Health probes (`app/routers/health_api.py`)
 
-Two unauthenticated routes (`include_in_schema=False`), mounted first in `app/main.py`:
+Unauthenticated routes, mounted first in `app/main.py` (the probes and `/metrics` with `include_in_schema=False`; `GET /v1/version` is in `/docs`, see [API versions](#api-versions-get-v1version)):
 
 | Path | Meaning | Codes |
 |---|---|---|
@@ -695,7 +761,7 @@ Every page loads its stylesheet, scripts and fonts from this site: `app/static/c
 - **Readable text.** The text colours are `t1` to `t4` in `frontend/tailwind.config.js`, brightest to dimmest. Explanations, labels and hints use `t3` / `t4`, which keep a readable contrast on a card: `t4` is `#7b8296` (4.5:1 on `n2`; it was `#4e5569`, 2.3:1, and the help text was hard to read), `t3` `#9aa1b3`. The same hex values are written in the pages' `<style>` blocks; change both together. An example in an empty field (`::placeholder`, `base.html`) is dim and italic, so it is never taken for a saved value. Money is written by one rule everywhere, the templates' `money` macro and the scripts' `gwMoney`: two decimals, four only under a cent (`tests/test_page_highlights.py`).
 - **Third-party files.** `scripts/vendor_frontend.sh` fetches Chart.js and the `@fontsource` packages from the npm registry (tarball sha512 checked, no Node), keeps the files the pages use, writes `fonts/fonts.css` and drops Chart.js's source-map comment. Run only to change a version.
 - **URLs.** Templates link through the `static_url(path)` global (registered in every template environment, like `get_site_links`): `/static/<path>?v=<12 hex of its SHA-256>`, recomputed when the file's mtime or size changes, `v=missing` for an absent file rather than a 500. A new build is a new URL, so caches never serve a stale stylesheet. nginx serves `/static/` from the checkout with `expires 30d` (`deploy/llm-gateway-example.nginx.conf`); the gateway also mounts it (`static_assets.mount`, no sign-in), so a site whose nginx lacks that location still works. On a container host the nginx alias reads the host checkout, which must be the one the image was built from.
-- **Content-Security-Policy** (`browser_security.ContentSecurityPolicy`, pure ASGI, installed by `add_browser_security`): HTML responses get `default-src 'self'`, scripts, styles and fonts from this site only, images from this site or `data:` (the favicon, the weekly report preview's charts), `frame-ancestors 'none'`, `form-action 'self'`. Scripts keep `'unsafe-inline'` because the templates carry inline `<script>` blocks and `onclick=` handlers; removing it means moving those into files. API responses (JSON, SSE) and `/static` files get no header; FastAPI's `/docs` and `/redoc`, which load their viewer from a CDN, are exempt. `tests/test_static_assets.py`.
+- **Content-Security-Policy** (`browser_security.ContentSecurityPolicy`, pure ASGI, installed by `add_browser_security`): HTML responses get `default-src 'self'`, scripts, styles and fonts from this site only, images from this site or `data:` (the favicon, the weekly report preview's charts), `frame-ancestors 'none'`, `form-action 'self'`. Scripts keep `'unsafe-inline'` because the templates carry inline `<script>` blocks and `onclick=` handlers; removing it means moving those into files. API responses (JSON, SSE) and `/static` files get no header; FastAPI's `/docs`, which loads its viewer from a CDN, is exempt (it is the one docs page: ReDoc and the OAuth2 redirect page are switched off in `app/main.py`). `tests/test_static_assets.py`.
 
 ## Admin Users tab (`app/templates/_admin_user_table.html`)
 

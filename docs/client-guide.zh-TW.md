@@ -438,6 +438,33 @@ skill、MCP server 或 plugin 要說明它是裝進哪個程式的：
 
 狀態列、terminal 工具或腳本要讀的就是 `/v1/me`、`/v1/status`、`/v1/usage`、`/v1/service-accounts`、`/v1/notices`、`/v1/settings`，合起來就是 dashboard 上看得到的資訊，加上工具設定 client 所需要的資料。`POST /v1/notices/resolved` 和 `POST /v1/events` 則是工具用來回報的兩支。它們在額度用完時一樣可以用，都不計費，也都不會回傳 API key：key 只會在登入之後交出（見下一節，或 dashboard）。
 
+## API 版本
+
+和 gateway 分開發佈的程式（前端、terminal 工具）在登入之前先問這一支。不需要 key：
+
+```bash
+curl https://your-gateway/v1/version
+```
+
+```json
+{
+  "object": "version",
+  "gateway": "1.0.0",
+  "stable": "v1",
+  "statuses": ["stable", "deprecated", "nightly"],
+  "versions": [{"version": "v1", "status": "stable"}]
+}
+```
+
+在 `versions` 裡找自己的版本：
+
+- `stable`：正常提供，之後只會新增、不會改動既有的欄位。最上面的 `stable` 就是它：要開發就對這個版本。
+- `deprecated`：還在提供，到 `sunset`（日期，最後一天）為止；請改用 `successor`。這時該提醒使用者更新。
+- `nightly`：提供試用，可能隨時改動或拿掉，正式發佈的東西不要對它開發。
+- 清單裡沒有：這台 gateway 不提供這個版本。請停下來告訴使用者，不要去呼叫已經不存在的 API。
+
+遇到不認得的狀態，當成 `nightly` 處理。`gateway` 是 gateway 自己的發佈版號，回報問題時用：不要拿它判斷支援什麼。目前 `v1` 就是這份文件描述的全部。
+
 ## 從 terminal 工具登入
 
 不是瀏覽器的程式（terminal 工具、TUI）可以直接取得你的 API key，不用你到 dashboard 複製：

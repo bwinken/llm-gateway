@@ -67,7 +67,10 @@ _NOT_AUDITED: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/admin/guardrail/test"),
     ("POST", "/admin/client-settings/check"),
 })
-_AUDITED_READS = re.compile(r"^/(admin/(users/\d+/api-key|api/export/.+)|dashboard/api-key/patch\.(bat|sh))$")
+_AUDITED_READS = re.compile(
+    r"^/(admin/(users/\d+/api-key|api/export/.+)"
+    r"|dashboard/(api-key/patch\.(bat|sh)|api/api-key|api/service-accounts/\d+/api-key))$"
+)
 # Authenticated by an SSO token the client sends itself, outside the cookie
 # paths (``app/routers/auth_api.py``). Recorded only for an identified actor.
 _AUDITED_TOKEN_ROUTES: frozenset[tuple[str, str]] = frozenset({
@@ -84,7 +87,7 @@ _ACTOR_REQUIRED = _AUDITED_TOKEN_ROUTES | _AUDITED_KEY_ROUTES
 _ACTOR_NOTE = "_actor"
 # The whole model config: its handler notes a diff instead of the body.
 _BODY_NOT_RECORDED = frozenset({"/admin/api/config"})
-_TARGET_RE = re.compile(r"^/(?:admin/users|dashboard/app)/(\d+)(?:/|$)")
+_TARGET_RE = re.compile(r"^/(?:admin/users|dashboard/app|dashboard/api/service-accounts)/(\d+)(?:/|$)")
 
 _SECRET_KEY_RE = re.compile(r"api_?key|secret|token|password|authorization|cookie", re.I)
 _MAX_BODY = 16 * 1024          # request bytes kept for parsing
