@@ -121,9 +121,11 @@ async def lifespan(app: FastAPI):
 # its router's: the account endpoints (account_api) and the model API
 # (v1_api) share the /v1 prefix but are two routers and two groups.
 OPENAPI_TAGS = [
-    {"name": "account", "description": "What an account can read and report about itself, by API key: budget, "
+    {"name": "account", "description": "What an account can read and report about itself: budget, "
      "models, usage, service accounts, client notices (with the model changes), client settings, and what a setup tool installed. "
-     "Never billed; what a terminal tool or a desktop window is built against."},
+     "`Authorization: Bearer` with the account's API key, or with the person's SSO access token (a browser frontend, "
+     "through the proxy; a tool that signed in). Always about the caller's own account: `X-On-Behalf-Of` is refused here. "
+     "Never billed; what a terminal tool, a desktop window or a frontend is built against."},
     {"name": "v1", "description": "The unified inference API (OpenAI- and Anthropic-compatible): on-prem models, "
      "plus the Azure and AWS models the account may use. Also served without the /v1 prefix."},
     {"name": "azure", "description": "Azure OpenAI only (`/azure/v1`). Needs Azure access."},
@@ -131,8 +133,9 @@ OPENAPI_TAGS = [
     {"name": "auth", "description": "Sign-in for a terminal tool: an SSO token for the account's API key."},
     {"name": "health", "description": "Liveness, readiness and metrics, and the API versions the gateway serves "
      "(`GET /v1/version`: no key, the first call of a frontend or a tool released apart from the gateway)."},
-    {"name": "web", "description": "The dashboard (its page, and `/dashboard/api/*`: the same data as JSON for a "
-     "frontend of its own), the welcome and setup pages (SSO)."},
+    {"name": "web", "description": "The dashboard: its page, what only a signed-in person may do (a key in full, "
+     "regenerating one, the scripts), and the welcome and setup pages. SSO only. The dashboard's data as JSON is the "
+     "`account` group."},
     {"name": "admin", "description": "The admin pages and their API (SSO, admin scope)."},
 ]
 
