@@ -478,6 +478,18 @@ the view module knows no request and no template. That one router answers
 both sign-ins from one service (`account_view`) is in
 `test_service_layering.py`.
 
+### `test_account_schema.py` — the answers' shapes in `openapi.json`
+
+`app/services/account_schema.py` says what is in each account answer, and
+no route filters through it, so this test is what keeps it true.
+`TestEveryAnswerFitsItsShape`: every real answer, by key and by SSO
+sign-in, for an account with everything and for an empty one, validates
+against its shape and comes back unchanged (a key on one side only fails).
+`TestTheCheckItselfWorks`: the comparison notices an extra key, a missing
+one and a `null`. `TestTheDocument`: every 200 has its schema, no key of an
+answer is nullable, optional keys are optional, the request bodies state
+the code's limits, and the shapes are never a `response_model`.
+
 ### `test_account_sign_in.py` — the account endpoints' two sign-ins
 
 How `deps.get_account_user` judges an API key and an SSO sign-in.

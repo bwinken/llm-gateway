@@ -54,7 +54,7 @@ from app.core.deps import (
 )
 from app.core.logger import logger
 from app.models.schema import User, signed_in_by_sso
-from app.services import account_view, audit, client_events, client_settings
+from app.services import account_schema, account_view, audit, client_events, client_settings
 
 # What every route here can answer besides its own answer, said once: the
 # group's description in /docs carries the same three.
@@ -72,6 +72,19 @@ _COMMON_ERRORS: dict[int | str, dict] = {
 # One group of /docs: every route here is an account endpoint.
 router = APIRouter(tags=["account"], responses=_COMMON_ERRORS)
 
+
+def _answers(shape, description: str = "The answer.") -> dict:
+    """The 200 of a route, with its shape for ``openapi.json``
+    (``account_schema``). It describes the answer and does not filter it:
+    the handler returns the dict ``account_view`` built, as it is."""
+    return {200: {"model": shape, "description": description}}
+
+
+def _takes(model) -> dict:
+    """A request body's shape for ``openapi.json``. The handler still reads
+    the body as a plain object and validates it itself."""
+    return {"requestBody": {"content": {"application/json": {"schema": model.model_json_schema()}}}}
+
 # Every docstring below is the route's description in /docs and openapi.json,
 # and they are written to one plan, in this order, so a reader finds the same
 # thing in the same place: a first line that says what the route answers;
@@ -79,10 +92,14 @@ router = APIRouter(tags=["account"], responses=_COMMON_ERRORS)
 # one row per key); **Only for an SSO sign-in** (when something is); **Limits
 # and things to know** (ranges, how fresh a figure is, what is left out);
 # **Errors** (the route's own; 401, 403 and 429 are the group's, above).
+# The same answer as a schema is in ``account_schema``: change the two, and
+# the function in ``account_view`` that builds it, together.
 
 
-@router.get("/v1/me", summary="Account and today's budget")
-@router.get("/me", summary="Account and today's budget (alias of /v1/me)")
+@router.get("/v1/me", summary="Account and today's budget", responses=_answers(account_schema.Account))
+@router.get(
+    "/me", summary="Account and today's budget (alias of /v1/me)", responses=_answers(account_schema.Account),
+)
 async def account_info(request: Request, user: User = Depends(get_account_user)):
     """Who the caller is, what they may reach, and how much of today's budget is left.
 
@@ -134,7 +151,7 @@ async def account_info(request: Request, user: User = Depends(get_account_user))
     return body
 
 
-@router.get("/v1/status", summary="Models and whether they are up")
+@router.get("/v1/status", summary="Models and whether they are up", responses=_answers(account_schema.Status))
 async def model_status(user: User = Depends(get_account_user)):
     """The models the account can see, each with its state, load and price: the dashboard's model tables.
 
@@ -171,7 +188,7 @@ async def model_status(user: User = Depends(get_account_user)):
     return account_view.status(user)
 
 
-@router.get("/v1/usage", summary="Usage per day, and by model")
+@router.get("/v1/usage", summary="Usage per day, and by model", responses=_answers(account_schema.Usage))
 def usage_history(
     days: int = Query(7, ge=1, le=account_view.USAGE_MAX_DAYS, description="How many days back, today included."),
     user: User = Depends(get_account_user),
@@ -218,7 +235,10 @@ def usage_history(
     return account_view.usage(user, days)
 
 
-@router.get("/v1/service-accounts", summary="The service accounts the caller owns")
+@router.get(
+    "/v1/service-accounts", summary="The service accounts the caller owns",
+    responses=_answers(account_schema.ServiceAccounts),
+)
 def owned_service_accounts(user: User = Depends(get_account_user)):
     """The service accounts (accounts for programs) an admin assigned to the caller, with this month's usage.
 
@@ -264,7 +284,9 @@ def owned_service_accounts(user: User = Depends(get_account_user)):
     return account_view.service_accounts(user)
 
 
-@router.get("/v1/notices", summary="Client notices and model changes")
+@router.get(
+    "/v1/notices", summary="Client notices and model changes", responses=_answers(account_schema.Notices),
+)
 def client_notices(user: User = Depends(get_account_user)):
     """What the dashboard tells the caller about their client setup, and the models being replaced for them.
 
@@ -310,7 +332,9 @@ def client_notices(user: User = Depends(get_account_user)):
 @router.post(
     "/v1/notices/resolved",
     summary="Report notices as applied",
+    openapi_extra=_takes(account_schema.NoticesResolvedRequest),
     responses={
+        **_answers(account_schema.NoticesResolved),
         400: {"description": "`ids` is not a list of at most 50 notice ids of at most 20 characters each."},
         503: {"description": "It could not be recorded now. Nothing was changed: try again later."},
     },
@@ -378,7 +402,9 @@ def client_notices_resolved(
 @router.post(
     "/v1/events",
     summary="Report what a setup tool did",
+    openapi_extra=_takes(account_schema.ClientEventRequest),
     responses={
+        **_answers(account_schema.EventRecorded),
         400: {"description": "The event does not validate: the reply says which field."},
         429: {"description": f"More than {client_events.MAX_PER_HOUR} events from this account in the last hour "
                              "(`Retry-After: 3600`); or the address is locked after too many invalid API keys."},
@@ -453,7 +479,7 @@ def client_event(
     return {"object": "event", "recorded": True}
 
 
-@router.get("/v1/settings", summary="Recommended client settings")
+@router.get("/v1/settings", summary="Recommended client settings", responses=_answers(account_schema.Settings))
 async def client_settings_fields(user: User = Depends(get_account_user)):
     """The client settings a tool can offer this account when it sets a client up: apply every `default`, or let the user pick.
 
