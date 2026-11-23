@@ -472,7 +472,9 @@ data route holds a key; the two key routes are never cached, audited, and
 refused to anyone but an owner in the account's department.
 `TestTheActionsTakeWhatTheApiGives`: a notice and a model change are
 reported as applied by the id the API gives. `TestThePageAndTheApiAgree`:
-the view module knows no request and no template.
+the view module knows no request and no template. That the two routers
+share one service (`account_view`) and neither imports the other is in
+`test_service_layering.py`.
 
 ### `test_endpoint_inventory.py` — `docs/endpoints.md`
 

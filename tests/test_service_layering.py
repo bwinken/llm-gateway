@@ -100,3 +100,47 @@ def test_client_setup_reads_neither_the_rules_nor_their_mail():
     imports = _service_imports("client_settings")
     assert "client_patch" in imports  # the variables that hold the key
     assert not imports & {"client_rules", "client_mail", "client_checks"}
+
+
+# ── The account's answers: one service, two routers ──
+
+ROUTERS = SERVICES.parent / "routers"
+ACCOUNT_ANSWERS = ("me", "status", "usage", "service_account_row", "notices")
+
+
+def _imports(path: Path) -> set[str]:
+    """Every module ``path`` imports, as dotted names (``from a.b import c``
+    gives ``a.b`` and ``a.b.c``)."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            found.add(node.module)
+            found.update(f"{node.module}.{alias.name}" for alias in node.names)
+        elif isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+    return found
+
+
+def test_the_account_answers_know_no_router_and_no_request():
+    """``account_view`` builds what ``/v1/me`` ... ``/v1/notices`` and
+    ``/dashboard/api/*`` answer. It takes the user a route authenticated and
+    returns the body: no request, no response, no router."""
+    imports = _imports(SERVICES / "account_view.py")
+    assert "app.core.deps" in imports  # the walk does find imports
+    assert not [name for name in imports if name.startswith(("fastapi", "starlette", "app.routers"))]
+
+
+def test_both_routers_call_the_service_and_neither_calls_the_other():
+    v1 = ROUTERS / "v1_api.py"
+    dashboard = sorted((ROUTERS / "dashboard").glob("*.py"))
+    assert len(dashboard) >= 4
+    assert not [name for name in _imports(v1) if name.startswith("app.routers")]
+    for module in dashboard:
+        assert "app.routers.v1_api" not in _imports(module), module.name
+    api = (ROUTERS / "dashboard" / "api.py").read_text(encoding="utf-8")
+    by_key = v1.read_text(encoding="utf-8")
+    for name in ACCOUNT_ANSWERS:
+        assert f"account_view.{name}" in api, name
+    # By key the row is reached through the whole list.
+    for name in ("me", "status", "usage", "service_accounts", "notices"):
+        assert f"account_view.{name}" in by_key, name

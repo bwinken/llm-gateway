@@ -192,7 +192,7 @@ Dashboard 是獨立的 package：`app/routers/dashboard/`，正在分階段拆�
 
 ### Dashboard 的 JSON（`dashboard/api.py`）
 
-給獨立的前端用，前端要和 gateway 同源。前五條的內容就是同名 `/v1` 端點的回應（呼叫同一個函式），再加上只有登入者能看的部分。只增不改，不回傳 `null`。
+給獨立的前端用，前端要和 gateway 同源。前五條的內容就是同名 `/v1` 端點的回應（兩邊都呼叫 `app/services/account_view.py` 裡的同一個函式），再加上只有登入者能看的部分。只增不改，不回傳 `null`。
 
 | 方法 | 路徑 | 說明 |
 |---|---|---|

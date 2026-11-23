@@ -3,7 +3,7 @@
 What the dashboard page shows, as JSON for a frontend of its own, signed in
 by SSO. ``me`` / ``status`` / ``usage`` / ``service-accounts`` / ``notices``
 answer what the account endpoints of the same name answer by API key, from
-the same function, plus what only a signed-in person may see. A key is in
+the same function (``app/services/account_view.py``), plus what only a signed-in person may see. A key is in
 none of them: the two routes that show one do nothing else and are in the
 audit log."""
 

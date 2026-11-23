@@ -15,9 +15,10 @@ keep:
              caller that asks for it, so they serve the page and a frontend
              alike.
 
-What any of them answers with is put together in
-``app/services/dashboard_view.py``; the modules here authenticate and
-answer. They register their routes on ``router`` when imported, so the
+What any of them answers with is put together in the service layer: the
+page's data in ``app/services/dashboard_view.py``, and the answers the API
+shares with ``/v1/*`` in ``app/services/account_view.py``. The modules here
+authenticate and answer. They register their routes on ``router`` when imported, so the
 import below is what puts them there. The package exports ``router`` and
 nothing else: import a helper from the module that defines it, and patch a
 name in the module that looks it up.

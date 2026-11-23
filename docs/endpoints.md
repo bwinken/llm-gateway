@@ -65,7 +65,7 @@ grep -cE '"(GET|POST|PATCH) /admin/(users(/[0-9]+)?|api/anomalies|api/audit-log)
 
 ### Dashboard 的 JSON API（SSO）
 
-新增。`me`、`status`、`usage`、`service-accounts`、`notices` 的內容就是同名 `/v1` 端點的回應（呼叫同一個函式），再加上只有登入者能看的部分。兩條 `api-key` 各回傳一把完整的 key，會記在稽核紀錄。`model-breakdown` 是原本就有的，給現有頁面的 Cost by Model 卡片用。
+新增。`me`、`status`、`usage`、`service-accounts`、`notices` 的內容就是同名 `/v1` 端點的回應（兩邊都呼叫 `app/services/account_view.py` 裡的同一個函式），再加上只有登入者能看的部分。兩條 `api-key` 各回傳一把完整的 key，會記在稽核紀錄。`model-breakdown` 是原本就有的，給現有頁面的 Cost by Model 卡片用。
 
 | 端點 | Handler |
 |---|---|

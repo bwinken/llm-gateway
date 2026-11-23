@@ -193,7 +193,7 @@ The dashboard is a package of its own, `app/routers/dashboard/`, being separated
 
 ### The dashboard as JSON (`dashboard/api.py`)
 
-For a frontend of its own, served from the gateway's own origin. The first five answer what the `/v1` endpoint of the same name answers, by calling its function, and add what only a signed-in person sees. Additive changes only, never a `null`.
+For a frontend of its own, served from the gateway's own origin. The first five answer what the `/v1` endpoint of the same name answers (both call the one function in `app/services/account_view.py`) and add what only a signed-in person sees. Additive changes only, never a `null`.
 
 | Method | Path | Description |
 |---|---|---|

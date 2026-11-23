@@ -4,8 +4,9 @@ The dashboard as data: ``/dashboard/api/*``, JSON for a frontend of its own
 
 ``me``, ``status``, ``usage``, ``service-accounts`` and ``notices`` answer
 what the account endpoints of the same name answer by API key
-(``/v1/me`` ... ``/v1/notices``), by calling the same function, so a client
-learns one shape and the two cannot disagree. On top of that each carries
+(``/v1/me`` ... ``/v1/notices``): both call the one function in
+``app/services/account_view.py``, so a client learns one shape and the two
+cannot disagree. On top of that each carries
 what only a signed-in person may see: whether they are an admin, the masked
 key, a service account's id and who it sent requests for.
 
@@ -25,6 +26,7 @@ from datetime import timezone
 
 from fastapi import Depends, HTTPException, Query, Request, Security
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from sqlmodel import Session
 
 from app.core.auth import get_web_user
@@ -33,11 +35,10 @@ from app.core.database import get_session
 from app.core.logger import logger
 from app.core.timeutil import LOCAL_TZ, local_month_start
 from app.models.schema import User, mask_api_key
-from app.routers import v1_api
 from app.routers.dashboard.actions import owned_service_account
 from app.routers.dashboard.common import router
 from app.routers.web_ui import gateway_base
-from app.services import client_rules, dashboard_view, model_catalog
+from app.services import account_view, client_rules, dashboard_view, model_catalog
 from app.services.model_order import natural_key
 from app.services.stats import FLOW_TOP_USERS, get_on_behalf_users, get_owned_apps_summary, get_withheld_apps
 
@@ -64,7 +65,7 @@ async def me(
       set), whether the Setup page is on (``setup_page``) and whether the
       Windows installer can be downloaded (``installer``).
     """
-    body = await v1_api.account_info(user)
+    body = await run_in_threadpool(account_view.me, user)
     body["is_admin"] = bool(user.is_admin)
     if user.org_code:
         body["org_code"] = user.org_code
@@ -90,19 +91,19 @@ async def status(user: User = Security(get_web_user, scopes=["read"])):
     """The models the person can use and whether they are up: exactly what
     ``GET /v1/status`` answers. An admin sees the cloud models whatever
     their own cloud access, as on the dashboard page. No database read."""
-    return await v1_api.model_status(user)
+    return account_view.status(user)
 
 
 @router.get("/dashboard/api/usage")
 def usage(
-    days: int = Query(7, ge=1, le=v1_api.USAGE_MAX_DAYS, description="How many days back, today included."),
+    days: int = Query(7, ge=1, le=account_view.USAGE_MAX_DAYS, description="How many days back, today included."),
     user: User = Security(get_web_user, scopes=["read"]),
 ):
     """The person's usage per day, and today and this month by model and by
     the way it came in: exactly what ``GET /v1/usage`` answers, the figures
     behind the trend chart, *Cost by Model* and *Usage Flow*. Plain ``def``
     (database read)."""
-    return v1_api.usage_history(days=days, user=user)
+    return account_view.usage(user, days)
 
 
 def _sent_for(flow: dict) -> dict:
@@ -156,7 +157,7 @@ def service_accounts(
     for account in accounts:
         row = {
             "id": account["id"],
-            **v1_api.service_account_row(account),
+            **account_view.service_account_row(account),
             "api_key_masked": mask_api_key(account["api_key"]),
         }
         flow = flows.get(account["id"])
@@ -183,7 +184,7 @@ def notices(user: User = Security(get_web_user, scopes=["read"])):
     or ``.../{id}/resolved`` for one notice, and
     ``POST /dashboard/model-changes/{id}/applied`` for a model change, each
     with the ``id`` given here. Plain ``def`` (database read)."""
-    body = v1_api.client_notices(user)
+    body = account_view.notices(user)
     body["quiet_days"] = client_rules.RESOLVED_QUIET_DAYS
     return body
 
