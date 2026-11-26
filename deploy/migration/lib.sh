@@ -33,8 +33,9 @@ GATEWAY_IMAGE="${GATEWAY_IMAGE:-llm-gateway:drill}"
 #   EXCHANGE_*   有了它 client-rule 的信會真的寄給使用者
 #   LANGFUSE_*   演練的請求會混進正式的觀測資料
 #   USAGE_LOG_RETENTION_DAYS  保留期工作會刪掉演練資料庫的資料，筆數就對不起來
+#   OFFBOARDING_*  離職者檢查會用正式的 client 去問 Keycloak，enforce 時還會停用演練資料庫的帳號並寫稽核紀錄
 #   DATABASE_URL / 路徑        演練環境自己產生
-ENV_STRIP_RE='^[[:space:]]*(export[[:space:]]+)?(EXCHANGE_[A-Z0-9_]*|LANGFUSE_[A-Z0-9_]*|USAGE_LOG_RETENTION_DAYS|DATABASE_URL|CONFIG_DIR|LOG_DIR|METRICS_DIR|AUTH_CENTER_PUBLIC_KEY_PATH)='
+ENV_STRIP_RE='^[[:space:]]*(export[[:space:]]+)?(EXCHANGE_[A-Z0-9_]*|LANGFUSE_[A-Z0-9_]*|OFFBOARDING_[A-Z0-9_]*|USAGE_LOG_RETENTION_DAYS|DATABASE_URL|CONFIG_DIR|LOG_DIR|METRICS_DIR|AUTH_CENTER_PUBLIC_KEY_PATH)='
 
 # 快照與比對用的資料表
 SNAPSHOT_TABLES="users usage_logs usage_daily audit_log app_owners ip_allow_rules client_violations anomaly_events"

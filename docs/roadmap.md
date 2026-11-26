@@ -74,7 +74,7 @@
 | 16 | CMP-9 | CI 加上映像掃描與 SAST | workflow |
 | 17 | AUD-2 | 存取審查報表 | 新的唯讀匯出 |
 | 18 | CMP-3 | 長期未用的 key 自動停用 | 一個排程工作 |
-| 19 | CMP-7 | 離職者帳號自動停用 | 一個排程工作；先確認 AuthCenter 能不能提供名單 |
+| 19 | CMP-7 | 離職者帳號自動停用 | 一個排程工作，向 Keycloak 查詢停用名單；已上線為 `monitor`，穩定後改 `enforce` |
 | 20 | GRD-3 | 供應商原生的內容過濾：在 Azure / AWS 端設定，gateway 記錄結果 | 雲端設定 + 小改動 |
 | 21 | AUD-1 | 稽核證據包：把現有的匯出打包 | 腳本 |
 
@@ -319,11 +319,11 @@
 - **現況**：`usage_logs` 保存預設關閉（`USAGE_LOG_RETENTION_DAYS`，刻意不預設）；`audit_log` 不刪；應用程式 log 保存 `LOG_RETENTION`（預設 14 天）；Langfuse 的保存由 Langfuse 端設定；備份有自己的保留期。
 - **方向**：一份保存期限表（每種資料：內容、是否含個資、保存期限、依據、刪除方式），由組織決定期限；gateway 端照表設定。注意 CLAUDE.md 的規則：retention 不得刪到 rollup watermark 之後，`usage_logs` 是計費紀錄。
 
-### CMP-7　離職者帳號自動停用 — 階段 2 · 未開始
+### CMP-7　離職者帳號自動停用 — 階段 2 · 進行中
 
-- **現況**：帳號從 AuthCenter 移除後，gateway 上的帳號與 API key 仍然有效，直到 admin 手動停用。CMP-3 只擋得住沒在用的 key。
-- **方向**：一個排程工作定期向 AuthCenter 取得有效帳號名單，停用不在名單上的人（不刪除：用量紀錄要保留），並寫入稽核紀錄。service account 不受影響，但擁有者離職時要提醒 admin 重新指派。
-- **待確認**：AuthCenter 有沒有可以查詢帳號狀態的 API。沒有的話，退而求其次是 AUD-2 的報表加上人工比對。
+- **決定（2026-11-26）**：名單來源是 Keycloak（離職者在那裡會被停用），用一個專用的唯讀 client 查詢；登入維持 AuthCenter。先跑 `monitor`（只通知 admin，由 admin 手動停用），名單穩定後改 `enforce`（gateway 自己停用）。回任的人由 admin 手動恢復。
+- **已完成**：`app/services/offboarding.py` 的排程工作（每小時；`OFFBOARDING_MODE=off|monitor|enforce`，預設 `off`）。Keycloak 回報停用的人會標記 `users.sso_disabled_at`；`monitor` 時列在 admin 頁的 *Needs attention*，並可用 Users 表格的篩選一次停用；`enforce` 時直接停用並寫稽核紀錄（`job:offboarding`）。只認明確的「已停用」：讀取失敗或 Keycloak 不認識的人不會被停用；一次超過 `OFFBOARDING_MAX_PER_RUN`（20）就一個都不停用。不刪除帳號，service account 不受影響（擁有者被停用時，原有的「擁有者待檢視」會提醒 admin）。設定步驟見 `deploy/README.zh-TW.md` 的「離職者的帳號」。
+- **剩下的**：(1) 申請 Keycloak client，正式環境開啟 `monitor`；(2) 名單準確一段時間後改成 `enforce`；(3) 在 Keycloak 被**刪除**而不是停用的人找不到，如果有這種情況要另外處理；(4) 沒有主動通知（信件），admin 要打開 admin 頁才看得到。
 
 ### CMP-8　測試環境 — 等待（server 集群） · 未開始
 

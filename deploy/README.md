@@ -121,6 +121,7 @@ The gateway runs its periodic jobs itself; there are no systemd timers or cron e
 | Usage rollup | every 10 min | Sums closed Asia/Taipei days of `usage_logs` into `usage_daily`, which the admin page, dashboard and exports read. Backfills on first start after the migration. | on | `USAGE_ROLLUP_INTERVAL_S` (`0` = off) |
 | Anomaly scan | hourly | Flags unusual usage into `anomaly_events` for the admin panel. Detection only, never blocks anyone. | on | `ANOMALY_SCAN_INTERVAL_S` (`0` = off) |
 | Client-rule mail | every 10 min | Sends client-rule mail in batches (20 a run, 2 s apart by default): accounts an admin queued, then those due by a rule's automatic mail and its weekly / monthly reminder. Does nothing while mail is not configured. | on | `CLIENT_RULE_MAIL_INTERVAL_S` (`0` = off), `CLIENT_RULE_MAIL_BATCH`, `CLIENT_RULE_MAIL_PAUSE_S` |
+| People who left | hourly | Asks Keycloak which users are disabled and lists them for the admin (`monitor`) or disables their accounts (`enforce`). See [Accounts of people who left](#accounts-of-people-who-left) | **off** | `OFFBOARDING_MODE`, `OFFBOARDING_KEYCLOAK_*`, `OFFBOARDING_INTERVAL_S` |
 | Usage-log retention | daily | **Deletes** `usage_logs` rows older than N days, whole days only, and never a day not yet in `usage_daily` (reports keep it) | **off** | `USAGE_LOG_RETENTION_DAYS` (unset = keep forever) |
 
 `usage_logs` is the billing and audit record, and PostgreSQL holds years of it comfortably, so retention ships off on purpose: deleting it is a governance decision. Deleting a user keeps their usage rows too. `scheduled_jobs` shows each job's last start, finish and outcome. The scripts run the same code by hand and are dry runs without `--execute`:
@@ -131,6 +132,7 @@ uv run python scripts/rollup_usage_daily.py              # rollup watermark and 
 uv run python scripts/cleanup_usage_logs.py              # retention preview: cutoff and row count
 uv run python scripts/cleanup_usage_logs.py --days 180   # custom retention
 uv run python scripts/scan_anomalies.py                  # print findings only
+uv run python scripts/offboarding_check.py               # who Keycloak reports as disabled; --apply runs it now
 ```
 
 `scripts/rollup_usage_daily.py --recompute FROM TO --execute` re-rolls days after a data correction. See [docs/architecture.md](../docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy).
@@ -271,6 +273,46 @@ Everyone signs in again. Then check: the dashboard opens under your existing acc
 - **403 `Insufficient scope`**: the account lacks the client role `read`.
 - **Terminal tools** (`POST /auth/api-key`) then send a Keycloak access token. A tool with its own (public) client needs an *Audience* mapper adding the gateway's client to `aud`, and the gateway client's roles in its tokens.
 - **Going back**: remove `SSO_PROVIDER` from `.env`, restore the AuthCenter values in `deploy/.env` (and remove `OAUTH2_COOKIE_REFRESH`), apply both again.
+
+## Accounts of people who left
+
+Disabling a person's sign-in (AuthCenter, Keycloak) does not stop their API key: the gateway checks a key against its own accounts and never asks the identity provider. The offboarding job closes that gap by asking Keycloak which users are disabled. It is off until `.env` turns it on, and it works whichever `SSO_PROVIDER` signs the web UI's tokens (sign-in can stay with AuthCenter): it only needs Keycloak to know people by the usernames they have on the gateway.
+
+| `OFFBOARDING_MODE` | What happens to a person Keycloak reports as disabled |
+|---|---|
+| `off` (default) | Nothing; Keycloak is not asked |
+| `monitor` | Listed on the admin page under *Needs attention*, and under the Users table's filter *Sign-in disabled, account still active*. You disable the account (tick the rows → *Disable*). Start here |
+| `enforce` | The same, and the gateway disables the account itself, with a row in the audit log (actor `job:offboarding`) |
+
+**1. In Keycloak (realm admin)**: a client of its own, for example `llm-gateway-offboarding`: OpenID Connect, *Client authentication* on, *Service accounts roles* on, every other flow off. Under *Service account roles* assign `realm-management` → `view-users`, and nothing else: it reads, it cannot change a user.
+
+**2. Gateway (`.env`)**
+
+```bash
+OFFBOARDING_MODE=monitor
+OFFBOARDING_KEYCLOAK_URL=https://keycloak.company.com/realms/company
+OFFBOARDING_KEYCLOAK_CLIENT_ID=llm-gateway-offboarding
+OFFBOARDING_KEYCLOAK_CLIENT_SECRET=<the client's secret>
+# OFFBOARDING_KEYCLOAK_CA_FILE=/etc/ssl/company-ca.pem    # Keycloak certificate from an internal CA
+```
+
+**3. Try it before restarting.** This reads Keycloak and prints who is disabled there and still active here; it writes nothing, and works while the mode is still `off`:
+
+```bash
+uv run python scripts/offboarding_check.py
+```
+
+Check the list against what you know: a person who left last month should be on it. If someone who left is missing, they were probably deleted in Keycloak rather than disabled, or their username differs; the job only acts on an explicit "disabled", so such an account is not found.
+
+**4. Restart** (`systemctl --user restart llm-gateway`). The job runs once an hour (`OFFBOARDING_INTERVAL_S`). `scheduled_jobs` holds its last outcome (`name = 'offboarding'`), and the log has an `Offboarding | ...` line whenever it finds someone new.
+
+**Moving to `enforce`**: once the list has been right for a while, set `OFFBOARDING_MODE=enforce` and restart. Everyone still on the list is disabled at the next check.
+
+- **Only an explicit "disabled" counts.** A failed read, an empty answer or a person Keycloak does not know disables nobody. If the check itself stops working (Keycloak unreachable, the secret rotated), *Needs attention* says so.
+- **A cap.** `enforce` disables at most `OFFBOARDING_MAX_PER_RUN` (20) accounts in one check. With more due it disables none and lists them: that many at once is more likely a mistake at the source.
+- **A person who comes back** is enabled again by an admin, after Keycloak has enabled them. The job never enables an account. In `enforce`, an account you enable while Keycloak still reports the person disabled is disabled again at the next check: make the exception in Keycloak.
+- **Service accounts** are never touched. When an owner is disabled, the service account is listed under *Needs attention* as having an owner to review; regenerate its key if that person should no longer have it.
+- **`the client sees no users`**: the client has `query-users` but not `view-users`. **`HTTP 401`** on the client's sign-in: wrong secret, or *Service accounts roles* is off. **`HTTP 403`** on the user list: the role is missing.
 
 ## Database Backup
 

@@ -215,6 +215,7 @@ It writes `~/backup/llm-gateway/migration-bundle-<time>/`:
 - `EXCHANGE_*`: with them the drill environment would **send real mail to users**;
 - `LANGFUSE_*`: the drill's requests would land in production's traces;
 - `USAGE_LOG_RETENTION_DAYS`: the retention job would delete rows from the drill database;
+- `OFFBOARDING_*`: the leaver check would sign in to Keycloak with production's client and, in `enforce`, disable accounts in the drill database;
 - `DATABASE_URL` and host paths: the drill generates its own.
 
 The bundle holds every API key and downstream secret, so it **must be encrypted** (same public key as the backups); without a key the script refuses to run. If it fails partway, the half-made directory is removed.

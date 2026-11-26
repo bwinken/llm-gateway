@@ -215,6 +215,7 @@ BACKUP_GPG_RECIPIENT_FILE=~/opt/llm-gateway/keys/backup.pub.asc bash deploy/migr
 - `EXCHANGE_*`：有了它，演練環境會**真的寄信給使用者**；
 - `LANGFUSE_*`：演練的請求會混進正式的觀測資料；
 - `USAGE_LOG_RETENTION_DAYS`：保留期工作會刪掉演練資料庫的資料；
+- `OFFBOARDING_*`：離職者檢查會用正式環境的 client 登入 Keycloak，`enforce` 時還會停用演練資料庫裡的帳號；
 - `DATABASE_URL` 與主機路徑：演練環境自己產生。
 
 演練包裡有所有 API key 與下游密鑰，所以**一定要加密**（和備份用同一把公鑰）；沒設公鑰時腳本會拒絕執行。中途失敗的話，做到一半的目錄會被刪掉。

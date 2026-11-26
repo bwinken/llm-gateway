@@ -39,6 +39,7 @@
                     {% if u.is_service_account %}<span class="gw-badge">Service</span>{% else %}<span class="gw-badge gw-badge-muted">User</span>{% endif %}
                     {% if is_self %}<span class="gw-badge gw-badge-muted">You</span>{% endif %}
                     <span class="gw-badge gw-badge-off um-disabled-badge {{ '' if u.is_disabled else 'hidden' }}">Disabled</span>
+                    {% if d.sso_disabled_since %}<span class="gw-badge gw-badge-muted">Sign-in disabled</span>{% endif %}
                 </div>
             </div>
         </div>
@@ -271,6 +272,10 @@
     {# The rare, heavy actions, at the end and away from the switches. #}
     <section class="ud-sec">
         <h3 class="ud-h">Account</h3>
+        {% if d.sso_disabled_since %}
+        <div class="text-xs text-aa mb-2" data-ud-sso-disabled>Keycloak reports this person's sign-in as disabled since {{ d.sso_disabled_since }} (they left, or were suspended).
+            {{ 'The account is disabled here too. If they are back, enable it again once Keycloak has.' if u.is_disabled else 'Their API key still works until you disable the account.' }}</div>
+        {% endif %}
         <div class="flex flex-wrap items-center gap-2">
             <form action="/admin/users/{{ u.id }}/toggle-disable" method="POST" data-action="disable"
                   data-granted="{{ 'true' if u.is_disabled else 'false' }}">

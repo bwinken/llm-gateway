@@ -185,6 +185,7 @@ Azure 與 Bedrock 模型放在 `[azure_models.*]`、`[bedrock_models.*]`；價�
 | `METRICS_ENABLED` | 在 `/metrics` 提供 Prometheus 指標 |
 | `EXCHANGE_*`、`COMPANY_EMAIL_DOMAIN`、`PUBLIC_BASE_URL` | 寄信：通知使用者修正 client 設定，以及週報 |
 | `USAGE_LOG_RETENTION_DAYS` | 刪除超過這個天數的原始用量紀錄（預設關閉；報表的總計會保留） |
+| `OFFBOARDING_MODE`、`OFFBOARDING_KEYCLOAK_*` | 向 Keycloak 查詢誰被停用了（離職者）：列給 admin 看，或直接停用帳號。見 [deploy/README.zh-TW.md](deploy/README.zh-TW.md#離職者的帳號) |
 
 [`.env.example`](.env.example) 列出所有變數與預設值：log、登入失敗封鎖、連線池、背景工作的間隔、寄信節奏。SSO 本身（OIDC issuer、client secret）是在 `deploy/.env` 設定給 oauth2-proxy，見 [deploy/README.zh-TW.md](deploy/README.zh-TW.md)。
 
@@ -248,6 +249,7 @@ Gateway 的所有功能、在哪裡開啟，以及在 `.env` 需要設什麼。�
 | 地端流量的 prompt guardrail（Qwen3Guard-Gen） | **Admin → Security**；預設關閉；需要一台 guard 模型伺服器 | 選用 `GUARDRAIL_MAX_CONNECTIONS` |
 | 同一位址送出多把不同的無效 API key 後暫時封鎖 | 預設開啟 | 選用 `AUTH_FAIL_DISTINCT_KEYS`、`AUTH_FAIL_WINDOW_S`、`AUTH_LOCKOUT_S` |
 | 記錄每個管理與儀表板操作的稽核紀錄 | 一律開啟 | – |
+| 離職者的帳號：依 Keycloak 的停用名單列給 admin（`monitor`）或直接停用（`enforce`） | 預設關閉；需要一個唯讀的 Keycloak client | `OFFBOARDING_MODE`、`OFFBOARDING_KEYCLOAK_*` |
 
 **Client 與寄信**
 
@@ -323,6 +325,11 @@ Gateway 會讀取的所有變數，分成三組：一定要設的、某個功能
 | **Prometheus 指標** | `METRICS_ENABLED` | **必填**（設 `true` 才開啟） | 在 `/metrics` 提供指標 |
 | | `METRICS_DIR` | 選用（`<tmp>/llm-gateway-metrics`） | 各 worker 共用指標數值的目錄 |
 | **刪除舊的用量紀錄** | `USAGE_LOG_RETENTION_DAYS` | **必填**（設天數才開啟） | 刪除超過這個天數的原始用量紀錄；報表的總計會保留 |
+| **離職者的帳號** | `OFFBOARDING_MODE` | **必填**（`monitor` 或 `enforce` 才開啟） | `monitor` 把名單列在 admin 頁面；`enforce` 另外直接停用帳號 |
+| | `OFFBOARDING_KEYCLOAK_URL` | **必填**（已設 `KEYCLOAK_ISSUER_URL` 時可省略） | 要查詢的 realm URL |
+| | `OFFBOARDING_KEYCLOAK_CLIENT_ID`、`OFFBOARDING_KEYCLOAK_CLIENT_SECRET` | **必填** | 專用的 client，權限只要 `realm-management` → `view-users` |
+| | `OFFBOARDING_KEYCLOAK_CA_FILE` | 選用（`KEYCLOAK_CA_FILE`） | Keycloak 憑證由內部 CA 簽發時的 CA bundle |
+| | `OFFBOARDING_INTERVAL_S`、`OFFBOARDING_MAX_PER_RUN` | 選用（`3600`、`20`） | 檢查的間隔秒數；一次要停用的帳號超過這個數量時，`enforce` 一個都不停用 |
 
 ### 選用
 

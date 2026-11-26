@@ -90,7 +90,7 @@ Above the tab bar: only the **Needs attention** strip, a `<details>` that is one
 
 | Section | Tab | Description |
 |---|---|---|
-| **Needs attention** | — | Folded: counts per kind (models down, anomalies, at / near daily limit, client rules violated). Open: Three columns: open usage anomalies from the gateway's hourly scan (`app/services/anomaly_scan.py`) (severity, user/model, rule, summary; Ack / Resolve buttons), on-prem models down or queueing, and accounts at ≥ 90 % of today's daily limit (each links to `?q=<username>#users`). Collapses to "All clear" when empty |
+| **Needs attention** | — | Folded: counts per kind (models down, anomalies, at / near daily limit, client rules violated). Open: Three columns: open usage anomalies from the gateway's hourly scan (`app/services/anomaly_scan.py`) (severity, user/model, rule, summary; Ack / Resolve buttons), on-prem models down or queueing, and accounts at ≥ 90 % of today's daily limit (each links to `?q=<username>#users`). Below them, when there is any: client rules violated, service account owners to review, and people whose sign-in was disabled at Keycloak while their account still works (the offboarding job, `app/services/offboarding.py`: each opens the account, a link lists them in the Users table; it also says when that check is not working). Collapses to "All clear" when empty |
 | **Key numbers** | Overview | Spend today, Requests today, Active users today, In flight now (concurrency leases; "tracking off" when the limit is `off`), this month's cost / requests / tokens |
 | **DAU Trend** | Overview | Chart.js bar chart, 30-day Daily Active Users, today's DAU in top-right |
 | **Service Account Leaderboard** | Overview | Service account ranking, top-10 by monthly cost descending |

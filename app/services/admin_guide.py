@@ -365,6 +365,44 @@ SECTIONS: tuple[Section, ...] = (
                 tradeoffs=("On the web pages an admin (by SSO scope) is let in even when their own account is disabled; on the API nobody is.",),
             ),
             Entry(
+                id="account-sso-disabled",
+                name="People whose sign-in was disabled (leavers)",
+                keys=("OFFBOARDING_MODE (.env)", "users.sso_disabled_at"),
+                default="off",
+                what=(
+                    "A job asks Keycloak, once an hour, which users are disabled there. In monitor mode a person "
+                    "it reports is listed under Needs attention (and under the Users table's filter "
+                    "\"Sign-in disabled, account still active\") until you disable the account; nothing is "
+                    "disabled for you. In enforce mode the gateway disables the account itself and writes it to "
+                    "the audit log as job:offboarding. The mode and the Keycloak client are set in .env "
+                    "(OFFBOARDING_*), not on a page, and need a restart."
+                ),
+                why=(
+                    "Disabling someone's sign-in does not stop their API key: the gateway checks a key against "
+                    "its own accounts and never asks the identity provider. Without this, the key of a person "
+                    "who left works until someone remembers to disable the account."
+                ),
+                tradeoffs=(
+                    "Only an explicit \"disabled\" from Keycloak counts. A person Keycloak does not know, a failed "
+                    "read or an empty answer marks nobody, so a wrong address or differing usernames cannot "
+                    "disable anyone; the price is that a person who was deleted there instead of disabled is not found.",
+                    "Keycloak says \"disabled\", not why: a suspended account looks the same as one of a person who left.",
+                    "In enforce mode an account you enable again is disabled at the next check while Keycloak "
+                    "still reports the person disabled. Who is employed is Keycloak's to say; make the exception there.",
+                    "Enforce disables at most OFFBOARDING_MAX_PER_RUN accounts (20) in one check. With more due "
+                    "it disables none and lists them for you: a list that long is more likely a mistake at the "
+                    "source than a real day.",
+                    "A service account is never touched. When its owner is disabled it is listed as an owner to review.",
+                    "If the check itself stops working, Needs attention says so: a check that fails quietly "
+                    "would look like a day on which nobody left.",
+                ),
+                decided=(
+                    "Monitor first, enforce later: the owner chose to be told and to disable by hand until the "
+                    "list has proven right. A person who comes back is enabled again by an admin, never by the "
+                    "job. Sign-in stays with AuthCenter; only this check reads Keycloak. (2026-11)"
+                ),
+            ),
+            Entry(
                 id="account-owner",
                 name="Owners of a service account",
                 keys=("app_owners",),

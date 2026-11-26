@@ -45,7 +45,7 @@ from app.routers.admin.common import (
     router,
     templates,
 )
-from app.services import audit, concurrency, overflow
+from app.services import audit, concurrency, offboarding, overflow
 from app.services.stats import get_monthly_all_users_usage, get_on_behalf_month, owners_to_review
 
 
@@ -89,6 +89,9 @@ USER_TABLE_STATUSES: dict[str, str] = {
     # Not a permission: service accounts with an owner an admin should look
     # at (``stats.owners_to_review``). Deliberately not in SPECIAL_ACCESS_KEYS.
     "owner_review": "Owner to review",
+    # Not a permission: people the identity provider reports as disabled
+    # (they left) whose account here still works (``offboarding.pending_clause``).
+    "sso_disabled": "Sign-in disabled, account still active",
     # Not a permission: tracks how many keys still predate the current format
     # (schema.is_legacy_api_key). Deliberately not in SPECIAL_ACCESS_KEYS.
     "legacy_key": "Older-format API key",
@@ -175,6 +178,7 @@ def _status_clause(status: str, is_apps: bool):
         "on_behalf": on_behalf,
         "disabled": User.is_disabled == True,  # noqa: E712
         "owner_review": _owner_review_clause() if is_apps else sa_false(),
+        "sso_disabled": sa_false() if is_apps else offboarding.pending_clause(),
         "legacy_key": legacy_api_key_clause(),
         "stale_key": _stale_key_clause(),
     }
@@ -328,6 +332,8 @@ def _user_table(
             "cloud_daily_limit_usd": u.cloud_daily_limit_usd,
             "is_self": u.id == admin_user.id,
             "is_disabled": u.is_disabled,
+            # The identity provider reports this person's sign-in as disabled (offboarding job).
+            "sso_disabled_since": _local_label(u.sso_disabled_at)[:10],
             "can_use_azure": u.can_use_azure,
             "can_use_bedrock": u.can_use_bedrock,
             "concurrency_waived": u.concurrency_waived,
@@ -487,6 +493,8 @@ def _account_detail(session: Session, target: User) -> dict:
         "key_issued": _local_label(target.api_key_created_at),
         "key_last_used": _local_label(target.api_key_last_used_at),
         "created": _local_label(target.created_at),
+        # The identity provider reports this person's sign-in as disabled (offboarding job).
+        "sso_disabled_since": _local_label(target.sso_disabled_at),
         "audit": _audit_rows(session, limit=_DETAIL_AUDIT_ROWS, about=target),
         "local_label": _local_label,
     }

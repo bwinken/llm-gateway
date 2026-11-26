@@ -17,6 +17,10 @@
   one write an API key has on its account: the handler names the account
   (``note_actor``), and a request whose key was refused is not recorded.
 
+One kind of row comes from no request: an account a periodic job changed
+(``record_job``: the offboarding job disabling the account of a person whose
+sign-in was disabled). Its actor is ``job:<name>`` and its method ``JOB``.
+
 Being a middleware, it covers a new endpoint without anyone remembering to.
 Each row has the actor (JWT ``sub``), method, route template, path, status
 (500 when the handler raised), client address and a JSON ``detail``:
@@ -224,6 +228,28 @@ def _write(record: dict[str, Any]) -> None:
         logger.error("Audit write failed | error={}: {} | record={}", type(exc).__name__, exc, line)
         return
     logger.info("Audit | {}", line)
+
+
+def record_job(job: str, *, user_id: int, username: str, **fields: Any) -> None:
+    """A change a periodic job made to an account, in the same trail: no
+    request reaches the middleware when the gateway itself acts (the
+    offboarding job disabling a leaver's account). One row per account,
+    written after the job's own commit.
+
+    The actor is ``job:<name>`` (never a username: nobody signs in as one,
+    and ``:`` is in no account name), the method ``JOB``, and the path is
+    the account's, so the account's history in the admin drawer shows it
+    beside what admins did. Blocking; never raises, like every audit write.
+    """
+    _write({
+        "actor": f"job:{job}",
+        "method": "JOB",
+        "route": f"job:{job}",
+        "path": f"/admin/users/{user_id}",
+        "status": 200,
+        "client": "",
+        "detail": {"target": username, **redact(fields)},
+    })
 
 
 class AuditMiddleware:

@@ -195,6 +195,14 @@ class User(SQLModel, table=True):
     # Naive UTC, like concurrency_leases (compared in SQL against naive values).
     api_key_created_at: NaiveDatetime | None = Field(default_factory=lambda: _naive_utcnow())
     api_key_last_used_at: NaiveDatetime | None = Field(default=None)
+    # When the offboarding job first saw the identity provider report this
+    # person's sign-in as disabled (app/services/offboarding.py); NULL while
+    # it reports them enabled, does not know them, or was never asked. It is
+    # what the provider said, not a permission: nothing on the request path
+    # reads it. Whether the account works is ``is_disabled``, which an admin
+    # sets (or the job itself, in its ``enforce`` mode). Never set on a
+    # service account.
+    sso_disabled_at: NaiveDatetime | None = Field(default=None)
 
 
 # ── Acting for a user ──

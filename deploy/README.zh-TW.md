@@ -120,6 +120,7 @@ docker compose -f ~/opt/llm-gateway/deploy/docker-compose.yml down
 |---|---|---|---|---|
 | 用量彙總 | 每 10 分鐘 | 把已結束的台北日 `usage_logs` 彙總進 `usage_daily`，管理頁面、dashboard 與匯出都讀它。遷移後第一次啟動會自動回填。 | 開 | `USAGE_ROLLUP_INTERVAL_S`（`0` = 關） |
 | 異常掃描 | 每小時 | 把異常使用記到 `anomaly_events`，供管理頁面檢視。只偵測，絕不封鎖任何人。 | 開 | `ANOMALY_SCAN_INTERVAL_S`（`0` = 關） |
+| 離職者檢查 | 每小時 | 向 Keycloak 查詢哪些使用者被停用，列給 admin（`monitor`）或直接停用帳號（`enforce`）。見[離職者的帳號](#離職者的帳號) | **關** | `OFFBOARDING_MODE`、`OFFBOARDING_KEYCLOAK_*`、`OFFBOARDING_INTERVAL_S` |
 | usage log 保留期 | 每天 | **刪除** N 天前的 `usage_logs`，只刪整天，且絕不刪還沒彙總進 `usage_daily` 的日子（報表仍保有） | **關** | `USAGE_LOG_RETENTION_DAYS`（不設 = 永久保留） |
 
 `usage_logs` 是計費與稽核的底帳，PostgreSQL 存放多年資料也毫無壓力，所以保留期清理刻意預設關閉：要不要刪除是治理決定。刪除使用者時也會保留其用量紀錄。`scheduled_jobs` 資料表記錄每個工作最近一次的開始、結束時間與結果。下列腳本執行相同的程式，不加 `--execute` 都只是 dry run：
@@ -130,6 +131,7 @@ uv run python scripts/rollup_usage_daily.py              # 彙總進度與待處
 uv run python scripts/cleanup_usage_logs.py              # 保留期預覽：截止點與筆數
 uv run python scripts/cleanup_usage_logs.py --days 180   # 自訂保留天數
 uv run python scripts/scan_anomalies.py                  # 只列出結果
+uv run python scripts/offboarding_check.py               # Keycloak 回報誰被停用；加 --apply 立刻跑一次
 ```
 
 資料修正後用 `scripts/rollup_usage_daily.py --recompute FROM TO --execute` 重算指定日期。詳見 [docs/architecture.md](../docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy)。
@@ -246,6 +248,46 @@ systemctl --user restart llm-gateway
 - **403 `Insufficient scope`**：這個帳號沒有 client role `read`。
 - **終端機工具**（`POST /auth/api-key`）之後要送 Keycloak 的 access token。工具若用自己的（public）client，需要一個 *Audience* mapper 把 gateway 的 client 加進 `aud`，並讓它的 token 帶有 gateway client 的 role。
 - **換回去**：把 `.env` 的 `SSO_PROVIDER` 拿掉、`deploy/.env` 還原成 AuthCenter 的值（並拿掉 `OAUTH2_COOKIE_REFRESH`），兩邊再套用一次。
+
+## 離職者的帳號
+
+在 AuthCenter 或 Keycloak 停用一個人的登入，擋不住他的 API key：gateway 只拿 key 比對自己的帳號，不會去問身分系統。offboarding 這個工作補上這一段：它向 Keycloak 查詢哪些使用者被停用了。要在 `.env` 開啟才會執行，而且跟 `SSO_PROVIDER` 無關（登入可以繼續用 AuthCenter）：只要 Keycloak 裡的 username 跟 gateway 上的帳號名稱一致。
+
+| `OFFBOARDING_MODE` | Keycloak 回報「已停用」的人會怎樣 |
+|---|---|
+| `off`（預設） | 不處理，也不會查詢 Keycloak |
+| `monitor` | 列在 admin 頁面的 *Needs attention*，以及 Users 表格的篩選 *Sign-in disabled, account still active*。由你停用帳號（勾選後按 *Disable*）。先從這個開始 |
+| `enforce` | 同上，另外 gateway 會自己停用帳號，並寫一筆稽核紀錄（actor 是 `job:offboarding`） |
+
+**1. Keycloak 端（realm 管理員）**：建一個專用的 client，例如 `llm-gateway-offboarding`：OpenID Connect，開啟 *Client authentication* 與 *Service accounts roles*，其他 flow 都關閉。在 *Service account roles* 指派 `realm-management` → `view-users`，只要這一個：它只能讀，不能改任何使用者。
+
+**2. Gateway（`.env`）**
+
+```bash
+OFFBOARDING_MODE=monitor
+OFFBOARDING_KEYCLOAK_URL=https://keycloak.company.com/realms/company
+OFFBOARDING_KEYCLOAK_CLIENT_ID=llm-gateway-offboarding
+OFFBOARDING_KEYCLOAK_CLIENT_SECRET=<這個 client 的 secret>
+# OFFBOARDING_KEYCLOAK_CA_FILE=/etc/ssl/company-ca.pem    # Keycloak 憑證由內部 CA 簽發時
+```
+
+**3. 重啟前先試。** 這個指令會讀 Keycloak，印出哪些人在那邊被停用、在 gateway 上卻還有效；不會寫入任何東西，模式還是 `off` 時也能跑：
+
+```bash
+uv run python scripts/offboarding_check.py
+```
+
+拿名單跟你知道的情況對一下：上個月離職的人應該在上面。如果有離職的人不在名單上，多半是他在 Keycloak 被刪除而不是停用，或是 username 不一樣；這個工作只認明確的「已停用」，那樣的帳號找不到。
+
+**4. 重啟**（`systemctl --user restart llm-gateway`）。工作每小時跑一次（`OFFBOARDING_INTERVAL_S`）。`scheduled_jobs` 記錄最近一次的結果（`name = 'offboarding'`），找到新的人時 log 會有一行 `Offboarding | ...`。
+
+**換成 `enforce`**：名單準確一段時間後，把 `OFFBOARDING_MODE` 改成 `enforce` 再重啟。還在名單上的人會在下一次檢查時被停用。
+
+- **只認明確的「已停用」。** 讀取失敗、空的回應，或 Keycloak 不認識的人，都不會讓任何人被停用。檢查本身壞掉時（連不上 Keycloak、secret 換了），*Needs attention* 會顯示。
+- **單次上限。** `enforce` 一次最多停用 `OFFBOARDING_MAX_PER_RUN`（20）個帳號。超過就一個都不停用，只列出來：一次這麼多，比較可能是來源出錯。
+- **回任的人**要等 Keycloak 先恢復，再由 admin 手動啟用帳號；這個工作不會啟用任何帳號。`enforce` 模式下，Keycloak 還回報停用的人，就算你手動啟用，下一次檢查也會再被停用：例外請在 Keycloak 處理。
+- **Service account** 不受影響。擁有者被停用後，該 service account 會列在 *Needs attention* 的「擁有者待檢視」；如果那個人不該再持有 key，請重新產生。
+- **`the client sees no users`**：client 只有 `query-users`，沒有 `view-users`。client 登入回 **`HTTP 401`**：secret 不對，或沒開 *Service accounts roles*。讀使用者清單回 **`HTTP 403`**：沒有指派角色。
 
 ## 資料庫備份
 

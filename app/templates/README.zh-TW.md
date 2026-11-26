@@ -90,7 +90,7 @@ disabled.html        → 已停用使用者開啟任何 HTML 路由時，由 Acc
 
 | 區塊 | 分頁 | 說明 |
 |---|---|---|
-| **Needs attention** | — | 收合時顯示各類數量（模型離線、異常、接近或達到每日上限、被違反的 client rule）；展開後：三欄：gateway 每小時異常掃描（`app/services/anomaly_scan.py`）找出的未結用量異常（嚴重度、使用者/模型、規則、摘要；Ack / Resolve 按鈕）、DOWN 或排隊中的地端模型、今日用量 ≥ 90 % 每日上限的帳號（點擊連到 `?q=<username>#users`）。都沒有時收合為 "All clear" |
+| **Needs attention** | — | 收合時顯示各類數量（模型離線、異常、接近或達到每日上限、被違反的 client rule）；展開後：三欄：gateway 每小時異常掃描（`app/services/anomaly_scan.py`）找出的未結用量異常（嚴重度、使用者/模型、規則、摘要；Ack / Resolve 按鈕）、DOWN 或排隊中的地端模型、今日用量 ≥ 90 % 每日上限的帳號（點擊連到 `?q=<username>#users`）。三欄下方（有才顯示）：被違反的 client rule、待檢視的 service account 擁有者，以及在 Keycloak 已被停用登入、但帳號仍有效的人（offboarding 工作，`app/services/offboarding.py`：點名字開啟帳號，另有連結在 Users 表格列出全部；檢查本身失效時也會在這裡顯示）。都沒有時收合為 "All clear" |
 | **關鍵數字** | — | Spend today、Requests today、Active users today、In flight now（並行 lease 數；上限為 `off` 時顯示 "tracking off"）、本月費用 / 請求數 / tokens |
 | **DAU Trend** | Overview | Chart.js 柱狀圖，近 30 天 Daily Active Users，右上顯示今日 DAU |
 | **Service Account Leaderboard** | Overview | 服務帳號排行榜，按月費用降序 top-10 |

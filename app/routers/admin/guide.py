@@ -27,7 +27,7 @@ from app.core.config import (
 from app.core.logger import logger
 from app.models.schema import User
 from app.routers.admin.common import router, templates
-from app.services import admin_guide, overflow
+from app.services import admin_guide, offboarding, overflow
 
 
 def _usd(value: float | None) -> str:
@@ -97,6 +97,7 @@ def _other() -> dict[str, str]:
         "ip-allowlist-mode": get_ip_allowlist_settings()["mode"],
         "guardrail-action": f"{'on' if guard.get('enabled') else 'off'} · {guard.get('action', 'monitor')}",
         "client-monthly-mail": "on" if get_client_monthly_mail() else "off",
+        "account-sso-disabled": offboarding.settings()["mode"],
     }
 
 
