@@ -1,4 +1,5 @@
-"""People whose sign-in was disabled at the identity provider (leavers).
+"""People whose sign-in was disabled at the identity provider (leavers),
+and people who changed department.
 
 The gateway checks a token offline and an API key against its own database,
 so nothing tells it that a person left: their key keeps working until an
@@ -20,6 +21,17 @@ its own (client credentials, ``realm-management`` → ``view-users``), whoever
 signs the web UI's tokens. Accounts are matched by username, without regard
 to case.
 
+Departments (optional: ``OFFBOARDING_KEYCLOAK_ORG_ATTR`` names the user
+attribute that holds a person's org code). A person's ``users.org_code`` is
+otherwise only what their last sign-in said, so someone who moved keeps the
+old department until they next open the web UI. With the attribute set, the
+same run lists every user and writes a department that differs, as a
+sign-in would, in ``monitor`` and ``enforce`` alike (the mode is about
+disabling accounts), with an audit row. An empty value never overwrites
+one, a difference in case only is no difference, and more than
+``OFFBOARDING_MAX_PER_RUN`` moves at once change nobody: that many is a
+wrong attribute or a reorganisation, and either wants a person's look.
+
 What it never does:
 
 - act on anything but an explicit "disabled" from Keycloak. A person
@@ -39,7 +51,7 @@ from __future__ import annotations
 import os
 import ssl
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 from sqlmodel import Session, select
@@ -56,9 +68,14 @@ DEFAULT_INTERVAL_S = 3600.0
 DEFAULT_MAX_PER_RUN = 20
 _TIMEOUT_S = 15.0
 _PAGE = 200
-# 200 pages of 200: a realm with more disabled users than that is not one
-# this read was written for, and an endless loop must not be possible.
-_MAX_PAGES = 200
+# 500 pages of 200: a realm with more users than that is not one this read
+# was written for, and an endless loop must not be possible.
+_MAX_PAGES = 500
+# A part of a run's summary that an admin should read starts with this; the
+# admin page shows those parts (``status``). The summary is this module's own
+# text, kept in ``scheduled_jobs.last_detail``.
+ATTENTION = "needs a look: "
+_PART_SEP = " | "
 
 
 class OffboardingError(RuntimeError):
@@ -90,6 +107,9 @@ def settings() -> dict[str, Any]:
         "client_id": os.getenv("OFFBOARDING_KEYCLOAK_CLIENT_ID", "").strip(),
         "client_secret": os.getenv("OFFBOARDING_KEYCLOAK_CLIENT_SECRET", "").strip(),
         "ca_file": os.getenv("OFFBOARDING_KEYCLOAK_CA_FILE", "").strip() or os.getenv("KEYCLOAK_CA_FILE", "").strip(),
+        # The Keycloak user attribute that holds a person's org code. Not
+        # set (the default) = departments are not read.
+        "org_attr": os.getenv("OFFBOARDING_KEYCLOAK_ORG_ATTR", "").strip(),
         "max_per_run": max(max_per_run, 0),
     }
 
@@ -134,8 +154,31 @@ def _json(resp: httpx.Response, what: str) -> Any:
         raise OffboardingError(f"Keycloak's answer to {what} is not JSON") from exc
 
 
-def read_disabled(s: dict[str, Any] | None = None) -> set[str]:
-    """The usernames Keycloak reports as disabled, lower-cased. Blocking.
+class Reading(NamedTuple):
+    """What one read of Keycloak said."""
+    disabled: set[str]                    # lower-cased usernames reported as disabled
+    # lower-cased username -> org code, for the enabled users that have one;
+    # None when departments were not read (no attribute set).
+    departments: dict[str, str] | None
+    attributes: dict[str, int]            # attribute name -> users that have it (when everyone was listed)
+    # Every username in the answer, lower-cased: the whole realm when
+    # everyone was listed, else only the disabled.
+    usernames: set[str]
+
+
+def _first(value: Any) -> str:
+    """A user attribute as text: Keycloak holds each one as a list."""
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def read(s: dict[str, Any] | None = None, *, everyone: bool | None = None) -> Reading:
+    """Ask Keycloak. Blocking.
+
+    Without ``everyone`` (the default when no org attribute is set) only the
+    disabled users are listed; with it every user is, which is what reading
+    departments needs.
 
     Raises ``OffboardingError`` whenever the answer cannot be relied on,
     and an empty set is relied on: so before it is believed, the client
@@ -143,6 +186,8 @@ def read_disabled(s: dict[str, Any] | None = None) -> set[str]:
     ``view-users`` is answered an empty list, not a refusal).
     """
     s = s or settings()
+    if everyone is None:
+        everyone = bool(s["org_attr"])
     missing = missing_settings(s)
     if missing:
         raise OffboardingError("not set: " + ", ".join(missing))
@@ -168,12 +213,14 @@ def read_disabled(s: dict[str, Any] | None = None) -> set[str]:
                 )
 
             disabled: set[str] = set()
+            departments: dict[str, str] = {}
+            attributes: dict[str, int] = {}
+            usernames: set[str] = set()
             for page in range(_MAX_PAGES):
-                rows = _json(http.get(
-                    users_url,
-                    params={"enabled": "false", "first": page * _PAGE, "max": _PAGE},
-                    headers=auth,
-                ), "the disabled users")
+                params: dict[str, Any] = {"first": page * _PAGE, "max": _PAGE}
+                if not everyone:
+                    params["enabled"] = "false"
+                rows = _json(http.get(users_url, params=params, headers=auth), "the users")
                 if not isinstance(rows, list):
                     raise OffboardingError("Keycloak's user list is not a list")
                 for row in rows:
@@ -182,16 +229,36 @@ def read_disabled(s: dict[str, Any] | None = None) -> set[str]:
                         # "nobody is disabled" would be read from it.
                         raise OffboardingError("a user in Keycloak's answer has no 'enabled' field")
                     name = row.get("username")
+                    if not isinstance(name, str) or not name.strip():
+                        continue
+                    name = name.strip().lower()
+                    usernames.add(name)
                     # A server that does not know the ``enabled`` filter
                     # answers with everyone: the field decides, not the query.
-                    if row["enabled"] is False and isinstance(name, str) and name.strip():
-                        disabled.add(name.strip().lower())
+                    if row["enabled"] is False:
+                        disabled.add(name)
+                        continue
+                    attrs = row.get("attributes")
+                    if everyone and isinstance(attrs, dict):
+                        for key, value in attrs.items():
+                            if _first(value):
+                                attributes[str(key)] = attributes.get(str(key), 0) + 1
+                        org = _first(attrs.get(s["org_attr"])) if s["org_attr"] else ""
+                        if org:
+                            departments[name] = org
                 if len(rows) < _PAGE:
-                    return disabled
+                    return Reading(
+                        disabled, departments if everyone and s["org_attr"] else None, attributes, usernames,
+                    )
             raise OffboardingError(f"more than {_MAX_PAGES * _PAGE} users in the answer: not read to the end")
     except httpx.HTTPError as exc:
         # httpx timeouts stringify to nothing: the type is the message.
         raise OffboardingError(f"Keycloak not reached: {type(exc).__name__}") from exc
+
+
+def read_disabled(s: dict[str, Any] | None = None) -> set[str]:
+    """The usernames Keycloak reports as disabled, lower-cased. Blocking."""
+    return read(s).disabled
 
 
 # ---------------------------------------------------------------------------
@@ -256,22 +323,83 @@ def reconcile(
     }
 
 
-def summary(mode: str, result: dict[str, Any]) -> str:
-    """One line for the log and ``scheduled_jobs.last_detail``."""
-    parts = [mode]
+def _same_department(a: str, b: str) -> bool:
+    """Without regard to case or surrounding blanks, as ``schema.in_department``
+    compares: AuthCenter's token and Keycloak's attribute may spell one code
+    two ways, and the two must not keep overwriting each other."""
+    return (a or "").strip().lower() == (b or "").strip().lower()
+
+
+def reconcile_departments(
+    session: Session, departments: dict[str, str], *, max_per_run: int = DEFAULT_MAX_PER_RUN,
+) -> dict[str, Any]:
+    """Write the department Keycloak has for a person whose ``org_code``
+    differs, as a sign-in would (``auth._sync_user``). Commits.
+
+    ``departments`` is lower-cased username -> org code, enabled users with
+    a value only: a person Keycloak reports disabled, does not know or has
+    no department for keeps theirs. Never a service account: its
+    ``org_code`` is the department an admin set it up for.
+
+    Returns ``{"moved": [(username, old, new)], "held", "due"}``. More than
+    ``max_per_run`` due at once changes nobody (``held``).
+    """
+    people = session.exec(select(User).where(~service_account_clause()).order_by(User.username)).all()
+    due: list[tuple[User, str]] = []
+    for person in people:
+        new = departments.get(person.username.strip().lower(), "")
+        if new and not _same_department(person.org_code, new):
+            due.append((person, new))
+    if len(due) > max_per_run:
+        return {"moved": [], "held": True, "due": len(due)}
+    moved = []
+    for person, new in due:
+        moved.append((int(person.id), person.username, person.org_code or "", new))
+        person.org_code = new
+        session.add(person)
+    session.commit()
+    for user_id, username, old, new in moved:
+        audit.record_job(
+            JOB_NAME, user_id=user_id, username=username,
+            org_code={"from": old, "to": new}, reason="department at Keycloak",
+        )
+    return {"moved": [(name, old, new) for _, name, old, new in moved], "held": False, "due": len(due)}
+
+
+def summary(
+    mode: str, result: dict[str, Any], departments: dict[str, Any] | None = None, notes: list[str] | None = None,
+) -> str:
+    """One line for the log and ``scheduled_jobs.last_detail``. The parts an
+    admin should read come first (the line is cut at 500 characters) and
+    start with ``ATTENTION``."""
+    look = [ATTENTION + note for note in (notes or [])]
+    parts: list[str] = []
     if result["new"]:
         parts.append(f"newly reported disabled: {_names(result['new'])}")
     if result["disabled"]:
         parts.append(f"disabled here: {_names(result['disabled'])}")
     if result["held"]:
-        parts.append(f"{result['pending']} accounts are due, above OFFBOARDING_MAX_PER_RUN: none disabled, review them")
+        look.append(
+            f"{ATTENTION}{result['pending']} accounts are due to be disabled, above OFFBOARDING_MAX_PER_RUN: none disabled"
+        )
     elif result["pending"]:
         parts.append(f"{result['pending']} still active")
     if result["back"]:
         parts.append(f"enabled again at Keycloak: {_names(result['back'])}")
-    if len(parts) == 1:
+    if departments is not None:
+        if departments["held"]:
+            look.append(
+                f"{ATTENTION}{departments['due']} people have another department at Keycloak, above "
+                "OFFBOARDING_MAX_PER_RUN: none changed. A reorganisation, or the attribute does not hold "
+                "the org code people sign in with"
+            )
+        elif departments["moved"]:
+            parts.append("department changed: " + _names(
+                [f"{name} {old or '(none)'} → {new}" for name, old, new in departments["moved"]]
+            ))
+    if not look and not parts:
         parts.append("nothing new")
-    return " | ".join(parts)
+    return _PART_SEP.join([*look, mode, *parts])
 
 
 def run(session: Session) -> str:
@@ -280,10 +408,21 @@ def run(session: Session) -> str:
     s = settings()
     if s["mode"] == "off":
         return "off"
-    disabled = read_disabled(s)  # before the first query: no connection held meanwhile
-    result = reconcile(session, disabled, mode=s["mode"], max_per_run=s["max_per_run"])
-    line = summary(s["mode"], result)
-    if result["new"] or result["disabled"] or result["held"]:
+    reading = read(s)  # before the first query: no connection held meanwhile
+    result = reconcile(session, reading.disabled, mode=s["mode"], max_per_run=s["max_per_run"])
+    departments = None
+    notes: list[str] = []
+    if reading.departments:
+        departments = reconcile_departments(session, reading.departments, max_per_run=s["max_per_run"])
+    elif reading.departments is not None:
+        # Asked for and found on nobody: a wrong name must not look like
+        # "nobody moved".
+        notes.append(
+            f"no user at Keycloak has the attribute '{s['org_attr']}' (OFFBOARDING_KEYCLOAK_ORG_ATTR): "
+            "departments are not being read"
+        )
+    line = summary(s["mode"], result, departments, notes)
+    if result["new"] or result["disabled"] or ATTENTION in line or (departments and departments["moved"]):
         logger.warning("Offboarding | {}", line)
     return line
 
@@ -334,7 +473,14 @@ def status(session: Session) -> dict[str, Any]:
     the check itself is not working, why. A check that fails silently would
     look exactly like a day on which nobody left."""
     s = settings()
-    out: dict[str, Any] = {"mode": s["mode"], "pending": to_review(session), "problem": "", "checked_at": None}
+    pending = to_review(session)
+    out: dict[str, Any] = {
+        "mode": s["mode"], "pending": pending, "problem": "", "notes": [], "checked_at": None,
+        # ``enforce`` with more due than it may disable in one run disables
+        # none: the page must not say it is about to.
+        "held": s["mode"] == "enforce" and len(pending) > s["max_per_run"],
+        "max_per_run": s["max_per_run"],
+    }
     if s["mode"] == "off":
         return out
     missing = missing_settings(s)
@@ -345,4 +491,11 @@ def status(session: Session) -> dict[str, Any]:
         out["problem"] = job.last_detail or "the last check failed"
     if job is not None:
         out["checked_at"] = job.last_finished_at
+        if job.last_status == "ok":
+            # What the last run asks an admin to read (``summary``), other
+            # than the accounts above, which the page shows as they are now.
+            out["notes"] = [
+                part[len(ATTENTION):] for part in (job.last_detail or "").split(_PART_SEP)
+                if part.startswith(ATTENTION) and "due to be disabled" not in part
+            ]
     return out

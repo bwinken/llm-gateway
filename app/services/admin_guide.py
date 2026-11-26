@@ -403,6 +403,34 @@ SECTIONS: tuple[Section, ...] = (
                 ),
             ),
             Entry(
+                id="account-department-sync",
+                name="A person's department, kept current from Keycloak",
+                keys=("OFFBOARDING_KEYCLOAK_ORG_ATTR (.env)", "users.org_code"),
+                default="not set",
+                what=(
+                    "With the name of the Keycloak user attribute that holds the org code, the hourly check of "
+                    "Keycloak also writes the department of a person whose department here differs, as their "
+                    "next sign-in would, and records it in the audit log as job:offboarding. It does so in "
+                    "monitor and in enforce: the mode is about disabling accounts."
+                ),
+                why=(
+                    "A person's department is otherwise what their last sign-in said. Someone who moved and does "
+                    "not open the web pages keeps the old one, and with it that department's IP allowlist rules "
+                    "and the service accounts that belong to it."
+                ),
+                tradeoffs=(
+                    "The attribute must hold the same code a sign-in gives. An empty value never overwrites a "
+                    "department and a difference in upper or lower case only is not a change, so the two "
+                    "sources cannot keep overwriting each other over spelling.",
+                    "More than OFFBOARDING_MAX_PER_RUN (20) people to move in one check changes nobody and "
+                    "Needs attention says so. A wrong attribute would rewrite everyone's org code, and an "
+                    "enforcing IP allowlist admits by org code. For a real reorganisation, raise the number for one run.",
+                    "With it set, the check lists every user of the realm each hour, not only the disabled ones.",
+                    "A service account's department is the one you set, never Keycloak's.",
+                ),
+                decided="The owner asked for people who changed department to be found and updated by the same check. (2026-11)",
+            ),
+            Entry(
                 id="account-owner",
                 name="Owners of a service account",
                 keys=("app_owners",),
@@ -429,7 +457,7 @@ SECTIONS: tuple[Section, ...] = (
                     "without waiting for someone to remember the assignment."
                 ),
                 tradeoffs=(
-                    "A person's department is what their last sign-in said. Someone who moved is noticed when they next sign in; someone who left never signs in again, so the gateway only knows once their account is disabled or deleted.",
+                    "A person's department is what their last sign-in said, unless the check of Keycloak reads departments (see the entry above): someone who moved is otherwise noticed when they next sign in, and someone who left never signs in again, so the gateway only knows once their account is disabled or deleted.",
                     "Hiding the account does not take back a key the owner already copied. When an owner is listed for review, regenerate the key if they should no longer have it.",
                     "The code must be one at least one person has, compared without regard to case: a typing mistake would hide the account from every owner. A new owner must be in the department; one assigned earlier is never dropped by an edit.",
                     "With no department the owners are not checked, as before this setting existed.",

@@ -185,7 +185,7 @@ Azure 與 Bedrock 模型放在 `[azure_models.*]`、`[bedrock_models.*]`；價�
 | `METRICS_ENABLED` | 在 `/metrics` 提供 Prometheus 指標 |
 | `EXCHANGE_*`、`COMPANY_EMAIL_DOMAIN`、`PUBLIC_BASE_URL` | 寄信：通知使用者修正 client 設定，以及週報 |
 | `USAGE_LOG_RETENTION_DAYS` | 刪除超過這個天數的原始用量紀錄（預設關閉；報表的總計會保留） |
-| `OFFBOARDING_MODE`、`OFFBOARDING_KEYCLOAK_*` | 向 Keycloak 查詢誰被停用了（離職者）：列給 admin 看，或直接停用帳號。見 [deploy/README.zh-TW.md](deploy/README.zh-TW.md#離職者的帳號) |
+| `OFFBOARDING_MODE`、`OFFBOARDING_KEYCLOAK_*` | 向 Keycloak 查詢誰被停用了（離職者）：列給 admin 看，或直接停用帳號；也可以順便更新換部門的人。見 [deploy/README.zh-TW.md](deploy/README.zh-TW.md#離職者的帳號) |
 
 [`.env.example`](.env.example) 列出所有變數與預設值：log、登入失敗封鎖、連線池、背景工作的間隔、寄信節奏。SSO 本身（OIDC issuer、client secret）是在 `deploy/.env` 設定給 oauth2-proxy，見 [deploy/README.zh-TW.md](deploy/README.zh-TW.md)。
 
@@ -329,7 +329,8 @@ Gateway 會讀取的所有變數，分成三組：一定要設的、某個功能
 | | `OFFBOARDING_KEYCLOAK_URL` | **必填**（已設 `KEYCLOAK_ISSUER_URL` 時可省略） | 要查詢的 realm URL |
 | | `OFFBOARDING_KEYCLOAK_CLIENT_ID`、`OFFBOARDING_KEYCLOAK_CLIENT_SECRET` | **必填** | 專用的 client，權限只要 `realm-management` → `view-users` |
 | | `OFFBOARDING_KEYCLOAK_CA_FILE` | 選用（`KEYCLOAK_CA_FILE`） | Keycloak 憑證由內部 CA 簽發時的 CA bundle |
-| | `OFFBOARDING_INTERVAL_S`、`OFFBOARDING_MAX_PER_RUN` | 選用（`3600`、`20`） | 檢查的間隔秒數；一次要停用的帳號超過這個數量時，`enforce` 一個都不停用 |
+| | `OFFBOARDING_KEYCLOAK_ORG_ATTR` | 選用（不設） | 存放部門代碼的使用者欄位：設了以後，換部門的人不用等到下次登入就會更新 |
+| | `OFFBOARDING_INTERVAL_S`、`OFFBOARDING_MAX_PER_RUN` | 選用（`3600`、`20`） | 檢查的間隔秒數；一次要異動的帳號超過這個數量時，一個都不改 |
 
 ### 選用
 

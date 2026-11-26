@@ -185,7 +185,7 @@ Azure and Bedrock models go in `[azure_models.*]` and `[bedrock_models.*]`; pric
 | `METRICS_ENABLED` | Serve Prometheus metrics at `/metrics` |
 | `EXCHANGE_*`, `COMPANY_EMAIL_DOMAIN`, `PUBLIC_BASE_URL` | Mail: to users about their client setup, and the weekly reports |
 | `USAGE_LOG_RETENTION_DAYS` | Delete raw usage rows older than this (off by default; reports keep their totals) |
-| `OFFBOARDING_MODE`, `OFFBOARDING_KEYCLOAK_*` | Ask Keycloak who was disabled (people who left): list them for the admin, or disable their accounts. See [deploy/README.md](deploy/README.md#accounts-of-people-who-left) |
+| `OFFBOARDING_MODE`, `OFFBOARDING_KEYCLOAK_*` | Ask Keycloak who was disabled (people who left): list them for the admin, or disable their accounts; optionally keep people's departments current. See [deploy/README.md](deploy/README.md#accounts-of-people-who-left) |
 
 [`.env.example`](.env.example) lists every variable with its default: logging, the failed-login lockout, connection pools, job intervals and mail pacing. SSO itself (OIDC issuer, client secret) is configured for oauth2-proxy in `deploy/.env`; see [deploy/README.md](deploy/README.md).
 
@@ -329,7 +329,8 @@ Leave a group unset and that feature is simply off. Within a group, every variab
 | | `OFFBOARDING_KEYCLOAK_URL` | **required** (unless `KEYCLOAK_ISSUER_URL` is set) | The realm URL to ask |
 | | `OFFBOARDING_KEYCLOAK_CLIENT_ID`, `OFFBOARDING_KEYCLOAK_CLIENT_SECRET` | **required** | A client of its own with `realm-management` → `view-users` |
 | | `OFFBOARDING_KEYCLOAK_CA_FILE` | optional (`KEYCLOAK_CA_FILE`) | CA bundle for a Keycloak certificate from an internal CA |
-| | `OFFBOARDING_INTERVAL_S`, `OFFBOARDING_MAX_PER_RUN` | optional (`3600`, `20`) | Seconds between checks; above this many accounts due at once, `enforce` disables none |
+| | `OFFBOARDING_KEYCLOAK_ORG_ATTR` | optional (not set) | The user attribute holding the org code: with it, a person who changed department is updated without waiting for their next sign-in |
+| | `OFFBOARDING_INTERVAL_S`, `OFFBOARDING_MAX_PER_RUN` | optional (`3600`, `20`) | Seconds between checks; above this many accounts due at once, a check changes none |
 
 ### Optional
 

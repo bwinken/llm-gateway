@@ -120,7 +120,7 @@
 | 失敗認證 throttle | ✅ | 每個 worker 各算 | HA-5 |
 | 雲端權限逐帳號開啟 | ✅ | `can_use_azure` / `can_use_bedrock` | |
 | 帳號停用 | ✅ | `is_disabled`（手動） | |
-| 離職者自動停用 | 🟡 | `offboarding` 排程工作向 Keycloak 查詢停用名單：`monitor` 列給 admin、`enforce` 自動停用並寫稽核紀錄。預設 `off`。❓ 正式環境的模式 | CMP-7（開啟 `monitor`，穩定後改 `enforce`） |
+| 離職者自動停用、調職者部門更新 | 🟡 | `offboarding` 排程工作向 Keycloak 查詢停用名單：`monitor` 列給 admin、`enforce` 自動停用並寫稽核紀錄；指定部門欄位後也更新換部門的人。預設 `off`。❓ 正式環境的模式 | CMP-7（開啟 `monitor`，穩定後改 `enforce`） |
 | 長期未用的 key 自動停用 | ⬜ | | CMP-3（已決定要做） |
 | Key 強制效期 | ⬜ | | CMP-3（已決定先不做） |
 | Key 以 hash 儲存 | ⬜ | | CMP-2（已決定：風險接受） |

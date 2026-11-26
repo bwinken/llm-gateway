@@ -98,6 +98,10 @@ def _other() -> dict[str, str]:
         "guardrail-action": f"{'on' if guard.get('enabled') else 'off'} · {guard.get('action', 'monitor')}",
         "client-monthly-mail": "on" if get_client_monthly_mail() else "off",
         "account-sso-disabled": offboarding.settings()["mode"],
+        "account-department-sync": (
+            "off" if offboarding.settings()["mode"] == "off"
+            else offboarding.settings()["org_attr"] or "not set"
+        ),
     }
 
 

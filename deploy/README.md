@@ -121,7 +121,7 @@ The gateway runs its periodic jobs itself; there are no systemd timers or cron e
 | Usage rollup | every 10 min | Sums closed Asia/Taipei days of `usage_logs` into `usage_daily`, which the admin page, dashboard and exports read. Backfills on first start after the migration. | on | `USAGE_ROLLUP_INTERVAL_S` (`0` = off) |
 | Anomaly scan | hourly | Flags unusual usage into `anomaly_events` for the admin panel. Detection only, never blocks anyone. | on | `ANOMALY_SCAN_INTERVAL_S` (`0` = off) |
 | Client-rule mail | every 10 min | Sends client-rule mail in batches (20 a run, 2 s apart by default): accounts an admin queued, then those due by a rule's automatic mail and its weekly / monthly reminder. Does nothing while mail is not configured. | on | `CLIENT_RULE_MAIL_INTERVAL_S` (`0` = off), `CLIENT_RULE_MAIL_BATCH`, `CLIENT_RULE_MAIL_PAUSE_S` |
-| People who left | hourly | Asks Keycloak which users are disabled and lists them for the admin (`monitor`) or disables their accounts (`enforce`). See [Accounts of people who left](#accounts-of-people-who-left) | **off** | `OFFBOARDING_MODE`, `OFFBOARDING_KEYCLOAK_*`, `OFFBOARDING_INTERVAL_S` |
+| People who left or moved | hourly | Asks Keycloak which users are disabled and lists them for the admin (`monitor`) or disables their accounts (`enforce`); with `OFFBOARDING_KEYCLOAK_ORG_ATTR`, also updates the department of a person who moved. See [Accounts of people who left](#accounts-of-people-who-left) | **off** | `OFFBOARDING_MODE`, `OFFBOARDING_KEYCLOAK_*`, `OFFBOARDING_INTERVAL_S` |
 | Usage-log retention | daily | **Deletes** `usage_logs` rows older than N days, whole days only, and never a day not yet in `usage_daily` (reports keep it) | **off** | `USAGE_LOG_RETENTION_DAYS` (unset = keep forever) |
 
 `usage_logs` is the billing and audit record, and PostgreSQL holds years of it comfortably, so retention ships off on purpose: deleting it is a governance decision. Deleting a user keeps their usage rows too. `scheduled_jobs` shows each job's last start, finish and outcome. The scripts run the same code by hand and are dry runs without `--execute`:
@@ -230,7 +230,7 @@ The gateway signs people in through AuthCenter unless `.env` says `SSO_PROVIDER=
 |---|---|
 | Client | OpenID Connect, *Client authentication* on, *Standard flow*; valid redirect URI `https://<domain>/oauth2/callback`. Its ID is `KEYCLOAK_CLIENT_ID` / `OAUTH2_CLIENT_ID` |
 | Permissions | Two **client roles** on that client: `read` (may use the web UI and sign in from a terminal tool) and `admin` (the admin pages). To give everyone `read`, add it to the realm's default roles. Realm roles are not read |
-| Usernames | A person's Keycloak username must equal their gateway username: that is how their account is found. Keycloak lowercases usernames, so check first: `SELECT username FROM users WHERE username <> lower(username) AND NOT is_service_account;`. A name that differs signs in to a new, empty account |
+| Usernames | A person's Keycloak username must equal their gateway username: that is how their account is found. Keycloak lowercases usernames, so check first: `SELECT username FROM users WHERE username <> lower(username) AND NOT is_service_account;`. A name that differs signs in to a new, empty account. `uv run python scripts/offboarding_check.py --everyone` lists the accounts with no Keycloak user of the same name (see [Accounts of people who left](#before-switching-sign-in-to-keycloak)) |
 | Who may choose a username | Nobody but the directory: keep *User registration* and *Edit username* off (*Realm settings* → *Login*). Whoever can take a username gets that account, API key included |
 | Org code (optional) | A *User Attribute* mapper on the client's dedicated scope: token claim `org_code`, added to the access token. IP allowlist rules by org code need it |
 | Access token lifespan | Note it (*Realm settings* → *Tokens*, default 5 min): step 2 needs a shorter refresh |
@@ -313,6 +313,30 @@ Check the list against what you know: a person who left last month should be on 
 - **A person who comes back** is enabled again by an admin, after Keycloak has enabled them. The job never enables an account. In `enforce`, an account you enable while Keycloak still reports the person disabled is disabled again at the next check: make the exception in Keycloak.
 - **Service accounts** are never touched. When an owner is disabled, the service account is listed under *Needs attention* as having an owner to review; regenerate its key if that person should no longer have it.
 - **`the client sees no users`**: the client has `query-users` but not `view-users`. **`HTTP 401`** on the client's sign-in: wrong secret, or *Service accounts roles* is off. **`HTTP 403`** on the user list: the role is missing.
+
+### People who changed department
+
+A person's department (`org_code`) is otherwise what their last sign-in said, so someone who moved keeps the old one until they next open the web UI. It decides which IP allowlist rules admit them and whether they still see a service account that belongs to a department. Name the Keycloak user attribute that holds the org code and the same check updates it:
+
+```bash
+OFFBOARDING_KEYCLOAK_ORG_ATTR=department
+```
+
+Find the attribute, and see who would change, before setting it for real. This prints the attribute names that exist (never a value) and, once the setting names one, every account whose department differs:
+
+```bash
+uv run python scripts/offboarding_check.py --everyone
+```
+
+- The value must be **the same code the sign-in gives** (what the Users table shows today). If the list shows nearly everyone as different, it is another kind of value: don't turn it on.
+- It updates in `monitor` and `enforce` alike: the mode is about disabling accounts, and this writes what the person's next sign-in would write. Every change is in the audit log (`job:offboarding`).
+- An empty value never overwrites a department, and a difference in upper / lower case only is not a change.
+- More than `OFFBOARDING_MAX_PER_RUN` (20) people to move in one check changes **nobody** and *Needs attention* says so: that is a reorganisation or a wrong attribute. For a real reorganisation, raise the number for one run.
+- With the attribute set the check lists every user of the realm each hour, not only the disabled ones.
+
+### Before switching sign-in to Keycloak
+
+This check is a safe first step toward [signing in through Keycloak](#switching-sso-to-keycloak): it uses a client of its own, changes nothing about sign-in, and proves that the gateway host reaches Keycloak and trusts its certificate. `scripts/offboarding_check.py --everyone` also lists the accounts here that have **no Keycloak user of the same name**. Clear that list before the switch: after it, each of those people would sign in to a new, empty account. The client for sign-in is a different one (standard flow, client roles `read` / `admin`); this one stays for the check.
 
 ## Database Backup
 

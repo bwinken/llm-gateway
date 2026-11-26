@@ -74,7 +74,7 @@
 | 16 | CMP-9 | CI 加上映像掃描與 SAST | workflow |
 | 17 | AUD-2 | 存取審查報表 | 新的唯讀匯出 |
 | 18 | CMP-3 | 長期未用的 key 自動停用 | 一個排程工作 |
-| 19 | CMP-7 | 離職者帳號自動停用 | 一個排程工作，向 Keycloak 查詢停用名單；已上線為 `monitor`，穩定後改 `enforce` |
+| 19 | CMP-7 | 離職者帳號自動停用、調職者部門更新 | 一個排程工作，向 Keycloak 查詢；程式已完成，待正式環境開啟（先 `monitor`，穩定後 `enforce`） |
 | 20 | GRD-3 | 供應商原生的內容過濾：在 Azure / AWS 端設定，gateway 記錄結果 | 雲端設定 + 小改動 |
 | 21 | AUD-1 | 稽核證據包：把現有的匯出打包 | 腳本 |
 
@@ -323,7 +323,9 @@
 
 - **決定（2026-11-26）**：名單來源是 Keycloak（離職者在那裡會被停用），用一個專用的唯讀 client 查詢；登入維持 AuthCenter。先跑 `monitor`（只通知 admin，由 admin 手動停用），名單穩定後改 `enforce`（gateway 自己停用）。回任的人由 admin 手動恢復。
 - **已完成**：`app/services/offboarding.py` 的排程工作（每小時；`OFFBOARDING_MODE=off|monitor|enforce`，預設 `off`）。Keycloak 回報停用的人會標記 `users.sso_disabled_at`；`monitor` 時列在 admin 頁的 *Needs attention*，並可用 Users 表格的篩選一次停用；`enforce` 時直接停用並寫稽核紀錄（`job:offboarding`）。只認明確的「已停用」：讀取失敗或 Keycloak 不認識的人不會被停用；一次超過 `OFFBOARDING_MAX_PER_RUN`（20）就一個都不停用。不刪除帳號，service account 不受影響（擁有者被停用時，原有的「擁有者待檢視」會提醒 admin）。設定步驟見 `deploy/README.zh-TW.md` 的「離職者的帳號」。
-- **剩下的**：(1) 申請 Keycloak client，正式環境開啟 `monitor`；(2) 名單準確一段時間後改成 `enforce`；(3) 在 Keycloak 被**刪除**而不是停用的人找不到，如果有這種情況要另外處理；(4) 沒有主動通知（信件），admin 要打開 admin 頁才看得到。
+- **調職**：同一個工作也能更新換部門的人。在 `.env` 用 `OFFBOARDING_KEYCLOAK_ORG_ATTR` 指定 Keycloak 上存放部門代碼的欄位後，部門不一樣的人會被更新（等同本人下次登入時的同步，寫稽核紀錄）；空值不覆蓋，一次超過上限就一個都不改並通知 admin。預設不讀。
+- **和換 SSO 的關係**：這是把登入換成 Keycloak 之前可以先做的一步：用自己的 client，不動登入，先確認 gateway 連得到 Keycloak、帳號名稱對得上（`scripts/offboarding_check.py --everyone` 會列出 Keycloak 找不到的帳號）。
+- **剩下的**：(1) 申請 Keycloak client，正式環境開啟 `monitor`；(2) 名單準確一段時間後改成 `enforce`；(3) 確認部門欄位名稱與代碼格式後設定 `OFFBOARDING_KEYCLOAK_ORG_ATTR`；(4) 在 Keycloak 被**刪除**而不是停用的人找不到，如果有這種情況要另外處理；(5) 沒有主動通知（信件），admin 要打開 admin 頁才看得到。
 
 ### CMP-8　測試環境 — 等待（server 集群） · 未開始
 

@@ -36,7 +36,7 @@ def env(monkeypatch):
     for name in (
         "OFFBOARDING_MODE", "OFFBOARDING_KEYCLOAK_URL", "OFFBOARDING_KEYCLOAK_CLIENT_ID",
         "OFFBOARDING_KEYCLOAK_CLIENT_SECRET", "OFFBOARDING_KEYCLOAK_CA_FILE", "OFFBOARDING_MAX_PER_RUN",
-        "OFFBOARDING_INTERVAL_S", "KEYCLOAK_ISSUER_URL", "KEYCLOAK_CA_FILE",
+        "OFFBOARDING_INTERVAL_S", "OFFBOARDING_KEYCLOAK_ORG_ATTR", "KEYCLOAK_ISSUER_URL", "KEYCLOAK_CA_FILE",
     ):
         monkeypatch.delenv(name, raising=False)
     for name, value in ENV.items():
@@ -88,8 +88,11 @@ class Keycloak:
         return httpx.Client(transport=httpx.MockTransport(self))
 
 
-def _kc_user(name: str, enabled: bool = True) -> dict:
-    return {"id": f"id-{name}", "username": name, "enabled": enabled}
+def _kc_user(name: str, enabled: bool = True, **attributes: str) -> dict:
+    user: dict = {"id": f"id-{name}", "username": name, "enabled": enabled}
+    if attributes:
+        user["attributes"] = {key: [value] for key, value in attributes.items()}
+    return user
 
 
 @pytest.fixture()
@@ -282,7 +285,7 @@ class TestMonitor:
     def test_keycloak_is_read_before_the_database(self):
         # No pooled connection is held while Keycloak answers.
         src = inspect.getsource(offboarding.run)
-        assert src.index("read_disabled(") < src.index("reconcile(")
+        assert src.index("read(s)") < src.index("reconcile(")
 
 
 # ── Enforce: the gateway disables the account ──
@@ -327,13 +330,18 @@ class TestEnforce:
         offboarding.run(db_session)
         assert _reload(db_session, bob).is_disabled is True
 
-    def test_too_many_at_once_disables_nobody(self, db_session, keycloak, env):
+    def test_too_many_at_once_disables_nobody(self, client, db_session, admin_user, keycloak, env):
         env.setenv("OFFBOARDING_MAX_PER_RUN", "2")
         names = ["bob", "dan", "eve"]
         keycloak.users = [_kc_user("alice")] + [_kc_user(n, enabled=False) for n in names]
         people = [_add(db_session, n) for n in names]
         line = offboarding.run(db_session)
         assert "none disabled" in line
+        # The page does not say the gateway is about to disable them.
+        page = client.get("/admin", headers=_admin()).text
+        block = page[page.index('id="leaversAttention"'):][:3000]
+        assert "More than 2 at once: the gateway disabled none" in block
+        assert "disables these accounts itself" not in block
         for person in people:
             person = _reload(db_session, person)
             assert person.is_disabled is False and person.sso_disabled_at is not None
@@ -358,6 +366,126 @@ class TestEnforce:
         assert result["disabled"] == [] and result["pending"] == 0
         assert _reload(db_session, bob).sso_disabled_at is not None
         assert db_session.exec(select(AuditLog)).all() == []
+
+
+# ── Departments: a person who moved ──
+
+class TestDepartments:
+    @pytest.fixture()
+    def realm(self, env):
+        env.setenv("OFFBOARDING_KEYCLOAK_ORG_ATTR", "department")
+        realm = Keycloak([
+            _kc_user("alice", department="QA2", phone="123"),
+            _kc_user("bob", enabled=False, department="RD9"),
+            _kc_user("carol", department="RD1"),
+            _kc_user("dave"),
+        ])
+        with patch.object(offboarding, "_http", realm.client):
+            yield realm
+
+    def test_not_read_unless_the_attribute_is_named(self, db_session, keycloak):
+        alice = _add(db_session, "alice", org_code="RD1")
+        keycloak.users[0]["attributes"] = {"department": ["QA2"]}
+        reading = offboarding.read()
+        assert reading.departments is None
+        # ... and only the disabled users are asked for.
+        assert all(r.url.params.get("enabled") == "false" for r in keycloak.requests[2:])
+        offboarding.run(db_session)
+        assert _reload(db_session, alice).org_code == "RD1"
+
+    def test_one_read_gives_the_disabled_and_the_departments(self, realm):
+        reading = offboarding.read()
+        assert reading.disabled == {"bob"}
+        # Enabled users with a value only: a disabled person's is not taken.
+        assert reading.departments == {"alice": "QA2", "carol": "RD1"}
+        assert reading.usernames == {"alice", "bob", "carol", "dave"}
+        assert reading.attributes == {"department": 2, "phone": 1}  # names and counts, never a value
+        assert all("enabled" not in r.url.params for r in realm.requests[1:])
+
+    @pytest.mark.parametrize("mode", ["monitor", "enforce"])
+    def test_a_person_who_moved_is_updated_in_either_mode(self, db_session, realm, env, mode):
+        env.setenv("OFFBOARDING_MODE", mode)
+        alice = _add(db_session, "alice", org_code="RD1")
+        carol = _add(db_session, "carol", org_code="RD1")
+        line = offboarding.run(db_session)
+        assert "department changed: alice RD1 → QA2" in line
+        assert _reload(db_session, alice).org_code == "QA2"
+        assert _reload(db_session, carol).org_code == "RD1"
+        [row] = db_session.exec(select(AuditLog)).all()
+        assert (row.actor, row.method, row.path) == ("job:offboarding", "JOB", f"/admin/users/{alice.id}")
+        assert json.loads(row.detail)["org_code"] == {"from": "RD1", "to": "QA2"}
+        # Once: the next run has nothing to change.
+        assert "department changed" not in offboarding.run(db_session)
+        assert len(db_session.exec(select(AuditLog)).all()) == 1
+
+    def test_the_leavers_are_still_found_in_the_same_run(self, db_session, realm):
+        bob = _add(db_session, "bob", org_code="RD1")
+        offboarding.run(db_session)
+        bob = _reload(db_session, bob)
+        # Marked as a leaver, and their department is left as it was.
+        assert bob.sso_disabled_at is not None and bob.org_code == "RD1"
+
+    def test_what_is_never_overwritten(self, db_session, realm):
+        dave = _add(db_session, "dave", org_code="RD1")           # no department at Keycloak
+        stranger = _add(db_session, "stranger", org_code="RD1")   # not at Keycloak at all
+        app = _add(db_session, "alice", org_code="RD1", is_service_account=True)
+        offboarding.run(db_session)
+        for account in (dave, stranger, app):
+            assert _reload(db_session, account).org_code == "RD1"
+        assert db_session.exec(select(AuditLog)).all() == []
+
+    def test_a_difference_in_case_only_is_no_difference(self, db_session):
+        alice = _add(db_session, "Alice", org_code="qa2")
+        result = offboarding.reconcile_departments(db_session, {"alice": " QA2 "})
+        assert result == {"moved": [], "held": False, "due": 0}
+        assert _reload(db_session, alice).org_code == "qa2"
+
+    def test_a_person_without_one_gets_theirs(self, db_session):
+        alice = _add(db_session, "alice")
+        result = offboarding.reconcile_departments(db_session, {"alice": "QA2"})
+        assert result["moved"] == [("alice", "", "QA2")]
+        assert _reload(db_session, alice).org_code == "QA2"
+
+    def test_too_many_at_once_changes_nobody_and_the_admin_is_told(self, client, db_session, admin_user, realm, env):
+        env.setenv("OFFBOARDING_MAX_PER_RUN", "1")
+        alice = _add(db_session, "alice", org_code="RD1")
+        carol = _add(db_session, "carol", org_code="RD7")
+        assert scheduler.run_if_due(offboarding.JOB) == "ok"
+        assert _reload(db_session, alice).org_code == "RD1" and _reload(db_session, carol).org_code == "RD7"
+        assert db_session.exec(select(AuditLog)).all() == []
+        [note] = offboarding.status(db_session)["notes"]
+        assert "2 people have another department at Keycloak" in note and "none changed" in note
+        page = client.get("/admin", headers=_admin()).text
+        assert "leaver check: 1 to read" in page
+        assert "none changed" in page[page.index("data-leavers-note"):][:600]
+        # Within the cap they are changed, and the note goes with the next run.
+        env.setenv("OFFBOARDING_MAX_PER_RUN", "5")
+        offboarding.run(db_session)
+        assert _reload(db_session, alice).org_code == "QA2" and _reload(db_session, carol).org_code == "RD1"
+
+    def test_an_attribute_nobody_has_is_said_not_read_as_nobody_moved(self, client, db_session, admin_user, realm, env):
+        env.setenv("OFFBOARDING_KEYCLOAK_ORG_ATTR", "org_code")
+        alice = _add(db_session, "alice", org_code="RD1")
+        _add(db_session, "bob")
+        scheduler.run_if_due(offboarding.JOB)
+        assert _reload(db_session, alice).org_code == "RD1"
+        status = offboarding.status(db_session)
+        assert "no user at Keycloak has the attribute 'org_code'" in status["notes"][0]
+        # The leavers were still found.
+        assert [e["username"] for e in status["pending"]] == ["bob"]
+
+    def test_an_owner_who_moved_is_listed_for_review(self, db_session, realm):
+        from app.models.schema import AppOwner
+        from app.services import stats
+
+        alice = _add(db_session, "alice", org_code="RD1")
+        app = _add(db_session, "hr-chat", org_code="RD1", is_service_account=True)
+        db_session.add(AppOwner(app_id=app.id, owner_id=alice.id))
+        db_session.commit()
+        assert stats.owners_to_review(db_session) == []
+        offboarding.run(db_session)
+        [entry] = stats.owners_to_review(db_session)
+        assert entry["owners"] == [{"username": "alice", "org_code": "QA2", "reason": "department"}]
 
 
 # ── The job ──

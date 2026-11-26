@@ -196,7 +196,8 @@ def admin_page(
     except Exception as exc:  # before `alembic upgrade`
         session.rollback()
         logger.warning("Offboarding view failed | error={}: {}", type(exc).__name__, exc)
-        leavers = {"mode": "off", "pending": [], "problem": "", "checked_at": None}
+        leavers = {"mode": "off", "pending": [], "problem": "", "notes": [], "checked_at": None,
+                   "held": False, "max_per_run": 0}
     leavers["checked_label"] = _local_label(leavers["checked_at"])
     for entry in leavers["pending"]:
         entry["since_label"] = _local_label(entry["since"])
