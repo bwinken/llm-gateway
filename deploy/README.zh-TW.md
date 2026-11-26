@@ -132,6 +132,7 @@ uv run python scripts/cleanup_usage_logs.py              # 保留期預覽：截
 uv run python scripts/cleanup_usage_logs.py --days 180   # 自訂保留天數
 uv run python scripts/scan_anomalies.py                  # 只列出結果
 uv run python scripts/offboarding_check.py               # Keycloak 回報誰被停用；加 --apply 立刻跑一次
+uv run python scripts/keycloak_preflight.py              # 把登入換成 Keycloak 之前的全部檢查；只讀
 ```
 
 資料修正後用 `scripts/rollup_usage_daily.py --recompute FROM TO --execute` 重算指定日期。詳見 [docs/architecture.md](../docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy)。
@@ -196,6 +197,8 @@ scrape_configs:
 - **套件與密鑰掃描** 在 GitHub Actions 執行（`.github/workflows/security.yml`）。要讓 Dependabot 自動開安全修補 PR，需到 repo 的 Settings → Code security 打開 *Dependabot security updates*。
 
 ## 將 SSO 換成 Keycloak
+
+**從 Keycloak 管理介面第一步開始的逐步說明：[docs/keycloak-setup.zh-TW.md](../docs/keycloak-setup.zh-TW.md)。** 切換前執行 `uv run python scripts/keycloak_preflight.py`，它不改任何東西，會檢查切換所依賴的每一件事：這台主機信不信任 Keycloak 的憑證（不信任時缺的是哪個 CA）、realm 的 issuer 與簽章金鑰、哪些帳號切換後會對不上、client 的 role 與 redirect URI，以及一個真人的 token（`--token`）。這一節是精簡的參考。
 
 `.env` 沒有設 `SSO_PROVIDER=keycloak` 時，gateway 一律用 AuthCenter 登入。切換只改變「Web UI 的 access token 由誰簽發」：帳號、API key、額度與用量都不動，使用 API key 的 client 完全不受影響。切換分兩半，要一起做：oauth2-proxy（`deploy/.env`）與 gateway（`.env`）；只換了一半的期間 Web UI 會回 401。
 

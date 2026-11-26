@@ -133,6 +133,7 @@ uv run python scripts/cleanup_usage_logs.py              # retention preview: cu
 uv run python scripts/cleanup_usage_logs.py --days 180   # custom retention
 uv run python scripts/scan_anomalies.py                  # print findings only
 uv run python scripts/offboarding_check.py               # who Keycloak reports as disabled; --apply runs it now
+uv run python scripts/keycloak_preflight.py              # everything a switch of sign-in to Keycloak depends on; reads only
 ```
 
 `scripts/rollup_usage_daily.py --recompute FROM TO --execute` re-rolls days after a data correction. See [docs/architecture.md](../docs/architecture.md#daily-usage-rollup-appservicesusage_rolluppy).
@@ -221,6 +222,8 @@ With both off, a failed request logs the **shape** of the body — fields presen
 - **Dependency and secret scanning** run in GitHub Actions (`.github/workflows/security.yml`). For Dependabot to open security-fix PRs, turn on *Dependabot security updates* in the repository's Settings → Code security.
 
 ## Switching SSO to Keycloak
+
+**Step by step, from the first click in Keycloak's console: [docs/keycloak-setup.md](../docs/keycloak-setup.md).** Before the switch, `uv run python scripts/keycloak_preflight.py` checks everything it depends on without changing anything: whether this host trusts Keycloak's certificate (and which CA is missing when it does not), the realm's issuer and signing keys, the accounts that would not be found again, the client's roles and redirect URI, and one real person's token (`--token`). This section is the short reference.
 
 The gateway signs people in through AuthCenter unless `.env` says `SSO_PROVIDER=keycloak`. The switch changes who signs the web UI's access token and nothing else: accounts, API keys, limits and usage stay, and API clients (who use an API key) notice nothing. It has two halves that go together, oauth2-proxy (`deploy/.env`) and the gateway (`.env`); between the two the web UI answers 401.
 

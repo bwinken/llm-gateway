@@ -154,6 +154,23 @@ def _json(resp: httpx.Response, what: str) -> Any:
         raise OffboardingError(f"Keycloak's answer to {what} is not JSON") from exc
 
 
+def sign_in(http: httpx.Client, s: dict[str, Any]) -> dict[str, str]:
+    """The client's own sign-in (client credentials): the ``Authorization``
+    header for the Admin API. Raises ``OffboardingError``."""
+    token = _json(http.post(
+        f"{s['realm_url']}/protocol/openid-connect/token",
+        data={
+            "grant_type": "client_credentials",
+            "client_id": s["client_id"],
+            "client_secret": s["client_secret"],
+        },
+    ), "the client's sign-in")
+    token = token.get("access_token") if isinstance(token, dict) else None
+    if not isinstance(token, str) or not token:
+        raise OffboardingError("Keycloak gave the client no access token")
+    return {"Authorization": f"Bearer {token}"}
+
+
 class Reading(NamedTuple):
     """What one read of Keycloak said."""
     disabled: set[str]                    # lower-cased usernames reported as disabled
@@ -194,17 +211,7 @@ def read(s: dict[str, Any] | None = None, *, everyone: bool | None = None) -> Re
     users_url = admin_url(s["realm_url"]) + "/users"
     try:
         with _http(s) as http:
-            token = _json(http.post(
-                f"{s['realm_url']}/protocol/openid-connect/token",
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": s["client_id"],
-                    "client_secret": s["client_secret"],
-                },
-            ), "the client's sign-in").get("access_token")
-            if not isinstance(token, str) or not token:
-                raise OffboardingError("Keycloak gave the client no access token")
-            auth = {"Authorization": f"Bearer {token}"}
+            auth = sign_in(http, s)
 
             probe = _json(http.get(users_url, params={"first": 0, "max": 1}, headers=auth), "the user list")
             if not isinstance(probe, list) or not probe:
