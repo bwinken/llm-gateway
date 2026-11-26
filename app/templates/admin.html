@@ -125,7 +125,7 @@
 
 {# ── Needs attention: anomalies, servers, budgets — what to act on first ── #}
 {% set n_crit = anomalies|selectattr('severity', 'equalto', 'critical')|list|length + system_status.down|length + budget_pressure|selectattr('percent', 'ge', 100)|list|length %}
-{% set n_attention = anomalies|length + system_status.down|length + system_status.queueing|length + budget_pressure|length + client_rule_attention|length + owner_review|length %}
+{% set n_attention = anomalies|length + system_status.down|length + system_status.queueing|length + budget_pressure|length + client_rule_attention|length + owner_review|length + leavers.pending|length + (1 if leavers.problem else 0) + leavers.notes|length %}
 {# A one-line strip on every tab; it opens to the details. Open by default
    on Overview, folded on the other tabs (see the script below), so the tab
    bar and the tab's own content are on screen when the page opens. #}
@@ -150,6 +150,9 @@
             {% if budget_pressure|length - n_blocked_today %}<span class="gw-att-chip gw-att-warn">{{ budget_pressure|length - n_blocked_today }} near daily limit</span>{% endif %}
             {% if client_rule_attention %}<span class="gw-att-chip gw-att-warn">{{ client_rule_attention|length }} client rule{{ '' if client_rule_attention|length == 1 else 's' }} violated</span>{% endif %}
             {% if owner_review %}<span class="gw-att-chip gw-att-warn">{{ owner_review|length }} service account owner{{ '' if owner_review|length == 1 else 's' }} to review</span>{% endif %}
+            {% if leavers.pending %}<span class="gw-att-chip gw-att-warn">{{ leavers.pending|length }} sign-in{{ '' if leavers.pending|length == 1 else 's' }} disabled, account still active</span>{% endif %}
+            {% if leavers.problem %}<span class="gw-att-chip gw-att-warn">leaver check not working</span>{% endif %}
+            {% if leavers.notes %}<span class="gw-att-chip gw-att-warn">leaver check: {{ leavers.notes|length }} to read</span>{% endif %}
         </span>
         <span class="ml-auto flex items-center gap-1.5 text-xs text-t4">
             <span class="group-open:hidden">Show</span><span class="hidden group-open:inline">Hide</span>
@@ -240,12 +243,39 @@
     {% if owner_review %}
     <div id="ownerReviewAttention" class="p-4" style="border-top:1px solid rgba(255,255,255,0.05)">
         <div class="text-[11px] font-bold uppercase tracking-wider text-t3 mb-2 gw-tip gw-tip-wide"
-             data-tip="An owner who is no longer in the department their service account is for sees nothing of it until you have looked; a disabled owner cannot sign in. Either may still know the key. Open the account to remove the owner or change the department. A person's department is what their last sign-in said.">Service account owners to review</div>
+             data-tip="An owner who is no longer in the department their service account is for sees nothing of it until you have looked; a disabled owner cannot sign in. Either may still know the key. Open the account to remove the owner or change the department. A person's department is what their last sign-in said, or Keycloak when the leaver check reads departments.">Service account owners to review</div>
         <div class="flex flex-wrap gap-1.5">
             {% for a in owner_review %}
             <button type="button" data-um-detail="{{ a.id }}"
                     class="text-xs px-2 py-1 rounded hover:bg-[rgba(255,255,255,0.06)]" style="background:rgba(245,166,35,0.08);color:#f5a623"><span class="font-mono">{{ a.username }}</span>{% if a.department %} ({{ a.department }}){% endif %}:
                 {% for o in a.owners %}<span class="font-mono">{{ o.username }}</span> {{ 'disabled' if o.reason == 'disabled' else 'is in ' ~ (o.org_code or 'no department') }}{{ ', ' if not loop.last }}{% endfor %}</button>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+    {# People whose sign-in was disabled at the identity provider (they left) and whose account here still works #}
+    {% if leavers.pending or leavers.problem or leavers.notes %}
+    <div id="leaversAttention" class="p-4" style="border-top:1px solid rgba(255,255,255,0.05)">
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2">
+            <span class="text-[11px] font-bold uppercase tracking-wider text-t3 gw-tip gw-tip-wide"
+                  data-tip="What the hourly check of Keycloak found. People whose sign-in is disabled there left, or were suspended: disabling the sign-in does not stop an API key, which the gateway checks itself, so the account works until it is disabled here. Open one to disable it, or list them in the Users table and disable them together.">{{ 'Sign-in disabled, account still active' if leavers.pending else 'Leaver check' }}</span>
+            <span class="text-[11px] text-t4">{% if leavers.held %}More than {{ leavers.max_per_run }} at once: the gateway disabled none. Disable them yourself, or raise OFFBOARDING_MAX_PER_RUN{% elif leavers.mode == 'enforce' %}The gateway disables these accounts itself at its next check{% else %}Monitoring only: no account is disabled until you do it{% endif %}{% if leavers.checked_label %} · last checked {{ leavers.checked_label }}{% endif %}</span>
+            <span class="ml-auto flex items-center gap-3 text-[11px] whitespace-nowrap">
+                {% if leavers.pending %}<a href="{{ leavers_url }}" class="text-ab hover:underline" data-leavers-filter>Show in the Users table</a>{% endif %}
+                <a href="/admin/guide#account-sso-disabled" class="text-ab hover:underline">Why?</a>
+            </span>
+        </div>
+        {% if leavers.problem %}
+        <div class="text-xs text-aa mb-2" data-leavers-problem>The check is not working, so people who left are not being found: {{ leavers.problem }}</div>
+        {% endif %}
+        {% for note in leavers.notes %}
+        <div class="text-xs text-aa mb-2" data-leavers-note>{{ note }}</div>
+        {% endfor %}
+        <div class="flex flex-wrap gap-1.5">
+            {% for a in leavers.pending %}
+            <button type="button" data-um-detail="{{ a.id }}"
+                    class="text-xs px-2 py-1 rounded hover:bg-[rgba(255,255,255,0.06)]" style="background:rgba(245,166,35,0.08);color:#f5a623"
+                    title="Key last used: {{ a.key_last_used_label or 'never' }}"><span class="font-mono">{{ a.username }}</span>{% if a.display_name and a.display_name != a.username %} {{ a.display_name }}{% endif %}{% if a.org_code %} ({{ a.org_code }}){% endif %} · since {{ a.since_label[:10] }}</button>
             {% endfor %}
         </div>
     </div>

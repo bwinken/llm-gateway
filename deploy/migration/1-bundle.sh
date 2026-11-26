@@ -13,7 +13,7 @@
 #   SHA256SUMS                    演練機器用來確認檔案沒有在搬運途中損毀
 # 把整個目錄帶到演練機器，接著跑 2 ~ 7。
 #
-# .env 會先清理再打包：寄信（EXCHANGE_*）、Langfuse、DATABASE_URL、保留期設定不會離開正式主機，
+# .env 會先清理再打包：寄信（EXCHANGE_*）、Langfuse、離職者檢查（OFFBOARDING_*）、DATABASE_URL、保留期設定不會離開正式主機，
 # 演練環境因此不會寄信給使用者、不會把資料送進正式的 Langfuse。
 #
 # 演練包含有所有 API key 與下游密鑰，所以必須加密（和備份用同一把公鑰）：

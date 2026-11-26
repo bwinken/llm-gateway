@@ -42,11 +42,13 @@ from app.routers.admin.users import (
     USER_TABLE_SORTS,
     USER_TABLE_STATUSES,
     _PAGE_SIZE,
+    _STATE_DEFAULTS,
+    _admin_url,
     _special_access_summary,
     _table_state,
     _user_table,
 )
-from app.services import client_rules, client_settings, concurrency, guardrail, overflow
+from app.services import client_rules, client_settings, concurrency, guardrail, offboarding, overflow
 from app.services.stats import (
     get_budget_pressure,
     owners_to_review,
@@ -187,6 +189,20 @@ def admin_page(
         logger.warning("Cloud overflow view failed | error={}: {}", type(exc).__name__, exc)
         overflow_view = None
 
+    # People whose sign-in was disabled at the identity provider (leavers)
+    # and whose account here still works, and whether that check is working.
+    try:
+        leavers = offboarding.status(session)
+    except Exception as exc:  # before `alembic upgrade`
+        session.rollback()
+        logger.warning("Offboarding view failed | error={}: {}", type(exc).__name__, exc)
+        leavers = {"mode": "off", "pending": [], "problem": "", "notes": [], "checked_at": None,
+                   "held": False, "max_per_run": 0}
+    leavers["checked_label"] = _local_label(leavers["checked_at"])
+    for entry in leavers["pending"]:
+        entry["since_label"] = _local_label(entry["since"])
+        entry["key_last_used_label"] = _local_label(entry["key_last_used_at"])
+
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -224,6 +240,8 @@ def admin_page(
             "description_max": DESCRIPTION_MAX,
             "departments": known_departments(session),
             "owner_review": owners_to_review(session),
+            "leavers": leavers,
+            "leavers_url": _admin_url(_STATE_DEFAULTS, status="sso_disabled"),
             "cloud_budget_fallback": get_cloud_budget_fallback(),
             "today_totals": today_totals,
             "budget_pressure": budget_pressure,

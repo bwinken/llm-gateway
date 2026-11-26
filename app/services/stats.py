@@ -469,7 +469,8 @@ def owners_to_review(session: Session) -> list[dict]:
     Read from ``users`` and ``app_owners`` as they are now, so it clears
     itself once an admin removes the owner, changes the department or the
     person signs in from the right one. A person's department is what their
-    last sign-in said: the gateway learns of a move when they next sign in."""
+    last sign-in said, or what Keycloak has for them when the offboarding
+    job reads departments (``offboarding.reconcile_departments``)."""
     owner = sa_aliased(User)
     rows = session.exec(
         select(User, owner)

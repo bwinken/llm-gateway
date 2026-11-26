@@ -365,6 +365,72 @@ SECTIONS: tuple[Section, ...] = (
                 tradeoffs=("On the web pages an admin (by SSO scope) is let in even when their own account is disabled; on the API nobody is.",),
             ),
             Entry(
+                id="account-sso-disabled",
+                name="People whose sign-in was disabled (leavers)",
+                keys=("OFFBOARDING_MODE (.env)", "users.sso_disabled_at"),
+                default="off",
+                what=(
+                    "A job asks Keycloak, once an hour, which users are disabled there. In monitor mode a person "
+                    "it reports is listed under Needs attention (and under the Users table's filter "
+                    "\"Sign-in disabled, account still active\") until you disable the account; nothing is "
+                    "disabled for you. In enforce mode the gateway disables the account itself and writes it to "
+                    "the audit log as job:offboarding. The mode and the Keycloak client are set in .env "
+                    "(OFFBOARDING_*), not on a page, and need a restart."
+                ),
+                why=(
+                    "Disabling someone's sign-in does not stop their API key: the gateway checks a key against "
+                    "its own accounts and never asks the identity provider. Without this, the key of a person "
+                    "who left works until someone remembers to disable the account."
+                ),
+                tradeoffs=(
+                    "Only an explicit \"disabled\" from Keycloak counts. A person Keycloak does not know, a failed "
+                    "read or an empty answer marks nobody, so a wrong address or differing usernames cannot "
+                    "disable anyone; the price is that a person who was deleted there instead of disabled is not found.",
+                    "Keycloak says \"disabled\", not why: a suspended account looks the same as one of a person who left.",
+                    "In enforce mode an account you enable again is disabled at the next check while Keycloak "
+                    "still reports the person disabled. Who is employed is Keycloak's to say; make the exception there.",
+                    "Enforce disables at most OFFBOARDING_MAX_PER_RUN accounts (20) in one check. With more due "
+                    "it disables none and lists them for you: a list that long is more likely a mistake at the "
+                    "source than a real day.",
+                    "A service account is never touched. When its owner is disabled it is listed as an owner to review.",
+                    "If the check itself stops working, Needs attention says so: a check that fails quietly "
+                    "would look like a day on which nobody left.",
+                ),
+                decided=(
+                    "Monitor first, enforce later: the owner chose to be told and to disable by hand until the "
+                    "list has proven right. A person who comes back is enabled again by an admin, never by the "
+                    "job. Sign-in stays with AuthCenter; only this check reads Keycloak. (2026-11)"
+                ),
+            ),
+            Entry(
+                id="account-department-sync",
+                name="A person's department, kept current from Keycloak",
+                keys=("OFFBOARDING_KEYCLOAK_ORG_ATTR (.env)", "users.org_code"),
+                default="not set",
+                what=(
+                    "With the name of the Keycloak user attribute that holds the org code, the hourly check of "
+                    "Keycloak also writes the department of a person whose department here differs, as their "
+                    "next sign-in would, and records it in the audit log as job:offboarding. It does so in "
+                    "monitor and in enforce: the mode is about disabling accounts."
+                ),
+                why=(
+                    "A person's department is otherwise what their last sign-in said. Someone who moved and does "
+                    "not open the web pages keeps the old one, and with it that department's IP allowlist rules "
+                    "and the service accounts that belong to it."
+                ),
+                tradeoffs=(
+                    "The attribute must hold the same code a sign-in gives. An empty value never overwrites a "
+                    "department and a difference in upper or lower case only is not a change, so the two "
+                    "sources cannot keep overwriting each other over spelling.",
+                    "More than OFFBOARDING_MAX_PER_RUN (20) people to move in one check changes nobody and "
+                    "Needs attention says so. A wrong attribute would rewrite everyone's org code, and an "
+                    "enforcing IP allowlist admits by org code. For a real reorganisation, raise the number for one run.",
+                    "With it set, the check lists every user of the realm each hour, not only the disabled ones.",
+                    "A service account's department is the one you set, never Keycloak's.",
+                ),
+                decided="The owner asked for people who changed department to be found and updated by the same check. (2026-11)",
+            ),
+            Entry(
                 id="account-owner",
                 name="Owners of a service account",
                 keys=("app_owners",),
@@ -391,7 +457,7 @@ SECTIONS: tuple[Section, ...] = (
                     "without waiting for someone to remember the assignment."
                 ),
                 tradeoffs=(
-                    "A person's department is what their last sign-in said. Someone who moved is noticed when they next sign in; someone who left never signs in again, so the gateway only knows once their account is disabled or deleted.",
+                    "A person's department is what their last sign-in said, unless the check of Keycloak reads departments (see the entry above): someone who moved is otherwise noticed when they next sign in, and someone who left never signs in again, so the gateway only knows once their account is disabled or deleted.",
                     "Hiding the account does not take back a key the owner already copied. When an owner is listed for review, regenerate the key if they should no longer have it.",
                     "The code must be one at least one person has, compared without regard to case: a typing mistake would hide the account from every owner. A new owner must be in the department; one assigned earlier is never dropped by an edit.",
                     "With no department the owners are not checked, as before this setting existed.",

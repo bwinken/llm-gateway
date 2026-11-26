@@ -37,6 +37,11 @@
                 {% endif %}
                 {% if u.is_self %}<span class="ml-1 gw-badge gw-badge-muted">You</span>{% endif %}
                 <span class="ml-1 gw-badge gw-badge-off um-disabled-badge {{ '' if u.is_disabled else 'hidden' }}">Disabled</span>
+                {# What the identity provider said (the offboarding job): the person left, or was suspended. #}
+                {% if u.sso_disabled_since %}
+                <span class="ml-1 gw-badge gw-badge-muted" data-sso-disabled
+                      title="Keycloak reports this person's sign-in as disabled since {{ u.sso_disabled_since }}">Sign-in disabled</span>
+                {% endif %}
             </div>
         </div>
     </td>

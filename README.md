@@ -178,13 +178,14 @@ Azure and Bedrock models go in `[azure_models.*]` and `[bedrock_models.*]`; pric
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `AUTH_BASE_URL`, `AUTH_CENTER_APP_ID`, `AUTH_CENTER_PUBLIC_KEY_PATH` | Web-UI login: JWT issuer, audience and public key |
-| `SSO_PROVIDER`, `KEYCLOAK_ISSUER_URL`, `KEYCLOAK_CLIENT_ID` | Sign in through Keycloak instead of AuthCenter (`SSO_PROVIDER=keycloak`; default `authcenter`). See [deploy/README.md](deploy/README.md#switching-sso-to-keycloak) |
+| `SSO_PROVIDER`, `KEYCLOAK_ISSUER_URL`, `KEYCLOAK_CLIENT_ID` | Sign in through Keycloak instead of AuthCenter (`SSO_PROVIDER=keycloak`; default `authcenter`). Step by step in [docs/keycloak-setup.md](docs/keycloak-setup.md), with a preflight (`scripts/keycloak_preflight.py`); short reference in [deploy/README.md](deploy/README.md#switching-sso-to-keycloak) |
 | `AZURE_HTTP_PROXY`, `BEDROCK_HTTP_PROXY` | HTTP proxy for cloud traffic (on-prem traffic is never proxied) |
 | `BEDROCK_REGION`, `BEDROCK_AWS_ACCESS_KEY_ID`, `BEDROCK_AWS_SECRET_ACCESS_KEY` | AWS settings shared by every Bedrock model |
 | `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | Turn on [Langfuse](https://langfuse.com) tracing (the weekly reports need it) |
 | `METRICS_ENABLED` | Serve Prometheus metrics at `/metrics` |
 | `EXCHANGE_*`, `COMPANY_EMAIL_DOMAIN`, `PUBLIC_BASE_URL` | Mail: to users about their client setup, and the weekly reports |
 | `USAGE_LOG_RETENTION_DAYS` | Delete raw usage rows older than this (off by default; reports keep their totals) |
+| `OFFBOARDING_MODE`, `OFFBOARDING_KEYCLOAK_*` | Ask Keycloak who was disabled (people who left): list them for the admin, or disable their accounts; optionally keep people's departments current. See [deploy/README.md](deploy/README.md#accounts-of-people-who-left) |
 
 [`.env.example`](.env.example) lists every variable with its default: logging, the failed-login lockout, connection pools, job intervals and mail pacing. SSO itself (OIDC issuer, client secret) is configured for oauth2-proxy in `deploy/.env`; see [deploy/README.md](deploy/README.md).
 
@@ -248,6 +249,7 @@ Everything the gateway does, where it is switched on, and what it needs in `.env
 | Prompt guardrail (Qwen3Guard-Gen) on local traffic | **Admin → Security**; off by default; needs a guard model server | optional `GUARDRAIL_MAX_CONNECTIONS` |
 | Lockout after many different invalid API keys from one address | On by default | optional `AUTH_FAIL_DISTINCT_KEYS`, `AUTH_FAIL_WINDOW_S`, `AUTH_LOCKOUT_S` |
 | Audit log of every admin and dashboard change | Always on | – |
+| Accounts of people who left: listed for the admin (`monitor`) or disabled (`enforce`), from Keycloak's disabled users | Off by default; needs a read-only Keycloak client | `OFFBOARDING_MODE`, `OFFBOARDING_KEYCLOAK_*` |
 
 **Clients and mail**
 
@@ -323,6 +325,12 @@ Leave a group unset and that feature is simply off. Within a group, every variab
 | **Prometheus metrics** | `METRICS_ENABLED` | **required** (`true` turns it on) | Serve metrics at `/metrics` |
 | | `METRICS_DIR` | optional (`<tmp>/llm-gateway-metrics`) | Where the workers share their metric values |
 | **Deleting old usage rows** | `USAGE_LOG_RETENTION_DAYS` | **required** (a number of days turns it on) | Delete raw usage rows older than this; reports keep their totals |
+| **Accounts of people who left** | `OFFBOARDING_MODE` | **required** (`monitor` or `enforce` turns it on) | `monitor` lists them on the admin page; `enforce` also disables the account |
+| | `OFFBOARDING_KEYCLOAK_URL` | **required** (unless `KEYCLOAK_ISSUER_URL` is set) | The realm URL to ask |
+| | `OFFBOARDING_KEYCLOAK_CLIENT_ID`, `OFFBOARDING_KEYCLOAK_CLIENT_SECRET` | **required** | A client of its own with `realm-management` → `view-users` |
+| | `OFFBOARDING_KEYCLOAK_CA_FILE` | optional (`KEYCLOAK_CA_FILE`) | CA bundle for a Keycloak certificate from an internal CA |
+| | `OFFBOARDING_KEYCLOAK_ORG_ATTR` | optional (not set) | The user attribute holding the org code: with it, a person who changed department is updated without waiting for their next sign-in |
+| | `OFFBOARDING_INTERVAL_S`, `OFFBOARDING_MAX_PER_RUN` | optional (`3600`, `20`) | Seconds between checks; above this many accounts due at once, a check changes none |
 
 ### Optional
 

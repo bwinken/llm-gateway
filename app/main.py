@@ -69,10 +69,10 @@ async def lifespan(app: FastAPI):
     from app.services.anomaly_scan import SCAN_JOB
     from app.services.scheduler import job_loop
     from app.services.usage_retention import RETENTION_JOB
-    from app.services import client_mail, client_rules, weekly_reports
+    from app.services import client_mail, client_rules, offboarding, weekly_reports
     job_tasks = [
         asyncio.create_task(job_loop(job))
-        for job in (SCAN_JOB, RETENTION_JOB, client_mail.MAIL_JOB, weekly_reports.JOB)
+        for job in (SCAN_JOB, RETENTION_JOB, client_mail.MAIL_JOB, weekly_reports.JOB, offboarding.JOB)
     ]
 
     # Client rules: this worker's copy of the enabled rules (a failed load

@@ -102,8 +102,8 @@ fi
 
 # ── 不對外產生副作用 ──
 section "演練不會影響到外面"
-leaked="$({ in_gateway env | grep -E '^(EXCHANGE_|LANGFUSE_|USAGE_LOG_RETENTION_DAYS=)' || true; } | cut -d= -f1 | tr '\n' ' ')"
-[ -z "$leaked" ] && pass "容器裡沒有寄信、Langfuse、保留期的設定" || fail "容器裡還有這些設定：$leaked"
+leaked="$({ in_gateway env | grep -E '^(EXCHANGE_|LANGFUSE_|OFFBOARDING_|USAGE_LOG_RETENTION_DAYS=)' || true; } | cut -d= -f1 | tr '\n' ' ')"
+[ -z "$leaked" ] && pass "容器裡沒有寄信、Langfuse、離職者檢查、保留期的設定" || fail "容器裡還有這些設定：$leaked"
 in_gateway python -c "
 from app.services import mailer
 raise SystemExit(1 if mailer.is_enabled() else 0)" >/dev/null 2>&1 \

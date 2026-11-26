@@ -23,6 +23,9 @@ os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["METRICS_ENABLED"] = ""
 # Client-rule mail goes out a pause apart; tests do not wait for it.
 os.environ["CLIENT_RULE_MAIL_PAUSE_S"] = "0"
+# The offboarding job (who left, by Keycloak) stays off unless a test turns it
+# on: a developer's .env must not put it on the admin page of every test.
+os.environ["OFFBOARDING_MODE"] = ""
 
 from datetime import datetime, timedelta, timezone
 
