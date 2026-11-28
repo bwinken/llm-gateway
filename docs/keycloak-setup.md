@@ -296,7 +296,13 @@ The preflight tells you beforehand whether you need this (*oauth2-proxy* → *Ke
         proxy_busy_buffers_size 32k;
 ```
 
-Then `sudo nginx -t` and `sudo systemctl reload nginx`. Without them the sign-in itself works at Keycloak, but coming back the browser gets a 502 from `/oauth2/callback` (error log: `upstream sent too big header`), no cookie is set, and the next request is asked to sign in again. With only the first location done, sign-in works and every page after it is a 500.
+In the same site's `server` block (the one with `listen 443`), let a request carry those cookies back (the default is 8k a header, and the browser sends them in one `Cookie` header; without it nginx answers `400 Request Header Or Cookie Too Large`):
+
+```nginx
+    large_client_header_buffers 4 32k;
+```
+
+Then `sudo nginx -t` and `sudo systemctl reload nginx`. Without the buffers the sign-in itself works at Keycloak, but coming back the browser gets a 502 from `/oauth2/callback` (error log: `upstream sent too big header`), no cookie is set, and the next request is asked to sign in again. With only the first location done, sign-in works and every page after it is a 500.
 
 **(2) The gateway: `.env`**
 

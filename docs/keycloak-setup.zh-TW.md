@@ -302,7 +302,13 @@ preflight 會事先告訴你需不需要（*oauth2-proxy* → *Keycloak's CA*）
         proxy_busy_buffers_size 32k;
 ```
 
-然後 `sudo nginx -t`、`sudo systemctl reload nginx`。沒加的話，在 Keycloak 登入本身會成功，但回來時瀏覽器會從 `/oauth2/callback` 拿到 502（error log：`upstream sent too big header`），cookie 沒設成功，下一個請求又被要求登入。只加第一個的話，登入會成功，之後每一頁都是 500。
+同一個網站設定檔的 `server` 區塊（有 `listen 443` 的那個）也要讓請求帶得回這些 cookie（預設每行 header 上限 8k，瀏覽器會把它們放在同一行 `Cookie` 送來；沒加的話 nginx 回 `400 Request Header Or Cookie Too Large`）：
+
+```nginx
+    large_client_header_buffers 4 32k;
+```
+
+然後 `sudo nginx -t`、`sudo systemctl reload nginx`。沒加緩衝區的話，在 Keycloak 登入本身會成功，但回來時瀏覽器會從 `/oauth2/callback` 拿到 502（error log：`upstream sent too big header`），cookie 沒設成功，下一個請求又被要求登入。只加第一個的話，登入會成功，之後每一頁都是 500。
 
 **(2) gateway：`.env`**
 

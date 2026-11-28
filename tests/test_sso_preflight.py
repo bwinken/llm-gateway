@@ -681,6 +681,16 @@ class TestOauth2Proxy:
             block = block[:block.index("\n    }")]
             assert "proxy_buffer_size       16k;" in block and "proxy_busy_buffers_size 32k;" in block, start
 
+    def test_the_nginx_example_takes_a_large_cookie_header(self):
+        # Keycloak's session is split over several cookies, sent back in one
+        # Cookie header; nginx's 8k default answers it with a 400.
+        from pathlib import Path
+
+        text = (Path(__file__).resolve().parent.parent / "deploy" / "llm-gateway-example.nginx.conf").read_text(encoding="utf-8")
+        https = text[text.index("    listen 443 ssl;"):]
+        https = https[:https.index("    location ")]
+        assert "\n    large_client_header_buffers 4 32k;\n" in https
+
     def test_already_keycloaks(self):
         env = {"OIDC_ISSUER_URL": ISSUER, "OAUTH2_CLIENT_ID": CLIENT}
         assert {c.status for c in preflight.check_oauth2_proxy(env, KC)} == {"ok"}

@@ -821,8 +821,9 @@ def check_oauth2_proxy(
             "oauth2-proxy", "nginx buffers", TODO,
             "Keycloak's session does not fit nginx's default buffers",
             "In the nginx site, location /oauth2/ and location = /oauth2/auth each need proxy_buffer_size 16k; "
-            "proxy_buffers 8 16k; proxy_busy_buffers_size 32k; (as in deploy/llm-gateway-example.nginx.conf). "
-            "Without them the sign-in comes back as a 502 ('upstream sent too big header') and no cookie is set",
+            "proxy_buffers 8 16k; proxy_busy_buffers_size 32k; and the server block large_client_header_buffers "
+            "4 32k; (as in deploy/llm-gateway-example.nginx.conf). Without them the sign-in comes back as a 502 "
+            "('upstream sent too big header') or a 400 ('Request Header Or Cookie Too Large')",
         ))
     ca = deploy_env.get(CA_SETTING, "")
     if not ca:
