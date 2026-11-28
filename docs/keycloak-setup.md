@@ -155,7 +155,7 @@ With users synchronised from AD / LDAP both are usually off already.
 After saving:
 
 1. *Credentials* → copy the client secret.
-2. *Service accounts roles* → *Assign role* → *Filter by clients* → search `realm-management`, and tick:
+2. *Service accounts roles* → *Assign role* → client roles (*Filter by clients* in the dialog; in newer consoles *Assign role* is a menu with *Client roles*) → search for the **role's name**, `view-users` (the search does not find a client's name; the row shows it belongs to `realm-management`, or to `master-realm` when you work in the `master` realm), and tick:
 
 | Role | For | When it can go |
 |---|---|---|
@@ -278,14 +278,15 @@ OAUTH2_CLIENT_SECRET=<the secret from step 2>
 OAUTH2_COOKIE_REFRESH=4m
 ```
 
-With an internal CA oauth2-proxy must trust it too, or it fails with `x509: certificate signed by unknown authority`. Under `oauth2-proxy` in `deploy/docker-compose.yml` (not verified in your environment: start it once before the switch):
+With an internal CA oauth2-proxy must be given it too. Its container sees only the public CAs, **not this host's trust store**, so a company CA this host trusts is still unknown to it. Without it oauth2-proxy does not start (`x509: certificate signed by unknown authority` in `docker logs llm-gateway-oauth2-proxy`) and every page answers 500. In `deploy/.env`, the absolute path of the CA's PEM on this host:
 
-```yaml
-    environment:
-      OAUTH2_PROXY_PROVIDER_CA_FILES: "/etc/ssl/keycloak-ca.pem"
-    volumes:
-      - /etc/ssl/company-ca.pem:/etc/ssl/keycloak-ca.pem:ro
+```bash
+OAUTH2_PROXY_PROVIDER_CA_FILES=/etc/ssl/company-ca.pem
 ```
+
+`deploy/docker-compose.yml` mounts that one file into the container under the same path and passes the variable on. The file must be readable by others (`chmod 644`): the container does not run as root. When this host already trusts the CA, its own bundle works as the file (`/etc/ssl/certs/ca-certificates.crt` on Debian / Ubuntu, `/etc/pki/tls/certs/ca-bundle.crt` on RHEL). To stop using it, remove the line; don't leave it empty.
+
+The preflight tells you beforehand whether you need this (*oauth2-proxy* → *Keycloak's CA*), and tries the file you give.
 
 **(2) The gateway: `.env`**
 

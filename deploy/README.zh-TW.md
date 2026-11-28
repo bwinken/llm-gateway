@@ -245,6 +245,7 @@ systemctl --user restart llm-gateway
 
 所有人都要重新登入。接著確認：儀表板是你原本的帳號（API key 沒變）；有 `admin` client role 的帳號打得開 `/admin`，沒有的帳號得到 403。
 
+- **切換後每個網頁都回 500**，nginx error log 有 `auth request unexpected status: 502`：oauth2-proxy 沒在跑，`docker logs llm-gateway-oauth2-proxy --tail 20` 會說原因。`x509: certificate signed by unknown authority`：Keycloak 的憑證是內部 CA 簽的，而容器只認公開的 CA，看不到主機的信任清單。在 `deploy/.env` 設 `OAUTH2_PROXY_PROVIDER_CA_FILES=<主機上 CA 憑證（PEM）的絕對路徑>`（要讓其他使用者讀得到；compose 檔會把它掛進容器），再跑一次 `docker compose up -d`。`issuer did not match`：`OIDC_ISSUER_URL` 跟 realm 自稱的不是一字不差。`no such host`：容器解析不到 Keycloak 的網域（compose 檔裡的 `extra_hosts`）。
 - **nginx error log 出現 `upstream sent too big header`**：Keycloak 的 token 與 cookie 比較大。照 nginx 範例裡 `location = /oauth2/auth` 上方的說明加上那三行 `proxy_buffer*`。
 - **幾分鐘後每一頁都變成 401**：`OAUTH2_COOKIE_REFRESH` 沒有比 access token 的壽命短。
 - **一登入就是 401**：gateway 的 log 會寫原因（`JWT issuer mismatch`：`KEYCLOAK_ISSUER_URL` 和 token 的 `iss` 不同；`Keycloak signing keys not read`：gateway 連不到 Keycloak 或不信任它的憑證；`JWT audience mismatch`：`KEYCLOAK_CLIENT_ID` 不是 oauth2-proxy 用的那個 client）。
@@ -262,7 +263,7 @@ systemctl --user restart llm-gateway
 | `monitor` | 列在 admin 頁面的 *Needs attention*，以及 Users 表格的篩選 *Sign-in disabled, account still active*。由你停用帳號（勾選後按 *Disable*）。先從這個開始 |
 | `enforce` | 同上，另外 gateway 會自己停用帳號，並寫一筆稽核紀錄（actor 是 `job:offboarding`） |
 
-**1. Keycloak 端（realm 管理員）**：建一個專用的 client，例如 `llm-gateway-offboarding`：OpenID Connect，開啟 *Client authentication* 與 *Service accounts roles*，其他 flow 都關閉。在 *Service account roles* 指派 `realm-management` → `view-users`，只要這一個：它只能讀，不能改任何使用者。
+**1. Keycloak 端（realm 管理員）**：建一個專用的 client，例如 `llm-gateway-offboarding`：OpenID Connect，開啟 *Client authentication* 與 *Service accounts roles*，其他 flow 都關閉。在 *Service accounts roles* → *Assign role* → 選 client roles，搜尋角色名稱 `view-users`（它屬於 `realm-management` 這個 client；搜尋框找不到 client 的名稱），只要這一個：它只能讀，不能改任何使用者。
 
 **2. Gateway（`.env`）**
 

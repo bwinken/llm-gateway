@@ -19,7 +19,10 @@ answer is no:
   roles ``read`` / ``admin``, who holds ``admin``, the org-code mapper);
 - **token**: an access token of a real person, checked by the very
   function the web UI will use (``keycloak.decode``);
-- **oauth2-proxy**: what ``deploy/.env`` must say at the switch.
+- **oauth2-proxy**: what ``deploy/.env`` must say at the switch, and
+  whether its container will trust Keycloak: it sees only the public CAs,
+  not this host's trust store, so a company CA has to be handed to it
+  (``OAUTH2_PROXY_PROVIDER_CA_FILES``).
 
 It reads and never writes: not the database, not Keycloak, not a setting.
 Nothing here runs in the gateway; it is a script's module, kept under
@@ -744,9 +747,43 @@ def read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def check_oauth2_proxy(deploy_env: dict[str, str], kc: dict[str, str], compose_text: str = "", needs_ca: bool = False) -> list[Check]:
+CA_SETTING = "OAUTH2_PROXY_PROVIDER_CA_FILES"
+
+
+def publicly_trusted(url: str) -> bool | None:
+    """Would a machine that has only the public CAs trust the server at
+    ``url``? That is what the oauth2-proxy container is: it does not see
+    this host's trust store, so a company CA this host trusts is unknown to
+    it. None when it cannot be told (not https, not reached, no bundle).
+
+    Without the strict RFC 5280 checks: oauth2-proxy is a Go program and
+    does not make them."""
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname:
+        return None
+    try:
+        import certifi  # noqa: PLC0415 - the public roots, as the image has them
+        context = ssl.create_default_context(cafile=certifi.where())
+        context.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
+        _handshake(parts.hostname, parts.port or 443, context)
+    except ssl.SSLCertVerificationError:
+        return False
+    except Exception:
+        return None
+    return True
+
+
+def check_oauth2_proxy(
+    deploy_env: dict[str, str], kc: dict[str, str], compose_text: str = "", public: bool | None = None,
+) -> list[Check]:
     """What oauth2-proxy must be told at the switch. Before it, these still
-    hold AuthCenter's values: that is a to-do, not a fault."""
+    hold AuthCenter's values: that is a to-do, not a fault.
+
+    ``public`` is ``publicly_trusted(issuer)``. When Keycloak's certificate
+    is not from a public CA, oauth2-proxy needs that CA or it does not start
+    (``x509: certificate signed by unknown authority``) and every page is a
+    500: ``OAUTH2_PROXY_PROVIDER_CA_FILES`` in ``deploy/.env`` names the PEM
+    on this host, and the compose file mounts it into the container."""
     if not deploy_env:
         return [Check("oauth2-proxy", "deploy/.env", SKIP, "not found here",
                       "At the switch: OIDC_ISSUER_URL and OAUTH2_CLIENT_ID as below, OAUTH2_CLIENT_SECRET the client's secret")]
@@ -756,14 +793,41 @@ def check_oauth2_proxy(deploy_env: dict[str, str], kc: dict[str, str], compose_t
         out.append(Check("oauth2-proxy", key, OK if have == wanted else TODO,
                          have if have == wanted else f"{have or '(not set)'}",
                          "" if have == wanted else f"At the switch set {key}={wanted}"))
-    if needs_ca and "PROVIDER_CA_FILES" not in compose_text:
-        out.append(Check(
-            "oauth2-proxy", "Keycloak's CA", TODO,
-            "the gateway needs a CA file for Keycloak, and oauth2-proxy has none configured",
-            "oauth2-proxy talks to Keycloak too. Mount the same PEM into its container and set "
-            "OAUTH2_PROXY_PROVIDER_CA_FILES to that path (deploy/docker-compose.yml), or it fails with "
-            "'x509: certificate signed by unknown authority'",
-        ))
+    switched = deploy_env.get("OIDC_ISSUER_URL", "") == kc["issuer"]
+    ca = deploy_env.get(CA_SETTING, "")
+    if not ca:
+        if public is False:
+            out.append(Check(
+                "oauth2-proxy", "Keycloak's CA", FAIL if switched else TODO,
+                "Keycloak's certificate is not from a public CA, and the oauth2-proxy container trusts only those "
+                "(it does not see this host's trust store)",
+                f"In deploy/.env set {CA_SETTING}=<absolute path of the CA's PEM on this host>, then "
+                "docker compose up -d. Without it oauth2-proxy does not start "
+                "('x509: certificate signed by unknown authority') and every page is a 500",
+            ))
+        return out
+    if "," in ca or not ca.startswith("/"):
+        return out + [Check(
+            "oauth2-proxy", CA_SETTING, FAIL, f"{ca}: must be one absolute path",
+            "The compose file mounts this one file into the container under the same path. Put every "
+            "certificate it needs (the root and any intermediate) in one PEM file",
+        )]
+    if compose_text and CA_SETTING not in compose_text:
+        out.append(Check("oauth2-proxy", "docker-compose.yml", FAIL,
+                         f"this deploy/docker-compose.yml does not pass {CA_SETTING} to the container",
+                         "It is an older copy: update the repository (git pull), then docker compose up -d"))
+    out += [Check("oauth2-proxy", c.name, c.status, c.detail, c.fix) for c in inspect_ca_file(ca, CA_SETTING)]
+    try:
+        readable = bool(Path(ca).stat().st_mode & 0o004)
+    except OSError:
+        return out
+    if not readable:
+        out.append(Check("oauth2-proxy", "CA file permissions", FAIL, f"{ca} is not readable by others",
+                         f"The container does not run as root: chmod 644 {ca}"))
+    probe = probe_tls(kc["issuer"], ca, CA_SETTING)
+    if probe and probe[0].status != SKIP:
+        first = probe[0]
+        out.append(Check("oauth2-proxy", "Keycloak with that CA", first.status, first.detail, first.fix))
     return out
 
 
@@ -800,8 +864,7 @@ def run(session: Session | None = None, *, token_text: str = "", repo_root: Path
             compose_text = (repo_root / "deploy" / "docker-compose.yml").read_text(encoding="utf-8")
         except OSError:
             pass
-    needs_ca = bool(kc["ca_file"]) or any(c.status == FAIL and c.name.startswith("TLS") for c in tls)
-    checks += check_oauth2_proxy(deploy_env, kc, compose_text, needs_ca)
+    checks += check_oauth2_proxy(deploy_env, kc, compose_text, publicly_trusted(kc["issuer"]))
 
     missing = offboarding.missing_settings(ob)
     if missing:
