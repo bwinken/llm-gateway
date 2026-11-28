@@ -288,6 +288,16 @@ OAUTH2_PROXY_PROVIDER_CA_FILES=/etc/ssl/company-ca.pem
 
 The preflight tells you beforehand whether you need this (*oauth2-proxy* → *Keycloak's CA*), and tries the file you give.
 
+**nginx: larger buffers for the two `/oauth2` locations.** Keycloak's session does not fit one cookie (oauth2-proxy logs *Multiple cookies are required for this session as it exceeds the 4kb cookie limit*), and nginx's default buffers are too small for it. In the site's file, add to **both** `location /oauth2/` and `location = /oauth2/auth` (the example file has them):
+
+```nginx
+        proxy_buffer_size       16k;
+        proxy_buffers           8 16k;
+        proxy_busy_buffers_size 32k;
+```
+
+Then `sudo nginx -t` and `sudo systemctl reload nginx`. Without them the sign-in itself works at Keycloak, but coming back the browser gets a 502 from `/oauth2/callback` (error log: `upstream sent too big header`), no cookie is set, and the next request is asked to sign in again. With only the first location done, sign-in works and every page after it is a 500.
+
 **(2) The gateway: `.env`**
 
 ```bash

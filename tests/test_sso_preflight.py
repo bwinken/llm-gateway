@@ -182,6 +182,40 @@ class TestCaFile:
         [check] = preflight.inspect_ca_file(str(old))
         assert check.status == "fail" and "expired" in check.detail
 
+    def test_a_hosts_bundle_with_expired_certificates_in_it_is_fine(self, pki):
+        # /etc/ssl/certs/ca-certificates.crt always holds a few that have
+        # expired, and certificates that are nobody's CA. Verification skips
+        # them: reporting them as a failure sent an admin looking for a
+        # problem that was not there.
+        bundle = pki["dir"] / "ca-certificates.crt"
+        key = _key()
+        others = [_cert(f"Public Root {i}", key, ca=True) for i in range(11)]
+        dead = [_cert("Old Root", key, ca=True, days=10, start_days_ago=30),
+                _cert("*.docker.test", key, days=10, start_days_ago=30)]
+        bundle.write_bytes(b"".join(_pem(c) for c in [*others, *dead, pki["ca_cert"]]))
+        [check] = preflight.inspect_ca_file(str(bundle))
+        assert check.status == "ok"
+        assert "a bundle of 14 certificates" in check.detail and "2 of them have expired and are ignored" in check.detail
+
+    def test_an_expired_certificate_beside_a_valid_one_in_a_small_file_is_pointed_out(self, pki):
+        both = pki["dir"] / "two.pem"
+        both.write_bytes(_pem(pki["ca_cert"]) + _pem(_cert("Old Root", _key(), ca=True, days=10, start_days_ago=30)))
+        [check] = preflight.inspect_ca_file(str(both))
+        assert check.status == "warn" and "Old Root" in check.detail
+
+    def test_the_bundle_is_judged_by_whether_keycloak_verifies_with_it(self, tls_server, pki):
+        bundle = pki["dir"] / "bundle-with-dead.crt"
+        key = _key()
+        bundle.write_bytes(b"".join(_pem(c) for c in [
+            *[_cert(f"Public Root {i}", key, ca=True) for i in range(11)],
+            _cert("Old Root", key, ca=True, days=10, start_days_ago=30), pki["ca_cert"],
+        ]))
+        kc = {**KC, "issuer": tls_server}
+        env = {"OIDC_ISSUER_URL": tls_server, "OAUTH2_CLIENT_ID": CLIENT, preflight.CA_SETTING: str(bundle)}
+        checks = preflight.check_oauth2_proxy(env, kc, "OAUTH2_PROXY_PROVIDER_CA_FILES:\n", public=False)
+        assert not [c for c in checks if c.status == "fail"]
+        assert _by_name(checks)["Keycloak with that CA"].status == "ok"
+
     def test_a_file_that_is_cut_off(self, pki):
         cut = pki["dir"] / "cut.pem"
         cut.write_bytes(_pem(pki["ca_cert"])[:200])
@@ -628,6 +662,24 @@ class TestOauth2Proxy:
         checks = _by_name(preflight.check_oauth2_proxy(env, KC))
         assert checks["OIDC_ISSUER_URL"].status == "todo" and ISSUER in checks["OIDC_ISSUER_URL"].fix
         assert checks["OAUTH2_CLIENT_ID"].status == "todo"
+
+    def test_the_nginx_buffers_are_a_reminder_before_the_switch(self):
+        # nginx's file cannot be read from here; a sign-in that comes back
+        # as a 502 was the second thing to go wrong at the first switch.
+        env = {"OIDC_ISSUER_URL": "http://auth.company.test", "OAUTH2_CLIENT_ID": CLIENT}
+        check = _by_name(preflight.check_oauth2_proxy(env, KC))["nginx buffers"]
+        assert check.status == "todo" and "proxy_buffer_size 16k" in check.fix and "/oauth2/auth" in check.fix
+        switched = {"OIDC_ISSUER_URL": ISSUER, "OAUTH2_CLIENT_ID": CLIENT}
+        assert "nginx buffers" not in _by_name(preflight.check_oauth2_proxy(switched, KC))
+
+    def test_the_nginx_example_has_them_in_both_places(self):
+        from pathlib import Path
+
+        text = (Path(__file__).resolve().parent.parent / "deploy" / "llm-gateway-example.nginx.conf").read_text(encoding="utf-8")
+        for start in ("    location /oauth2/ {", "    location = /oauth2/auth {"):
+            block = text[text.index(start):]
+            block = block[:block.index("\n    }")]
+            assert "proxy_buffer_size       16k;" in block and "proxy_busy_buffers_size 32k;" in block, start
 
     def test_already_keycloaks(self):
         env = {"OIDC_ISSUER_URL": ISSUER, "OAUTH2_CLIENT_ID": CLIENT}

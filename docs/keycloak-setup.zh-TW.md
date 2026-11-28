@@ -294,6 +294,16 @@ OAUTH2_PROXY_PROVIDER_CA_FILES=/etc/ssl/company-ca.pem
 
 preflight 會事先告訴你需不需要（*oauth2-proxy* → *Keycloak's CA*），也會實際用你給的檔案試一次。
 
+**nginx：兩個 `/oauth2` 的 location 要加大緩衝區。** Keycloak 的 session 一個 cookie 放不下（oauth2-proxy 的 log 會有 *Multiple cookies are required for this session as it exceeds the 4kb cookie limit*），nginx 預設的緩衝區裝不下。在網站設定檔的 `location /oauth2/` 和 `location = /oauth2/auth` **兩個都**加上（範例檔已經有）：
+
+```nginx
+        proxy_buffer_size       16k;
+        proxy_buffers           8 16k;
+        proxy_busy_buffers_size 32k;
+```
+
+然後 `sudo nginx -t`、`sudo systemctl reload nginx`。沒加的話，在 Keycloak 登入本身會成功，但回來時瀏覽器會從 `/oauth2/callback` 拿到 502（error log：`upstream sent too big header`），cookie 沒設成功，下一個請求又被要求登入。只加第一個的話，登入會成功，之後每一頁都是 500。
+
 **(2) gateway：`.env`**
 
 ```bash
