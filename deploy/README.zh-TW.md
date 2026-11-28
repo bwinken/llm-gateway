@@ -246,7 +246,8 @@ systemctl --user restart llm-gateway
 所有人都要重新登入。接著確認：儀表板是你原本的帳號（API key 沒變）；有 `admin` client role 的帳號打得開 `/admin`，沒有的帳號得到 403。
 
 - **切換後每個網頁都回 500**，nginx error log 有 `auth request unexpected status: 502`：oauth2-proxy 沒在跑，`docker logs llm-gateway-oauth2-proxy --tail 20` 會說原因。`x509: certificate signed by unknown authority`：Keycloak 的憑證是內部 CA 簽的，而容器只認公開的 CA，看不到主機的信任清單。在 `deploy/.env` 設 `OAUTH2_PROXY_PROVIDER_CA_FILES=<主機上 CA 憑證（PEM）的絕對路徑>`（要讓其他使用者讀得到；compose 檔會把它掛進容器），再跑一次 `docker compose up -d`。`issuer did not match`：`OIDC_ISSUER_URL` 跟 realm 自稱的不是一字不差。`no such host`：容器解析不到 Keycloak 的網域（compose 檔裡的 `extra_hosts`）。
-- **nginx error log 出現 `upstream sent too big header`**：Keycloak 的 token 與 cookie 比較大。照 nginx 範例裡 `location = /oauth2/auth` 上方的說明加上那三行 `proxy_buffer*`。
+- **在 Keycloak 登入成功，回來卻是 502（或又被要求登入）**，nginx error log 有 `upstream sent too big header`：Keycloak 的 session 一個 cookie 放不下（oauth2-proxy 的 log 會有 *Multiple cookies are required*），nginx 預設的緩衝區裝不下 oauth2-proxy 的回應，cookie 送不到瀏覽器。在網站設定檔的 `location /oauth2/` 和 `location = /oauth2/auth` **兩個都**加上 `proxy_buffer_size 16k; proxy_buffers 8 16k; proxy_busy_buffers_size 32k;`（範例檔已經有），然後 `nginx -t` 並 reload。只加第一個的話，登入會成功，之後每一頁都是 500。
+- **登入後出現 `400 Request Header Or Cookie Too Large`**：瀏覽器把那幾個 cookie 放在同一行 `Cookie` header 送回來，超過 nginx 預設的 8k。在網站設定檔的 `server` 區塊加 `large_client_header_buffers 4 32k;`（範例檔已經有）。
 - **幾分鐘後每一頁都變成 401**：`OAUTH2_COOKIE_REFRESH` 沒有比 access token 的壽命短。
 - **一登入就是 401**：gateway 的 log 會寫原因（`JWT issuer mismatch`：`KEYCLOAK_ISSUER_URL` 和 token 的 `iss` 不同；`Keycloak signing keys not read`：gateway 連不到 Keycloak 或不信任它的憑證；`JWT audience mismatch`：`KEYCLOAK_CLIENT_ID` 不是 oauth2-proxy 用的那個 client）。
 - **403 `Insufficient scope`**：這個帳號沒有 client role `read`。

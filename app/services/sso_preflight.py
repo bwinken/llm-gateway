@@ -59,6 +59,9 @@ OK, WARN, FAIL, SKIP, TODO = "ok", "warn", "fail", "skip", "todo"
 _TIMEOUT_S = 10.0
 _EXPIRY_WARN_DAYS = 30
 _LIST_LIMIT = 20
+# More certificates than this in a CA file is a bundle (a host's trust
+# store), not a file someone put a CA or two in.
+_BUNDLE_SIZE = 10
 # OpenSSL verification results that mean "the CA is not trusted here".
 _UNTRUSTED = {2, 18, 19, 20, 21}
 _EXPIRED = 10
@@ -160,7 +163,13 @@ def _expiry(cert) -> datetime:
 
 def inspect_ca_file(path: str, setting: str = "KEYCLOAK_CA_FILE") -> list[Check]:
     """What is in the CA file: readable, PEM certificates, CAs, not expired,
-    no private key. Whether it is the *right* CA is ``probe_tls``'s answer."""
+    no private key. Whether it is the *right* CA is ``probe_tls``'s answer.
+
+    The file may be one CA's certificate or a whole bundle (a host's
+    ``ca-certificates.crt``, which is a fine file to use). A bundle always
+    holds a few expired certificates, and other people's: verification
+    skips them, so they are counted, not failed. Only a file in which
+    nothing is still valid cannot work."""
     name = f"{setting}"
     file = Path(path)
     if not file.exists():
@@ -190,10 +199,21 @@ def inspect_ca_file(path: str, setting: str = "KEYCLOAK_CA_FILE") -> list[Check]
     expired = [c for c in certs if _expiry(c) < now]
     soon = [c for c in certs if now <= _expiry(c) < now + timedelta(days=_EXPIRY_WARN_DAYS)]
     cas = [c for c in certs if _is_ca(c)]
+    bundle = len(certs) > _BUNDLE_SIZE
     summary = f"{path}: {len(certs)} certificate(s): " + _names([_cert_name(c) for c in certs], 5)
-    if expired:
+    if expired and len(expired) == len(certs):
         out.append(Check("certificate", name, FAIL, f"expired: {_names([_cert_name(c) for c in expired], 5)}",
                          "Get the CA's current certificate"))
+    elif bundle:
+        # A system bundle: what matters is whether Keycloak verifies with it.
+        note = f"; {len(expired)} of them have expired and are ignored" if expired else ""
+        out.append(Check("certificate", name, OK, f"{path}: a bundle of {len(certs)} certificates{note}"))
+    elif expired:
+        out.append(Check(
+            "certificate", name, WARN,
+            f"{path}: {len(certs)} certificates, of which expired: {_names([_cert_name(c) for c in expired], 5)}",
+            "An expired certificate is ignored. Take it out of the file; whether the rest is enough is the check with Keycloak",
+        ))
     elif not cas:
         out.append(Check(
             "certificate", name, WARN, summary + ". None of them is a CA",
@@ -794,6 +814,17 @@ def check_oauth2_proxy(
                          have if have == wanted else f"{have or '(not set)'}",
                          "" if have == wanted else f"At the switch set {key}={wanted}"))
     switched = deploy_env.get("OIDC_ISSUER_URL", "") == kc["issuer"]
+    if not switched:
+        # Not something this script can read (the site's file is nginx's),
+        # and the second thing that goes wrong at a switch.
+        out.append(Check(
+            "oauth2-proxy", "nginx buffers", TODO,
+            "Keycloak's session does not fit nginx's default buffers",
+            "In the nginx site, location /oauth2/ and location = /oauth2/auth each need proxy_buffer_size 16k; "
+            "proxy_buffers 8 16k; proxy_busy_buffers_size 32k; and the server block large_client_header_buffers "
+            "4 32k; (as in deploy/llm-gateway-example.nginx.conf). Without them the sign-in comes back as a 502 "
+            "('upstream sent too big header') or a 400 ('Request Header Or Cookie Too Large')",
+        ))
     ca = deploy_env.get(CA_SETTING, "")
     if not ca:
         if public is False:
