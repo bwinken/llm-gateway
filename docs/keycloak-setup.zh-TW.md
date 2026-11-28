@@ -157,7 +157,7 @@ gateway 用部門代碼（`org_code`）決定 IP allowlist 的部門規則，以
 存檔後：
 
 1. *Credentials* 分頁 → 複製 Client secret。
-2. *Service accounts roles* 分頁 → *Assign role* → *Filter by clients* → 搜尋 `realm-management`，勾選：
+2. *Service accounts roles* 分頁 → *Assign role* → 選 client roles（對話框裡的 *Filter by clients*；較新的介面 *Assign role* 本身是選單，選 *Client roles*）→ 搜尋**角色名稱** `view-users`（搜尋框找不到 client 的名稱；結果那一列會標示它屬於 `realm-management`，在 `master` realm 操作的話是 `master-realm`），勾選：
 
 | Role | 用途 | 什麼時候可以拿掉 |
 |---|---|---|
@@ -284,14 +284,15 @@ OAUTH2_CLIENT_SECRET=<第 2 步的 secret>
 OAUTH2_COOKIE_REFRESH=4m
 ```
 
-Keycloak 是內部 CA 的話，oauth2-proxy 也要信任它，否則會出現 `x509: certificate signed by unknown authority`。在 `deploy/docker-compose.yml` 的 `oauth2-proxy` 加上（這段沒有在你們的環境驗證過，請先在切換前試啟動一次）：
+Keycloak 是內部 CA 的話，oauth2-proxy 也要拿到那張 CA 憑證。它的容器只認公開的 CA，**看不到這台主機的信任清單**，所以就算主機已經信任公司的 CA，容器還是不認得。沒給的話 oauth2-proxy 會起不來（`docker logs llm-gateway-oauth2-proxy` 顯示 `x509: certificate signed by unknown authority`），所有網頁都回 500。在 `deploy/.env` 填主機上 CA 憑證（PEM）的絕對路徑：
 
-```yaml
-    environment:
-      OAUTH2_PROXY_PROVIDER_CA_FILES: "/etc/ssl/keycloak-ca.pem"
-    volumes:
-      - /etc/ssl/company-ca.pem:/etc/ssl/keycloak-ca.pem:ro
+```bash
+OAUTH2_PROXY_PROVIDER_CA_FILES=/etc/ssl/company-ca.pem
 ```
+
+`deploy/docker-compose.yml` 會把這個檔案掛進容器的同一個路徑，並把變數傳進去。檔案要讓其他使用者讀得到（`chmod 644`），因為容器不是用 root 跑的。主機本身已經信任這個 CA 的話，可以直接用主機的 CA 總表（Debian / Ubuntu 是 `/etc/ssl/certs/ca-certificates.crt`，RHEL 是 `/etc/pki/tls/certs/ca-bundle.crt`）。不用時把整行拿掉，不要留空值。
+
+preflight 會事先告訴你需不需要（*oauth2-proxy* → *Keycloak's CA*），也會實際用你給的檔案試一次。
 
 **(2) gateway：`.env`**
 

@@ -270,6 +270,7 @@ systemctl --user restart llm-gateway
 
 Everyone signs in again. Then check: the dashboard opens under your existing account (same API key), `/admin` opens for an account with the `admin` client role and answers 403 for one without it.
 
+- **Every page answers 500** right after the switch, and the nginx error log says `auth request unexpected status: 502`: oauth2-proxy is not running. `docker logs llm-gateway-oauth2-proxy --tail 20` says why. `x509: certificate signed by unknown authority`: Keycloak's certificate is from an internal CA, and the container sees only the public CAs, not this host's trust store. Set `OAUTH2_PROXY_PROVIDER_CA_FILES=<absolute path of the CA's PEM on this host>` in `deploy/.env` (readable by others; the compose file mounts it into the container) and run `docker compose up -d` again. `issuer did not match`: `OIDC_ISSUER_URL` is not letter for letter the realm's own. `no such host`: the container cannot resolve Keycloak's name (`extra_hosts` in the compose file).
 - **`upstream sent too big header`** in the nginx error log: Keycloak's tokens and cookies are larger. Add the three `proxy_buffer*` lines shown in the nginx example above `location = /oauth2/auth`.
 - **401 on every page after a few minutes**: `OAUTH2_COOKIE_REFRESH` is not shorter than the access token lifespan.
 - **401 right away**: the gateway log says why (`JWT issuer mismatch`: `KEYCLOAK_ISSUER_URL` is not the token's `iss`; `Keycloak signing keys not read`: the gateway cannot reach Keycloak or does not trust its certificate; `JWT audience mismatch`: `KEYCLOAK_CLIENT_ID` is not the client oauth2-proxy uses).
@@ -287,7 +288,7 @@ Disabling a person's sign-in (AuthCenter, Keycloak) does not stop their API key:
 | `monitor` | Listed on the admin page under *Needs attention*, and under the Users table's filter *Sign-in disabled, account still active*. You disable the account (tick the rows → *Disable*). Start here |
 | `enforce` | The same, and the gateway disables the account itself, with a row in the audit log (actor `job:offboarding`) |
 
-**1. In Keycloak (realm admin)**: a client of its own, for example `llm-gateway-offboarding`: OpenID Connect, *Client authentication* on, *Service accounts roles* on, every other flow off. Under *Service account roles* assign `realm-management` → `view-users`, and nothing else: it reads, it cannot change a user.
+**1. In Keycloak (realm admin)**: a client of its own, for example `llm-gateway-offboarding`: OpenID Connect, *Client authentication* on, *Service accounts roles* on, every other flow off. Under *Service accounts roles* → *Assign role* → client roles, search for the role's name, `view-users` (it belongs to the client `realm-management`; the search does not find a client's name), and assign nothing else: it reads, it cannot change a user.
 
 **2. Gateway (`.env`)**
 

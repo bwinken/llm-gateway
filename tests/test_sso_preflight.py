@@ -633,12 +633,81 @@ class TestOauth2Proxy:
         env = {"OIDC_ISSUER_URL": ISSUER, "OAUTH2_CLIENT_ID": CLIENT}
         assert {c.status for c in preflight.check_oauth2_proxy(env, KC)} == {"ok"}
 
-    def test_an_internal_ca_must_reach_oauth2_proxy_too(self):
+    # ── Keycloak's CA: the container has only the public ones ──
+
+    def test_a_company_ca_is_not_one_the_container_trusts(self, tls_server):
+        assert preflight.publicly_trusted(tls_server) is False
+        assert preflight.publicly_trusted("http://sso.example.test/realms/x") is None
+
+    def test_nothing_to_tell_when_it_cannot_be_reached(self):
+        with socket.create_server(("127.0.0.1", 0)) as s:
+            port = s.getsockname()[1]
+        assert preflight.publicly_trusted(f"https://localhost:{port}/realms/x") is None
+
+    def test_a_company_ca_and_none_given_is_a_to_do_before_the_switch(self):
+        env = {"OIDC_ISSUER_URL": "http://auth.company.test", "OAUTH2_CLIENT_ID": CLIENT}
+        check = _by_name(preflight.check_oauth2_proxy(env, KC, public=False))["Keycloak's CA"]
+        assert check.status == "todo" and "OAUTH2_PROXY_PROVIDER_CA_FILES=" in check.fix
+        assert "500" in check.fix
+
+    def test_and_a_failure_once_switched(self):
+        # The situation that takes every page down: switched, no CA.
         env = {"OIDC_ISSUER_URL": ISSUER, "OAUTH2_CLIENT_ID": CLIENT}
-        checks = _by_name(preflight.check_oauth2_proxy(env, KC, "services:\n  oauth2-proxy:\n", needs_ca=True))
-        assert checks["Keycloak's CA"].status == "todo" and "OAUTH2_PROXY_PROVIDER_CA_FILES" in checks["Keycloak's CA"].fix
-        compose = "OAUTH2_PROXY_PROVIDER_CA_FILES: /etc/ssl/ca.pem"
-        assert "Keycloak's CA" not in _by_name(preflight.check_oauth2_proxy(env, KC, compose, needs_ca=True))
+        assert _by_name(preflight.check_oauth2_proxy(env, KC, public=False))["Keycloak's CA"].status == "fail"
+
+    def test_a_public_certificate_needs_nothing(self):
+        env = {"OIDC_ISSUER_URL": ISSUER, "OAUTH2_CLIENT_ID": CLIENT}
+        assert "Keycloak's CA" not in _by_name(preflight.check_oauth2_proxy(env, KC, public=True))
+        assert "Keycloak's CA" not in _by_name(preflight.check_oauth2_proxy(env, KC, public=None))
+
+    def test_the_ca_given_is_looked_at_and_tried(self, tls_server, pki):
+        kc = {**KC, "issuer": tls_server}
+        env = {"OIDC_ISSUER_URL": tls_server, "OAUTH2_CLIENT_ID": CLIENT, preflight.CA_SETTING: pki["ca"]}
+        compose = "OAUTH2_PROXY_PROVIDER_CA_FILES:\n"
+        checks = _by_name(preflight.check_oauth2_proxy(env, kc, compose, public=False))
+        assert checks[preflight.CA_SETTING].status == "ok"
+        assert checks["Keycloak with that CA"].status == "ok"
+        assert "Keycloak's CA" not in checks and "docker-compose.yml" not in checks
+
+    def test_the_wrong_ca_is_said(self, tls_server, pki):
+        kc = {**KC, "issuer": tls_server}
+        env = {"OIDC_ISSUER_URL": tls_server, "OAUTH2_CLIENT_ID": CLIENT, preflight.CA_SETTING: pki["other"]}
+        check = _by_name(preflight.check_oauth2_proxy(env, kc, public=False))["Keycloak with that CA"]
+        assert check.status == "fail" and "Test Company Root CA" in check.fix
+
+    def test_a_file_that_is_not_there(self, pki):
+        env = {"OIDC_ISSUER_URL": ISSUER, "OAUTH2_CLIENT_ID": CLIENT, preflight.CA_SETTING: str(pki["dir"] / "nope.pem")}
+        check = _by_name(preflight.check_oauth2_proxy(env, KC, public=False))[preflight.CA_SETTING]
+        assert check.status == "fail" and "does not exist" in check.detail
+
+    @pytest.mark.parametrize("value", ["ca.pem", "/etc/ssl/a.pem,/etc/ssl/b.pem"])
+    def test_it_is_one_absolute_path(self, value):
+        env = {"OIDC_ISSUER_URL": ISSUER, "OAUTH2_CLIENT_ID": CLIENT, preflight.CA_SETTING: value}
+        check = _by_name(preflight.check_oauth2_proxy(env, KC, public=False))[preflight.CA_SETTING]
+        assert check.status == "fail" and "one absolute path" in check.detail
+
+    def test_a_file_the_container_cannot_read(self, pki, tmp_path):
+        private = tmp_path / "ca.pem"
+        private.write_bytes(_pem(pki["ca_cert"]))
+        private.chmod(0o600)
+        env = {"OIDC_ISSUER_URL": ISSUER, "OAUTH2_CLIENT_ID": CLIENT, preflight.CA_SETTING: str(private)}
+        check = _by_name(preflight.check_oauth2_proxy(env, KC, public=False))["CA file permissions"]
+        assert check.status == "fail" and "chmod 644" in check.fix
+
+    def test_an_older_compose_file_does_not_pass_it_on(self, pki):
+        env = {"OIDC_ISSUER_URL": ISSUER, "OAUTH2_CLIENT_ID": CLIENT, preflight.CA_SETTING: pki["ca"]}
+        checks = _by_name(preflight.check_oauth2_proxy(env, KC, "services:\n  oauth2-proxy:\n", public=False))
+        assert checks["docker-compose.yml"].status == "fail" and "git pull" in checks["docker-compose.yml"].fix
+
+    def test_the_compose_file_takes_it_from_the_env_and_nothing_when_unset(self):
+        # The key has no value (so an unset variable is not in the container
+        # at all: existing deployments are as they were), and the mount falls
+        # back to /dev/null.
+        from pathlib import Path
+
+        text = (Path(__file__).resolve().parent.parent / "deploy" / "docker-compose.yml").read_text(encoding="utf-8")
+        assert "      OAUTH2_PROXY_PROVIDER_CA_FILES:\n" in text
+        assert "${OAUTH2_PROXY_PROVIDER_CA_FILES:-/dev/null}:${OAUTH2_PROXY_PROVIDER_CA_FILES:-/tmp/no-provider-ca}:ro" in text
 
     def test_the_env_file(self, tmp_path):
         f = tmp_path / ".env"

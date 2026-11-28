@@ -90,6 +90,18 @@ services:
       # 白名單（視需要修改）
       # OAUTH2_PROXY_WHITELIST_DOMAINS: ".your-domain.com"
 
+      # ─── SSO 的憑證由內部 CA 簽發時 ───
+      # oauth2-proxy 啟動時要連 SSO；不信任它的憑證就起不來
+      # （x509: certificate signed by unknown authority），網頁全部變成 500。
+      # 在 deploy/.env 設 OAUTH2_PROXY_PROVIDER_CA_FILES=<主機上 CA 憑證（PEM）的絕對路徑>，
+      # 下面的 volumes 會把同一個檔案掛進容器的同一個路徑。
+      # 這裡刻意不寫值：沒設定時容器裡根本不會有這個變數，行為和原本一樣。
+      OAUTH2_PROXY_PROVIDER_CA_FILES:
+
+    volumes:
+      # 沒設定時掛的是 /dev/null（一個空檔案，沒有任何作用）。
+      - ${OAUTH2_PROXY_PROVIDER_CA_FILES:-/dev/null}:${OAUTH2_PROXY_PROVIDER_CA_FILES:-/tmp/no-provider-ca}:ro
+
     # ─── 內網 DNS 解析（如果容器無法解析 AuthCenter 域名）───
     # extra_hosts:
     #   - "auth.company.com:192.168.x.x"
